@@ -1,0 +1,42 @@
+{
+  "name": "patcher",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "cli": "tsx src/index.ts",
+    "inspect": "tsx src/inspector.ts",
+    "diff": "tsx src/diff.ts",
+    "build": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.22.0",
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/yargs": "^17.0.35",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@babel/generator": "^7.28.5",
+    "@babel/parser": "^7.28.5",
+    "@babel/traverse": "^7.28.5",
+    "@babel/types": "^7.28.5",
+    "@types/babel__generator": "^7.27.0",
+    "@types/babel__traverse": "^7.28.0",
+    "@types/diff": "^8.0.0",
+    "@types/semver": "^7.7.1",
+    "@types/tar": "^6.1.13",
+    "chalk": "^5.6.2",
+    "diff": "^8.0.2",
+    "prettier": "^3.6.2",
+    "recast": "^0.23.11",
+    "semver": "^7.7.3",
+    "tar": "^7.5.2",
+    "yargs": "^18.0.0"
+  },
+  "type": "module"
+}
