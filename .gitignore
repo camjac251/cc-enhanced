@@ -1,9 +1,6 @@
-*
-!.gitignore
-!package.json
-!pnpm-lock.yaml
-!tsconfig.json
-!README.md
-!Makefile
-!/src/
-!/src/**
+node_modules/
+versions/
+versions_clean/
+.tmp/
+dist/exported-prompts/
+exported-prompts/

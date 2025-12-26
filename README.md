@@ -1,61 +1,82 @@
 # Claude Code Patcher
 
-A Node.js/TypeScript CLI for downloading, normalizing, and patching the `@anthropic-ai/claude-code` CLI.
+A TypeScript CLI for downloading and patching the `@anthropic-ai/claude-code` CLI to improve usability.
 
 ## Features
 
-- **Automated Download:** Fetches versions directly from the NPM registry.
-- **Normalization:** Formats `cli.js` using Prettier (via Babel parser) to ensure readable and deterministic code.
-- **Robust Patching:** Uses AST-based transformations (Recast) instead of brittle regex replacement.
-- **Safety:** Verifies patches against expected structures and reports detailed results.
+- **Automated Download:** Fetches versions from NPM registry with tarball caching
+- **Normalization:** Formats `cli.js` with Prettier for readable diffs
+- **AST Patching:** Uses Babel for safe, structure-aware transformations
+- **Verification:** Auto-validates patches after application
+- **Dry-Run:** Preview changes without writing
 
 ## Installation
 
 ```bash
-cd patcher
 pnpm install
-pnpm build # optional, compiles to dist/
 ```
 
 ## Usage
 
-Run commands from the `patcher/` directory.
-
-### Basic Commands
-
 ```bash
-# Download and patch the latest version
-pnpm cli --latest 1
+# Patch the latest version (default)
+pnpm cli
 
-# Download and patch a specific version
-pnpm cli -v 2.0.47
+# Patch a specific version
+pnpm cli -v 2.0.75
 
-# Download ONLY (no patches, useful for diffing)
-pnpm cli -v 2.0.47 --out-dir test-output-clean --no-patch
+# Preview without writing (dry-run)
+pnpm cli --dry-run
+
+# Show diff of changes
+pnpm cli --diff
+
+# Skip formatting (faster)
+pnpm cli --skip-format
+
+# Output to different directory
+pnpm cli --out-dir ./my-output
+
+# Download without patching (for diffing)
+pnpm cli --no-patch --out-dir versions_clean
 ```
 
-### Advanced Options
+## Patch Options
 
-*   `--out-dir <path>`: Specify where to save versions (default: `versions`).
-*   `--skip-format`: Skip Prettier formatting (faster, but patches might be less reliable on minified code).
-*   `--summary-path <file.json>`: Write a machine-readable report of what happened.
-*   `--no-enhance-prompts`: Disable prompt text modifications.
-*   `--no-bump-limits`: Disable limit increases.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--prompts` | true | Prompt enhancements (bash, policy, guards) |
+| `--edit-tool` | true | Edit tool extensions (line insert, diff, batch) |
+| `--limits` | true | Bump read limits (5000 lines, 1MB) |
+| `--signature` | true | Inject patch signature |
+| `--verify` | true | Verify patches after applying |
+| `--list` | - | List all available patches |
 
-### Developer Tools
+Use `--no-<option>` to disable (e.g., `--no-prompts`).
 
-**Inspector (Search Code Context):**
-Finds where code patterns exist in the AST. Essential for updating patches when upstream changes.
+## Development
+
 ```bash
-# Search for "A tool for editing files"
-pnpm inspect search versions/2.0.47/package/cli.js "A tool for editing files"
+# Inspect AST for a string
+mise run inspect version=2.0.75 query="search term"
 
-# Search for identifiers named "kI"
-pnpm inspect search versions/2.0.47/package/cli.js "kI" --type Identifier
+# Compare patched vs clean
+mise run diff version=2.0.75
+
+# Verify a patched version
+mise run verify version=2.0.75
+
+# Type check
+mise run typecheck
+
+# Clean output directories
+mise run clean
 ```
 
-**Smart Diff (Verify Patches):**
-Compares two files by AST structure, ignoring whitespace/formatting noise.
-```bash
-pnpm diff diff test-output-clean/2.0.47/package/cli.js test-output/2.0.47/package/cli.js
-```
+## Adding Patches
+
+1. Create a rule in `src/patches/`
+2. Register in `src/manager.ts`
+3. Add tag in `src/patches/signature.ts`
+
+See `CLAUDE.md` for architecture details.
