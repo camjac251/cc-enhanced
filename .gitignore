@@ -1,6 +1,9 @@
 node_modules/
-versions/
 versions_clean/
+archive/
+.cache/
 .tmp/
-dist/exported-prompts/
+.tmp-build/
+dist/
+.tmp-src-build/
 exported-prompts/

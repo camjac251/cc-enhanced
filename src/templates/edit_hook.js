@@ -1,8 +1,7 @@
-// Self-contained edit helpers - no dependency on minified variable names
-// Uses standard Node APIs via dynamic import (ES module compatible)
-
-const _claudeFs = await import("node:fs");
-const _claudePath = await import("node:path");
+// Self-contained edit helpers - no dependency on minified variable names.
+// Keep these as ESM imports so the injected block works in module scope.
+import * as _claudeFs from "node:fs";
+import * as _claudePath from "node:path";
 
 // --- Utility Functions (replicate internal helpers) ---
 
@@ -108,6 +107,21 @@ function _claudeFuzzyMatch(content, search) {
 
 const _claudeExtendedLinePositions = ["before", "after"];
 
+function _claudeEditUnwrapQuotedScalar(A) {
+	if (typeof A !== "string") return A;
+	let B = A.trim();
+	for (let i = 0; i < 2; i++) {
+		if (B.length < 2) break;
+		const first = B[0];
+		const last = B[B.length - 1];
+		const isQuoted =
+			(first === '"' && last === '"') || (first === "'" && last === "'");
+		if (!isQuoted) break;
+		B = B.slice(1, -1).trim();
+	}
+	return B;
+}
+
 function _claudeEditHasExtendedFields(A) {
 	if (!A) return false;
 	const hasOwn = (k) => Object.hasOwn(A, k);
@@ -121,6 +135,7 @@ function _claudeEditHasExtendedFields(A) {
 		hasOwn("start_line") ||
 		hasOwn("end_line") ||
 		hasOwn("diff") ||
+		hasOwn("pattern") ||
 		hasOwn("lineNumber") ||
 		hasOwn("startLine") ||
 		hasOwn("endLine")
@@ -132,17 +147,80 @@ function _claudeEditHasExtendedFields(A) {
 		_claudeEditSanitizeLine(A.line_number ?? A.lineNumber) !== null ||
 		_claudeEditSanitizeLine(A.start_line ?? A.startLine) !== null ||
 		_claudeEditSanitizeLine(A.end_line ?? A.endLine) !== null ||
-		(typeof A.diff === "string" && A.diff.trim().length > 0)
+		(typeof A.diff === "string" && A.diff.trim().length > 0) ||
+		(typeof A.pattern === "string" && A.pattern.length > 0)
 	);
 }
 
 function _claudeEditSanitizeLine(A) {
 	if (A === void 0 || A === null || A === "") return null;
-	let B = typeof A === "string" ? Number(A) : A;
-	if (!Number.isFinite(B)) return null;
-	B = Math.floor(B);
-	if (B < 1) B = 1;
-	return B;
+	const B = _claudeEditUnwrapQuotedScalar(A);
+	let C = typeof B === "string" ? Number(B) : B;
+	if (!Number.isFinite(C)) return null;
+	C = Math.floor(C);
+	if (C < 1) C = 1;
+	return C;
+}
+
+function _claudeEditParseBoolean(A, fallback = false) {
+	if (A === void 0 || A === null || A === "") return fallback;
+	if (typeof A === "boolean") return A;
+	if (typeof A === "number") return A !== 0;
+	if (typeof A === "string") {
+		const B = String(_claudeEditUnwrapQuotedScalar(A)).trim().toLowerCase();
+		if (B === "true" || B === "1" || B === "yes" || B === "on") return true;
+		if (B === "false" || B === "0" || B === "no" || B === "off" || B === "")
+			return false;
+	}
+	return !!A;
+}
+
+function _claudeParseDiffHunks(diffText) {
+	const chunks = diffText
+		.split(/(^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@.*$)/gm)
+		.filter(Boolean);
+	const hunks = [];
+	let currentHeader = null;
+
+	for (const chunk of chunks) {
+		if (chunk.trim().startsWith("@@")) {
+			currentHeader = chunk.trim();
+			continue;
+		}
+		if (!currentHeader) continue;
+
+		const blockLines = chunk.split(/\r?\n/);
+		if (blockLines.length > 0 && blockLines[0] === "") blockLines.shift();
+		while (blockLines.length > 0 && blockLines[blockLines.length - 1] === "")
+			blockLines.pop();
+
+		const searchLines = [];
+		const replaceLines = [];
+
+		for (const line of blockLines) {
+			if (line.startsWith(" ")) {
+				searchLines.push(line.slice(1));
+				replaceLines.push(line.slice(1));
+			} else if (line.startsWith("-")) {
+				searchLines.push(line.slice(1));
+			} else if (line.startsWith("+")) {
+				replaceLines.push(line.slice(1));
+			} else if (line === "") {
+				searchLines.push("");
+				replaceLines.push("");
+			}
+		}
+
+		if (searchLines.length > 0 || replaceLines.length > 0) {
+			hunks.push({
+				searchText: searchLines.join("\n"),
+				replaceText: replaceLines.join("\n"),
+			});
+		}
+		currentHeader = null;
+	}
+
+	return hunks;
 }
 
 function _claudeEditNormalizeEdits(A) {
@@ -159,9 +237,9 @@ function _claudeEditNormalizeEdits(A) {
 						start_line: A.start_line,
 						end_line: A.end_line,
 						diff: A.diff,
+						pattern: A.pattern,
 					},
 				];
-
 	if (!B || B.length === 0) {
 		return {
 			error: {
@@ -199,22 +277,53 @@ function _claudeEditNormalizeEdits(A) {
 	for (let I of B) {
 		I = normalizeEntry(I);
 
-		// Diff Mode
+		// Diff Mode - convert hunks to string replaces
 		if (typeof I.diff === "string" && I.diff.trim().length > 0) {
-			Q.push({ mode: "diff", diff: I.diff });
+			const hunks = _claudeParseDiffHunks(I.diff);
+			if (hunks.length === 0) {
+				return {
+					error: {
+						result: false,
+						behavior: "ask",
+						message:
+							"Invalid diff format. Expected @@ -old +new @@ header with context/change lines.",
+						errorCode: 15,
+					},
+				};
+			}
+			for (const hunk of hunks) {
+				Q.push({
+					mode: "string",
+					oldString: hunk.searchText,
+					newString: hunk.replaceText,
+					replaceAll: false,
+				});
+			}
+			continue;
+		}
+
+		// Regex Mode
+		if (typeof I.pattern === "string" && I.pattern.length > 0) {
+			const newStr = typeof I.new_string === "string" ? I.new_string : "";
+			Q.push({
+				mode: "regex",
+				pattern: I.pattern,
+				newString: newStr,
+				replaceAll: _claudeEditParseBoolean(I.replace_all, false),
+			});
 			continue;
 		}
 
 		const rawNewString =
 			typeof I.new_string === "string" ? I.new_string : (I.new_string ?? "");
 		const Z = typeof I.old_string === "string" ? I.old_string : "";
-		const Y = I.replace_all === void 0 ? false : !!I.replace_all;
+		const Y = _claudeEditParseBoolean(I.replace_all, false);
 		let J = _claudeEditSanitizeLine(I.line_number);
 		let X = _claudeEditSanitizeLine(I.start_line);
 		let W = _claudeEditSanitizeLine(I.end_line);
 		const posCandidate =
 			typeof I.line_position === "string"
-				? I.line_position.toLowerCase()
+				? String(_claudeEditUnwrapQuotedScalar(I.line_position)).toLowerCase()
 				: "before";
 		const pos = _claudeExtendedLinePositions.includes(posCandidate)
 			? posCandidate
@@ -279,15 +388,54 @@ function _claudeEditApplyString(content, edit) {
 		};
 	}
 
+	const searchStr = matched || edit.oldString;
+
+	// Count occurrences to check uniqueness
+	if (!edit.replaceAll && searchStr !== "") {
+		let count = 0;
+		let pos = 0;
+		const positions = [];
+		pos = content.indexOf(searchStr, pos);
+		while (pos !== -1) {
+			count++;
+			// Track line numbers for context
+			const lineNum = content.slice(0, pos).split("\n").length;
+			positions.push(lineNum);
+			pos += searchStr.length;
+			if (count > 10) break; // Don't scan entire huge files
+			pos = content.indexOf(searchStr, pos);
+		}
+
+		if (count > 1) {
+			const lineInfo =
+				positions.slice(0, 5).join(", ") + (positions.length > 5 ? "..." : "");
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message:
+						`old_string matches ${count}${count > 10 ? "+" : ""} locations (lines: ${lineInfo}). ` +
+						"Add more context to make it unique, or use replace_all:true to replace all.\n" +
+						"String: " +
+						edit.oldString.slice(0, 80) +
+						(edit.oldString.length > 80 ? "..." : ""),
+					errorCode: 9,
+				},
+			};
+		}
+	}
+
 	if (edit.replaceAll) {
+		const parts = content.split(searchStr);
 		return {
-			content: content.split(matched || edit.oldString).join(edit.newString),
-			oldString: matched || edit.oldString,
+			content: parts.join(edit.newString),
+			oldString: searchStr,
+			matchCount: parts.length - 1,
 		};
 	} else {
 		return {
-			content: content.replace(matched || edit.oldString, edit.newString),
-			oldString: matched || edit.oldString,
+			content: content.replace(searchStr, edit.newString),
+			oldString: searchStr,
 		};
 	}
 }
@@ -342,210 +490,62 @@ function _claudeEditApplyRange(content, edit) {
 	return { content: lines.join("\n") };
 }
 
-function _claudeEditApplyDiff(content, edit) {
-	const diff = edit.diff;
-	const lines = content.split("\n");
+function _claudeEditApplyRegex(content, edit) {
+	try {
+		// Parse regex - support /pattern/flags format or plain pattern
+		let pattern = edit.pattern;
+		let flags = edit.replaceAll ? "g" : "";
 
-	// Track partial application
-	const failedHunks = [];
-	let appliedHunks = 0;
-
-	// Parse all hunks
-	const chunks = diff
-		.split(/(^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@.*$)/gm)
-		.filter(Boolean);
-	const parsedHunks = [];
-	let currentHeader = null;
-
-	for (const chunk of chunks) {
-		if (chunk.trim().startsWith("@@")) {
-			currentHeader = chunk.trim();
-			continue;
-		}
-		if (!currentHeader) continue;
-
-		const headerMatch = /@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/.exec(
-			currentHeader,
-		);
-		if (!headerMatch) {
-			currentHeader = null;
-			continue;
-		}
-
-		const oldStart = parseInt(headerMatch[1], 10);
-		const blockLines = chunk.split(/\r?\n/);
-		if (blockLines.length > 0 && blockLines[0] === "") blockLines.shift();
-
-		const searchLines = [];
-		const replaceLines = [];
-
-		for (const line of blockLines) {
-			if (line.startsWith(" ") || line === "") {
-				const l = line.startsWith(" ") ? line.slice(1) : line;
-				searchLines.push(l);
-				replaceLines.push(l);
-			} else if (line.startsWith("-")) {
-				searchLines.push(line.slice(1));
-			} else if (line.startsWith("+")) {
-				replaceLines.push(line.slice(1));
+		// Check if pattern is in /pattern/flags format
+		const regexMatch = pattern.match(/^\/(.+)\/([gimsuy]*)$/);
+		if (regexMatch) {
+			pattern = regexMatch[1];
+			flags = regexMatch[2] || "";
+			// Ensure 'g' flag if replaceAll is true
+			if (edit.replaceAll && !flags.includes("g")) {
+				flags += "g";
 			}
 		}
 
-		parsedHunks.push({
-			header: currentHeader,
-			oldStart,
-			searchLines,
-			replaceLines,
-		});
-		currentHeader = null;
-	}
+		const regex = new RegExp(pattern, flags);
+		const matches = content.match(regex);
 
-	if (parsedHunks.length === 0) {
+		if (!matches || matches.length === 0) {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message: `Regex pattern not found in file.\nPattern: ${edit.pattern}`,
+					errorCode: 17,
+				},
+			};
+		}
+
+		const newContent = content.replace(regex, edit.newString);
+		const matchCount = matches.length;
+
+		// Get the actual interpolated replacement for first match (for diff display)
+		const firstMatchRegex = new RegExp(pattern, flags.replace("g", ""));
+		const actualNewString = matches[0].replace(firstMatchRegex, edit.newString);
+
+		return {
+			content: newContent,
+			matchCount,
+			// For display purposes, show first match as "old"
+			oldString: matches[0],
+			// Actual interpolated replacement (with $1, $2 etc resolved)
+			newString: actualNewString,
+		};
+	} catch (e) {
 		return {
 			error: {
 				result: false,
 				behavior: "ask",
-				message: "Invalid diff format. Expected @@ -old +new @@ header.",
-				errorCode: 15,
+				message: `Invalid regex pattern: ${e.message}`,
+				errorCode: 18,
 			},
 		};
 	}
-
-	// Sort descending by line number to avoid offset issues
-	parsedHunks.sort((a, b) => b.oldStart - a.oldStart);
-
-	const modifiedLines = [...lines];
-
-	for (const hunk of parsedHunks) {
-		const { oldStart, searchLines, replaceLines, header } = hunk;
-		const projectedIndex = Math.max(0, oldStart - 1);
-
-		const isMatch = (startIdx) => {
-			if (startIdx < 0 || startIdx + searchLines.length > modifiedLines.length)
-				return false;
-			for (let k = 0; k < searchLines.length; k++) {
-				if (modifiedLines[startIdx + k] !== searchLines[k]) return false;
-			}
-			return true;
-		};
-
-		// Normalize whitespace for comparison (tabs to spaces, collapse multiple spaces)
-		const normalizeWs = (s) =>
-			s.replace(/\t/g, "    ").replace(/\s+/g, " ").trim();
-
-		const isMatchSloppy = (startIdx) => {
-			if (startIdx < 0 || startIdx + searchLines.length > modifiedLines.length)
-				return false;
-			for (let k = 0; k < searchLines.length; k++) {
-				const fileLine = modifiedLines[startIdx + k];
-				if (
-					fileLine === undefined ||
-					normalizeWs(fileLine) !== normalizeWs(searchLines[k])
-				)
-					return false;
-			}
-			return true;
-		};
-
-		let foundIndex = -1;
-
-		// A: Exact at projected location
-		if (isMatch(projectedIndex)) {
-			foundIndex = projectedIndex;
-		}
-		// B: Nearby exact search (+/- 100 lines)
-		if (foundIndex === -1) {
-			for (let offset = 1; offset < 100; offset++) {
-				if (isMatch(projectedIndex - offset)) {
-					foundIndex = projectedIndex - offset;
-					break;
-				}
-				if (isMatch(projectedIndex + offset)) {
-					foundIndex = projectedIndex + offset;
-					break;
-				}
-			}
-		}
-		// C: Whitespace-normalized match at projected/nearby (catches tab/space issues early)
-		if (foundIndex === -1) {
-			if (isMatchSloppy(projectedIndex)) {
-				foundIndex = projectedIndex;
-			} else {
-				for (let offset = 1; offset < 100; offset++) {
-					if (isMatchSloppy(projectedIndex - offset)) {
-						foundIndex = projectedIndex - offset;
-						break;
-					}
-					if (isMatchSloppy(projectedIndex + offset)) {
-						foundIndex = projectedIndex + offset;
-						break;
-					}
-				}
-			}
-		}
-		// D: Global unique exact search
-		if (foundIndex === -1) {
-			const fileStr = modifiedLines.join("\n");
-			const searchStr = searchLines.join("\n");
-			const idx = fileStr.indexOf(searchStr);
-			const lastIdx = fileStr.lastIndexOf(searchStr);
-			if (idx !== -1 && idx === lastIdx) {
-				foundIndex = fileStr.slice(0, idx).split("\n").length - 1;
-			}
-		}
-		// E: Global unique whitespace-normalized search
-		if (foundIndex === -1) {
-			const fileStrNorm = modifiedLines.map(normalizeWs).join("\n");
-			const searchStrNorm = searchLines.map(normalizeWs).join("\n");
-			const idx = fileStrNorm.indexOf(searchStrNorm);
-			const lastIdx = fileStrNorm.lastIndexOf(searchStrNorm);
-			if (idx !== -1 && idx === lastIdx) {
-				foundIndex = fileStrNorm.slice(0, idx).split("\n").length - 1;
-			}
-		}
-
-		if (foundIndex === -1) {
-			// Track failed hunk but continue with others (partial application)
-			failedHunks.push({
-				header,
-				reason: "Context not found",
-				expected:
-					searchLines.slice(0, 3).join("\n") +
-					(searchLines.length > 3 ? "\n..." : ""),
-			});
-			continue;
-		}
-
-		modifiedLines.splice(foundIndex, searchLines.length, ...replaceLines);
-		appliedHunks++;
-	}
-
-	// Report results
-	if (failedHunks.length > 0 && appliedHunks === 0) {
-		// Complete failure - no hunks applied
-		return {
-			error: {
-				result: false,
-				behavior: "ask",
-				message:
-					"Could not apply any hunks.\nFailed hunks:\n" +
-					failedHunks.map((h) => `  ${h.header}: ${h.reason}`).join("\n"),
-				errorCode: 16,
-			},
-		};
-	}
-
-	if (failedHunks.length > 0) {
-		// Partial success - some hunks applied
-		return {
-			content: modifiedLines.join("\n"),
-			warning:
-				`Applied ${appliedHunks}/${appliedHunks + failedHunks.length} hunks. Failed:\n` +
-				failedHunks.map((h) => `  ${h.header}: ${h.reason}`).join("\n"),
-		};
-	}
-
-	return { content: modifiedLines.join("\n") };
 }
 
 function _claudeApplyExtendedFileEdits(content, edits) {
@@ -554,10 +554,24 @@ function _claudeApplyExtendedFileEdits(content, edits) {
 	const warnings = [];
 	const appliedEdits = [];
 
-	for (const edit of edits) {
+	// Sort edits: content-based first, then line-based bottom-up (descending line number)
+	// This prevents earlier edits from shifting line numbers for later edits
+	const contentEdits = edits.filter(
+		(e) => e.mode === "string" || e.mode === "regex",
+	);
+	const lineEdits = edits
+		.filter((e) => e.mode === "line" || e.mode === "range")
+		.sort((a, b) => {
+			const aLine = a.lineNumber ?? a.startLine ?? 0;
+			const bLine = b.lineNumber ?? b.startLine ?? 0;
+			return bLine - aLine; // Descending order (bottom-up)
+		});
+	const sortedEdits = [...contentEdits, ...lineEdits];
+
+	for (const edit of sortedEdits) {
 		let outcome;
 
-		if (edit.mode === "diff") outcome = _claudeEditApplyDiff(result, edit);
+		if (edit.mode === "regex") outcome = _claudeEditApplyRegex(result, edit);
 		else if (edit.mode === "range")
 			outcome = _claudeEditApplyRange(result, edit);
 		else if (edit.mode === "line") outcome = _claudeEditApplyLine(result, edit);
@@ -571,22 +585,42 @@ function _claudeApplyExtendedFileEdits(content, edits) {
 		}
 
 		// Track applied edits for structured patch generation
-		if (edit.mode === "string" && outcome.oldString !== undefined) {
-			appliedEdits.push({
-				oldString: outcome.oldString,
-				newString: edit.newString,
-				replaceAll: edit.replaceAll || false,
-			});
+		if (
+			(edit.mode === "string" || edit.mode === "regex") &&
+			outcome.oldString !== undefined
+		) {
+			// Use outcome.newString for regex (interpolated $1,$2) or edit.newString for string mode
+			const displayNewString =
+				outcome.newString !== undefined ? outcome.newString : edit.newString;
+			// For replaceAll with multiple matches, expand into individual edits for better patch generation
+			const matchCount = outcome.matchCount || 1;
+			if (edit.replaceAll && matchCount > 1) {
+				for (let i = 0; i < matchCount; i++) {
+					appliedEdits.push({
+						oldString: outcome.oldString,
+						newString: displayNewString,
+						replaceAll: false, // Individual replacements
+					});
+				}
+			} else {
+				appliedEdits.push({
+					oldString: outcome.oldString,
+					newString: displayNewString,
+					replaceAll: edit.replaceAll || false,
+				});
+			}
 		}
 
 		if (
 			!firstStringEdit &&
-			edit.mode === "string" &&
+			(edit.mode === "string" || edit.mode === "regex") &&
 			outcome.oldString !== undefined
 		) {
+			const displayNewString =
+				outcome.newString !== undefined ? outcome.newString : edit.newString;
 			firstStringEdit = {
 				oldString: outcome.oldString,
-				newString: edit.newString,
+				newString: displayNewString,
 				replaceAll: edit.replaceAll,
 			};
 		}
@@ -603,10 +637,87 @@ function _claudeApplyExtendedFileEdits(content, edits) {
 }
 
 // Simple diff generator for structuredPatch output
-// Note: This is a simplified diff - just returns empty array for now to avoid infinite loops
-// The structured patch is optional and not critical for edit functionality
-function _claudeGenerateSimpleDiff(_oldContent, _newContent, _filePath) {
-	// Return empty - the diff generation is complex and not essential
-	// The edit still works, just without detailed patch info in the response
-	return [];
+// Generates unified diff hunks compatible with Claude Code's UI
+function _claudeGenerateSimpleDiff(arg1, arg2, arg3) {
+	// Accept both signatures:
+	// 1) ({ filePath, oldContent, newContent })
+	// 2) (oldContent, newContent, filePath)
+	let oldContent;
+	let newContent;
+	if (arg1 && typeof arg1 === "object" && !Array.isArray(arg1)) {
+		oldContent = arg1.oldContent;
+		newContent = arg1.newContent;
+	} else {
+		oldContent = arg1;
+		newContent = arg2;
+		void arg3;
+	}
+
+	oldContent = String(oldContent ?? "")
+		.replace(/\r\n/g, "\n")
+		.replace(/\r/g, "\n");
+	newContent = String(newContent ?? "")
+		.replace(/\r\n/g, "\n")
+		.replace(/\r/g, "\n");
+	if (oldContent === newContent) return [];
+
+	const oldLines = oldContent.split("\n");
+	const newLines = newContent.split("\n");
+	const contextSize = 3;
+
+	let prefix = 0;
+	const prefixLimit = Math.min(oldLines.length, newLines.length);
+	while (prefix < prefixLimit && oldLines[prefix] === newLines[prefix]) {
+		prefix++;
+	}
+
+	let suffix = 0;
+	const suffixLimit = Math.min(
+		oldLines.length - prefix,
+		newLines.length - prefix,
+	);
+	while (
+		suffix < suffixLimit &&
+		oldLines[oldLines.length - 1 - suffix] ===
+			newLines[newLines.length - 1 - suffix]
+	) {
+		suffix++;
+	}
+
+	const oldChangedStart = prefix;
+	const oldChangedEnd = oldLines.length - suffix;
+	const newChangedStart = prefix;
+	const newChangedEnd = newLines.length - suffix;
+
+	const beforeStart = Math.max(0, oldChangedStart - contextSize);
+	const before = oldLines.slice(beforeStart, oldChangedStart);
+	const oldChanged = oldLines.slice(oldChangedStart, oldChangedEnd);
+	const newChanged = newLines.slice(newChangedStart, newChangedEnd);
+	const after = oldLines.slice(
+		oldChangedEnd,
+		Math.min(oldLines.length, oldChangedEnd + contextSize),
+	);
+
+	const lines = [
+		...before.map((line) => ` ${line}`),
+		...oldChanged.map((line) => `-${line}`),
+		...newChanged.map((line) => `+${line}`),
+		...after.map((line) => ` ${line}`),
+	];
+
+	const oldStart = beforeStart + 1;
+	const newStart =
+		Math.max(0, newChangedStart - (oldChangedStart - beforeStart)) + 1;
+	const oldSpan = before.length + oldChanged.length + after.length;
+	const newSpan = before.length + newChanged.length + after.length;
+
+	return [
+		{
+			oldStart,
+			oldLines: oldSpan,
+			newStart,
+			newLines: newSpan,
+			lines,
+		},
+	];
 }

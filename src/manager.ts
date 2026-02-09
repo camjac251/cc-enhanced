@@ -1,215 +1,359 @@
+import { createHash } from "node:crypto";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import chalk from "chalk";
 import {
-	downloadAndExtract,
-	getLatestVersion,
-	getPackageMeta,
-	versionExists,
-} from "./downloader.js";
+	extractClaudeJsFromNativeBinary,
+	isNativeBinary,
+	repackNativeBinary,
+	unwrapBunCjsModule,
+	wrapBunCjsModule,
+} from "./native.js";
+import {
+	fetchNativeRelease,
+	type NativeFetchResult,
+} from "./native-release.js";
 import { normalize } from "./normalizer.js";
 import { PatchRunner } from "./patch-runner.js";
-import * as patches from "./patches/index.js";
-import { logVerifyResult, verifyPatch } from "./verify-patch.js";
+import { allPatches } from "./patches/index.js";
+import type { PatchResult } from "./types.js";
 
 interface ManagerOptions {
-	outDir: string;
-	formatter?: string;
-	skipFormat?: boolean;
-	enhancePrompts?: boolean;
-	bumpLimits?: boolean;
-	applyPatches?: boolean;
-	verify?: boolean;
+	target?: string;
+	outputPath?: string;
+	backupDir?: string;
+	format?: boolean;
+	patch?: boolean;
 	dryRun?: boolean;
 	showDiff?: boolean;
 	summaryPath?: string;
-	// specific patches
-	patchBashPrompt?: boolean;
-	patchToolPolicy?: boolean;
-	trimTodo?: boolean;
-	normalizeRead?: boolean;
-	relaxGuard?: boolean;
-	patchEditTool?: boolean;
-	patchSignature?: boolean;
-	patchDisableTools?: boolean;
-	patchRestrictFileRead?: boolean;
-	patchShrinkWriteResult?: boolean;
-	// Glob/Grep removal patches
-	patchRemoveGlobGrepRefs?: boolean;
-	patchAllowedToolsPrompt?: boolean;
-	patchTaskToolPrompt?: boolean;
-	patchSkillAllowedTools?: boolean;
-	// Agent configuration patches
-	patchAgentTools?: boolean;
-	patchAgentPrompts?: boolean;
-	// Context management patch
-	patchContextManagement?: boolean;
+	nativeCacheDir?: string;
 }
 
 export class Manager {
-	private runner: PatchRunner;
-	private meta: any = null;
+	constructor(private options: ManagerOptions) {}
 
-	constructor(private options: ManagerOptions) {
-		this.runner = new PatchRunner();
-		if (options.applyPatches !== false) {
-			this.configureRunner();
-		}
+	private async ensureOutputDir(filePath: string) {
+		await fs.mkdir(path.dirname(filePath), { recursive: true });
 	}
 
-	private configureRunner() {
-		const o = this.options;
-		const _toolsDisabled = o.patchDisableTools !== false;
-
-		if (o.enhancePrompts !== false) {
-			// Default true
-			if (o.patchBashPrompt !== false)
-				this.runner.addStringRule(patches.bashPromptString);
-			if (o.patchToolPolicy !== false) this.runner.addRule(patches.toolPolicy);
-			if (o.trimTodo !== false) this.runner.addRule(patches.todoTrims);
-			if (o.normalizeRead !== false)
-				this.runner.addRule(patches.readWritePrompts);
-			if (o.patchEditTool !== false) this.runner.addRule(patches.editTool);
-			if (o.patchDisableTools !== false)
-				this.runner.addRule(patches.disableTools);
-			if (o.patchRestrictFileRead !== false)
-				this.runner.addRule(patches.restrictFileRead);
-			if (o.patchShrinkWriteResult !== false)
-				this.runner.addRule(patches.shrinkWriteResult);
-			if (o.patchEditTool !== false)
-				this.runner.addRule(patches.patchDefinitions);
-			// Glob/Grep removal patches - remove all references to disabled tools
-			// String-based patches run first (faster)
-			if (o.patchRemoveGlobGrepRefs !== false)
-				this.runner.addStringRule(patches.removeGlobGrepRefsString);
-			if (o.patchAllowedToolsPrompt !== false)
-				this.runner.addStringRule(patches.removeAllowedToolsPrompt);
-			if (o.patchTaskToolPrompt !== false)
-				this.runner.addStringRule(patches.taskToolPromptString);
-			if (o.patchSkillAllowedTools !== false) {
-				this.runner.addStringRule(patches.skillAllowedToolsString);
-				this.runner.addRule(patches.skillAllowedTools); // AST for filePatternTools array
-			}
-			// Agent configuration patches
-			if (o.patchAgentTools !== false)
-				this.runner.addRule(patches.patchAgentTools);
-			if (o.patchAgentPrompts !== false)
-				this.runner.addStringRule(patches.patchAgentPromptsString);
-			// Context management patch (AST-based for future resilience)
-			if (o.patchContextManagement !== false)
-				this.runner.addRule(patches.patchContextManagement);
-		}
-		if (o.bumpLimits !== false) {
-			// Default true
-			this.runner.addRule(patches.bumpLimits);
-		}
-		// Always add signature last
-		if (o.patchSignature !== false)
-			this.runner.addRule(patches.injectSignature);
+	private getDefaultBackupPath(targetPath: string): string {
+		const digest = createHash("sha256")
+			.update(path.resolve(targetPath))
+			.digest("hex")
+			.slice(0, 12);
+		const backupRoot =
+			this.options.backupDir ??
+			path.join(os.homedir(), ".claude-patcher", "backups");
+		return path.join(
+			backupRoot,
+			`${path.basename(targetPath)}.${digest}.backup`,
+		);
 	}
 
-	async getMeta() {
-		if (!this.meta) {
-			this.meta = await getPackageMeta();
-		}
-		return this.meta;
+	private buildRunner(nativeMode = false): PatchRunner {
+		if (!nativeMode) return new PatchRunner();
+		const patches = allPatches.filter((p) => p.tag !== "signature");
+		return new PatchRunner(patches);
 	}
 
-	async resolveVersion(specificVersion?: string): Promise<string> {
-		const meta = await this.getMeta();
-
-		if (specificVersion) {
-			if (!versionExists(meta, specificVersion)) {
-				throw new Error(`Unknown version: ${specificVersion}`);
-			}
-			return specificVersion;
-		}
-
-		// Default to latest
-		return getLatestVersion(meta);
-	}
-
-	async processVersion(version: string) {
-		const vDir = path.join(this.options.outDir, version);
-		console.log(chalk.blue(`→ Downloading ${version} → ${vDir}`));
-
-		await downloadAndExtract(version, vDir, await this.getMeta());
-
-		const cliPath = path.join(vDir, "package", "cli.js");
-
+	private async normalizeCliJs(cliPath: string) {
+		if (this.options.format === false) return;
+		console.log(chalk.gray(`   Formatting ${path.basename(cliPath)}...`));
 		try {
-			await fs.access(cliPath);
-		} catch {
-			console.error(
-				chalk.red(`  Error: ${cliPath} not found after extraction.`),
-			);
-			return { version, error: "File not found" };
+			const raw = await fs.readFile(cliPath, "utf-8");
+			const formatted = await normalize(raw, { filepath: cliPath });
+			await fs.writeFile(cliPath, formatted, "utf-8");
+		} catch (e) {
+			console.error(chalk.yellow(`   Formatting failed: ${e}`));
 		}
+	}
 
-		if (!this.options.skipFormat) {
-			console.log(chalk.gray(`   Formatting ${version}...`));
-			try {
-				const raw = await fs.readFile(cliPath, "utf-8");
-				const formatted = await normalize(raw, { filepath: cliPath });
-				await fs.writeFile(cliPath, formatted, "utf-8");
-			} catch (e) {
-				console.error(chalk.yellow(`   Formatting failed: ${e}`));
-			}
+	private async patchCliPath(
+		cliPath: string,
+		nativeMode = false,
+	): Promise<{ result?: PatchResult; error?: string }> {
+		if (this.options.patch === false) {
+			console.log(chalk.gray("   Skipping patches (--no-patch)"));
+			return {};
 		}
 
 		console.log(chalk.gray("   Enhancing prompt/help text..."));
 		try {
-			const report = await this.runner.run(cliPath, {
+			const runner = this.buildRunner(nativeMode);
+			const result = await runner.run(cliPath, {
 				dryRun: this.options.dryRun,
 				showDiff: this.options.showDiff,
 			});
-			this.logReport(report);
-
-			// Run verification if enabled (default: true when patches applied, skip in dry-run)
-			if (
-				this.options.verify !== false &&
-				this.options.applyPatches !== false &&
-				!this.options.dryRun
-			) {
-				console.log(chalk.gray("   Verifying patches..."));
-				const verifyResult = verifyPatch(cliPath, report);
-				logVerifyResult(verifyResult, false); // Only show failures
-
-				if (!verifyResult.passed) {
-					return { version, ...report, verificationFailed: true };
-				}
-			}
-
-			return { version, ...report };
-		} catch (e: any) {
-			console.error(chalk.red(`   Patching failed: ${e}`));
-			if (e.stack) console.error(chalk.gray(e.stack));
-			return { version, error: e.toString() };
+			this.logResult(result);
+			return { result };
+		} catch (e) {
+			const error = String(e);
+			console.error(chalk.red(`   Patch error: ${error}`));
+			return { error };
 		}
 	}
 
-	private logReport(r: any) {
-		// Concise log
-		const checks = [
-			r.bash_prompt_condensed && "Bash",
-			r.tool_policy_softened && "Policy",
-			r.context_usage_hint_added && "Context",
-			r.todo_examples_trimmed && "Todo",
-			r.read_tool_prompt_normalized && "Read",
-			r.write_guard_relaxed && "Guard",
-			r.edit_tool_extended && "EditExt",
-			r.tools_disabled && "ToolsTrimmed",
-			r.file_read_restricted && "ReadRestricted",
-			r.write_result_trimmed && "WriteResult",
-			(r.agents_disabled || r.agents_filtered) && "AgentsOff",
-			r.claude_guide_blocklist && "GuideBlocklist",
-			r.agent_prompts_patched && "AgentPrompts",
-		]
-			.filter(Boolean)
-			.join(", ");
-		console.log(chalk.green(`     - Applied: ${checks || "None"}`));
+	private async processLocalCliJsTarget(targetPath: string) {
+		const outPath = this.options.outputPath ?? targetPath;
+		const patchPath = this.options.dryRun ? targetPath : outPath;
 
-		if (r.lines_cap_bumped || r.byte_ceiling_bumped) {
+		if (!this.options.dryRun && outPath !== targetPath) {
+			await this.ensureOutputDir(outPath);
+			await fs.copyFile(targetPath, patchPath);
+		}
+
+		await this.normalizeCliJs(patchPath);
+		const patched = await this.patchCliPath(patchPath, false);
+		return {
+			target: targetPath,
+			outputPath: outPath,
+			mode: "cli.js",
+			...patched,
+		};
+	}
+
+	private async processNativeTarget(targetPath: string) {
+		console.log(chalk.blue(`→ Extracting embedded JS from ${targetPath}`));
+		const extractedCliText =
+			extractClaudeJsFromNativeBinary(targetPath).toString("utf-8");
+		const wrapper = unwrapBunCjsModule(extractedCliText);
+		const tempDir = await fs.mkdtemp(
+			path.join(os.tmpdir(), "claude-native-patch-"),
+		);
+		const tempCliPath = path.join(tempDir, "cli.js");
+
+		try {
+			await fs.writeFile(
+				tempCliPath,
+				wrapper ? wrapper.body : extractedCliText,
+				"utf-8",
+			);
+			await this.normalizeCliJs(tempCliPath);
+			const previousNativeMode = process.env.CLAUDE_PATCHER_NATIVE_MODE;
+			process.env.CLAUDE_PATCHER_NATIVE_MODE = "1";
+			let patched: { result?: PatchResult; error?: string };
+			try {
+				patched = await this.patchCliPath(tempCliPath, true);
+			} finally {
+				if (previousNativeMode === undefined) {
+					delete process.env.CLAUDE_PATCHER_NATIVE_MODE;
+				} else {
+					process.env.CLAUDE_PATCHER_NATIVE_MODE = previousNativeMode;
+				}
+			}
+
+			const outputPath = this.options.outputPath ?? targetPath;
+			if (!this.options.dryRun && outputPath !== targetPath) {
+				await this.ensureOutputDir(outputPath);
+			}
+
+			if (
+				this.options.patch === false &&
+				!this.options.dryRun &&
+				outputPath !== targetPath
+			) {
+				await fs.copyFile(targetPath, outputPath);
+			}
+
+			if (
+				this.options.patch !== false &&
+				!this.options.dryRun &&
+				!patched.error
+			) {
+				const patchedBody = await fs.readFile(tempCliPath, "utf-8");
+				const patchedJsText = wrapper
+					? wrapBunCjsModule(wrapper, patchedBody)
+					: patchedBody;
+				console.log(
+					chalk.blue(
+						`→ Repacking patched JS into native binary ${outputPath === targetPath ? "(in-place)" : ""}`,
+					),
+				);
+				repackNativeBinary(
+					targetPath,
+					Buffer.from(patchedJsText, "utf-8"),
+					outputPath,
+				);
+			}
+
+			return {
+				target: targetPath,
+				outputPath,
+				mode: "native-linux",
+				...patched,
+			};
+		} finally {
+			try {
+				await fs.rm(tempDir, { recursive: true, force: true });
+			} catch {
+				// best-effort cleanup
+			}
+		}
+	}
+
+	async fetchNativeTarget(
+		spec: string,
+		options?: {
+			platform?: string;
+			forceDownload?: boolean;
+		},
+	): Promise<NativeFetchResult> {
+		return fetchNativeRelease({
+			spec,
+			platform: options?.platform,
+			forceDownload: options?.forceDownload,
+			cacheDir: this.options.nativeCacheDir,
+		});
+	}
+
+	async processTarget() {
+		if (!this.options.target) {
+			throw new Error("Target path is required");
+		}
+
+		const targetPath = this.options.target;
+		try {
+			await fs.access(targetPath);
+		} catch {
+			throw new Error(`Target does not exist: ${targetPath}`);
+		}
+
+		const looksLikeCliJs =
+			path.basename(targetPath) === "cli.js" ||
+			path.extname(targetPath) === ".js";
+		const looksLikeNative = isNativeBinary(targetPath);
+
+		if (looksLikeCliJs) {
+			console.log(chalk.blue(`→ Patching local cli.js: ${targetPath}`));
+			return this.processLocalCliJsTarget(targetPath);
+		}
+
+		if (looksLikeNative) {
+			console.log(chalk.blue(`→ Patching native binary: ${targetPath}`));
+			return this.processNativeTarget(targetPath);
+		}
+
+		const stats = fsSync.statSync(targetPath);
+		if (stats.isFile() && this.options.target.includes("claude")) {
+			throw new Error(
+				`Unsupported target format for ${targetPath}. File is not detected as ELF or cli.js.`,
+			);
+		}
+		throw new Error(`Unsupported target: ${targetPath}`);
+	}
+
+	async backupTarget(targetPath: string, backupPath?: string) {
+		const resolvedTarget = path.resolve(targetPath);
+		const resolvedBackup = backupPath
+			? path.resolve(backupPath)
+			: this.getDefaultBackupPath(resolvedTarget);
+		await this.ensureOutputDir(resolvedBackup);
+		await fs.copyFile(resolvedTarget, resolvedBackup);
+		return { targetPath: resolvedTarget, backupPath: resolvedBackup };
+	}
+
+	async restoreTarget(targetPath: string, backupPath?: string) {
+		const resolvedTarget = path.resolve(targetPath);
+		const resolvedBackup = backupPath
+			? path.resolve(backupPath)
+			: this.getDefaultBackupPath(resolvedTarget);
+		await fs.access(resolvedBackup);
+		await this.ensureOutputDir(resolvedTarget);
+		let mode: number;
+		try {
+			mode = fsSync.statSync(resolvedTarget).mode;
+		} catch {
+			mode = fsSync.statSync(resolvedBackup).mode;
+		}
+		const tmpPath = `${resolvedTarget}.tmp-restore`;
+		await fs.copyFile(resolvedBackup, tmpPath);
+		fsSync.chmodSync(tmpPath, mode);
+		fsSync.renameSync(tmpPath, resolvedTarget);
+		return { targetPath: resolvedTarget, backupPath: resolvedBackup };
+	}
+
+	async unpackNativeTarget(targetPath: string, outputJsPath: string) {
+		const resolvedTarget = path.resolve(targetPath);
+		const resolvedOutput = path.resolve(outputJsPath);
+		if (!isNativeBinary(resolvedTarget)) {
+			throw new Error(`Target is not a native binary: ${resolvedTarget}`);
+		}
+
+		const extractedCliText =
+			extractClaudeJsFromNativeBinary(resolvedTarget).toString("utf-8");
+		const wrapper = unwrapBunCjsModule(extractedCliText);
+		const outputText = wrapper ? wrapper.body : extractedCliText;
+		await this.ensureOutputDir(resolvedOutput);
+		await fs.writeFile(resolvedOutput, outputText, "utf-8");
+		await this.normalizeCliJs(resolvedOutput);
+		return { targetPath: resolvedTarget, outputJsPath: resolvedOutput };
+	}
+
+	async repackNativeTarget(
+		targetPath: string,
+		inputJsPath: string,
+		outputPath?: string,
+	) {
+		const resolvedTarget = path.resolve(targetPath);
+		const resolvedInput = path.resolve(inputJsPath);
+		const resolvedOutput = outputPath
+			? path.resolve(outputPath)
+			: resolvedTarget;
+		if (!isNativeBinary(resolvedTarget)) {
+			throw new Error(`Target is not a native binary: ${resolvedTarget}`);
+		}
+
+		const sourceCliText =
+			extractClaudeJsFromNativeBinary(resolvedTarget).toString("utf-8");
+		const wrapper = unwrapBunCjsModule(sourceCliText);
+		const inputBody = await fs.readFile(resolvedInput, "utf-8");
+		const repackedText = wrapper
+			? wrapBunCjsModule(wrapper, inputBody)
+			: inputBody;
+
+		if (resolvedOutput !== resolvedTarget) {
+			await this.ensureOutputDir(resolvedOutput);
+		}
+		repackNativeBinary(
+			resolvedTarget,
+			Buffer.from(repackedText, "utf-8"),
+			resolvedOutput,
+		);
+		return {
+			targetPath: resolvedTarget,
+			inputJsPath: resolvedInput,
+			outputPath: resolvedOutput,
+		};
+	}
+
+	private logResult(r: PatchResult) {
+		const applied = r.appliedTags.join(", ") || "None";
+		console.log(chalk.green(`     - Applied: ${applied}`));
+		if (r.groupResults && r.groupResults.length > 0) {
+			console.log(chalk.gray("     - Groups:"));
+			for (const group of r.groupResults) {
+				const status =
+					group.failed > 0
+						? chalk.yellow(`${group.passed}/${group.total} passed`)
+						: chalk.green(`${group.passed}/${group.total} passed`);
+				console.log(chalk.gray(`       ${group.group}: `) + status);
+			}
+		}
+
+		if (r.failedTags.length > 0) {
+			console.log(chalk.yellow(`     - Failed: ${r.failedTags.join(", ")}`));
+			// Print failure reasons
+			for (const v of r.verifications) {
+				if (!v.passed && v.reason) {
+					console.log(chalk.yellow(`       ${v.tag}: ${v.reason}`));
+				}
+			}
+		}
+
+		if (r.limits && Object.keys(r.limits).length > 0) {
 			console.log(chalk.green(`     - Limits bumped`));
 		}
 	}
