@@ -1,0 +1,282 @@
+[tools]
+node = "24"
+pnpm = "10"
+
+[tasks.patch]
+description = "Auto-detect installed native claude binary (Linux/macOS/Windows) and patch it in-place"
+run = "NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --detect-target"
+
+[tasks."patch:target"]
+description = "Patch an explicit native claude binary path"
+usage = '''
+arg "<target>" help="Path to native claude binary"
+flag "--dry-run" help="Preview without writing"
+flag "-o --output <path>" help="Output path (default: in-place)"
+flag "--summary <file>" help="Write JSON summary to file"
+'''
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+ARGS=(--target "${usage_target?}")
+[[ "${usage_dry_run:-}" == "true" ]] && ARGS+=(--dry-run)
+[[ -n "${usage_output:-}" ]] && ARGS+=(--output "${usage_output}")
+[[ -n "${usage_summary:-}" ]] && ARGS+=(--summary-path "${usage_summary}")
+NODE_OPTIONS='--max-old-space-size=8192' pnpm cli "${ARGS[@]}"
+"""
+
+[tasks."native:backup"]
+description = "Create a backup for an explicit native target"
+usage = '''
+arg "<target>" help="Path to native claude binary"
+arg "[backup_path]" help="Optional explicit backup file path"
+'''
+run = "NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --target ${usage_target?} --backup-only ${usage_backup_path:+--backup-path ${usage_backup_path}}"
+
+[tasks."native:restore"]
+description = "Restore an explicit native target from backup"
+usage = '''
+arg "<target>" help="Path to native claude binary"
+arg "[backup_path]" help="Optional explicit backup file path"
+'''
+run = "NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --target ${usage_target?} --restore ${usage_backup_path:+--backup-path ${usage_backup_path}}"
+
+[tasks."native:unpack"]
+description = "Extract embedded JS from a native target"
+usage = '''
+arg "<target>" help="Path to native claude binary"
+arg "<output_js>" help="Path to write extracted JS"
+'''
+run = "NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --target ${usage_target?} --unpack ${usage_output_js?}"
+
+[tasks."native:repack"]
+description = "Repack JS file back into a native target"
+usage = '''
+arg "<target>" help="Path to native claude binary"
+arg "<input_js>" help="Path to JS to embed"
+arg "[output]" help="Optional output binary path (default in-place)"
+'''
+run = "NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --target ${usage_target?} --repack ${usage_input_js?} ${usage_output:+--output ${usage_output}}"
+
+[tasks."native:pull"]
+description = "Fetch native binary and extract clean formatted JS (for diffing)"
+usage = '''
+arg "[spec]" help="latest|stable|X.Y.Z (default: latest)"
+flag "--platform <platform>" help="Platform override (e.g. linux-x64)"
+flag "--no-format" help="Skip Prettier formatting"
+'''
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+SPEC="${usage_spec:-latest}"
+FETCH_ARGS=(--native-fetch "$SPEC" --native-fetch-only)
+[[ -n "${usage_platform:-}" ]] && FETCH_ARGS+=(--native-platform "${usage_platform}")
+NODE_OPTIONS='--max-old-space-size=8192' pnpm cli "${FETCH_ARGS[@]}"
+
+# Resolve cached binary path
+CACHE_DIR="${HOME}/.claude-patcher/native-cache"
+VERSION=$(ls -1 "$CACHE_DIR" | sort -V | tail -1)
+PLATFORM="${usage_platform:-linux-x64}"
+BINARY="$CACHE_DIR/$VERSION/$PLATFORM/claude"
+
+if [[ ! -f "$BINARY" ]]; then
+  echo "Binary not found: $BINARY" >&2
+  exit 1
+fi
+
+OUT_DIR="versions_clean/$VERSION"
+mkdir -p "$OUT_DIR"
+UNPACK_ARGS=(--target "$BINARY" --unpack "$OUT_DIR/cli.js")
+[[ "${usage_no_format:-}" == "true" ]] && UNPACK_ARGS+=(--no-format)
+NODE_OPTIONS='--max-old-space-size=8192' pnpm cli "${UNPACK_ARGS[@]}"
+echo "Clean JS: $OUT_DIR/cli.js"
+"""
+
+[tasks."native:fetch"]
+description = "Fetch official native Claude binary into local cache"
+usage = '''
+arg "[spec]" help="latest|stable|X.Y.Z (default: latest)"
+arg "[platform]" help="Optional platform override (e.g. linux-x64)"
+'''
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+SPEC="${usage_spec:-latest}"
+PLATFORM="${usage_platform:-}"
+if [[ -n "$PLATFORM" ]]; then
+  NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --native-fetch "$SPEC" --native-platform "$PLATFORM" --native-fetch-only
+else
+  NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --native-fetch "$SPEC" --native-fetch-only
+fi
+"""
+
+[tasks."native:fetch-patch"]
+description = "Fetch native Claude binary and patch it (writes to builds/ subdir)"
+usage = '''
+arg "[spec]" help="latest|stable|X.Y.Z (default: latest)"
+flag "--force" help="Force re-download even if cached"
+flag "--dry-run" help="Preview without writing"
+flag "--platform <platform>" help="Platform override (e.g. linux-x64)"
+flag "--summary <file>" help="Write JSON summary to file"
+'''
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+ARGS=(--native-fetch "${usage_spec:-latest}")
+[[ "${usage_force:-}" == "true" ]] && ARGS+=(--native-force-download)
+[[ "${usage_dry_run:-}" == "true" ]] && ARGS+=(--dry-run)
+[[ -n "${usage_platform:-}" ]] && ARGS+=(--native-platform "${usage_platform}")
+[[ -n "${usage_summary:-}" ]] && ARGS+=(--summary-path "${usage_summary}")
+NODE_OPTIONS='--max-old-space-size=8192' pnpm cli "${ARGS[@]}"
+"""
+
+[tasks."native:promote"]
+description = "Promote a patched native binary by wiring versions/current and ~/.local/bin/claude symlinks"
+usage = '''
+arg "<target>" help="Path to patched native binary to activate"
+arg "[bin_link]" help="Launcher symlink path (default: ~/.local/bin/claude)"
+arg "[versions_dir]" help="Versions dir holding current/previous links (default: ~/.local/share/claude/versions)"
+'''
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+TARGET="$(readlink -f "${usage_target?}")"
+BIN_LINK="${usage_bin_link:-$HOME/.local/bin/claude}"
+VERSIONS_DIR="${usage_versions_dir:-$HOME/.local/share/claude/versions}"
+CURRENT_LINK="$VERSIONS_DIR/current"
+PREVIOUS_LINK="$VERSIONS_DIR/previous"
+
+if [[ ! -f "$TARGET" ]]; then
+  echo "Target does not exist: $TARGET" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$BIN_LINK")" "$VERSIONS_DIR"
+chmod 755 "$TARGET"
+
+OLD_TARGET=""
+if [[ -e "$CURRENT_LINK" || -L "$CURRENT_LINK" ]]; then
+  OLD_TARGET="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+elif [[ -e "$BIN_LINK" || -L "$BIN_LINK" ]]; then
+  OLD_TARGET="$(readlink -f "$BIN_LINK" 2>/dev/null || true)"
+fi
+
+if [[ -n "$OLD_TARGET" && "$OLD_TARGET" != "$TARGET" && -e "$OLD_TARGET" ]]; then
+  ln -sfn "$OLD_TARGET" "$PREVIOUS_LINK"
+fi
+
+ln -sfn "$TARGET" "$CURRENT_LINK"
+ln -sfn "$CURRENT_LINK" "$BIN_LINK"
+
+echo "Promoted claude target:"
+echo "  target:   $TARGET"
+echo "  current:  $(readlink -f "$CURRENT_LINK")"
+echo "  launcher: $(readlink -f "$BIN_LINK")"
+
+# Clean old builds — keep promoted + 1 previous
+BUILDS_DIR="$(dirname "$TARGET")"
+if [[ "$(basename "$BUILDS_DIR")" == "builds" ]]; then
+  PREV_REAL="$(readlink -f "$PREVIOUS_LINK" 2>/dev/null || true)"
+  ls -1t "$BUILDS_DIR" | tail -n +3 | while read -r old; do
+    OLD_PATH="$BUILDS_DIR/$old"
+    [[ "$OLD_PATH" == "$PREV_REAL" ]] && continue
+    rm -f "$OLD_PATH" && echo "  cleaned:  $OLD_PATH"
+  done
+fi
+"""
+
+[tasks."native:rollback"]
+description = "Rollback launcher symlink to previous promoted native binary (or explicit target)"
+usage = '''
+arg "[target]" help="Optional explicit rollback target; defaults to versions/previous symlink target"
+arg "[bin_link]" help="Launcher symlink path (default: ~/.local/bin/claude)"
+arg "[versions_dir]" help="Versions dir holding current/previous links (default: ~/.local/share/claude/versions)"
+'''
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+BIN_LINK="${usage_bin_link:-$HOME/.local/bin/claude}"
+VERSIONS_DIR="${usage_versions_dir:-$HOME/.local/share/claude/versions}"
+CURRENT_LINK="$VERSIONS_DIR/current"
+PREVIOUS_LINK="$VERSIONS_DIR/previous"
+
+if [[ -n "${usage_target:-}" ]]; then
+  TARGET="$(readlink -f "${usage_target}")"
+else
+  if [[ ! -e "$PREVIOUS_LINK" && ! -L "$PREVIOUS_LINK" ]]; then
+    echo "No previous target available at $PREVIOUS_LINK" >&2
+    exit 1
+  fi
+  TARGET="$(readlink -f "$PREVIOUS_LINK")"
+fi
+
+if [[ ! -f "$TARGET" ]]; then
+  echo "Rollback target does not exist: $TARGET" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$BIN_LINK")" "$VERSIONS_DIR"
+chmod 755 "$TARGET"
+
+OLD_CURRENT=""
+if [[ -e "$CURRENT_LINK" || -L "$CURRENT_LINK" ]]; then
+  OLD_CURRENT="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+fi
+if [[ -n "$OLD_CURRENT" && "$OLD_CURRENT" != "$TARGET" && -e "$OLD_CURRENT" ]]; then
+  ln -sfn "$OLD_CURRENT" "$PREVIOUS_LINK"
+fi
+
+ln -sfn "$TARGET" "$CURRENT_LINK"
+ln -sfn "$CURRENT_LINK" "$BIN_LINK"
+
+echo "Rolled back claude target:"
+echo "  target:   $TARGET"
+echo "  current:  $(readlink -f "$CURRENT_LINK")"
+echo "  launcher: $(readlink -f "$BIN_LINK")"
+"""
+
+[tasks.list]
+description = "List available patches"
+run = "pnpm cli --list"
+
+[tasks.clean]
+description = "Remove output directories"
+run = "rm -rf versions_clean"
+
+[tasks.typecheck]
+description = "Run TypeScript type checking"
+run = "pnpm typecheck"
+
+[tasks.lint]
+description = "Lint source files"
+run = "pnpm biome check src/"
+
+[tasks.format]
+description = "Format source files"
+run = "pnpm biome format --write src/"
+
+[tasks."verify:patches"]
+description = "Verify patcher health and dry-run patch application for native target (cli.js optional)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+NATIVE_TARGET="${NATIVE_TARGET:-}"
+CLI_TARGET="${CLI_TARGET:-}"
+CLI_SUMMARY="${CLI_SUMMARY:-/tmp/cc-cli-dryrun-summary.json}"
+NATIVE_SUMMARY="${NATIVE_SUMMARY:-/tmp/cc-native-dryrun-summary.json}"
+
+pnpm typecheck
+pnpm biome check src/index.ts src/manager.ts src/patch-runner.ts src/patches/index.ts src/patches/edit-tool.ts src/templates/edit_hook.js
+
+if [[ -n "$CLI_TARGET" && -f "$CLI_TARGET" ]]; then
+  pnpm cli --target "$CLI_TARGET" --dry-run --summary-path "$CLI_SUMMARY"
+else
+  echo "Skipping cli.js dry-run (set CLI_TARGET to enable)"
+fi
+
+if [[ -n "$NATIVE_TARGET" && -f "$NATIVE_TARGET" ]]; then
+  pnpm cli --target "$NATIVE_TARGET" --dry-run --summary-path "$NATIVE_SUMMARY"
+else
+  echo "Skipping native dry-run (set NATIVE_TARGET to enable)"
+fi
+"""

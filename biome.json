@@ -15,7 +15,8 @@
 			"recommended": true,
 			"suspicious": {
 				"noExplicitAny": "off",
-				"noControlCharactersInRegex": "off"
+				"noControlCharactersInRegex": "off",
+				"noTemplateCurlyInString": "off"
 			}
 		}
 	}

@@ -1,133 +1,263 @@
+import { execFileSync } from "node:child_process";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import chalk from "chalk";
-import * as Diff from "diff";
 import ora from "ora";
 import { parse, print } from "./loader.js";
-import {
-	initialReport,
-	type PatchContext,
-	type PatchReport,
-	type PatchRule,
-	type StringPatchRule,
-} from "./types.js";
+import { buildGroupResults, getPatchMetadata } from "./patch-metadata.js";
+import { allPatches, getLimitsChanged, signature } from "./patches/index.js";
+import type { Patch, PatchResult, PatchVerification } from "./types.js";
 
 export class PatchRunner {
-	private rules: PatchRule[] = [];
-	private stringRules: StringPatchRule[] = [];
+	private patches: Patch[] = [];
+	private injectSignature: boolean;
 
-	addRule(rule: PatchRule) {
-		this.rules.push(rule);
-	}
-
-	addStringRule(rule: StringPatchRule) {
-		this.stringRules.push(rule);
+	constructor(
+		patches?: Patch[],
+		options?: {
+			injectSignature?: boolean;
+		},
+	) {
+		this.patches = patches || allPatches.filter((p) => p !== signature);
+		this.injectSignature = options?.injectSignature ?? true;
 	}
 
 	async run(
 		filePath: string,
 		options: { dryRun?: boolean; showDiff?: boolean } = {},
-	): Promise<PatchReport & { diff?: string }> {
+	): Promise<PatchResult> {
 		const originalCode = await fs.readFile(filePath, "utf-8");
 		let code = originalCode;
 
-		const report: PatchReport = {
-			...initialReport,
-			locations: {},
-			detected_variables: {},
-		};
-		const context: PatchContext = {
-			report,
-			filePath,
-		};
+		const appliedTags: string[] = [];
+		const failedTags: string[] = [];
+		const verifications: PatchVerification[] = [];
+		const errors: { tag: string; error: Error }[] = [];
 
-		const errors: { rule: string; error: Error }[] = [];
+		// Phase 1: Run string-based patches
+		for (const patch of this.patches) {
+			if (!patch.string) continue;
 
-		// Run string-based patches first
-		for (const rule of this.stringRules) {
-			const ruleSpinner = ora({
-				text: rule.name,
+			const spinner = ora({
+				text: patch.tag,
 				prefixText: "   ",
 				color: "blue",
 			}).start();
+
 			try {
-				code = rule(code, context);
-				ruleSpinner.succeed(rule.name);
+				code = patch.string(code);
+				spinner.succeed(patch.tag);
 			} catch (e) {
 				const err = e instanceof Error ? e : new Error(String(e));
-				errors.push({ rule: rule.name, error: err });
-				ruleSpinner.fail(`${rule.name}: ${err.message}`);
+				errors.push({ tag: patch.tag, error: err });
+				spinner.fail(`${patch.tag}: ${err.message}`);
 			}
 		}
 
-		const spinner = ora({
+		// Phase 2: Parse AST
+		const parseSpinner = ora({
 			text: `Parsing AST (${(code.length / 1024 / 1024).toFixed(1)} MB)`,
 			prefixText: "   ",
 			color: "cyan",
 		}).start();
 		const ast = parse(code);
-		spinner.succeed("AST parsed");
+		parseSpinner.succeed("AST parsed");
 
-		for (const rule of this.rules) {
-			const ruleSpinner = ora({
-				text: rule.name,
+		// Phase 3: Run AST-based patches
+		for (const patch of this.patches) {
+			if (!patch.ast) continue;
+
+			const spinner = ora({
+				text: patch.tag,
+				prefixText: "   ",
+				color: "blue",
+			}).start();
+
+			try {
+				await patch.ast(ast);
+				spinner.succeed(patch.tag);
+			} catch (e) {
+				const err = e instanceof Error ? e : new Error(String(e));
+				errors.push({ tag: patch.tag, error: err });
+				spinner.fail(`${patch.tag}: ${err.message}`);
+			}
+		}
+
+		// Phase 4: Print AST to code
+		const output = print(ast);
+
+		// Phase 5: Verify all patches
+		for (const patch of this.patches) {
+			if (patch === signature) continue; // Skip signature verification for now
+
+			try {
+				const result = patch.verify(output, ast);
+				const meta = getPatchMetadata(patch.tag);
+				if (result === true) {
+					verifications.push({
+						tag: patch.tag,
+						passed: true,
+						group: meta.group,
+						label: meta.label,
+					});
+					appliedTags.push(patch.tag);
+				} else {
+					// result is a string describing the failure
+					verifications.push({
+						tag: patch.tag,
+						passed: false,
+						reason: result,
+						group: meta.group,
+						label: meta.label,
+					});
+					failedTags.push(patch.tag);
+				}
+			} catch (e) {
+				const reason = e instanceof Error ? e.message : String(e);
+				const meta = getPatchMetadata(patch.tag);
+				verifications.push({
+					tag: patch.tag,
+					passed: false,
+					reason,
+					group: meta.group,
+					label: meta.label,
+				});
+				failedTags.push(patch.tag);
+			}
+		}
+
+		// Phase 6: Inject signature with applied tags (use same AST, don't re-parse)
+		if (this.injectSignature && appliedTags.length > 0) {
+			const sigSpinner = ora({
+				text: "signature",
 				prefixText: "   ",
 				color: "blue",
 			}).start();
 			try {
-				await rule(ast, context);
-				ruleSpinner.succeed(rule.name);
+				// Pass applied tags to signature patch (modifies ast in place)
+				(signature.ast as any)(ast, appliedTags);
+				sigSpinner.succeed("signature");
 			} catch (e) {
-				const err = e instanceof Error ? e : new Error(String(e));
-				errors.push({ rule: rule.name, error: err });
-				ruleSpinner.fail(`${rule.name}: ${err.message}`);
+				sigSpinner.fail(`signature: ${e}`);
 			}
 		}
 
-		if (errors.length > 0) {
-			console.log(
-				chalk.yellow(
-					`\n    ${errors.length} patch(es) failed: ${errors.map((e) => e.rule).join(", ")}`,
-				),
-			);
-		}
+		// Phase 7: Print final output
+		const finalOutput = print(ast);
 
-		const output = print(ast);
+		// diffOutput is no longer computed (external diff prints directly to console)
+		const diffOutput: string | undefined = undefined;
 
-		// Generate diff if requested
-		let diffOutput: string | undefined;
-		if (options.showDiff || options.dryRun) {
-			const patch = Diff.createPatch(
-				filePath,
-				originalCode,
-				output,
-				"original",
-				"patched",
-			);
-			diffOutput = patch;
+		// Generate diff using external diff command (much faster than JS diff on large files)
+		if (options.showDiff) {
+			const tmpDir = os.tmpdir();
+			const origPath = path.join(tmpDir, "claude-patch-orig.js");
+			const patchedPath = path.join(tmpDir, "claude-patch-new.js");
 
-			if (options.showDiff) {
-				// Print colorized diff
-				const lines = patch.split("\n");
-				for (const line of lines) {
-					if (line.startsWith("+") && !line.startsWith("+++")) {
-						console.log(chalk.green(line));
-					} else if (line.startsWith("-") && !line.startsWith("---")) {
-						console.log(chalk.red(line));
-					} else if (line.startsWith("@@")) {
-						console.log(chalk.cyan(line));
+			try {
+				fsSync.writeFileSync(origPath, originalCode);
+				fsSync.writeFileSync(patchedPath, finalOutput);
+
+				// Try delta first (better output), fall back to diff
+				let useDelta = false;
+				try {
+					execFileSync("which", ["delta"], { stdio: "ignore" });
+					useDelta = true;
+				} catch {
+					// delta not available
+				}
+
+				try {
+					let output: string;
+					if (useDelta) {
+						output = execFileSync(
+							"delta",
+							[
+								"--no-gitconfig",
+								"--side-by-side",
+								"--width=180",
+								origPath,
+								patchedPath,
+							],
+							{ encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 },
+						);
 					} else {
-						console.log(chalk.gray(line));
+						output = execFileSync("diff", ["-u", origPath, patchedPath], {
+							encoding: "utf-8",
+							maxBuffer: 50 * 1024 * 1024,
+						});
+					}
+					console.log(output);
+				} catch (e: any) {
+					// diff returns exit code 1 when files differ, which is expected
+					if (e.stdout) {
+						const lines = e.stdout.split("\n");
+						for (const line of lines) {
+							if (line.startsWith("+") && !line.startsWith("+++")) {
+								console.log(chalk.green(line));
+							} else if (line.startsWith("-") && !line.startsWith("---")) {
+								console.log(chalk.red(line));
+							} else if (line.startsWith("@@")) {
+								console.log(chalk.cyan(line));
+							} else {
+								console.log(line);
+							}
+						}
 					}
 				}
+			} finally {
+				// Cleanup temp files
+				try {
+					fsSync.unlinkSync(origPath);
+				} catch {}
+				try {
+					fsSync.unlinkSync(patchedPath);
+				} catch {}
 			}
 		}
 
-		if (!options.dryRun) {
-			await fs.writeFile(filePath, output, "utf-8");
-		} else {
+		if (options.dryRun) {
 			console.log(chalk.yellow("    Dry run - no changes written"));
+		} else {
+			await fs.writeFile(filePath, finalOutput, "utf-8");
 		}
 
-		return { ...report, diff: diffOutput };
+		// Verify signature was injected
+		if (this.injectSignature) {
+			const sigResult = signature.verify(finalOutput);
+			const sigMeta = getPatchMetadata(signature.tag);
+			if (sigResult === true) {
+				appliedTags.push("signature");
+				verifications.push({
+					tag: signature.tag,
+					passed: true,
+					group: sigMeta.group,
+					label: sigMeta.label,
+				});
+			} else {
+				failedTags.push("signature");
+				verifications.push({
+					tag: "signature",
+					passed: false,
+					reason: sigResult,
+					group: sigMeta.group,
+					label: sigMeta.label,
+				});
+			}
+		}
+
+		const groupResults = buildGroupResults(verifications);
+
+		return {
+			appliedTags,
+			failedTags,
+			verifications,
+			groupResults,
+			ast,
+			diff: diffOutput,
+			limits: getLimitsChanged(),
+		};
 	}
 }

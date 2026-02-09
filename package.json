@@ -7,9 +7,10 @@
 		"cli": "tsx src/index.ts",
 		"inspect": "tsx src/inspector.ts",
 		"diff": "tsx src/diff.ts",
-		"verify": "tsx src/verify-patch.ts",
-		"build": "tsc",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check src/",
+		"lint:fix": "biome check --write src/",
+		"format": "biome format --write src/"
 	},
 	"keywords": [],
 	"author": "",
