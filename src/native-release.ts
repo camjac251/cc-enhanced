@@ -1,17 +1,17 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { getProtectedPaths } from "./promote.js";
+import { DEFAULT_NATIVE_CACHE_DIR } from "./version-paths.js";
 
 const DEFAULT_NATIVE_BUCKET =
 	"https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases";
-const DEFAULT_NATIVE_CACHE_DIR = path.join(
-	os.homedir(),
-	".claude-patcher",
-	"native-cache",
-);
 const VERSION_CHANNELS = new Set(["latest", "stable"]);
+const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 180_000;
 
 interface NativeManifestPlatform {
 	checksum: string;
@@ -50,6 +50,43 @@ function normalizeSpec(spec?: string): string {
 	const value = (spec ?? "latest").trim();
 	if (value.length === 0) return "latest";
 	return value;
+}
+
+function parseTimeoutMs(value: string | undefined, fallback: number): number {
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function getRequestTimeoutMs(): number {
+	return parseTimeoutMs(
+		process.env.CLAUDE_PATCHER_FETCH_TIMEOUT_MS,
+		DEFAULT_FETCH_TIMEOUT_MS,
+	);
+}
+
+function getDownloadTimeoutMs(): number {
+	return parseTimeoutMs(
+		process.env.CLAUDE_PATCHER_DOWNLOAD_TIMEOUT_MS,
+		DEFAULT_DOWNLOAD_TIMEOUT_MS,
+	);
+}
+
+async function fetchWithTimeout(
+	url: string,
+	timeoutMs: number,
+): Promise<Response> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		return await fetch(url, { signal: controller.signal });
+	} catch (error) {
+		if (controller.signal.aborted) {
+			throw new Error(`Request timed out after ${timeoutMs}ms: ${url}`);
+		}
+		throw error;
+	} finally {
+		clearTimeout(timeout);
+	}
 }
 
 function resolveArch(rawArch: string): string {
@@ -92,7 +129,7 @@ export function detectNativeReleasePlatform(): string {
 }
 
 async function fetchText(url: string): Promise<string> {
-	const res = await fetch(url);
+	const res = await fetchWithTimeout(url, getRequestTimeoutMs());
 	if (!res.ok) {
 		throw new Error(`Failed to fetch ${url}: HTTP ${res.status}`);
 	}
@@ -100,7 +137,7 @@ async function fetchText(url: string): Promise<string> {
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
-	const res = await fetch(url);
+	const res = await fetchWithTimeout(url, getRequestTimeoutMs());
 	if (!res.ok) {
 		throw new Error(`Failed to fetch ${url}: HTTP ${res.status}`);
 	}
@@ -114,17 +151,60 @@ function fileSha256(filePath: string): string {
 }
 
 async function downloadToFile(url: string, outPath: string): Promise<void> {
-	const res = await fetch(url);
+	const res = await fetchWithTimeout(url, getDownloadTimeoutMs());
 	if (!res.ok) {
 		throw new Error(`Download failed for ${url}: HTTP ${res.status}`);
 	}
-	const body = await res.arrayBuffer();
-	fs.writeFileSync(outPath, Buffer.from(body));
+	if (!res.body) {
+		throw new Error(`No response body from ${url}`);
+	}
+	const nodeStream = Readable.fromWeb(
+		res.body as Parameters<typeof Readable.fromWeb>[0],
+	);
+	await pipeline(nodeStream, fs.createWriteStream(outPath));
 }
 
 function ensureExecutable(filePath: string): void {
 	if (process.platform === "win32") return;
 	fs.chmodSync(filePath, 0o755);
+}
+
+function compareSemver(a: string, b: string): number {
+	const pa = a.split(".").map(Number);
+	const pb = b.split(".").map(Number);
+	for (let i = 0; i < 3; i++) {
+		const diff = (pb[i] ?? 0) - (pa[i] ?? 0);
+		if (diff !== 0) return diff;
+	}
+	return 0;
+}
+
+function evictOldVersions(cacheDir: string): void {
+	const keep = Number(process.env.CLAUDE_PATCHER_CACHE_KEEP) || 2;
+	if (!fs.existsSync(cacheDir)) return;
+
+	const protectedPaths = getProtectedPaths();
+	const entries = fs
+		.readdirSync(cacheDir)
+		.filter((e) => /^\d+\.\d+\.\d+/.test(e));
+	entries.sort(compareSemver); // descending by semver
+
+	let kept = 0;
+	for (const entry of entries) {
+		const entryPath = path.resolve(path.join(cacheDir, entry));
+		if (protectedPaths.has(entryPath)) {
+			// Never evict versions referenced by current/previous symlinks
+			continue;
+		}
+		kept++;
+		if (kept > keep) {
+			try {
+				fs.rmSync(entryPath, { recursive: true, force: true });
+			} catch {
+				// best-effort cleanup
+			}
+		}
+	}
 }
 
 export async function fetchNativeRelease(
@@ -165,6 +245,8 @@ export async function fetchNativeRelease(
 			`Manifest checksum for ${platform} in ${version} is invalid: ${platformEntry.checksum}`,
 		);
 	}
+
+	evictOldVersions(cacheDir);
 
 	const platformDir = path.join(cacheDir, version, platform);
 	fs.mkdirSync(platformDir, { recursive: true });

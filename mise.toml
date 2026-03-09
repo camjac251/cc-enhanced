@@ -3,23 +3,31 @@ node = "24"
 pnpm = "10"
 
 [tasks.patch]
-description = "Auto-detect installed native claude binary (Linux/macOS/Windows) and patch it in-place"
-run = "NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --detect-target"
+description = "Safety guard: in-place detect-target patching is disabled; use native:update"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "In-place detect-target patching is disabled." >&2
+echo "Use: mise run native:update" >&2
+echo "Or:  mise run native:fetch-patch latest && mise run native:promote <build-path>" >&2
+exit 1
+"""
 
 [tasks."patch:target"]
 description = "Patch an explicit native claude binary path"
 usage = '''
 arg "<target>" help="Path to native claude binary"
 flag "--dry-run" help="Preview without writing"
-flag "-o --output <path>" help="Output path (default: in-place)"
+flag "-o --output <path>" help="Output path (default: <target>.patched)"
 flag "--summary <file>" help="Write JSON summary to file"
 '''
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
 ARGS=(--target "${usage_target?}")
+DEFAULT_OUTPUT="${usage_target?}.patched"
+ARGS+=(--output "${usage_output:-$DEFAULT_OUTPUT}")
 [[ "${usage_dry_run:-}" == "true" ]] && ARGS+=(--dry-run)
-[[ -n "${usage_output:-}" ]] && ARGS+=(--output "${usage_output}")
 [[ -n "${usage_summary:-}" ]] && ARGS+=(--summary-path "${usage_summary}")
 NODE_OPTIONS='--max-old-space-size=8192' pnpm cli "${ARGS[@]}"
 """
@@ -62,7 +70,6 @@ description = "Fetch native binary and extract clean formatted JS (for diffing)"
 usage = '''
 arg "[spec]" help="latest|stable|X.Y.Z (default: latest)"
 flag "--platform <platform>" help="Platform override (e.g. linux-x64)"
-flag "--no-format" help="Skip Prettier formatting"
 '''
 run = """
 #!/usr/bin/env bash
@@ -70,11 +77,16 @@ set -euo pipefail
 SPEC="${usage_spec:-latest}"
 FETCH_ARGS=(--native-fetch "$SPEC" --native-fetch-only)
 [[ -n "${usage_platform:-}" ]] && FETCH_ARGS+=(--native-platform "${usage_platform}")
-NODE_OPTIONS='--max-old-space-size=8192' pnpm cli "${FETCH_ARGS[@]}"
+FETCH_OUTPUT=$(NODE_OPTIONS='--max-old-space-size=8192' pnpm cli "${FETCH_ARGS[@]}" 2>&1)
+echo "$FETCH_OUTPUT"
 
-# Resolve cached binary path
+# Resolve version from fetch output (not cache listing)
 CACHE_DIR="${HOME}/.claude-patcher/native-cache"
-VERSION=$(ls -1 "$CACHE_DIR" | sort -V | tail -1)
+VERSION=$(echo "$FETCH_OUTPUT" | sed -nE 's#.*native-cache/([0-9]+\\.[0-9]+\\.[0-9]+).*#\\1#p' | head -1)
+if [[ -z "$VERSION" ]]; then
+  echo "Could not determine fetched version from output" >&2
+  exit 1
+fi
 PLATFORM="${usage_platform:-linux-x64}"
 BINARY="$CACHE_DIR/$VERSION/$PLATFORM/claude"
 
@@ -86,7 +98,6 @@ fi
 OUT_DIR="versions_clean/$VERSION"
 mkdir -p "$OUT_DIR"
 UNPACK_ARGS=(--target "$BINARY" --unpack "$OUT_DIR/cli.js")
-[[ "${usage_no_format:-}" == "true" ]] && UNPACK_ARGS+=(--no-format)
 NODE_OPTIONS='--max-old-space-size=8192' pnpm cli "${UNPACK_ARGS[@]}"
 echo "Clean JS: $OUT_DIR/cli.js"
 """
@@ -95,18 +106,16 @@ echo "Clean JS: $OUT_DIR/cli.js"
 description = "Fetch official native Claude binary into local cache"
 usage = '''
 arg "[spec]" help="latest|stable|X.Y.Z (default: latest)"
-arg "[platform]" help="Optional platform override (e.g. linux-x64)"
+flag "--force" help="Force re-download even if cached"
+flag "--platform <platform>" help="Platform override (e.g. linux-x64)"
 '''
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-SPEC="${usage_spec:-latest}"
-PLATFORM="${usage_platform:-}"
-if [[ -n "$PLATFORM" ]]; then
-  NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --native-fetch "$SPEC" --native-platform "$PLATFORM" --native-fetch-only
-else
-  NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --native-fetch "$SPEC" --native-fetch-only
-fi
+ARGS=(--native-fetch "${usage_spec:-latest}" --native-fetch-only)
+[[ "${usage_force:-}" == "true" ]] && ARGS+=(--native-force-download)
+[[ -n "${usage_platform:-}" ]] && ARGS+=(--native-platform "${usage_platform}")
+NODE_OPTIONS='--max-old-space-size=8192' pnpm cli "${ARGS[@]}"
 """
 
 [tasks."native:fetch-patch"]
@@ -129,114 +138,141 @@ ARGS=(--native-fetch "${usage_spec:-latest}")
 NODE_OPTIONS='--max-old-space-size=8192' pnpm cli "${ARGS[@]}"
 """
 
-[tasks."native:promote"]
-description = "Promote a patched native binary by wiring versions/current and ~/.local/bin/claude symlinks"
+[tasks."native:update"]
+description = "Fetch, patch, and promote latest Claude binary (one command)"
 usage = '''
-arg "<target>" help="Path to patched native binary to activate"
-arg "[bin_link]" help="Launcher symlink path (default: ~/.local/bin/claude)"
-arg "[versions_dir]" help="Versions dir holding current/previous links (default: ~/.local/share/claude/versions)"
+arg "[spec]" help="latest|stable|X.Y.Z (default: latest)"
+flag "--force" help="Force re-download even if cached"
+flag "--platform <platform>" help="Platform override"
+flag "--dry-run" help="Fetch + patch preview only (no promote)"
+flag "--no-patch" help="Skip patching and promote fetched binary as-is"
+flag "--diff" help="Show diff during patch step"
+flag "--summary <file>" help="Write JSON summary to file"
+flag "--skip-smoke-test" help="Skip post-promote version check"
 '''
 run = """
 #!/usr/bin/env bash
 set -euo pipefail
-TARGET="$(readlink -f "${usage_target?}")"
-BIN_LINK="${usage_bin_link:-$HOME/.local/bin/claude}"
-VERSIONS_DIR="${usage_versions_dir:-$HOME/.local/share/claude/versions}"
-CURRENT_LINK="$VERSIONS_DIR/current"
-PREVIOUS_LINK="$VERSIONS_DIR/previous"
-
-if [[ ! -f "$TARGET" ]]; then
-  echo "Target does not exist: $TARGET" >&2
-  exit 1
-fi
-
-mkdir -p "$(dirname "$BIN_LINK")" "$VERSIONS_DIR"
-chmod 755 "$TARGET"
-
-OLD_TARGET=""
-if [[ -e "$CURRENT_LINK" || -L "$CURRENT_LINK" ]]; then
-  OLD_TARGET="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
-elif [[ -e "$BIN_LINK" || -L "$BIN_LINK" ]]; then
-  OLD_TARGET="$(readlink -f "$BIN_LINK" 2>/dev/null || true)"
-fi
-
-if [[ -n "$OLD_TARGET" && "$OLD_TARGET" != "$TARGET" && -e "$OLD_TARGET" ]]; then
-  ln -sfn "$OLD_TARGET" "$PREVIOUS_LINK"
-fi
-
-ln -sfn "$TARGET" "$CURRENT_LINK"
-ln -sfn "$CURRENT_LINK" "$BIN_LINK"
-
-echo "Promoted claude target:"
-echo "  target:   $TARGET"
-echo "  current:  $(readlink -f "$CURRENT_LINK")"
-echo "  launcher: $(readlink -f "$BIN_LINK")"
-
-# Clean old builds — keep promoted + 1 previous
-BUILDS_DIR="$(dirname "$TARGET")"
-if [[ "$(basename "$BUILDS_DIR")" == "builds" ]]; then
-  PREV_REAL="$(readlink -f "$PREVIOUS_LINK" 2>/dev/null || true)"
-  ls -1t "$BUILDS_DIR" | tail -n +3 | while read -r old; do
-    OLD_PATH="$BUILDS_DIR/$old"
-    [[ "$OLD_PATH" == "$PREV_REAL" ]] && continue
-    rm -f "$OLD_PATH" && echo "  cleaned:  $OLD_PATH"
-  done
-fi
+ARGS=(--update)
+[[ "${usage_spec:-latest}" != "latest" ]] && ARGS+=(--native-fetch "${usage_spec}")
+[[ "${usage_force:-}" == "true" ]] && ARGS+=(--native-force-download)
+[[ -n "${usage_platform:-}" ]] && ARGS+=(--native-platform "${usage_platform}")
+[[ "${usage_dry_run:-}" == "true" ]] && ARGS+=(--dry-run)
+[[ "${usage_no_patch:-}" == "true" ]] && ARGS+=(--no-patch)
+[[ "${usage_diff:-}" == "true" ]] && ARGS+=(--diff)
+[[ -n "${usage_summary:-}" ]] && ARGS+=(--summary-path "${usage_summary}")
+[[ "${usage_skip_smoke_test:-}" == "true" ]] && ARGS+=(--skip-smoke-test)
+NODE_OPTIONS='--max-old-space-size=8192' pnpm cli "${ARGS[@]}"
 """
+
+[tasks."native:promote"]
+description = "Promote a patched native binary to active launcher"
+usage = 'arg "<target>" help="Path to patched native binary"'
+run = "NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --promote ${usage_target?}"
 
 [tasks."native:rollback"]
-description = "Rollback launcher symlink to previous promoted native binary (or explicit target)"
-usage = '''
-arg "[target]" help="Optional explicit rollback target; defaults to versions/previous symlink target"
-arg "[bin_link]" help="Launcher symlink path (default: ~/.local/bin/claude)"
-arg "[versions_dir]" help="Versions dir holding current/previous links (default: ~/.local/share/claude/versions)"
-'''
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-BIN_LINK="${usage_bin_link:-$HOME/.local/bin/claude}"
-VERSIONS_DIR="${usage_versions_dir:-$HOME/.local/share/claude/versions}"
-CURRENT_LINK="$VERSIONS_DIR/current"
-PREVIOUS_LINK="$VERSIONS_DIR/previous"
+description = "Roll back to previous promoted binary"
+usage = 'arg "[target]" help="Optional explicit rollback target"'
+run = "NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --rollback ${usage_target:+--rollback-target ${usage_target}}"
 
-if [[ -n "${usage_target:-}" ]]; then
-  TARGET="$(readlink -f "${usage_target}")"
-else
-  if [[ ! -e "$PREVIOUS_LINK" && ! -L "$PREVIOUS_LINK" ]]; then
-    echo "No previous target available at $PREVIOUS_LINK" >&2
-    exit 1
-  fi
-  TARGET="$(readlink -f "$PREVIOUS_LINK")"
-fi
-
-if [[ ! -f "$TARGET" ]]; then
-  echo "Rollback target does not exist: $TARGET" >&2
-  exit 1
-fi
-
-mkdir -p "$(dirname "$BIN_LINK")" "$VERSIONS_DIR"
-chmod 755 "$TARGET"
-
-OLD_CURRENT=""
-if [[ -e "$CURRENT_LINK" || -L "$CURRENT_LINK" ]]; then
-  OLD_CURRENT="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
-fi
-if [[ -n "$OLD_CURRENT" && "$OLD_CURRENT" != "$TARGET" && -e "$OLD_CURRENT" ]]; then
-  ln -sfn "$OLD_CURRENT" "$PREVIOUS_LINK"
-fi
-
-ln -sfn "$TARGET" "$CURRENT_LINK"
-ln -sfn "$CURRENT_LINK" "$BIN_LINK"
-
-echo "Rolled back claude target:"
-echo "  target:   $TARGET"
-echo "  current:  $(readlink -f "$CURRENT_LINK")"
-echo "  launcher: $(readlink -f "$BIN_LINK")"
-"""
+[tasks.status]
+description = "Show current/previous/cached version status"
+run = "NODE_OPTIONS='--max-old-space-size=8192' pnpm cli --status"
 
 [tasks.list]
 description = "List available patches"
 run = "pnpm cli --list"
+
+[tasks.inspect]
+description = "AST search tool with breadcrumbs and context"
+usage = '''
+arg "<file>" help="Path to JS file to inspect"
+arg "<query>" help="Search query string"
+flag "-d" help="Definitions only"
+flag "-e" help="Exact match"
+flag "-C --context <n>" help="Context lines (default: 1)"
+flag "-l --limit <n>" help="Max results (default: 10)"
+flag "-t --type <type>" help="Filter by AST node type"
+'''
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+ARGS=(search "${usage_file?}" "${usage_query?}")
+[[ "${usage_d:-}" == "true" ]] && ARGS+=(-d)
+[[ "${usage_e:-}" == "true" ]] && ARGS+=(-e)
+[[ -n "${usage_context:-}" ]] && ARGS+=(-C "${usage_context}")
+[[ -n "${usage_limit:-}" ]] && ARGS+=(-l "${usage_limit}")
+[[ -n "${usage_type:-}" ]] && ARGS+=(-t "${usage_type}")
+pnpm inspect "${ARGS[@]}"
+"""
+
+[tasks."inspect:view"]
+description = "View lines from a JS file"
+usage = '''
+arg "<file>" help="Path to JS file"
+arg "<range>" help="Line range (e.g. 1000:1050)"
+'''
+run = "pnpm inspect view ${usage_file?} ${usage_range?}"
+
+[tasks.diff]
+description = "Structural AST diff between two JS files"
+usage = '''
+arg "<original>" help="Path to original JS file"
+arg "<patched>" help="Path to patched JS file"
+'''
+run = "pnpm diff ${usage_original?} ${usage_patched?}"
+
+[tasks."lint:fix"]
+description = "Auto-fix lint and format issues"
+run = "pnpm biome check --write src/"
+
+[tasks."verify:anchors"]
+description = "Compare patched and clean cli.js anchors (signature + key patch markers)"
+usage = '''
+arg "<patched_cli>" help="Path to patched cli.js"
+arg "<clean_cli>" help="Path to clean/unpatched cli.js"
+'''
+run = "pnpm verify:anchors ${usage_patched_cli?} ${usage_clean_cli?}"
+
+[tasks."verify:cache"]
+description = "Run live cache efficiency benchmark (baseline vs patched policy) when ANTHROPIC_API_KEY is set"
+usage = '''
+arg "[model]" help="Model ID (default: ANTHROPIC_MODEL env)"
+arg "[transcript]" help="Transcript JSON fixture path (default: src/verification/fixtures/cache-transcript.json)"
+flag "--output-json <file>" help="Write benchmark JSON report"
+flag "--output-csv <file>" help="Write benchmark CSV report"
+flag "--ttl <ttl>" help="Cache TTL: 5m|1h|none"
+flag "--max-cost-regression-pct <pct>" help="Allowed patched cost regression percent"
+flag "--min-cache-read-delta <tokens>" help="Required patched cache_read delta tokens"
+flag "--dry-run" help="Render benchmark plan without calling the API"
+'''
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+  echo "Skipping verify:cache (ANTHROPIC_API_KEY is not set)"
+  exit 0
+fi
+
+ARGS=()
+[[ -n "${usage_model:-}" ]] && ARGS+=(--model "${usage_model}")
+[[ -n "${usage_transcript:-}" ]] && ARGS+=(--transcript "${usage_transcript}")
+[[ -n "${usage_output_json:-}" ]] && ARGS+=(--output-json "${usage_output_json}")
+[[ -n "${usage_output_csv:-}" ]] && ARGS+=(--output-csv "${usage_output_csv}")
+[[ -n "${usage_ttl:-}" ]] && ARGS+=(--ttl "${usage_ttl}")
+[[ -n "${usage_max_cost_regression_pct:-}" ]] && ARGS+=(--max-cost-regression-pct "${usage_max_cost_regression_pct}")
+[[ -n "${usage_min_cache_read_delta:-}" ]] && ARGS+=(--min-cache-read-delta "${usage_min_cache_read_delta}")
+[[ "${usage_dry_run:-}" == "true" ]] && ARGS+=(--dry-run)
+
+pnpm verify:cache "${ARGS[@]}"
+"""
+
+[tasks."prompts:export"]
+description = "Extract prompt artifacts from promoted binary or clean version"
+usage = 'arg "[source]" help="Version or current (default: current)"'
+run = "NODE_OPTIONS='--max-old-space-size=8192' npx tsx scripts/export-prompts-current.ts ${usage_source:-current}"
+
 
 [tasks.clean]
 description = "Remove output directories"
@@ -262,21 +298,79 @@ set -euo pipefail
 
 NATIVE_TARGET="${NATIVE_TARGET:-}"
 CLI_TARGET="${CLI_TARGET:-}"
-CLI_SUMMARY="${CLI_SUMMARY:-/tmp/cc-cli-dryrun-summary.json}"
-NATIVE_SUMMARY="${NATIVE_SUMMARY:-/tmp/cc-native-dryrun-summary.json}"
+TMP_VERIFY_DIR="${TMP_VERIFY_DIR:-}"
+if [[ -z "$TMP_VERIFY_DIR" ]]; then
+  TMP_VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cc-verify-patches.XXXXXX")"
+  trap 'rm -rf "$TMP_VERIFY_DIR"' EXIT
+else
+  mkdir -p "$TMP_VERIFY_DIR"
+fi
+
+CLI_SUMMARY="${CLI_SUMMARY:-$TMP_VERIFY_DIR/cc-cli-dryrun-summary.json}"
+NATIVE_SUMMARY="${NATIVE_SUMMARY:-$TMP_VERIFY_DIR/cc-native-dryrun-summary.json}"
+CLI_PATCHED_FOR_ANCHORS="${CLI_PATCHED_FOR_ANCHORS:-$TMP_VERIFY_DIR/cc-cli-patched-for-anchors.js}"
+
+assert_clean_summary() {
+  local summary_path="$1"
+  local label="$2"
+
+  if ! jq -e '.result and (.result.failedTags | type == "array") and (.result.appliedTags | type == "array")' "$summary_path" >/dev/null; then
+    echo "Invalid dry-run summary schema for ${label}: $summary_path" >&2
+    return 1
+  fi
+
+  if ! jq -e '.error == null' "$summary_path" >/dev/null; then
+    echo "Dry-run summary reports top-level error for ${label}: $summary_path" >&2
+    jq -r '.error' "$summary_path" >&2
+    return 1
+  fi
+
+  if ! jq -e '.result.failedTags | length == 0' "$summary_path" >/dev/null; then
+    echo "Dry-run summary contains failed tags for ${label}: $summary_path" >&2
+    jq -r '.result.verifications[] | select(.passed == false) | "  - " + .tag + ": " + (.reason // "unknown")' "$summary_path" >&2
+    return 1
+  fi
+}
 
 pnpm typecheck
 pnpm biome check src/index.ts src/manager.ts src/patch-runner.ts src/patches/index.ts src/patches/edit-tool.ts src/templates/edit_hook.js
 
 if [[ -n "$CLI_TARGET" && -f "$CLI_TARGET" ]]; then
   pnpm cli --target "$CLI_TARGET" --dry-run --summary-path "$CLI_SUMMARY"
+  assert_clean_summary "$CLI_SUMMARY" "cli.js"
 else
   echo "Skipping cli.js dry-run (set CLI_TARGET to enable)"
 fi
 
+# Auto-detect native target from promoted binary if not set
+if [[ -z "$NATIVE_TARGET" ]]; then
+  CURRENT_LINK="$HOME/.local/share/claude/versions/current"
+  if [[ -L "$CURRENT_LINK" ]]; then
+    PROMOTED_BIN="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+    if [[ -n "$PROMOTED_BIN" && -f "$PROMOTED_BIN" ]]; then
+      # Walk up from builds/<ts>-claude to <platform>/claude (source binary)
+      BUILDS_DIR="$(dirname "$PROMOTED_BIN")"
+      if [[ "$(basename "$BUILDS_DIR")" == "builds" ]]; then
+        PLATFORM_DIR="$(dirname "$BUILDS_DIR")"
+        SOURCE_BIN="$PLATFORM_DIR/claude"
+        [[ -f "$SOURCE_BIN" ]] && NATIVE_TARGET="$SOURCE_BIN"
+      fi
+    fi
+  fi
+fi
+
 if [[ -n "$NATIVE_TARGET" && -f "$NATIVE_TARGET" ]]; then
   pnpm cli --target "$NATIVE_TARGET" --dry-run --summary-path "$NATIVE_SUMMARY"
+  assert_clean_summary "$NATIVE_SUMMARY" "native"
 else
-  echo "Skipping native dry-run (set NATIVE_TARGET to enable)"
+  echo "Skipping native dry-run (no NATIVE_TARGET and no promoted binary found)"
+fi
+
+if [[ -n "$CLI_TARGET" && -f "$CLI_TARGET" ]]; then
+  cp "$CLI_TARGET" "$CLI_PATCHED_FOR_ANCHORS"
+  pnpm cli --target "$CLI_PATCHED_FOR_ANCHORS"
+  pnpm verify:anchors "$CLI_PATCHED_FOR_ANCHORS" "$CLI_TARGET"
+else
+  echo "Skipping anchor checks (set CLI_TARGET to enable)"
 fi
 """

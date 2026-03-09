@@ -9,10 +9,9 @@ import type { Patch } from "../types.js";
 export const signature: Patch = {
 	tag: "signature",
 
-	// Signature doesn't have its own verify - it just runs last
-	ast: (ast, appliedTags?: string[]) => {
-		// appliedTags will be passed by the runner
-		const tags = appliedTags || [];
+	// Runs after verification with all applied tags
+	postApply: (ast, appliedTags) => {
+		const tags = appliedTags;
 		if (tags.length === 0) return;
 
 		// Short signature for UI display (avoids width overflow)
@@ -29,14 +28,6 @@ export const signature: Patch = {
 						"(Claude Code)",
 						`(Claude Code; ${sigFull})`,
 					);
-				}
-				// UI title bar: use short signature
-				if (val === "v" && t.isCallExpression(path.parentPath.node)) {
-					const args = path.parentPath.node.arguments;
-					const idx = args.indexOf(path.node);
-					if (idx !== -1 && idx + 1 < args.length) {
-						args.splice(idx + 2, 0, t.stringLiteral(` • ${sigShort}`));
-					}
 				}
 			},
 			TemplateLiteral(path: any) {
@@ -121,7 +112,9 @@ export const signature: Patch = {
 	},
 
 	verify: (code) => {
-		if (!code.includes("patched:")) {
+		// Verify signature was injected into the version string specifically,
+		// not just that "patched:" appears somewhere in 15MB of code
+		if (!code.includes("(Claude Code; patched:")) {
 			return "Missing 'patched:' signature in version string";
 		}
 		return true;
