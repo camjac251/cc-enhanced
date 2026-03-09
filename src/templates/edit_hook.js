@@ -155,10 +155,10 @@ function _claudeEditHasExtendedFields(A) {
 function _claudeEditSanitizeLine(A) {
 	if (A === void 0 || A === null || A === "") return null;
 	const B = _claudeEditUnwrapQuotedScalar(A);
-	let C = typeof B === "string" ? Number(B) : B;
+	const C = typeof B === "string" ? Number(B) : B;
 	if (!Number.isFinite(C)) return null;
-	C = Math.floor(C);
-	if (C < 1) C = 1;
+	if (!Number.isInteger(C)) return null;
+	if (C < 1) return null;
 	return C;
 }
 
@@ -229,13 +229,13 @@ function _claudeEditNormalizeEdits(A) {
 			? A.edits
 			: [
 					{
-						old_string: A.old_string,
-						new_string: A.new_string,
-						replace_all: A.replace_all,
-						line_number: A.line_number,
-						line_position: A.line_position,
-						start_line: A.start_line,
-						end_line: A.end_line,
+						old_string: A.old_string ?? A.oldString,
+						new_string: A.new_string ?? A.newString,
+						replace_all: A.replace_all ?? A.replaceAll,
+						line_number: A.line_number ?? A.lineNumber,
+						line_position: A.line_position ?? A.linePosition,
+						start_line: A.start_line ?? A.startLine,
+						end_line: A.end_line ?? A.endLine,
 						diff: A.diff,
 						pattern: A.pattern,
 					},
@@ -277,8 +277,135 @@ function _claudeEditNormalizeEdits(A) {
 	for (let I of B) {
 		I = normalizeEntry(I);
 
+		let J = _claudeEditSanitizeLine(I.line_number);
+		let X = _claudeEditSanitizeLine(I.start_line);
+		let W = _claudeEditSanitizeLine(I.end_line);
+		const hasDiffMode = typeof I.diff === "string" && I.diff.trim().length > 0;
+		const hasRegexMode =
+			typeof I.pattern === "string" && String(I.pattern).length > 0;
+		const hasDiffKey = I.diff !== undefined;
+		const hasPatternKey = I.pattern !== undefined;
+		const hasLineKey = I.line_number !== undefined;
+		const hasStartKey = I.start_line !== undefined;
+		const hasEndKey = I.end_line !== undefined;
+		const hasRangeKey = hasStartKey || hasEndKey;
+		const hasExplicitModeKey =
+			hasDiffKey || hasPatternKey || hasLineKey || hasRangeKey;
+		const hasOldStringKey = I.old_string !== undefined;
+		const hasRangeMode = X !== null || W !== null;
+		const hasLineMode = J !== null;
+		const explicitModeCount =
+			(hasDiffMode ? 1 : 0) +
+			(hasRegexMode ? 1 : 0) +
+			(hasRangeMode ? 1 : 0) +
+			(hasLineMode ? 1 : 0);
+
+		if (hasPatternKey && !hasRegexMode) {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message: "Invalid regex mode: pattern must be a non-empty string.",
+					errorCode: 20,
+				},
+			};
+		}
+
+		if (hasDiffKey && !hasDiffMode) {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message: "Invalid diff mode: diff must be a non-empty string.",
+					errorCode: 21,
+				},
+			};
+		}
+
+		if (hasLineKey && !hasLineMode) {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message: "Invalid line mode: line_number must be a positive integer.",
+					errorCode: 22,
+				},
+			};
+		}
+
+		if (hasStartKey && X === null) {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message:
+						"Invalid range mode: start_line/end_line must be positive integers.",
+					errorCode: 23,
+				},
+			};
+		}
+
+		if (hasEndKey && W === null) {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message:
+						"Invalid range mode: start_line/end_line must be positive integers.",
+					errorCode: 23,
+				},
+			};
+		}
+
+		if (!hasStartKey && hasEndKey) {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message:
+						"Invalid range mode: start_line is required when end_line is provided.",
+					errorCode: 24,
+				},
+			};
+		}
+
+		if (hasRangeKey && !hasRangeMode) {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message:
+						"Invalid range mode: start_line/end_line must be positive integers.",
+					errorCode: 23,
+				},
+			};
+		}
+
+		if (explicitModeCount > 1) {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message:
+						"Each edit must specify exactly one explicit mode: diff, regex (pattern), line_number, or range (start_line/end_line).",
+					errorCode: 18,
+				},
+			};
+		}
+		if (hasOldStringKey && hasExplicitModeKey) {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message:
+						"Invalid edit: old_string cannot be combined with explicit modes (diff, pattern, line_number, start_line/end_line).",
+					errorCode: 28,
+				},
+			};
+		}
+
 		// Diff Mode - convert hunks to string replaces
-		if (typeof I.diff === "string" && I.diff.trim().length > 0) {
+		if (hasDiffMode) {
 			const hunks = _claudeParseDiffHunks(I.diff);
 			if (hunks.length === 0) {
 				return {
@@ -292,6 +419,17 @@ function _claudeEditNormalizeEdits(A) {
 				};
 			}
 			for (const hunk of hunks) {
+				if (hunk.searchText === "") {
+					return {
+						error: {
+							result: false,
+							behavior: "ask",
+							message:
+								"Unsupported diff hunk: pure insertion hunks must include at least one context or removal line.",
+							errorCode: 16,
+						},
+					};
+				}
 				Q.push({
 					mode: "string",
 					oldString: hunk.searchText,
@@ -303,7 +441,7 @@ function _claudeEditNormalizeEdits(A) {
 		}
 
 		// Regex Mode
-		if (typeof I.pattern === "string" && I.pattern.length > 0) {
+		if (hasRegexMode) {
 			const newStr = typeof I.new_string === "string" ? I.new_string : "";
 			Q.push({
 				mode: "regex",
@@ -316,11 +454,12 @@ function _claudeEditNormalizeEdits(A) {
 
 		const rawNewString =
 			typeof I.new_string === "string" ? I.new_string : (I.new_string ?? "");
+		const hasOldStringInput =
+			I.old_string !== undefined && I.old_string !== null;
+		const hasNewStringInput =
+			I.new_string !== undefined && I.new_string !== null;
 		const Z = typeof I.old_string === "string" ? I.old_string : "";
 		const Y = _claudeEditParseBoolean(I.replace_all, false);
-		let J = _claudeEditSanitizeLine(I.line_number);
-		let X = _claudeEditSanitizeLine(I.start_line);
-		let W = _claudeEditSanitizeLine(I.end_line);
 		const posCandidate =
 			typeof I.line_position === "string"
 				? String(_claudeEditUnwrapQuotedScalar(I.line_position)).toLowerCase()
@@ -347,6 +486,26 @@ function _claudeEditNormalizeEdits(A) {
 			F = "range";
 		} else if (J !== null) {
 			F = "line";
+		} else if (!hasOldStringInput && !hasNewStringInput) {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message:
+						"Invalid edit: provide either explicit mode fields (diff/pattern/line_number/start_line) or string mode fields (old_string/new_string).",
+					errorCode: 25,
+				},
+			};
+		} else if (Z === "" && rawNewString === "") {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message:
+						"Invalid edit: old_string and new_string cannot both be empty. Use range/line mode for positional edits.",
+					errorCode: 26,
+				},
+			};
 		} else if (Z === "" && !Y) {
 			// No location, no old_string - treat as append
 			F = "line";
@@ -354,6 +513,18 @@ function _claudeEditNormalizeEdits(A) {
 		}
 
 		const normalizedNewString = String(rawNewString).replace(/\r\n/g, "\n");
+
+		if (F === "string" && Z === "" && Y) {
+			return {
+				error: {
+					result: false,
+					behavior: "ask",
+					message:
+						"Invalid edit: old_string cannot be empty when replace_all is true. Use range mode, line insertion, or set replace_all to false.",
+					errorCode: 19,
+				},
+			};
+		}
 
 		Q.push({
 			mode: F,
@@ -466,6 +637,7 @@ function _claudeEditApplyLine(content, edit) {
 
 function _claudeEditApplyRange(content, edit) {
 	const lines = content === "" ? [] : content.split("\n");
+	const lineCount = lines.length;
 
 	if (edit.startLine === null) {
 		return {
@@ -478,11 +650,38 @@ function _claudeEditApplyRange(content, edit) {
 		};
 	}
 
-	const startIdx = Math.min(Math.max(edit.startLine - 1, 0), lines.length);
+	if (lineCount === 0 && edit.startLine > 1) {
+		return {
+			error: {
+				result: false,
+				behavior: "ask",
+				message:
+					"Invalid range: start_line exceeds file length. Use start_line:1 for empty files or line mode to append.",
+				errorCode: 27,
+			},
+		};
+	}
+
+	if (lineCount > 0 && edit.startLine > lineCount) {
+		return {
+			error: {
+				result: false,
+				behavior: "ask",
+				message:
+					"Invalid range: start_line exceeds file length. Use line mode for append-after-end behavior.",
+				errorCode: 27,
+			},
+		};
+	}
+
+	const startIdx = lineCount === 0 ? 0 : edit.startLine - 1;
 	let endLine = edit.endLine ?? edit.startLine;
 	if (endLine < edit.startLine) endLine = edit.startLine;
-	const endIdx = Math.min(endLine - 1, lines.length - 1);
-	const deleteCount = endIdx >= startIdx ? endIdx - startIdx + 1 : 0;
+	const endIdx =
+		lineCount === 0
+			? -1
+			: Math.min(Math.max(endLine - 1, startIdx), lineCount - 1);
+	const deleteCount = lineCount === 0 ? 0 : endIdx - startIdx + 1;
 
 	const newLines = edit.newString === "" ? [] : edit.newString.split("\n");
 	lines.splice(startIdx, deleteCount, ...newLines);
@@ -501,10 +700,14 @@ function _claudeEditApplyRegex(content, edit) {
 		if (regexMatch) {
 			pattern = regexMatch[1];
 			flags = regexMatch[2] || "";
-			// Ensure 'g' flag if replaceAll is true
-			if (edit.replaceAll && !flags.includes("g")) {
-				flags += "g";
-			}
+		}
+
+		if (edit.replaceAll) {
+			// Ensure global replacement when replace_all is explicitly true.
+			if (!flags.includes("g")) flags += "g";
+		} else {
+			// Keep regex mode aligned with replace_all semantics even if user passed /.../g.
+			flags = flags.replace(/g/g, "");
 		}
 
 		const regex = new RegExp(pattern, flags);
@@ -554,21 +757,8 @@ function _claudeApplyExtendedFileEdits(content, edits) {
 	const warnings = [];
 	const appliedEdits = [];
 
-	// Sort edits: content-based first, then line-based bottom-up (descending line number)
-	// This prevents earlier edits from shifting line numbers for later edits
-	const contentEdits = edits.filter(
-		(e) => e.mode === "string" || e.mode === "regex",
-	);
-	const lineEdits = edits
-		.filter((e) => e.mode === "line" || e.mode === "range")
-		.sort((a, b) => {
-			const aLine = a.lineNumber ?? a.startLine ?? 0;
-			const bLine = b.lineNumber ?? b.startLine ?? 0;
-			return bLine - aLine; // Descending order (bottom-up)
-		});
-	const sortedEdits = [...contentEdits, ...lineEdits];
-
-	for (const edit of sortedEdits) {
+	// Apply in user-provided order to preserve deterministic intent.
+	for (const edit of edits) {
 		let outcome;
 
 		if (edit.mode === "regex") outcome = _claudeEditApplyRegex(result, edit);
@@ -634,90 +824,4 @@ function _claudeApplyExtendedFileEdits(content, edits) {
 		appliedEdits: appliedEdits.length > 0 ? appliedEdits : undefined,
 		warning: warnings.length > 0 ? warnings.join("\n") : undefined,
 	};
-}
-
-// Simple diff generator for structuredPatch output
-// Generates unified diff hunks compatible with Claude Code's UI
-function _claudeGenerateSimpleDiff(arg1, arg2, arg3) {
-	// Accept both signatures:
-	// 1) ({ filePath, oldContent, newContent })
-	// 2) (oldContent, newContent, filePath)
-	let oldContent;
-	let newContent;
-	if (arg1 && typeof arg1 === "object" && !Array.isArray(arg1)) {
-		oldContent = arg1.oldContent;
-		newContent = arg1.newContent;
-	} else {
-		oldContent = arg1;
-		newContent = arg2;
-		void arg3;
-	}
-
-	oldContent = String(oldContent ?? "")
-		.replace(/\r\n/g, "\n")
-		.replace(/\r/g, "\n");
-	newContent = String(newContent ?? "")
-		.replace(/\r\n/g, "\n")
-		.replace(/\r/g, "\n");
-	if (oldContent === newContent) return [];
-
-	const oldLines = oldContent.split("\n");
-	const newLines = newContent.split("\n");
-	const contextSize = 3;
-
-	let prefix = 0;
-	const prefixLimit = Math.min(oldLines.length, newLines.length);
-	while (prefix < prefixLimit && oldLines[prefix] === newLines[prefix]) {
-		prefix++;
-	}
-
-	let suffix = 0;
-	const suffixLimit = Math.min(
-		oldLines.length - prefix,
-		newLines.length - prefix,
-	);
-	while (
-		suffix < suffixLimit &&
-		oldLines[oldLines.length - 1 - suffix] ===
-			newLines[newLines.length - 1 - suffix]
-	) {
-		suffix++;
-	}
-
-	const oldChangedStart = prefix;
-	const oldChangedEnd = oldLines.length - suffix;
-	const newChangedStart = prefix;
-	const newChangedEnd = newLines.length - suffix;
-
-	const beforeStart = Math.max(0, oldChangedStart - contextSize);
-	const before = oldLines.slice(beforeStart, oldChangedStart);
-	const oldChanged = oldLines.slice(oldChangedStart, oldChangedEnd);
-	const newChanged = newLines.slice(newChangedStart, newChangedEnd);
-	const after = oldLines.slice(
-		oldChangedEnd,
-		Math.min(oldLines.length, oldChangedEnd + contextSize),
-	);
-
-	const lines = [
-		...before.map((line) => ` ${line}`),
-		...oldChanged.map((line) => `-${line}`),
-		...newChanged.map((line) => `+${line}`),
-		...after.map((line) => ` ${line}`),
-	];
-
-	const oldStart = beforeStart + 1;
-	const newStart =
-		Math.max(0, newChangedStart - (oldChangedStart - beforeStart)) + 1;
-	const oldSpan = before.length + oldChanged.length + after.length;
-	const newSpan = before.length + newChanged.length + after.length;
-
-	return [
-		{
-			oldStart,
-			oldLines: oldSpan,
-			newStart,
-			newLines: newSpan,
-			lines,
-		},
-	];
 }

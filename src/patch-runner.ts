@@ -5,10 +5,18 @@ import * as os from "node:os";
 import * as path from "node:path";
 import chalk from "chalk";
 import ora from "ora";
+import { runCombinedAstPasses } from "./ast-pass-engine.js";
 import { parse, print } from "./loader.js";
 import { buildGroupResults, getPatchMetadata } from "./patch-metadata.js";
 import { allPatches, getLimitsChanged, signature } from "./patches/index.js";
-import type { Patch, PatchResult, PatchVerification } from "./types.js";
+import type {
+	Patch,
+	PatchAstPass,
+	PatchResult,
+	PatchVerification,
+} from "./types.js";
+
+export type SignatureInjectionPolicy = "auto" | "force" | "off";
 
 export class PatchRunner {
 	private patches: Patch[] = [];
@@ -17,11 +25,30 @@ export class PatchRunner {
 	constructor(
 		patches?: Patch[],
 		options?: {
+			signaturePolicy?: SignatureInjectionPolicy;
 			injectSignature?: boolean;
 		},
 	) {
-		this.patches = patches || allPatches.filter((p) => p !== signature);
-		this.injectSignature = options?.injectSignature ?? true;
+		const selectedPatches = patches ?? allPatches;
+		const hasSignatureSelected = selectedPatches.some(
+			(p) => p === signature || p.tag === signature.tag,
+		);
+		const signaturePolicy =
+			options?.signaturePolicy ??
+			(options?.injectSignature === undefined
+				? "auto"
+				: options.injectSignature
+					? "force"
+					: "off");
+		this.patches = selectedPatches.filter(
+			(p) => p !== signature && p.tag !== signature.tag,
+		);
+		this.injectSignature =
+			signaturePolicy === "force"
+				? true
+				: signaturePolicy === "off"
+					? false
+					: hasSignatureSelected;
 	}
 
 	async run(
@@ -35,24 +62,27 @@ export class PatchRunner {
 		const failedTags: string[] = [];
 		const verifications: PatchVerification[] = [];
 		const errors: { tag: string; error: Error }[] = [];
+		const patchExecutionErrors = new Map<string, string>();
 
 		// Phase 1: Run string-based patches
 		for (const patch of this.patches) {
 			if (!patch.string) continue;
+			const meta = getPatchMetadata(patch.tag);
 
 			const spinner = ora({
-				text: patch.tag,
+				text: meta.label,
 				prefixText: "   ",
 				color: "blue",
 			}).start();
 
 			try {
 				code = patch.string(code);
-				spinner.succeed(patch.tag);
+				spinner.succeed(meta.label);
 			} catch (e) {
 				const err = e instanceof Error ? e : new Error(String(e));
 				errors.push({ tag: patch.tag, error: err });
-				spinner.fail(`${patch.tag}: ${err.message}`);
+				patchExecutionErrors.set(patch.tag, err.message);
+				spinner.fail(`${meta.label}: ${err.message}`);
 			}
 		}
 
@@ -66,23 +96,49 @@ export class PatchRunner {
 		parseSpinner.succeed("AST parsed");
 
 		// Phase 3: Run AST-based patches
-		for (const patch of this.patches) {
-			if (!patch.ast) continue;
+		const combinedPatchEntries: Array<{ tag: string; pass: PatchAstPass }> = [];
 
+		for (const patch of this.patches) {
+			if (!patch.astPasses) continue;
+			const meta = getPatchMetadata(patch.tag);
 			const spinner = ora({
-				text: patch.tag,
+				text: `${meta.label} (register)`,
 				prefixText: "   ",
 				color: "blue",
 			}).start();
-
 			try {
-				await patch.ast(ast);
-				spinner.succeed(patch.tag);
+				const passes = await patch.astPasses(ast);
+				for (const pass of passes) {
+					combinedPatchEntries.push({ tag: patch.tag, pass });
+				}
+				spinner.succeed(`${meta.label} (combined)`);
 			} catch (e) {
 				const err = e instanceof Error ? e : new Error(String(e));
 				errors.push({ tag: patch.tag, error: err });
-				spinner.fail(`${patch.tag}: ${err.message}`);
+				patchExecutionErrors.set(patch.tag, err.message);
+				spinner.fail(`${meta.label}: ${err.message}`);
 			}
+		}
+
+		if (combinedPatchEntries.length > 0) {
+			await runCombinedAstPasses(
+				ast,
+				combinedPatchEntries,
+				(pass, patchCount) => {
+					console.log(
+						chalk.gray(`   combined-${pass} (${patchCount} patches)`),
+					);
+				},
+				() => {
+					// no-op; status emitted in onPassStart to avoid keeping spinner state across async traversal
+				},
+				(tag, error) => {
+					if (!patchExecutionErrors.has(tag)) {
+						errors.push({ tag, error });
+						patchExecutionErrors.set(tag, error.message);
+					}
+				},
+			);
 		}
 
 		// Phase 4: Print AST to code
@@ -90,9 +146,20 @@ export class PatchRunner {
 
 		// Phase 5: Verify all patches
 		for (const patch of this.patches) {
-			if (patch === signature) continue; // Skip signature verification for now
-
 			try {
+				const executionError = patchExecutionErrors.get(patch.tag);
+				if (executionError) {
+					const meta = getPatchMetadata(patch.tag);
+					verifications.push({
+						tag: patch.tag,
+						passed: false,
+						reason: `Patch execution failed: ${executionError}`,
+						group: meta.group,
+						label: meta.label,
+					});
+					failedTags.push(patch.tag);
+					continue;
+				}
 				const result = patch.verify(output, ast);
 				const meta = getPatchMetadata(patch.tag);
 				if (result === true) {
@@ -129,26 +196,37 @@ export class PatchRunner {
 		}
 
 		// Phase 6: Inject signature with applied tags (use same AST, don't re-parse)
-		if (this.injectSignature && appliedTags.length > 0) {
+		if (
+			this.injectSignature &&
+			failedTags.length === 0 &&
+			appliedTags.length > 0 &&
+			signature.postApply
+		) {
 			const sigSpinner = ora({
 				text: "signature",
 				prefixText: "   ",
 				color: "blue",
 			}).start();
 			try {
-				// Pass applied tags to signature patch (modifies ast in place)
-				(signature.ast as any)(ast, appliedTags);
+				await signature.postApply(ast, appliedTags);
 				sigSpinner.succeed("signature");
 			} catch (e) {
-				sigSpinner.fail(`signature: ${e}`);
+				const reason = e instanceof Error ? e.message : String(e);
+				sigSpinner.fail(`signature: ${reason}`);
+				const sigMeta = getPatchMetadata(signature.tag);
+				failedTags.push("signature");
+				verifications.push({
+					tag: signature.tag,
+					passed: false,
+					reason: `Signature injection failed: ${reason}`,
+					group: sigMeta.group,
+					label: sigMeta.label,
+				});
 			}
 		}
 
 		// Phase 7: Print final output
 		const finalOutput = print(ast);
-
-		// diffOutput is no longer computed (external diff prints directly to console)
-		const diffOutput: string | undefined = undefined;
 
 		// Generate diff using external diff command (much faster than JS diff on large files)
 		if (options.showDiff) {
@@ -218,14 +296,12 @@ export class PatchRunner {
 			}
 		}
 
-		if (options.dryRun) {
-			console.log(chalk.yellow("    Dry run - no changes written"));
-		} else {
-			await fs.writeFile(filePath, finalOutput, "utf-8");
-		}
-
 		// Verify signature was injected
-		if (this.injectSignature) {
+		if (
+			this.injectSignature &&
+			failedTags.length === 0 &&
+			appliedTags.length > 0
+		) {
 			const sigResult = signature.verify(finalOutput);
 			const sigMeta = getPatchMetadata(signature.tag);
 			if (sigResult === true) {
@@ -248,6 +324,18 @@ export class PatchRunner {
 			}
 		}
 
+		if (options.dryRun) {
+			console.log(chalk.yellow("    Dry run - no changes written"));
+		} else if (failedTags.length === 0) {
+			await fs.writeFile(filePath, finalOutput, "utf-8");
+		} else {
+			console.log(
+				chalk.red(
+					`    Skipping write due to failed verification tags: ${failedTags.join(", ")}`,
+				),
+			);
+		}
+
 		const groupResults = buildGroupResults(verifications);
 
 		return {
@@ -256,8 +344,8 @@ export class PatchRunner {
 			verifications,
 			groupResults,
 			ast,
-			diff: diffOutput,
 			limits: getLimitsChanged(),
+			errors: errors.map(({ tag, error }) => ({ tag, reason: error.message })),
 		};
 	}
 }

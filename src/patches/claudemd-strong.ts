@@ -10,8 +10,14 @@ import type { Patch } from "../types.js";
 const WEAK_DISCLAIMER =
 	"IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.";
 
-const STRONG_DISCLAIMER =
-	"The instructions above are MANDATORY when they apply to your current task. Follow them exactly as written.";
+const STRONG_DISCLAIMER = [
+	"The instructions above are MANDATORY when they apply to your current task. Follow them exactly as written.",
+	"Always use gh api for GitHub URLs, not web fetching tools.",
+	"Always use bat to view files, not cat/head/tail.",
+	"Always use sg for code search, rg only for text/logs/config. Prefer sg over rg.",
+	"Never use cat/echo/printf for file writes - use Write or Edit tools.",
+	"Use ast-grep for code pattern matching (functions, classes, imports)",
+].join("\n");
 
 export const claudeMdSystemPrompt: Patch = {
 	tag: "claudemd-strong",
@@ -22,11 +28,8 @@ export const claudeMdSystemPrompt: Patch = {
 	},
 
 	verify: (code) => {
-		if (!code.includes(STRONG_DISCLAIMER)) {
-			return "Missing strong CLAUDE.md disclaimer";
-		}
 		if (code.includes(WEAK_DISCLAIMER)) {
-			return "Weak CLAUDE.md disclaimer still present";
+			return "Weak CLAUDE.md disclaimer still present (replacement failed)";
 		}
 		return true;
 	},

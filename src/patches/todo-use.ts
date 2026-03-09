@@ -16,6 +16,9 @@ const TODO_SKIP_REPLACEMENT = `## Examples of When NOT to Use the Todo List
 `;
 
 const TRIGGER = "## Examples of When to Use the Todo List";
+const EXPECTED_USE_LINE = "Reach for it when the user hands you multiple";
+const EXPECTED_SKIP_LINE =
+	"Skip it for quick, single-step tasks where tracking would add overhead.";
 
 export const todo: Patch = {
 	tag: "todo-use",
@@ -35,9 +38,10 @@ export const todo: Patch = {
 			);
 		}
 
-		// Replace the "When NOT to Use" section
+		// Replace the "When NOT to Use" section.
+		// Lookahead: next heading OR end of the string literal (quote/backtick).
 		const skipRegex =
-			/(## Examples of When NOT to Use the Todo List\n)([\s\S]*?)(?=\n## )/;
+			/(## Examples of When NOT to Use the Todo List\n)([\s\S]*?)(?=\n## |["'`]|$)/;
 		if (skipRegex.test(result)) {
 			result = result.replace(
 				skipRegex,
@@ -49,8 +53,22 @@ export const todo: Patch = {
 	},
 
 	verify: (code) => {
-		if (!code.includes("Reach for it when the user hands you multiple")) {
+		if (code.includes(TRIGGER) && !code.includes(EXPECTED_USE_LINE)) {
 			return "Missing condensed Todo examples";
+		}
+		if (
+			code.includes("## Examples of When NOT to Use the Todo List") &&
+			!code.includes(EXPECTED_SKIP_LINE)
+		) {
+			return "Missing condensed Todo NOT-to-use examples";
+		}
+		// If Todo tool exists but neither section was found/checked, flag as drift
+		if (
+			!code.includes(TRIGGER) &&
+			(code.includes('"TodoWrite"') || code.includes('"Todo"'))
+		) {
+			// Tool exists but expected prompt section is missing -- upstream drift
+			return "Todo tool found but expected prompt section missing (upstream drift)";
 		}
 		return true;
 	},

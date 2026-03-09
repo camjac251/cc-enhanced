@@ -1,95 +1,181 @@
+import traverse from "@babel/traverse";
+import * as t from "@babel/types";
 import type { Patch } from "../types.js";
+import { getVerifyAst } from "./ast-helpers.js";
 
 // Coupling: targets the same Bash tool prompt as bash-output-tail.ts but in a
 // different section (CLI tool recommendations vs disk persistence/tail guidance).
 
-const TRIGGER_PHRASE = "Executes a given bash command with optional timeout";
+// Functions containing these anchors have an EMBEDDED_SEARCH_TOOLS gate (Yz()
+// or equivalent) as the init of their first VariableDeclarator.  Since tools-off
+// disables Glob/Grep, we force the gate to true so tool-list conditionals pick
+// the branch that omits Glob/Grep names.
+const EMBEDDED_SEARCH_GATE_ANCHORS = [
+	"Executes a given bash command", // Bash prompt builder (gJf)
+	"You are the Claude guide agent", // Guide agent prompt (wX1)
+];
 
-const REPLACEMENT_TEXT = `  - ALWAYS use modern CLI tools, NEVER legacy commands:
-    - \`bat\` not cat, \`eza\` not ls, \`fd\` not find, \`rg\` not grep, \`dust\` not du, \`procs\` not ps
-    - \`xh\` not curl, \`sd\` not sed, \`choose\` not awk, \`sg\` for AST-aware code search
-    - NEVER use \`rg -A/-B\` to capture function/class bodies — use \`sg\` for exact AST node boundaries
-  - File operations:
-    - View: \`Read\` tool or \`bat\` via Bash. Read is preferred (uses bat internally)
-    - List: \`eza -la path\`, \`eza -T path\` for tree view (always include path)
-    - Find: \`fd pattern path\`, \`fd --max-results N\` to limit. \`fselect\` for complex queries (size/date)
-    - Text search: \`rg pattern path\`, \`rg -m N\` to limit, \`rg -l\` files only, \`rg -t ts\` (includes .tsx)
-    - Code search (exact AST nodes, not arbitrary line ranges):
-      - \`sg -p 'function $NAME($$$) { $$$BODY }' src/\`
-      - \`sg -p 'class $NAME { $$$BODY }' src/\`
-      - \`sg -p 'import { $$$IMPORTS } from "$MOD"' src/\`
-      - \`sg -p '$OBJ.$METHOD($$$ARGS)' src/\`
-      - Rewrite: \`sg -p 'old($$$)' -r 'new($$$)' -U src/\`
-    - sg debug: \`--debug-query=ast\` for tree, \`--debug-query=pattern\` for pattern parse
-    - Edit: \`Edit\` tool or \`sd -F 'old' 'new' file\`. \`sponge\` for in-place: \`sort f | sponge f\`
-    - Write: \`Write\` tool for new files. Never use cat/echo/printf for file writes.
-  - Prefer native options over piping:
-    - \`rg -m 10\`, \`fd --max-results 10\`, \`bat -r -30:\`, \`jq '.items[:5]'\`
-    - Piping OK when no native option (e.g., \`pytest | tail\`, \`| wc -l\`)
-    - For line ranges from pipes: \`cmd | sed -n '20,40p'\` (not head/tail chains)
-  - Data processing:
-    - JSON: \`jq\` for queries, \`gron\` to flatten for grep, \`gron -u\` to unflatten
-    - YAML: \`yq\` (same syntax as jq), \`dasel\` for JSON/YAML/TOML/XML uniformly
-    - CSV: \`mlr\` (miller) or \`qsv\` for stats, select, sort, join
-    - HTML: \`htmlq\` (like jq for HTML), e.g., \`htmlq 'a' --attribute href\`
-  - HTTP requests:
-    - \`xh GET url\` for simple requests, \`xh POST url key=value\` for JSON
-    - \`hurl file.hurl\` for HTTP test sequences with assertions
-  - Git operations:
-    - Use \`gh api\` for GitHub URLs, not web fetching
-    - \`delta\` or \`difft\` for syntax-aware diffs
-    - patchutils: \`git diff | filterdiff -i '*/file.py' | git apply --cached\`
-    - \`grepdiff 'pattern'\` for hunks matching pattern, \`git-sizer\` for repo analysis
-    - \`git-filter-repo\` for history rewriting (secrets, large files)
-  - Code quality:
-    - \`tokei\` for code stats, \`semgrep\` for security scanning
-    - \`biome\` for JS/TS, \`oxlint\` for fast JS, \`ruff\` for Python
-    - \`hadolint\` for Dockerfiles, \`taplo\` for TOML
-  - Utilities:
-    - \`hyperfine 'cmd1' 'cmd2'\` for benchmarking
-    - \`entr\` for file watching: \`fd .rs | entr cargo test\`
-    - \`watchexec -e rs -- cargo test\` for more complex watching
-    - \`fzf --filter="pattern"\` for non-interactive fuzzy filtering
-    - \`comby 'pattern :[hole]' 'new'\` when sg metavars don't work
-    - \`sad 'old' 'new' src/\` to preview, \`--commit\` to apply
-    - \`grex\` to generate regex from examples
-    - \`glow file.md\` to render markdown, \`numbat\` for unit calculations
-  - Use absolute paths, quote paths with spaces, \`fd -0 | xargs -0\` for bulk ops
-  - Heredocs for multiline: \`bash <<'EOF' ... EOF\` to avoid escaping issues`;
+function containsAnchor(path: traverse.NodePath<t.Function>): boolean {
+	let found = false;
+	path.traverse({
+		StringLiteral(inner) {
+			for (const anchor of EMBEDDED_SEARCH_GATE_ANCHORS) {
+				if (inner.node.value.startsWith(anchor)) {
+					found = true;
+					inner.stop();
+					return;
+				}
+			}
+		},
+		TemplateLiteral(inner) {
+			for (const quasi of inner.node.quasis) {
+				const text = quasi.value.cooked ?? quasi.value.raw;
+				for (const anchor of EMBEDDED_SEARCH_GATE_ANCHORS) {
+					if (text.includes(anchor)) {
+						found = true;
+						inner.stop();
+						return;
+					}
+				}
+			}
+		},
+	});
+	return found;
+}
+
+function patchGateInFunction(path: traverse.NodePath<t.Function>): boolean {
+	let patched = false;
+	path.traverse({
+		VariableDeclaration(declPath) {
+			if (patched) return;
+			for (const decl of declPath.node.declarations) {
+				// Direct: let H = Yz()
+				if (
+					t.isCallExpression(decl.init) &&
+					decl.init.arguments.length === 0 &&
+					t.isIdentifier(decl.init.callee)
+				) {
+					decl.init = t.unaryExpression("!", t.numericLiteral(0));
+					patched = true;
+					declPath.stop();
+					return;
+				}
+				// Ternary: let H = Yz() ? A : B
+				if (
+					t.isConditionalExpression(decl.init) &&
+					t.isCallExpression(decl.init.test) &&
+					decl.init.test.arguments.length === 0 &&
+					t.isIdentifier(decl.init.test.callee)
+				) {
+					decl.init.test = t.unaryExpression("!", t.numericLiteral(0));
+					patched = true;
+					declPath.stop();
+					return;
+				}
+			}
+		},
+	});
+	return patched;
+}
+
+function findAnchor(path: traverse.NodePath<t.Function>): string | null {
+	let matched: string | null = null;
+	path.traverse({
+		StringLiteral(inner) {
+			for (const anchor of EMBEDDED_SEARCH_GATE_ANCHORS) {
+				if (inner.node.value.startsWith(anchor)) {
+					matched = anchor;
+					inner.stop();
+					return;
+				}
+			}
+		},
+		TemplateLiteral(inner) {
+			for (const quasi of inner.node.quasis) {
+				const text = quasi.value.cooked ?? quasi.value.raw;
+				for (const anchor of EMBEDDED_SEARCH_GATE_ANCHORS) {
+					if (text.includes(anchor)) {
+						matched = anchor;
+						inner.stop();
+						return;
+					}
+				}
+			}
+		},
+	});
+	return matched;
+}
+
+const isForcedTrue = (node: t.Expression | null | undefined) =>
+	t.isUnaryExpression(node) &&
+	node.operator === "!" &&
+	t.isNumericLiteral(node.argument) &&
+	node.argument.value === 0;
 
 export const bashPrompt: Patch = {
 	tag: "bash-prompt",
 
-	string: (code) => {
-		if (!code.includes(TRIGGER_PHRASE)) return code;
+	// Use a Function visitor directly so the combined-pass engine visits each
+	// function node natively, avoiding nested traverse conflicts.
+	astPasses: () => [
+		{
+			pass: "mutate" as const,
+			visitor: {
+				Function(path: traverse.NodePath<t.Function>) {
+					if (!containsAnchor(path)) return;
+					if (patchGateInFunction(path)) path.skip();
+				},
+			},
+		},
+	],
 
-		const pattern =
-			/\s*-\s*Avoid using Bash with[\s\S]*?Communication: Output text directly \(NOT echo\/printf\)/;
+	verify: (code, ast) => {
+		const verifyAst = getVerifyAst(code, ast);
+		if (!verifyAst) return "Unable to parse AST during verification";
 
-		if (pattern.test(code)) {
-			const safeReplacement = `\n${REPLACEMENT_TEXT}`.replace(/`/g, "\\`");
-			return code.replace(pattern, safeReplacement);
-		}
-		return code;
-	},
-
-	verify: (code) => {
-		if (!code.includes("ALWAYS use modern CLI tools")) {
-			return "Missing modern CLI tools statement";
-		}
 		if (code.includes("Avoid using Bash with the `find`")) {
 			return "Old 'Avoid using Bash with' text still present";
 		}
+
 		if (
-			!code.includes("bat") ||
-			!code.includes("eza") ||
-			!code.includes("fd")
+			!code.includes("`cat`, `head`, `tail`, `sed`, `awk`, or `echo`") &&
+			!code.includes("IMPORTANT: Avoid using this tool to run ${")
 		) {
-			return "Missing core modern tools (bat/eza/fd)";
+			return "Expected Bash tool IMPORTANT line with avoid-list or template form";
 		}
-		if (!code.includes("xh") || !code.includes("rg")) {
-			return "Missing modern replacements (xh/rg)";
+
+		// AST check: verify both gates are forced to !0
+		const forcedAnchors = new Set<string>();
+		traverse.default(verifyAst, {
+			Function(path) {
+				const anchor = findAnchor(path);
+				if (!anchor) return;
+
+				path.traverse({
+					VariableDeclarator(declPath) {
+						const init = declPath.node.init;
+						if (isForcedTrue(init)) {
+							forcedAnchors.add(anchor);
+							declPath.stop();
+							return;
+						}
+						if (t.isConditionalExpression(init) && isForcedTrue(init.test)) {
+							forcedAnchors.add(anchor);
+							declPath.stop();
+						}
+					},
+				});
+
+				path.skip();
+			},
+		});
+
+		for (const anchor of EMBEDDED_SEARCH_GATE_ANCHORS) {
+			if (!forcedAnchors.has(anchor)) {
+				return `EMBEDDED_SEARCH_TOOLS gate not forced in function with: "${anchor.slice(0, 40)}..."`;
+			}
 		}
+
 		return true;
 	},
 };

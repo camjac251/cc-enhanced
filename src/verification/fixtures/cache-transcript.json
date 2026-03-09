@@ -1,0 +1,26 @@
+{
+	"name": "cache-tail-policy-benchmark",
+	"description": "Synthetic multi-turn transcript for comparing baseline vs patched cache tail behavior.",
+	"systemBlocks": [
+		"You are a concise assistant used for cache efficiency benchmarking.",
+		"Reply with short deterministic answers."
+	],
+	"turns": [
+		{
+			"user": "Summarize prompt caching in one sentence.",
+			"assistant": "Prompt caching reuses stable prompt prefixes to reduce repeated input work."
+		},
+		{
+			"user": "List two benefits as comma-separated words.",
+			"assistant": "latency, cost"
+		},
+		{
+			"user": "Explain why cache read tokens matter in one sentence.",
+			"assistant": "Higher cache read tokens usually indicate more reused prompt prefixes and lower effective input cost."
+		},
+		{
+			"user": "Give one caution in five words.",
+			"assistant": "Too many breakpoints can fragment."
+		}
+	]
+}

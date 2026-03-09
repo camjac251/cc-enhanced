@@ -1,9 +1,11 @@
+import type traverse from "@babel/traverse";
 import type * as t from "@babel/types";
 
-export interface LocationResult {
-	start: number;
-	end: number;
-	identifiers?: string[];
+export type AstPassName = "discover" | "mutate" | "finalize";
+
+export interface PatchAstPass {
+	pass: AstPassName;
+	visitor: traverse.Visitor;
 }
 
 export interface PatchVerification {
@@ -33,8 +35,11 @@ export interface Patch {
 	/** String-based transformation (runs before AST parsing) */
 	string?: (code: string) => string;
 
-	/** AST-based transformation */
-	ast?: (ast: t.File) => void | Promise<void>;
+	/** Optional pass-based AST transforms for combined traversal mode */
+	astPasses?: (ast: t.File) => PatchAstPass[] | Promise<PatchAstPass[]>;
+
+	/** Post-verification hook (receives applied tags). Used by signature patch. */
+	postApply?: (ast: t.File, appliedTags: string[]) => void | Promise<void>;
 
 	/**
 	 * Verify patch applied correctly.
@@ -62,8 +67,8 @@ export interface PatchResult {
 	/** The final AST (for signature injection) */
 	ast?: t.File;
 
-	/** Diff output if requested */
-	diff?: string;
+	/** Runtime patch execution errors captured before verification */
+	errors?: Array<{ tag: string; reason: string }>;
 
 	/** Limit changes (old -> new values) */
 	limits?: {
@@ -71,5 +76,7 @@ export interface PatchResult {
 		lineChars?: [string, string];
 		byteCeiling?: [string, string];
 		tokenBudget?: [string, string];
+		resultSizeCap?: [string, string];
+		readMaxResultSize?: [string, string];
 	};
 }

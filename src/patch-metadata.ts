@@ -17,6 +17,11 @@ const GROUP_ORDER = [
 
 const BY_TAG: Record<string, PatchMetadata> = {
 	"bash-prompt": { tag: "bash-prompt", label: "Bash prompt", group: "Prompt" },
+	"built-in-agent-prompt": {
+		tag: "built-in-agent-prompt",
+		label: "Built-in agent prompts",
+		group: "Prompt",
+	},
 	"bash-tail": {
 		tag: "bash-tail",
 		label: "Bash output tail",
@@ -59,9 +64,14 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Edit tool",
 		group: "Tooling",
 	},
-	"output-tokens": {
-		tag: "output-tokens",
-		label: "Output token display",
+	"effort-max": {
+		tag: "effort-max",
+		label: "Interactive max effort",
+		group: "System",
+	},
+	"plan-diff-ui": {
+		tag: "plan-diff-ui",
+		label: "Plan diff UI",
 		group: "UX",
 	},
 	"tools-off": { tag: "tools-off", label: "Disable tools", group: "Tooling" },
@@ -85,11 +95,6 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Memory write UI",
 		group: "UX",
 	},
-	"mcp-timeout": {
-		tag: "mcp-timeout",
-		label: "MCP timeout",
-		group: "System",
-	},
 	"agents-off": {
 		tag: "agents-off",
 		label: "Disable agent tools",
@@ -98,6 +103,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 	"no-collapse": {
 		tag: "no-collapse",
 		label: "Disable collapse",
+		group: "UX",
+	},
+	"subagent-model-tag": {
+		tag: "subagent-model-tag",
+		label: "Subagent model tag",
 		group: "UX",
 	},
 	"session-mem": {

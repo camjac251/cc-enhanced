@@ -2,6 +2,20 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import {
+	BUN_TRAILER,
+	type BunOffsets,
+	countClaudeModules,
+	detectModuleStructSize,
+	getPointerContent,
+	isClaudeModule,
+	mapModules,
+	parseOffsets,
+	SIZEOF_MODULE_NEW,
+	SIZEOF_OFFSETS,
+	type StringPointer,
+	toWriteError,
+} from "./bun-format.js";
+import {
 	extractClaudeJsFromNativeLinux,
 	isElfBinary,
 	repackNativeLinuxBinary,
@@ -18,38 +32,11 @@ const MACHO_MAGIC_64_LE = Buffer.from([0xcf, 0xfa, 0xed, 0xfe]);
 const MACHO_FAT = Buffer.from([0xca, 0xfe, 0xba, 0xbe]);
 const PE_MAGIC = Buffer.from([0x4d, 0x5a]);
 
-const BUN_TRAILER = Buffer.from("\n---- Bun! ----\n");
-const SIZEOF_OFFSETS = 32;
-const SIZEOF_MODULE = 32 + 4;
-const BUSY_FILE_CODES = new Set(["ETXTBSY", "EBUSY", "EPERM"]);
-
-interface StringPointer {
-	offset: number;
-	length: number;
-}
-
-interface BunOffsets {
-	byteCount: bigint;
-	modulesPtr: StringPointer;
-	entryPointId: number;
-	compileExecArgvPtr: StringPointer;
-}
-
-interface BunModule {
-	name: StringPointer;
-	contents: StringPointer;
-	sourcemap: StringPointer;
-	bytecode: StringPointer;
-	encoding: number;
-	loader: number;
-	moduleFormat: number;
-	side: number;
-}
-
 interface LiefBunData {
 	bunBlob: Buffer;
 	bunOffsets: BunOffsets;
 	sectionHeaderSize: number;
+	moduleStructSize: number;
 	format: "MachO" | "PE";
 	binary: any;
 	segment?: any;
@@ -63,93 +50,11 @@ type NodeLiefModule = {
 
 export type NativeBinaryKind = "elf" | "macho" | "pe" | "unknown";
 
-function parseStringPointer(buffer: Buffer, offset: number): StringPointer {
-	return {
-		offset: buffer.readUInt32LE(offset),
-		length: buffer.readUInt32LE(offset + 4),
-	};
-}
-
-function parseOffsets(buffer: Buffer): BunOffsets {
-	let pos = 0;
-	const byteCount = buffer.readBigUInt64LE(pos);
-	pos += 8;
-	const modulesPtr = parseStringPointer(buffer, pos);
-	pos += 8;
-	const entryPointId = buffer.readUInt32LE(pos);
-	pos += 4;
-	const compileExecArgvPtr = parseStringPointer(buffer, pos);
-	return { byteCount, modulesPtr, entryPointId, compileExecArgvPtr };
-}
-
-function parseModule(buffer: Buffer, offset: number): BunModule {
-	let pos = offset;
-	const name = parseStringPointer(buffer, pos);
-	pos += 8;
-	const contents = parseStringPointer(buffer, pos);
-	pos += 8;
-	const sourcemap = parseStringPointer(buffer, pos);
-	pos += 8;
-	const bytecode = parseStringPointer(buffer, pos);
-	pos += 8;
-	const encoding = buffer.readUInt8(pos);
-	pos += 1;
-	const loader = buffer.readUInt8(pos);
-	pos += 1;
-	const moduleFormat = buffer.readUInt8(pos);
-	pos += 1;
-	const side = buffer.readUInt8(pos);
-	return {
-		name,
-		contents,
-		sourcemap,
-		bytecode,
-		encoding,
-		loader,
-		moduleFormat,
-		side,
-	};
-}
-
-function getPointerContent(buffer: Buffer, ptr: StringPointer): Buffer {
-	return buffer.subarray(ptr.offset, ptr.offset + ptr.length);
-}
-
-function isClaudeModule(moduleName: string): boolean {
-	return (
-		moduleName.endsWith("/claude") ||
-		moduleName === "claude" ||
-		moduleName.endsWith("/claude.exe") ||
-		moduleName === "claude.exe"
-	);
-}
-
-function mapModules<T>(
-	bunBlob: Buffer,
-	bunOffsets: BunOffsets,
-	visitor: (
-		module: BunModule,
-		moduleName: string,
-		index: number,
-	) => T | undefined,
-): T | undefined {
-	const modulesList = getPointerContent(bunBlob, bunOffsets.modulesPtr);
-	const moduleCount = Math.floor(modulesList.length / SIZEOF_MODULE);
-	for (let i = 0; i < moduleCount; i++) {
-		const module = parseModule(modulesList, i * SIZEOF_MODULE);
-		const moduleName = getPointerContent(bunBlob, module.name).toString(
-			"utf-8",
-		);
-		const result = visitor(module, moduleName, i);
-		if (result !== undefined) return result;
-	}
-	return undefined;
-}
-
 function parseSectionBunBlob(sectionData: Buffer): {
 	bunBlob: Buffer;
 	bunOffsets: BunOffsets;
 	sectionHeaderSize: number;
+	moduleStructSize: number;
 } {
 	if (sectionData.length < 4) {
 		throw new Error("Native section is too small");
@@ -201,46 +106,63 @@ function parseSectionBunBlob(sectionData: Buffer): {
 	const offsetsStart = bunBlob.length - SIZEOF_OFFSETS - BUN_TRAILER.length;
 	const offsets = bunBlob.subarray(offsetsStart, offsetsStart + SIZEOF_OFFSETS);
 	const bunOffsets = parseOffsets(offsets);
+	const moduleStructSize = detectModuleStructSize(bunOffsets.modulesPtr.length);
 
-	return { bunBlob, bunOffsets, sectionHeaderSize };
+	return { bunBlob, bunOffsets, sectionHeaderSize, moduleStructSize };
 }
 
 function rebuildBunBlob(
 	oldBunBlob: Buffer,
 	oldOffsets: BunOffsets,
 	modifiedClaudeJs: Buffer,
+	moduleStructSize: number,
 ): Buffer {
+	const isNewFormat = moduleStructSize === SIZEOF_MODULE_NEW;
+	const stringsPerModule = isNewFormat ? 6 : 4;
 	const strings: Buffer[] = [];
 	const modules: Array<{
 		name: Buffer;
 		contents: Buffer;
 		sourcemap: Buffer;
 		bytecode: Buffer;
+		moduleInfo: Buffer;
+		bytecodeOriginPath: Buffer;
 		encoding: number;
 		loader: number;
 		moduleFormat: number;
 		side: number;
 	}> = [];
 
-	mapModules(oldBunBlob, oldOffsets, (module, moduleName) => {
+	mapModules(oldBunBlob, oldOffsets, moduleStructSize, (module, moduleName) => {
 		const nameBytes = getPointerContent(oldBunBlob, module.name);
 		const contentsBytes = isClaudeModule(moduleName)
 			? modifiedClaudeJs
 			: getPointerContent(oldBunBlob, module.contents);
 		const sourcemapBytes = getPointerContent(oldBunBlob, module.sourcemap);
 		const bytecodeBytes = getPointerContent(oldBunBlob, module.bytecode);
+		const moduleInfoBytes = module.moduleInfo
+			? getPointerContent(oldBunBlob, module.moduleInfo)
+			: Buffer.alloc(0);
+		const bytecodeOriginPathBytes = module.bytecodeOriginPath
+			? getPointerContent(oldBunBlob, module.bytecodeOriginPath)
+			: Buffer.alloc(0);
 
 		modules.push({
 			name: nameBytes,
 			contents: contentsBytes,
 			sourcemap: sourcemapBytes,
 			bytecode: bytecodeBytes,
+			moduleInfo: moduleInfoBytes,
+			bytecodeOriginPath: bytecodeOriginPathBytes,
 			encoding: module.encoding,
 			loader: module.loader,
 			moduleFormat: module.moduleFormat,
 			side: module.side,
 		});
 		strings.push(nameBytes, contentsBytes, sourcemapBytes, bytecodeBytes);
+		if (isNewFormat) {
+			strings.push(moduleInfoBytes, bytecodeOriginPathBytes);
+		}
 		return undefined;
 	});
 
@@ -252,7 +174,7 @@ function rebuildBunBlob(
 	}
 
 	const modulesListOffset = offset;
-	const modulesListSize = modules.length * SIZEOF_MODULE;
+	const modulesListSize = modules.length * moduleStructSize;
 	offset += modulesListSize;
 
 	const compileExecArgv = getPointerContent(
@@ -288,35 +210,33 @@ function rebuildBunBlob(
 
 	for (let moduleIndex = 0; moduleIndex < modules.length; moduleIndex++) {
 		const moduleData = modules[moduleIndex];
-		const base = moduleIndex * 4;
-		const m: BunModule = {
-			name: pointers[base],
-			contents: pointers[base + 1],
-			sourcemap: pointers[base + 2],
-			bytecode: pointers[base + 3],
-			encoding: moduleData.encoding,
-			loader: moduleData.loader,
-			moduleFormat: moduleData.moduleFormat,
-			side: moduleData.side,
-		};
+		const base = moduleIndex * stringsPerModule;
 
-		let pos = modulesListOffset + moduleIndex * SIZEOF_MODULE;
-		out.writeUInt32LE(m.name.offset, pos);
-		out.writeUInt32LE(m.name.length, pos + 4);
+		let pos = modulesListOffset + moduleIndex * moduleStructSize;
+		out.writeUInt32LE(pointers[base].offset, pos);
+		out.writeUInt32LE(pointers[base].length, pos + 4);
 		pos += 8;
-		out.writeUInt32LE(m.contents.offset, pos);
-		out.writeUInt32LE(m.contents.length, pos + 4);
+		out.writeUInt32LE(pointers[base + 1].offset, pos);
+		out.writeUInt32LE(pointers[base + 1].length, pos + 4);
 		pos += 8;
-		out.writeUInt32LE(m.sourcemap.offset, pos);
-		out.writeUInt32LE(m.sourcemap.length, pos + 4);
+		out.writeUInt32LE(pointers[base + 2].offset, pos);
+		out.writeUInt32LE(pointers[base + 2].length, pos + 4);
 		pos += 8;
-		out.writeUInt32LE(m.bytecode.offset, pos);
-		out.writeUInt32LE(m.bytecode.length, pos + 4);
+		out.writeUInt32LE(pointers[base + 3].offset, pos);
+		out.writeUInt32LE(pointers[base + 3].length, pos + 4);
 		pos += 8;
-		out.writeUInt8(m.encoding, pos);
-		out.writeUInt8(m.loader, pos + 1);
-		out.writeUInt8(m.moduleFormat, pos + 2);
-		out.writeUInt8(m.side, pos + 3);
+		if (isNewFormat) {
+			out.writeUInt32LE(pointers[base + 4].offset, pos);
+			out.writeUInt32LE(pointers[base + 4].length, pos + 4);
+			pos += 8;
+			out.writeUInt32LE(pointers[base + 5].offset, pos);
+			out.writeUInt32LE(pointers[base + 5].length, pos + 4);
+			pos += 8;
+		}
+		out.writeUInt8(moduleData.encoding, pos);
+		out.writeUInt8(moduleData.loader, pos + 1);
+		out.writeUInt8(moduleData.moduleFormat, pos + 2);
+		out.writeUInt8(moduleData.side, pos + 3);
 	}
 
 	let offsetsPos = offsetsOffset;
@@ -329,6 +249,8 @@ function rebuildBunBlob(
 	offsetsPos += 4;
 	out.writeUInt32LE(compileExecArgvOffset, offsetsPos);
 	out.writeUInt32LE(compileExecArgvLength, offsetsPos + 4);
+	offsetsPos += 8;
+	out.writeUInt32LE(oldOffsets.flags, offsetsPos);
 
 	BUN_TRAILER.copy(out, trailerOffset);
 	return out;
@@ -342,27 +264,6 @@ function loadNodeLief(): NodeLiefModule {
 			"Mach-O/PE native patching requires node-lief. Install it with `pnpm add node-lief`.",
 		);
 	}
-}
-
-function toWriteError(error: unknown, targetPath: string): Error {
-	const fallback =
-		error instanceof Error ? error.message : String(error ?? "Unknown error");
-	if (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		typeof (error as { code: unknown }).code === "string"
-	) {
-		const code = (error as { code: string }).code;
-		if (BUSY_FILE_CODES.has(code)) {
-			return new Error(
-				`Cannot write patched binary to ${targetPath} while it is in use (${code}). Close running Claude processes and retry.`,
-			);
-		}
-	}
-	return new Error(
-		`Failed writing patched binary to ${targetPath}: ${fallback}`,
-	);
 }
 
 function maybeCodesignMac(outputPath: string): void {
@@ -412,12 +313,13 @@ function extractLiefBunData(filePath: string): LiefBunData {
 		const section = segment?.getSection("__bun");
 		if (!section) throw new Error("Mach-O __BUN/__bun section not found");
 		const sectionData = Buffer.from(section.content as Uint8Array);
-		const { bunBlob, bunOffsets, sectionHeaderSize } =
+		const { bunBlob, bunOffsets, sectionHeaderSize, moduleStructSize } =
 			parseSectionBunBlob(sectionData);
 		return {
 			bunBlob,
 			bunOffsets,
 			sectionHeaderSize,
+			moduleStructSize,
 			format: "MachO",
 			binary,
 			segment,
@@ -431,12 +333,13 @@ function extractLiefBunData(filePath: string): LiefBunData {
 		);
 		if (!section) throw new Error("PE .bun section not found");
 		const sectionData = Buffer.from(section.content as Uint8Array);
-		const { bunBlob, bunOffsets, sectionHeaderSize } =
+		const { bunBlob, bunOffsets, sectionHeaderSize, moduleStructSize } =
 			parseSectionBunBlob(sectionData);
 		return {
 			bunBlob,
 			bunOffsets,
 			sectionHeaderSize,
+			moduleStructSize,
 			format: "PE",
 			binary,
 			section,
@@ -451,12 +354,24 @@ function extractLiefBunData(filePath: string): LiefBunData {
 function extractClaudeJsFromBunBlob(
 	bunBlob: Buffer,
 	bunOffsets: BunOffsets,
+	moduleStructSize: number,
 ): Buffer {
-	const claudeJs = mapModules(bunBlob, bunOffsets, (module, moduleName) => {
-		if (!isClaudeModule(moduleName)) return undefined;
-		const contents = getPointerContent(bunBlob, module.contents);
-		return contents.length > 0 ? contents : undefined;
-	});
+	const matchCount = countClaudeModules(bunBlob, bunOffsets, moduleStructSize);
+	if (matchCount > 1) {
+		throw new Error(
+			`Ambiguous Bun binary: ${matchCount} modules match isClaudeModule (expected exactly 1)`,
+		);
+	}
+	const claudeJs = mapModules(
+		bunBlob,
+		bunOffsets,
+		moduleStructSize,
+		(module, moduleName) => {
+			if (!isClaudeModule(moduleName)) return undefined;
+			const contents = getPointerContent(bunBlob, module.contents);
+			return contents.length > 0 ? contents : undefined;
+		},
+	);
 	if (!claudeJs) {
 		throw new Error("Could not locate embedded claude module in Bun binary");
 	}
@@ -500,7 +415,11 @@ export function extractClaudeJsFromNativeBinary(filePath: string): Buffer {
 	}
 	if (kind === "macho" || kind === "pe") {
 		const extracted = extractLiefBunData(filePath);
-		return extractClaudeJsFromBunBlob(extracted.bunBlob, extracted.bunOffsets);
+		return extractClaudeJsFromBunBlob(
+			extracted.bunBlob,
+			extracted.bunOffsets,
+			extracted.moduleStructSize,
+		);
 	}
 	throw new Error(`Unsupported native binary: ${filePath}`);
 }
@@ -524,6 +443,7 @@ export function repackNativeBinary(
 		extracted.bunBlob,
 		extracted.bunOffsets,
 		modifiedClaudeJs,
+		extracted.moduleStructSize,
 	);
 	const header =
 		extracted.sectionHeaderSize === 8
