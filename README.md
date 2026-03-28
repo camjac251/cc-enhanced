@@ -1,213 +1,189 @@
-# Claude Code Patcher
+<p align="center">
+  <h1 align="center">cc-enhanced</h1>
+  <p align="center">AST-based patcher for customizing the Claude Code CLI</p>
+</p>
 
-A TypeScript CLI for patching the `@anthropic-ai/claude-code` native binary with
-AST-anchored, self-verifying transformations.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
+  <img src="https://img.shields.io/badge/Runtime-Node_24-339933.svg" alt="Node 24">
+  <img src="https://img.shields.io/badge/Patches-25-orange.svg" alt="25 Patches">
+</p>
 
-## Features
+---
 
-- **Native-First Patching:** Auto-detects installed `claude` binary and patches in place
-- **Native Binary Support:** Linux ELF built-in, macOS/Windows via optional `node-lief`
-- **Native Release Fetching:** Downloads official native binaries with manifest checksum verification
-- **Native Ops:** Backup/restore and unpack/repack workflows for native binaries
-- **Normalization:** Formats `cli.js` with Prettier for readable diffs
-- **Combined AST Pass Engine:** Runs `discover/mutate/finalize` patch passes with per-patch isolation
-- **Verification:** Auto-validates patches after application
-- **Dry-Run:** Preview changes without writing
+cc-enhanced patches the Claude Code CLI binary to unlock capabilities, fix bugs, and improve the development experience. It uses Babel AST traversal to make surgical, verifiable changes to the embedded JavaScript, then repacks the native binary in place.
 
-## Installation
+> [!NOTE]
+> This tool patches your local copy of the Claude Code binary. It does not distribute any Anthropic source code. All modifications happen on your machine. You need a valid Claude Code subscription.
+
+## How It Works
+
+```mermaid
+graph LR
+    A[Native Binary] -->|unpack| B[cli.js]
+    B -->|prettier| C[Formatted JS]
+    C -->|25 AST patches| D[Patched JS]
+    D -->|verify each| E{All OK?}
+    E -->|yes| F[Repack Binary]
+    E -->|no| G[Abort + Report]
+    F -->|atomic symlink| H[Active]
+```
+
+The patcher extracts the embedded JavaScript from the Claude Code binary, applies 25 AST patches in a single optimized pass (`discover` -> `mutate` -> `finalize`), verifies each patch independently, and repacks the result. The binary stays exactly the same size through in-place bytecode replacement.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Fetch: mise run native:update
+    Fetch --> Patch: extract cli.js
+    Patch --> Verify: AST pass engine
+    Verify --> Promote: all patches OK
+    Verify --> Abort: failures detected
+    Promote --> Active: atomic symlink swap
+    Active --> Rollback: mise run native:rollback
+    Rollback --> Previous: swap current/previous
+```
+
+**Rollback is instant.** Promotion uses atomic symlinks, and the previous version is always preserved.
+
+## Quick Start
 
 ```bash
+# Install dependencies
 pnpm install
-```
 
-For macOS/Windows native binary repacking support, install `node-lief`:
-
-```bash
-pnpm add node-lief
-```
-
-## Usage
-
-```bash
-# Default: auto-detect and patch installed native claude target
-pnpm cli
-
-# Standard update flow (fetch + patch + promote)
-pnpm cli --update
-
-# Update dry-run (fetch + patch preview, no promote)
-pnpm cli --update --dry-run
-
-# Update specific version
-pnpm cli --update --native-fetch 2.1.56
-
-# Patch explicit native binary path
-pnpm cli --target /path/to/claude
-
-# Patch explicit cli.js path
-pnpm cli --target /path/to/cli.js
-
-# Native backup/restore (target mode)
-pnpm cli --target /path/to/claude --backup-only
-pnpm cli --target /path/to/claude --restore
-
-# Native unpack/repack workflows
-pnpm cli --target /path/to/claude --unpack /tmp/claude.js
-pnpm cli --target /path/to/claude --repack /tmp/claude.js
-
-# Fetch official native binary into cache and patch it (writes sibling .patched file)
-pnpm cli --native-fetch latest
-
-# Fetch only (no patch), useful for staging updates
-pnpm cli --native-fetch stable --native-fetch-only
-
-# Fetch specific version/platform
-pnpm cli --native-fetch 2.1.37 --native-platform linux-x64
-
-# Preview without writing (dry-run)
-pnpm cli --dry-run
-
-# Show diff of changes
-pnpm cli --diff
-
-# Build lifecycle controls
-pnpm cli --status
-pnpm cli --promote /path/to/patched/claude
-pnpm cli --rollback
-```
-
-## Common CLI Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--target <path>` | auto-detect | Patch specific `cli.js` or native `claude` binary |
-| `--output <path>` | in-place | Output path for `--target` mode |
-| `--detect-target` | off | Require auto-detection of installed `claude` target |
-| `--backup-only` | off | Create backup of detected/target file and exit |
-| `--restore` | off | Restore detected/target file from backup and exit |
-| `--backup-path <file>` | auto | Backup file path for backup/restore |
-| `--backup-dir <dir>` | `~/.claude-patcher/backups` | Backup root directory |
-| `--unpack <file>` | off | Extract embedded native JS to file and exit |
-| `--repack <file>` | off | Repack JS file into native target and exit |
-| `--native-fetch <spec>` | off | Fetch native binary (`latest`, `stable`, or `X.Y.Z`) and patch that target |
-| `--native-fetch-only` | off | Fetch native binary to cache and exit |
-| `--native-platform <id>` | auto | Override fetch platform (e.g. `linux-x64`, `darwin-arm64`) |
-| `--native-cache-dir <dir>` | `~/.claude-patcher/native-cache` | Native fetch cache root |
-| `--native-force-download` | off | Ignore cached native binary and re-download |
-| `--update` | off | Run combined fetch + patch + promote workflow |
-| `--status` | off | Show current/previous/cached promoted versions |
-| `--promote <path>` | off | Promote a patched binary to active launcher |
-| `--rollback` | off | Roll back to previous promoted binary |
-| `--rollback-target <path>` | off | Roll back to explicit binary target |
-| `--skip-smoke-test` | off | Skip post-promote `--version` smoke check |
-| `--fast-verify` | off | Skip duplicate per-patch verifier pass in update-time anchor checks |
-| `--dry-run` | off | Preview without writing |
-| `--diff` | off | Print diff output |
-| `--no-patch` | on | Format-only mode (skip patch transformations) |
-| `--summary-path <file>` | - | Write JSON summary report |
-| `--list` | - | List available patch tags |
-
-## MCP CLI Setup
-
-When `ENABLE_EXPERIMENTAL_MCP_CLI=true` is set, Claude Code exposes MCP server interaction via `mcp-cli`. The upstream alias resolves symlinks at session start and goes stale after re-patching. A stable script at `~/.local/bin/mcp-cli` fixes this:
-
-```bash
-#!/usr/bin/env bash
-exec ~/.local/share/claude/versions/current --mcp-cli "$@"
-```
-
-This delegates through the `current` symlink (updated by `mise run native:promote`), so it stays valid across version changes. The upstream code skips alias creation when `command -v mcp-cli` finds this script.
-
-## Development
-
-```bash
-# Standard flow
+# Fetch latest Claude Code, patch it, and promote to active
 mise run native:update
-mise run native:update --dry-run
 
-# Granular flow
-mise run patch:target /path/to/claude
-mise run native:fetch-patch latest
-mise run native:promote /path/to/patched/claude
-mise run native:rollback
-mise run status
-
-# Binary operations
-mise run native:backup /path/to/claude
-mise run native:restore /path/to/claude
-mise run native:unpack /path/to/claude /tmp/claude.js
-mise run native:repack /path/to/claude /tmp/claude.js
-mise run native:fetch latest
-mise run native:pull latest
-
-# Inspection and diffing
-mise run inspect versions_clean/<version>/cli.js "Edit"
-mise run inspect:view versions_clean/<version>/cli.js 1000:1050
-mise run diff /path/to/original.js /path/to/patched.js
-
-# Verify patcher health (native target by default)
-mise run verify:patches
-mise run verify:anchors /path/to/patched-cli.js /path/to/clean-cli.js
-
-# Live cache efficiency benchmark (requires ANTHROPIC_API_KEY)
-mise run verify:cache --output-json /tmp/cache-report.json --output-csv /tmp/cache-report.csv
-
-# Typecheck / lint / format
-mise run typecheck
-mise run lint
-mise run lint:fix
-mise run format
-
-# Clean output directories
-mise run clean
+# Verify everything is working
+claude --version    # Shows "patched: tag1, tag2, ..." suffix
+mise run status     # Shows current/previous versions
 ```
 
-## Cache Efficiency Verification
+## Patches
 
-`verify:cache` compares two request-shaping policies over the same transcript:
+Every patch is independently verifiable and can be included or excluded:
 
-- `baseline`: tail window `1`, cache both user + assistant tail messages
-- `patched`: tail window `2`, cache user tail messages only
+```bash
+# Include only specific patches
+CLAUDE_PATCHER_INCLUDE_TAGS=read-bat,limits,edit-extended mise run native:update
 
-The verifier sends both policies to the Anthropic Messages API and compares:
+# Exclude specific patches
+CLAUDE_PATCHER_EXCLUDE_TAGS=tools-off,agents-off mise run native:update
+```
 
-- `cache_read_input_tokens` (higher is generally better for reuse / ITPM headroom)
-- `cache_creation_input_tokens` split (`ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`)
-- estimated effective input cost using cache multipliers (`5m write=1.25x`, `1h write=2x`, `read=0.1x`)
+---
 
-By default the gate fails on:
+### Tooling
 
-- patched estimated cost regression (`--max-cost-regression-pct`, default `0`)
-- patched cache-read delta below minimum (`--min-cache-read-delta`, default `0`)
-- requests exceeding `--max-breakpoints` (default `4`) when `--fail-on-breakpoint-overflow` is enabled
-- live runs where prompt caching never engages (`cache_creation_input_tokens=0` and `cache_read_input_tokens=0` for both baseline and patched) are marked inconclusive and fail
+Patches that enhance, fix, or extend Claude's built-in tools.
 
-Notes:
+| Patch | What it does |
+|-------|-------------|
+| `read-bat` | Replaces Read tool with `bat`-style range syntax (`30:40`, `-30:`, `100::10`), line-numbered output, auto-tailing for `.output` files, and oversized file preview with truncation notice. Caps changed-file diff snippets to prevent context bloat. |
+| `edit-extended` | Adds batch edit mode (`edits[]` for multiple find/replace in one call), rewrites the Edit prompt with fuzzy matching docs and error recovery tips, and fixes the diff preview for extended edits. |
+| `bash-tail` | Adds `output_tail` parameter (keeps the last N characters of truncated output so build errors are visible) and `max_output` (overrides inline threshold up to 500K to avoid disk saves). |
+| `limits` | Raises Read tool caps: byte ceiling 256KB to 1MB, token budget 25K to 50K, persistence threshold 50K to 120K chars. Formatted reads up to ~30K tokens stay inline instead of being saved to disk. |
+| `tools-off` | Disables Glob, Grep, WebSearch, WebFetch, and NotebookEdit so Claude uses Bash-based alternatives. Rewrites all prompt references to stop recommending disabled tools. |
+| `shell-quote-fix` | Fixes a bug where `!` in Bash commands (negation, `!==`, shell tests) was incorrectly backslash-escaped, corrupting generated commands. |
+| `mcp-server-name` | Fixes MCP server name validation so names with colons and dots (like `plugin:name:key`) are accepted in settings, instead of silently rejecting the settings file. |
+| `taskout-ext` | Adds structured `output_file` and `output_filename` fields to TaskOutput so Claude can reliably find and read full background task output. |
+| `lsp-multi-server` | Fixes LSP so file events are sent to all registered language servers for a file type, not just the first. Enables TypeScript + ESLint + Tailwind working simultaneously. |
+| `lsp-workspace-symbol` | Fixes `workspaceSymbol` to pass through the search query instead of always sending an empty string. |
 
-- Benchmark output depends on transcript shape, model, and TTL; use the same fixture/model for stable comparisons.
-- Tail-window expansion can increase cache writes early while improving later cache reads.
+### System
 
-## Update Performance Notes
+Patches that modify runtime behavior, caching, and configuration.
 
-- `native:update` reuses compatible patched builds when clean binary hash, selected patch tags, and patcher revision match.
-- `--fast-verify` skips duplicate per-patch verifier checks inside update-time anchor verification (anchor checks still run).
+| Patch | What it does |
+|-------|-------------|
+| `cache-tail-policy` | Optimizes API prompt caching: extends tail window to 2 turns, restricts breakpoints to user messages, promotes system prompt to global cache scope for cross-conversation hits, ensures 1-hour TTL, and caps cache blocks at 4. |
+| `effort-max` | Unlocks "max" effort level in the interactive picker for all models, not just Opus. |
+| `no-autoupdate` | Prevents Claude Code from silently replacing itself with a newer version (which would undo patches), while keeping plugin marketplace updates working. |
+| `session-mem` | Makes session memory controllable via environment variables (`ENABLE_SESSION_MEMORY`, `ENABLE_SESSION_MEMORY_PAST`) regardless of server-side flags. Token caps and update thresholds become configurable. |
+| `sys-prompt-file` | Loads a system prompt from `/etc/claude-code/system-prompt.md` (or a custom path via env var) and appends it to every conversation automatically. |
 
-## Test Strategy (Upstream `cli.js` Drift)
+### Prompt
 
-`cli.js` is minified and owned upstream, so tests should validate patcher behavior and drift detection, not
-specific minified symbols.
+Patches that improve or replace prompt text sent to the model.
 
-- Keep deterministic tests for patcher internals: runner invariants, pass-engine semantics, and patch `verify()` logic.
-- Keep integration checks against real extracted binaries: `verify:anchors`, forced `native:update --force`, smoke `--version`.
-- Avoid brittle tests tied to minified variable names or full-file snapshots of upstream `cli.js`.
-- Treat verification failures as drift signals that need patch anchor updates, not as flaky test noise.
+| Patch | What it does |
+|-------|-------------|
+| `bash-prompt` | Replaces legacy tool guidance so Claude recommends modern CLI tools (`fd`, `rg`, `bat`, `sd`, `sg`, `eza`) instead of `find`, `grep`, `cat`, `sed`, `awk`. |
+| `built-in-agent-prompt` | Rewrites Explore and Plan agent prompts. Explore becomes a deep codebase researcher with execution path tracing. Plan becomes a senior architect delivering concrete blueprints with trade-off analysis. |
+| `claudemd-strong` | Replaces the weak CLAUDE.md disclaimer with mandatory enforcement, making CLAUDE.md instructions binding when applicable. |
+| `todo-use` | Condenses verbose Todo tool examples to two brief bullets, reducing prompt token overhead. |
 
-## Adding Patches
+### Agent
 
-1. Create a patch file in `src/patches/`
-2. Export it from `src/patches/index.ts`
-3. Add it to `allPatches` in `src/patches/index.ts`
+Patches that control which agents and commands are available.
 
-Prompt-patch contributor note: keep patch-injected prompt text behavior-specific and compatibility-focused; do not duplicate global policy from `/etc/claude-code/CLAUDE.md` or `~/.claude/system-prompt.md`.
+| Patch | What it does |
+|-------|-------------|
+| `agents-off` | Disables the `statusline-setup` and `claude-code-guide` built-in agents. |
+| `commands-off` | Disables `/pr-comments`, `/review`, and `/security-review` slash commands, superseded by custom skills and dedicated agents with better functionality. |
 
-See `CLAUDE.md` for architecture details.
+### UX
+
+Patches that improve the terminal interface.
+
+| Patch | What it does |
+|-------|-------------|
+| `plan-diff-ui` | Shows actual "Write"/"Read" labels and full diffs in plan mode instead of generic "Updated plan" with suppressed content. |
+| `no-collapse` | Stops the UI from collapsing Read/Search/Grep results into one-line summaries. Makes memory file writes visible with full path and diff. Adds content snippet preview to "Saved N memories" notifications. |
+| `subagent-model-tag` | Hides the redundant model name on Task subagent rows when the subagent model is globally pinned. |
+
+### Metadata
+
+| Patch | What it does |
+|-------|-------------|
+| `signature` | Appends a "patched: tag1, tag2, ..." marker to `claude --version` and a " * patched" indicator to the UI title bar. |
+
+## Patch Distribution
+
+```mermaid
+pie showData title Patches by Category
+    "Tooling" : 10
+    "System" : 6
+    "Prompt" : 4
+    "UX" : 3
+    "Agent" : 2
+    "Metadata" : 1
+```
+
+Each patch is a self-contained module with an `astPasses` function (Babel visitors for the combined-pass engine), a `verify` function (returns `true` or a failure reason), and an optional `string` transform for prompt-only patches. Patches are isolated: if one fails verification, the others still apply and the failure is reported with the specific reason.
+
+## CLI Reference
+
+```bash
+mise run native:update              # Fetch + patch + promote (standard workflow)
+mise run native:update 2.1.90       # Pin a specific version
+mise run native:update --dry-run    # Preview without promoting
+mise run native:rollback            # Instant rollback to previous version
+mise run status                     # Show current/previous/cached versions
+mise run verify:patches             # Full health check (typecheck + lint + dry-run)
+pnpm cli --list                     # List all available patches
+pnpm test                           # Run test suite
+```
+
+See `pnpm cli --help` for all options and `mise.toml` for all tasks.
+
+## Requirements
+
+- **Node.js 24+** (managed via `mise`)
+- **pnpm 10+** (via corepack)
+- **Linux x86_64** (native ELF support built-in; macOS/Windows via optional `node-lief`)
+- A working **Claude Code** installation
+
+## Disclaimer
+
+This project is not affiliated with, endorsed by, or connected to Anthropic, PBC or any of its affiliates. "Claude" and "Claude Code" are trademarks of Anthropic, PBC. All other trademarks are the property of their respective owners.
+
+This repository does not distribute the Claude Code binary or its source. Patches contain short text fragments used as match anchors for locating and replacing specific sections. The patcher operates exclusively on the end user's locally installed copy.
+
+This tool modifies Claude Code, which may not be permitted under Anthropic's terms of service. Users are responsible for ensuring their use complies with all applicable terms and laws. The authors hold no liability for misuse, account actions, or damages resulting from this tool. Use at your own risk.
+
+## License
+
+[MIT](LICENSE)

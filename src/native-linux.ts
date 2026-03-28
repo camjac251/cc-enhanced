@@ -70,26 +70,24 @@ function parseLinuxBunBlob(binary: Buffer): {
 	bunOffsets: BunOffsets;
 	bunBlobStart: number;
 	moduleStructSize: number;
+	tailValue: bigint;
 } {
 	if (binary.length < BUN_TRAILER.length + 8 + SIZEOF_OFFSETS) {
 		throw new Error("Binary too small to contain Bun overlay");
 	}
 
-	const tailCount = binary.readBigUInt64LE(binary.length - 8);
-	if (tailCount <= 0n || tailCount > BigInt(binary.length)) {
-		throw new Error(`Invalid Bun overlay size in tail: ${tailCount}`);
-	}
-
-	const trailerEnd = binary.length - 8;
-	const trailerStart = trailerEnd - BUN_TRAILER.length;
+	// Find the Bun trailer by scanning backwards. Older binaries have the
+	// overlay at the very end of the file; newer builds (2.1.83+) append ELF
+	// section headers after the overlay so we cannot assume a fixed position.
+	const trailerStart = binary.lastIndexOf(BUN_TRAILER);
 	if (trailerStart < 0) {
-		throw new Error("Invalid Bun trailer position");
+		throw new Error("Bun trailer not found in binary");
 	}
+	const trailerEnd = trailerStart + BUN_TRAILER.length;
 
-	const trailer = binary.subarray(trailerStart, trailerEnd);
-	if (!trailer.equals(BUN_TRAILER)) {
-		throw new Error("Bun trailer not found at expected location");
-	}
+	// The 8-byte tail value sits immediately after the trailer.
+	const tailValue =
+		trailerEnd + 8 <= binary.length ? binary.readBigUInt64LE(trailerEnd) : 0n;
 
 	const offsetsEnd = trailerStart;
 	const offsetsStart = offsetsEnd - SIZEOF_OFFSETS;
@@ -130,102 +128,19 @@ function parseLinuxBunBlob(binary: Buffer): {
 
 	const moduleStructSize = detectModuleStructSize(bunOffsets.modulesPtr.length);
 
-	return { bunBlob, bunOffsets, bunBlobStart: dataStart, moduleStructSize };
+	return {
+		bunBlob,
+		bunOffsets,
+		bunBlobStart: dataStart,
+		moduleStructSize,
+		tailValue,
+	};
 }
 
 /**
  * Rebuild Bun blob by appending new claude content to existing data
  * and patching the module entry in-place (Linux overlay strategy).
  */
-function rebuildBunBlob(
-	oldBunBlob: Buffer,
-	oldOffsets: BunOffsets,
-	modifiedClaudeJs: Buffer,
-	moduleStructSize: number,
-): Buffer {
-	const oldDataLength = oldBunBlob.length - SIZEOF_OFFSETS - BUN_TRAILER.length;
-	if (oldDataLength <= 0) {
-		throw new Error("Invalid Bun blob data length");
-	}
-	const oldData = oldBunBlob.subarray(0, oldDataLength);
-
-	const modulesStart = oldOffsets.modulesPtr.offset;
-	const modulesLength = oldOffsets.modulesPtr.length;
-	if (
-		modulesStart < 0 ||
-		modulesLength <= 0 ||
-		modulesStart + modulesLength > oldData.length
-	) {
-		throw new Error("Invalid modules pointer range in Bun offsets");
-	}
-	const modulesList = oldData.subarray(
-		modulesStart,
-		modulesStart + modulesLength,
-	);
-	const moduleCount = Math.floor(modulesLength / moduleStructSize);
-	if (moduleCount <= 0) {
-		throw new Error("No modules found in Bun blob");
-	}
-
-	let claudeModuleIndex = -1;
-	for (let i = 0; i < moduleCount; i++) {
-		const module = parseModule(
-			modulesList,
-			i * moduleStructSize,
-			moduleStructSize,
-		);
-		const moduleName = getPointerContent(oldData, module.name).toString(
-			"utf-8",
-		);
-		if (isClaudeModule(moduleName)) {
-			claudeModuleIndex = i;
-			break;
-		}
-	}
-
-	if (claudeModuleIndex < 0) {
-		throw new Error("Could not locate embedded claude module in Bun blob");
-	}
-
-	const newContentOffset = oldData.length;
-	const newData = Buffer.allocUnsafe(
-		oldData.length + modifiedClaudeJs.length + 1,
-	);
-	oldData.copy(newData, 0);
-	modifiedClaudeJs.copy(newData, newContentOffset);
-	newData[newContentOffset + modifiedClaudeJs.length] = 0;
-
-	const moduleEntryOffset = modulesStart + claudeModuleIndex * moduleStructSize;
-	const contentsPointerOffset = moduleEntryOffset + 8; // name pointer is first 8 bytes
-	newData.writeUInt32LE(newContentOffset, contentsPointerOffset);
-	newData.writeUInt32LE(modifiedClaudeJs.length, contentsPointerOffset + 4);
-	// Force Bun to use updated source text for this module.
-	// Keeping stale embedded bytecode can crash module instantiation.
-	// Bytecode is the 4th StringPointer (offset +24) in both old and new formats.
-	const bytecodePointerOffset = moduleEntryOffset + 24;
-	newData.writeUInt32LE(0, bytecodePointerOffset);
-	newData.writeUInt32LE(0, bytecodePointerOffset + 4);
-
-	const newOffsets = Buffer.allocUnsafe(SIZEOF_OFFSETS);
-	newOffsets.fill(0);
-	let offsetsPos = 0;
-	newOffsets.writeBigUInt64LE(BigInt(newData.length), offsetsPos);
-	offsetsPos += 8;
-	newOffsets.writeUInt32LE(oldOffsets.modulesPtr.offset, offsetsPos);
-	newOffsets.writeUInt32LE(oldOffsets.modulesPtr.length, offsetsPos + 4);
-	offsetsPos += 8;
-	newOffsets.writeUInt32LE(oldOffsets.entryPointId, offsetsPos);
-	offsetsPos += 4;
-	newOffsets.writeUInt32LE(oldOffsets.compileExecArgvPtr.offset, offsetsPos);
-	newOffsets.writeUInt32LE(
-		oldOffsets.compileExecArgvPtr.length,
-		offsetsPos + 4,
-	);
-	offsetsPos += 8;
-	newOffsets.writeUInt32LE(oldOffsets.flags, offsetsPos);
-
-	return Buffer.concat([newData, newOffsets, BUN_TRAILER]);
-}
 
 function writeBinaryAtomically(targetPath: string, content: Buffer): void {
 	const tmp = `${targetPath}.tmp`;
@@ -261,9 +176,8 @@ export function extractClaudeJsFromNativeLinux(
 	filePath: string,
 ): ExtractedNativeLinux {
 	const binary = fs.readFileSync(filePath);
-	const { bunBlob, bunOffsets, bunBlobStart, moduleStructSize } =
+	const { bunBlob, bunOffsets, bunBlobStart, moduleStructSize, tailValue } =
 		parseLinuxBunBlob(binary);
-	const tailValue = binary.readBigUInt64LE(binary.length - 8);
 	const matchCount = countClaudeModules(bunBlob, bunOffsets, moduleStructSize);
 	if (matchCount > 1) {
 		throw new Error(
@@ -300,27 +214,46 @@ export function repackNativeLinuxBinary(
 	outputPath: string = filePath,
 ): void {
 	const extracted = extractClaudeJsFromNativeLinux(filePath);
-	const rebuiltBunBlob = rebuildBunBlob(
+
+	// Bun 1.3+ validates overlay integrity via memory-mapped PT_LOAD segments.
+	// Rebuilding the overlay (appending data, changing byteCount) breaks this.
+	// Instead, patch in-place: write the new content over the bytecode area
+	// (which is zeroed anyway) and update the module's content pointer.
+	const claudeModule = findClaudeModuleEntry(
 		extracted.bunBlob,
 		extracted.bunOffsets,
-		modifiedClaudeJs,
 		extracted.moduleStructSize,
 	);
-	const newOverlay = Buffer.allocUnsafe(rebuiltBunBlob.length + 8);
-	rebuiltBunBlob.copy(newOverlay, 0);
-	// Bun native binaries have used different trailer conventions across releases:
-	// some store full file size, others store overlay size. Preserve the original mode.
-	const tailUsesFileSize =
-		extracted.tailValue === BigInt(extracted.binary.length);
-	const tailValue = tailUsesFileSize
-		? BigInt(extracted.bunBlobStart + rebuiltBunBlob.length + 8)
-		: BigInt(rebuiltBunBlob.length);
-	newOverlay.writeBigUInt64LE(tailValue, rebuiltBunBlob.length);
 
-	const patchedBinary = Buffer.concat([
-		extracted.binary.subarray(0, extracted.bunBlobStart),
-		newOverlay,
-	]);
+	if (modifiedClaudeJs.length > claudeModule.bytecodeLen) {
+		throw new Error(
+			`Modified JS (${modifiedClaudeJs.length} bytes) exceeds bytecode area (${claudeModule.bytecodeLen} bytes)`,
+		);
+	}
+
+	// Copy the full binary (we patch in-place)
+	const patchedBinary = Buffer.from(extracted.binary);
+	const dataStart = extracted.bunBlobStart;
+
+	// Write new content over the bytecode region
+	const newContentOff = claudeModule.bytecodeOff;
+	modifiedClaudeJs.copy(patchedBinary, dataStart + newContentOff);
+	// Null-terminate
+	if (modifiedClaudeJs.length < claudeModule.bytecodeLen) {
+		patchedBinary[dataStart + newContentOff + modifiedClaudeJs.length] = 0;
+	}
+
+	// Update content pointer to the new location
+	const moduleEntryBase =
+		dataStart +
+		extracted.bunOffsets.modulesPtr.offset +
+		claudeModule.index * extracted.moduleStructSize;
+	patchedBinary.writeUInt32LE(newContentOff, moduleEntryBase + 8); // contents.offset
+	patchedBinary.writeUInt32LE(modifiedClaudeJs.length, moduleEntryBase + 12); // contents.length
+
+	// Zero out bytecode pointer
+	patchedBinary.writeUInt32LE(0, moduleEntryBase + 24);
+	patchedBinary.writeUInt32LE(0, moduleEntryBase + 28);
 
 	if (outputPath === filePath) {
 		writeBinaryAtomically(filePath, patchedBinary);
@@ -332,4 +265,35 @@ export function repackNativeLinuxBinary(
 	} catch (error) {
 		throw toWriteError(error, outputPath);
 	}
+}
+
+function findClaudeModuleEntry(
+	bunBlob: Buffer,
+	bunOffsets: BunOffsets,
+	moduleStructSize: number,
+): { index: number; bytecodeOff: number; bytecodeLen: number } {
+	const moduleCount = Math.floor(
+		bunOffsets.modulesPtr.length / moduleStructSize,
+	);
+	for (let i = 0; i < moduleCount; i++) {
+		const module = parseModule(
+			bunBlob.subarray(
+				bunOffsets.modulesPtr.offset,
+				bunOffsets.modulesPtr.offset + bunOffsets.modulesPtr.length,
+			),
+			i * moduleStructSize,
+			moduleStructSize,
+		);
+		const moduleName = getPointerContent(bunBlob, module.name).toString(
+			"utf-8",
+		);
+		if (isClaudeModule(moduleName)) {
+			return {
+				index: i,
+				bytecodeOff: module.bytecode.offset,
+				bytecodeLen: module.bytecode.length,
+			};
+		}
+	}
+	throw new Error("Could not locate claude module for in-place repack");
 }

@@ -13,22 +13,18 @@ import {
 /**
  * Add output_tail and max_output options to Bash tool.
  *
- * Architecture (2.1.2+):
- * - Bash outputs > 30KB are saved to disk
- * - max_output overrides this threshold to allow larger inline outputs
- * - output_tail truncates from END instead of beginning
+ * Stock behavior (2.1.77): truncation is head-first only (first 30K chars).
+ * Build errors, test failures, and other end-of-output content is lost.
+ * Persistence saves to disk with a 2K head-only preview.
  *
- * All modifications are AST-based for robustness across versions.
+ * This patch adds:
+ * - output_tail: boolean - keep LAST N chars instead of first
+ * - max_output: number - override inline threshold (up to 500K)
  *
- * Implementation uses globalThis.__bashTailOpts to bridge the Bash tool's
- * input params to the truncation function (FvI), since threading params
- * through minified call chains is fragile. This is safe because:
- * - Bash calls are serialized (one tool call at a time in main flow)
- * - Background tasks run in separate processes (don't share globals)
- * - The global is consumed immediately (set → FvI → cleared)
+ * Uses globalThis.__bashTailOpts to bridge Bash tool call() params to the
+ * truncation function, since threading through minified call chains is fragile.
+ * Safe because Bash calls are serialized (one at a time in main flow).
  */
-// Coupling: targets the same Bash tool prompt as bash-prompt.ts but in a
-// different section (disk persistence/tail guidance vs CLI tool recommendations).
 
 const PROMPT_ADDITION = `\
   - **Disk persistence**: Outputs over 30KB are saved to disk and you'll receive a file path instead. You'll need to read that file separately (e.g., \`bat /path/to/output.txt\`). To avoid this extra step, use \`max_output\` proactively.
@@ -36,7 +32,8 @@ const PROMPT_ADDITION = `\
   - Use \`output_tail: true\` for commands where errors/results appear at the end: build commands (npm/pnpm/yarn build, cargo build, make, go build), test runners (pytest, jest, vitest, cargo test, go test), Docker builds, and log viewing. When truncation occurs, keeps the LAST N characters instead of first.
   - For long builds/tests, combine \`run_in_background: true\` with \`output_tail: true\` to get the final errors when checking results later.`;
 
-// Helper to find the Zod variable (h, u, or U) used in schemas
+// --- Helpers ---
+
 function findZodVariable(path: any): string | null {
 	let zodVar: string | null = null;
 	path.traverse({
@@ -55,7 +52,6 @@ function findZodVariable(path: any): string | null {
 	return zodVar;
 }
 
-// Build a Zod schema property: VAR.type().optional().describe("...")
 function buildZodProperty(
 	key: string,
 	type: "boolean" | "number",
@@ -72,7 +68,6 @@ function buildZodProperty(
 	);
 }
 
-// Build: "key" in A ? A.key : void 0
 function buildConditionalProperty(key: string, inputVar: string): t.Expression {
 	return t.conditionalExpression(
 		t.binaryExpression("in", t.stringLiteral(key), t.identifier(inputVar)),
@@ -81,12 +76,6 @@ function buildConditionalProperty(key: string, inputVar: string): t.Expression {
 	);
 }
 
-// objectPatternHasKey moved to ast-helpers.ts
-
-/**
- * Find the name of a 0-arg function call in variable declarations.
- * Matches patterns like: let A = XXH();
- */
 function findThresholdCallName(body: t.Statement[]): string | null {
 	for (const stmt of body) {
 		if (!t.isVariableDeclaration(stmt)) continue;
@@ -103,9 +92,6 @@ function findThresholdCallName(body: t.Statement[]): string | null {
 	return null;
 }
 
-/**
- * Check if a function body returns an object with a "truncatedContent" property.
- */
 function hasReturnWithTruncatedContent(body: t.Statement[]): boolean {
 	for (const stmt of body) {
 		if (t.isReturnStatement(stmt) && t.isObjectExpression(stmt.argument)) {
@@ -122,10 +108,6 @@ function hasReturnWithTruncatedContent(body: t.Statement[]): boolean {
 	return false;
 }
 
-/**
- * Find the isImage check function name from the first statement.
- * Pattern: let $ = X6A(H); — a call with 1 arg matching the function param.
- */
 function findIsImageCallName(
 	body: t.Statement[],
 	paramName: string,
@@ -146,10 +128,6 @@ function findIsImageCallName(
 	return null;
 }
 
-/**
- * Build the replacement body for the truncation function (FvI).
- * Uses @babel/template for readable AST construction with placeholder interpolation.
- */
 function buildTruncationBody(
 	paramName: string,
 	isImageFn: string,
@@ -192,73 +170,57 @@ function buildTruncationBody(
 	});
 }
 
+// --- Mutator ---
+
 function createBashOutputTailMutator(): traverse.Visitor {
-	let schemaPatched = false;
-	let resultPatched = false;
 	let persistencePatched = false;
-	let destructuringPatched = false;
 	let truncationPatched = false;
-	let globalSetterPatched = false;
 	let previewPatched = false;
 
 	return {
-		// Step 1: Add output_tail and max_output to Bash schema
-		// Find: dangerouslyDisableSandbox property in Zod schema, insert after it
+		// 1. Add output_tail and max_output to Bash schema
 		ObjectProperty(path) {
-			if (getObjectKeyName(path.node.key) !== "dangerouslyDisableSandbox") {
+			if (getObjectKeyName(path.node.key) !== "dangerouslyDisableSandbox")
 				return;
-			}
-
-			// Verify this is a Zod schema (has .boolean().optional().describe() chain)
 			if (!t.isCallExpression(path.node.value)) return;
 			const callee = path.node.value.callee;
 			if (!t.isMemberExpression(callee)) return;
 			if (!isMemberPropertyName(callee, "describe")) return;
 
-			// Check if already patched
 			const parent = path.parent;
 			if (!t.isObjectExpression(parent)) return;
-			const hasOutputTail = parent.properties.some((p) =>
-				hasObjectKeyName(p, "output_tail"),
-			);
-			if (hasOutputTail) return;
-
-			// Find Zod variable — bail if unresolvable
-			const zodVar = findZodVariable(path);
-			if (!zodVar) {
-				console.warn("Bash output tail: Could not resolve Zod variable name");
+			if (parent.properties.some((p) => hasObjectKeyName(p, "output_tail")))
 				return;
-			}
 
-			// Find index of dangerouslyDisableSandbox
+			const zodVar = findZodVariable(path);
+			if (!zodVar) return;
+
 			const idx = parent.properties.indexOf(path.node);
 			if (idx < 0) return;
 
-			// Insert output_tail and max_output after dangerouslyDisableSandbox
-			const outputTailProp = buildZodProperty(
-				"output_tail",
-				"boolean",
-				"When output exceeds limit, keep the LAST N characters instead of first. Use for build/test output where errors appear at the end.",
-				zodVar,
+			parent.properties.splice(
+				idx + 1,
+				0,
+				buildZodProperty(
+					"output_tail",
+					"boolean",
+					"When output exceeds limit, keep the LAST N characters instead of first. Use for build/test output where errors appear at the end.",
+					zodVar,
+				),
+				buildZodProperty(
+					"max_output",
+					"number",
+					"Override max output characters for this command. Use higher values (500000+) for bat, git diff, or when you need full output. Default uses BASH_MAX_OUTPUT_LENGTH env var.",
+					zodVar,
+				),
 			);
-			const maxOutputProp = buildZodProperty(
-				"max_output",
-				"number",
-				"Override max output characters for this command. Use higher values (500000+) for bat, git diff, or when you need full output. Default uses BASH_MAX_OUTPUT_LENGTH env var.",
-				zodVar,
-			);
-
-			parent.properties.splice(idx + 1, 0, outputTailProp, maxOutputProp);
-			schemaPatched = true;
 		},
 
-		// Step 2: Add maxOutput/outputTail to Bash result + inject global setter in call()
-		// Find: return { data: { ..., dangerouslyDisableSandbox: "..." in A ? ... } }
+		// 2. Add maxOutput/outputTail to Bash result + 3. Inject global setter
 		ReturnStatement(path) {
 			const arg = path.node.argument;
 			if (!t.isObjectExpression(arg)) return;
 
-			// Find data property
 			const dataProp = arg.properties.find(
 				(p): p is t.ObjectProperty =>
 					t.isObjectProperty(p) && getObjectKeyName(p.key) === "data",
@@ -266,8 +228,6 @@ function createBashOutputTailMutator(): traverse.Visitor {
 			if (!dataProp || !t.isObjectExpression(dataProp.value)) return;
 
 			const dataObj = dataProp.value;
-
-			// Check for dangerouslyDisableSandbox and stdout (confirms this is Bash result)
 			const hasDangerous = dataObj.properties.some((p) =>
 				hasObjectKeyName(p, "dangerouslyDisableSandbox"),
 			);
@@ -275,14 +235,10 @@ function createBashOutputTailMutator(): traverse.Visitor {
 				hasObjectKeyName(p, "stdout"),
 			);
 			if (!hasDangerous || !hasStdout) return;
+			if (dataObj.properties.some((p) => hasObjectKeyName(p, "maxOutput")))
+				return;
 
-			// Check if already patched
-			const hasMaxOutput = dataObj.properties.some((p) =>
-				hasObjectKeyName(p, "maxOutput"),
-			);
-			if (hasMaxOutput) return;
-
-			// Find the input variable name from the conditional (usually "A")
+			// Find input variable from conditional pattern
 			const dangerousProp = dataObj.properties.find(
 				(p): p is t.ObjectProperty =>
 					t.isObjectProperty(p) &&
@@ -290,13 +246,11 @@ function createBashOutputTailMutator(): traverse.Visitor {
 			);
 			if (!dangerousProp || !t.isConditionalExpression(dangerousProp.value))
 				return;
-
 			const testExpr = dangerousProp.value.test;
 			if (!t.isBinaryExpression(testExpr, { operator: "in" })) return;
 			if (!t.isIdentifier(testExpr.right)) return;
 			const inputVar = testExpr.right.name;
 
-			// Add maxOutput and outputTail properties to result data
 			dataObj.properties.push(
 				t.objectProperty(
 					t.identifier("maxOutput"),
@@ -307,15 +261,12 @@ function createBashOutputTailMutator(): traverse.Visitor {
 					buildConditionalProperty("output_tail", inputVar),
 				),
 			);
-			resultPatched = true;
-
-			// --- Inject globalThis.__bashTailOpts setter at start of enclosing call method ---
+			// Inject global setter at start of enclosing call()
 			const funcPath = path.getFunctionParent();
 			if (!funcPath) return;
 			const funcBody = funcPath.node.body;
 			if (!t.isBlockStatement(funcBody)) return;
 
-			// Check if already patched
 			const firstStmt = funcBody.body[0];
 			if (
 				t.isExpressionStatement(firstStmt) &&
@@ -323,33 +274,28 @@ function createBashOutputTailMutator(): traverse.Visitor {
 				t.isMemberExpression(firstStmt.expression.left) &&
 				isMemberPropertyName(firstStmt.expression.left, "__bashTailOpts")
 			) {
-				globalSetterPatched = true;
 				return;
 			}
 
-			// The call method signature is: async call(H, $, A, L, I)
-			// H is the input object.
 			const callParam = funcPath.node.params[0];
 			if (!t.isIdentifier(callParam)) return;
-			const callInputVar = callParam.name;
 
 			const globalSetter = template.default.statement(`
-					globalThis.__bashTailOpts = {
-						outputTail: "output_tail" in INPUT ? INPUT.output_tail : void 0,
-						maxOutput: "max_output" in INPUT ? INPUT.max_output : void 0,
-					};
-				`)({ INPUT: t.identifier(callInputVar) });
+				globalThis.__bashTailOpts = {
+					outputTail: "output_tail" in INPUT ? INPUT.output_tail : void 0,
+					maxOutput: "max_output" in INPUT ? INPUT.max_output : void 0,
+				};
+			`)({ INPUT: t.identifier(callParam.name) });
 
 			funcBody.body.unshift(globalSetter);
-			globalSetterPatched = true;
 		},
 
-		// Step 3: Patch persistence function + Step 5: Patch truncation function
-		// Both target FunctionDeclaration nodes, combined into one visitor.
+		// 4. Persistence threshold override + 5. Truncation function replacement
 		Function(path) {
 			if (!t.isBlockStatement(path.node.body)) return;
 			const bodyBlock = path.node.body;
-			// --- Step 3: Persistence function (maxOutput override for threshold) ---
+
+			// 4. Persistence: async 3-param function with mapToolResultToToolResultBlockParam call
 			if (
 				!persistencePatched &&
 				path.node.async &&
@@ -360,75 +306,66 @@ function createBashOutputTailMutator(): traverse.Visitor {
 					const firstStmt = body[0];
 					if (
 						t.isVariableDeclaration(firstStmt) &&
-						firstStmt.declarations.length === 1
+						firstStmt.declarations.length === 1 &&
+						t.isCallExpression(firstStmt.declarations[0].init) &&
+						t.isMemberExpression(firstStmt.declarations[0].init.callee) &&
+						isMemberPropertyName(
+							firstStmt.declarations[0].init.callee,
+							"mapToolResultToToolResultBlockParam",
+						)
 					) {
-						const decl = firstStmt.declarations[0];
+						const secondStmt = body[1];
 						if (
-							t.isCallExpression(decl.init) &&
-							t.isMemberExpression(decl.init.callee) &&
-							isMemberPropertyName(
-								decl.init.callee,
-								"mapToolResultToToolResultBlockParam",
-							)
+							t.isReturnStatement(secondStmt) &&
+							t.isCallExpression(secondStmt.argument) &&
+							secondStmt.argument.arguments.length === 3
 						) {
-							const secondStmt = body[1];
-							if (
-								t.isReturnStatement(secondStmt) &&
-								t.isCallExpression(secondStmt.argument) &&
-								secondStmt.argument.arguments.length === 3
-							) {
-								const returnCall = secondStmt.argument;
-								// Skip if already patched
-								if (!t.isConditionalExpression(returnCall.arguments[2])) {
-									const thresholdArg = returnCall.arguments[2];
-									if (t.isExpression(thresholdArg)) {
-										const hasRef = (() => {
-											if (
-												t.isMemberExpression(thresholdArg) &&
-												isMemberPropertyName(thresholdArg, "maxResultSizeChars")
-											)
-												return true;
-											if (t.isCallExpression(thresholdArg)) {
-												return thresholdArg.arguments.some(
-													(arg) =>
-														t.isMemberExpression(arg) &&
-														isMemberPropertyName(arg, "maxResultSizeChars"),
-												);
-											}
-											return false;
-										})();
-										if (hasRef) {
-											const resultVar = path.node.params[1];
-											if (t.isIdentifier(resultVar)) {
-												const rv = resultVar.name;
-												returnCall.arguments[2] = t.conditionalExpression(
-													t.binaryExpression(
-														">",
-														t.optionalMemberExpression(
-															t.memberExpression(
-																t.identifier(rv),
-																t.identifier("data"),
-															),
-															t.identifier("maxOutput"),
-															false,
-															true,
-														),
-														t.numericLiteral(0),
-													),
-													t.memberExpression(
+							const returnCall = secondStmt.argument;
+							if (!t.isConditionalExpression(returnCall.arguments[2])) {
+								const thresholdArg = returnCall.arguments[2];
+								if (t.isExpression(thresholdArg)) {
+									const hasRef = (() => {
+										if (
+											t.isMemberExpression(thresholdArg) &&
+											isMemberPropertyName(thresholdArg, "maxResultSizeChars")
+										)
+											return true;
+										if (t.isCallExpression(thresholdArg)) {
+											return thresholdArg.arguments.some(
+												(arg) =>
+													t.isMemberExpression(arg) &&
+													isMemberPropertyName(arg, "maxResultSizeChars"),
+											);
+										}
+										return false;
+									})();
+									if (hasRef) {
+										const resultVar = path.node.params[1];
+										if (t.isIdentifier(resultVar)) {
+											returnCall.arguments[2] = t.conditionalExpression(
+												t.binaryExpression(
+													">",
+													t.optionalMemberExpression(
 														t.memberExpression(
-															t.identifier(rv),
+															t.identifier(resultVar.name),
 															t.identifier("data"),
 														),
 														t.identifier("maxOutput"),
+														false,
+														true,
 													),
-													t.cloneNode(thresholdArg),
-												);
-												persistencePatched = true;
-												console.log(
-													"Patched persistence function to use maxOutput",
-												);
-											}
+													t.numericLiteral(0),
+												),
+												t.memberExpression(
+													t.memberExpression(
+														t.identifier(resultVar.name),
+														t.identifier("data"),
+													),
+													t.identifier("maxOutput"),
+												),
+												t.cloneNode(thresholdArg),
+											);
+											persistencePatched = true;
 										}
 									}
 								}
@@ -438,7 +375,7 @@ function createBashOutputTailMutator(): traverse.Visitor {
 				}
 			}
 
-			// --- Step 5: Truncation function (FvI) body replacement ---
+			// 5. Truncation function body replacement
 			if (truncationPatched) return;
 			const node = path.node;
 			if (node.params.length !== 1) return;
@@ -449,20 +386,12 @@ function createBashOutputTailMutator(): traverse.Visitor {
 			if (body.length < 4) return;
 
 			const paramName = node.params[0].name;
-
-			// Structural anchors:
-			// 1. Has a 0-arg call (threshold getter like XXH())
 			const thresholdFn = findThresholdCallName(body);
 			if (!thresholdFn) return;
-
-			// 2. Has a return with truncatedContent property
 			if (!hasReturnWithTruncatedContent(body)) return;
-
-			// 3. Has isImage call as first meaningful statement
 			const isImageFn = findIsImageCallName(body, paramName);
 			if (!isImageFn) return;
 
-			// 4. Confirm "lines truncated" template literal
 			let hasLinesTruncated = false;
 			path.traverse({
 				TemplateElement(tePath: any) {
@@ -474,16 +403,11 @@ function createBashOutputTailMutator(): traverse.Visitor {
 			});
 			if (!hasLinesTruncated) return;
 
-			// All checks pass — replace the body
 			bodyBlock.body = buildTruncationBody(paramName, isImageFn, thresholdFn);
 			truncationPatched = true;
-			console.log(
-				`Patched truncation function (isImage=${isImageFn}, threshold=${thresholdFn})`,
-			);
 		},
 
-		// Step 4: Add outputTail to Bash mapToolResultToToolResultBlockParam destructuring
-		//         + fix persistence preview for tail mode
+		// 6. Destructuring + 7. Preview fix
 		ObjectMethod(path) {
 			if (
 				getObjectKeyName(path.node.key) !==
@@ -491,36 +415,21 @@ function createBashOutputTailMutator(): traverse.Visitor {
 			)
 				return;
 
-			// Get the first param (destructured object)
 			const firstParam = path.node.params[0];
 			if (!t.isObjectPattern(firstParam)) return;
-
-			// Verify this is Bash by checking for stdout in destructuring
-			const hasStdout = firstParam.properties.some((p) =>
-				hasObjectKeyName(p, "stdout"),
-			);
-			if (!hasStdout) return;
-
-			// Check if already patched
+			if (!firstParam.properties.some((p) => hasObjectKeyName(p, "stdout")))
+				return;
 			if (objectPatternHasKey(firstParam, "outputTail")) return;
 
-			// Add outputTail to destructuring
 			firstParam.properties.push(
 				t.objectProperty(
 					t.identifier("outputTail"),
 					t.identifier("outputTail"),
 					false,
-					true, // shorthand
+					true,
 				),
 			);
-			destructuringPatched = true;
-
-			// --- Fix persistence preview for tail mode ---
-			// Find the Y6A call inside this method body (persistence preview).
-			// Pattern: let X = Y6A(G, j7$);
-			// Replace with: let X = outputTail
-			//   ? { preview: G.slice(-j7$), hasMore: G.length > j7$ }
-			//   : Y6A(G, j7$);
+			// Fix persistence preview for tail mode
 			path.traverse({
 				VariableDeclarator(declPath: any) {
 					if (previewPatched) return;
@@ -531,14 +440,11 @@ function createBashOutputTailMutator(): traverse.Visitor {
 					if (!t.isIdentifier(init.callee)) return;
 					if (init.arguments.length !== 2) return;
 
-					// Both args must be identifiers
 					const stdoutArg = init.arguments[0];
 					const thresholdArg = init.arguments[1];
-					if (!t.isIdentifier(stdoutArg)) return;
-					if (!t.isIdentifier(thresholdArg)) return;
+					if (!t.isIdentifier(stdoutArg) || !t.isIdentifier(thresholdArg))
+						return;
 
-					const stdoutVar = stdoutArg.name;
-					const thresholdVar = thresholdArg.name;
 					const binding = declPath.scope.getBinding(declaredId.name);
 					if (!binding) return;
 					let usedAsPreview = false;
@@ -553,7 +459,6 @@ function createBashOutputTailMutator(): traverse.Visitor {
 					}
 					if (!usedAsPreview || !usedAsHasMore) return;
 
-					// Replace with conditional: outputTail ? tail-preview : original
 					declPath.node.init = t.conditionalExpression(
 						t.identifier("outputTail"),
 						t.objectExpression([
@@ -561,10 +466,10 @@ function createBashOutputTailMutator(): traverse.Visitor {
 								t.identifier("preview"),
 								t.callExpression(
 									t.memberExpression(
-										t.identifier(stdoutVar),
+										t.identifier(stdoutArg.name),
 										t.identifier("slice"),
 									),
-									[t.unaryExpression("-", t.identifier(thresholdVar))],
+									[t.unaryExpression("-", t.identifier(thresholdArg.name))],
 								),
 							),
 							t.objectProperty(
@@ -572,100 +477,85 @@ function createBashOutputTailMutator(): traverse.Visitor {
 								t.binaryExpression(
 									">",
 									t.memberExpression(
-										t.identifier(stdoutVar),
+										t.identifier(stdoutArg.name),
 										t.identifier("length"),
 									),
-									t.identifier(thresholdVar),
+									t.identifier(thresholdArg.name),
 								),
 							),
 						]),
 						t.cloneNode(init),
 					);
-
 					previewPatched = true;
 					declPath.stop();
 				},
 			});
 		},
-
-		Program: {
-			exit() {
-				if (schemaPatched)
-					console.log("Added output_tail/max_output to Bash schema");
-				if (resultPatched)
-					console.log("Added maxOutput/outputTail to Bash result");
-				if (persistencePatched) console.log("Patched persistence threshold");
-				if (destructuringPatched)
-					console.log("Added outputTail to destructuring");
-				if (truncationPatched) console.log("Patched truncation function body");
-				if (globalSetterPatched)
-					console.log("Injected global setter in call method");
-				if (previewPatched)
-					console.log("Patched persistence preview for tail mode");
-			},
-		},
 	};
 }
+
+// --- Patch ---
 
 export const bashOutputTail: Patch = {
 	tag: "bash-tail",
 
-	astPasses: () => [{ pass: "mutate", visitor: createBashOutputTailMutator() }],
-
-	// String patch for prompt update — add disk persistence and output_tail guidance
 	string: (code) => {
-		// Old pattern (pre-2.1.55): truncation text in template literal
-		const oldPattern =
-			/(If the output exceeds \$\{\w+\(\)\} characters, output will be truncated before being returned to you\.)/;
-		if (oldPattern.test(code)) {
-			const safeText = PROMPT_ADDITION.replace(/`/g, "\\`");
-			return code.replace(oldPattern, `$1\n${safeText}`);
-		}
-
-		// New pattern (2.1.55+): array-based instructions, insert before "Write a clear"
-		const newAnchor =
+		// Insert disk persistence / output_tail guidance into the Bash prompt.
+		// 2.1.86+ builds the prompt as an array of strings (one per bullet).
+		// Inject new items before "When issuing multiple commands:".
+		// Pre-2.1.86 used a single string with "Write a clear..." anchor.
+		const arrayAnchor = '"When issuing multiple commands:"';
+		const legacyAnchor =
 			'"Write a clear, concise description of what your command does.';
 		if (
 			code.includes("Executes a given bash command") &&
-			code.includes(newAnchor)
+			code.includes(arrayAnchor) &&
+			!code.includes(legacyAnchor)
 		) {
+			// 2.1.86+ array-builder format: inject as separate array elements
+			const items = PROMPT_ADDITION.split("\n")
+				.map((line) => line.replace(/^\s+-\s*/, "").trim())
+				.filter((line) => line.length > 0);
+			const escaped = items
+				.map((item) => {
+					const jsStr = item.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+					return `"${jsStr}"`;
+				})
+				.join(",\n      ");
+			return code.replace(arrayAnchor, `${escaped},\n      ${arrayAnchor}`);
+		}
+		if (
+			code.includes("Executes a given bash command") &&
+			code.includes(legacyAnchor)
+		) {
+			// Pre-2.1.86 single-string format
 			const jsStr = PROMPT_ADDITION.replace(/\\/g, "\\\\")
 				.replace(/"/g, '\\"')
 				.replace(/\n/g, "\\n");
-			return code.replace(newAnchor, `"${jsStr}",\n      ${newAnchor}`);
+			return code.replace(legacyAnchor, `"${jsStr}",\n      ${legacyAnchor}`);
 		}
-
 		return code;
 	},
+
+	astPasses: () => [{ pass: "mutate", visitor: createBashOutputTailMutator() }],
 
 	verify: (code, ast) => {
 		const verifyAst = getVerifyAst(code, ast);
 		if (!verifyAst) return "Unable to parse AST for bash-tail verification";
 
-		// --- AST-based structural checks ---
-
-		// 1. Verify Bash input schema has output_tail and max_output properties.
-		// Do not rely on `name: "Bash"` because that also matches unrelated
-		// syntax-highlighter language objects.
-		let foundBashInputSchema = false;
+		let foundBashSchema = false;
 		let schemaHasOutputTail = false;
 		let schemaHasMaxOutput = false;
-		// 2. Verify Bash result data object has maxOutput and outputTail fields
 		let resultHasMaxOutput = false;
 		let resultHasOutputTail = false;
-		// 3. Verify __bashTailOpts global bridge exists (setter assignment)
 		let hasGlobalSetter = false;
-		// 4. Verify truncation body has __bashTailOpts consumption and tail-slice logic
 		let hasTruncationBridge = false;
 		let hasTailSlice = false;
-		// 5. Verify outputTail in mapToolResultToToolResultBlockParam destructuring
 		let hasDestructuringOutputTail = false;
-		// 6. Verify persistence threshold uses maxOutput conditional
 		let hasPersistenceMaxOutput = false;
 
 		traverse.default(verifyAst, {
-			// Check 1: Bash input schema object.
-			// Anchor on schema-shape keys: command + dangerouslyDisableSandbox.
+			// Schema check
 			ObjectExpression(path) {
 				const keyNames = new Set<string>();
 				for (const prop of path.node.properties) {
@@ -677,16 +567,14 @@ export const bashOutputTail: Patch = {
 					!keyNames.has("command") ||
 					!keyNames.has("run_in_background") ||
 					!keyNames.has("dangerouslyDisableSandbox")
-				) {
+				)
 					return;
-				}
-				foundBashInputSchema = true;
+				foundBashSchema = true;
 				if (keyNames.has("output_tail")) schemaHasOutputTail = true;
 				if (keyNames.has("max_output")) schemaHasMaxOutput = true;
 			},
 
-			// Check 2: Bash result data -- return { data: { ..., stdout,
-			// dangerouslyDisableSandbox, maxOutput, outputTail } }
+			// Result data check
 			ReturnStatement(path) {
 				const arg = path.node.argument;
 				if (!t.isObjectExpression(arg)) return;
@@ -696,15 +584,11 @@ export const bashOutputTail: Patch = {
 				);
 				if (!dataProp || !t.isObjectExpression(dataProp.value)) return;
 				const dataObj = dataProp.value;
-				const hasStdout = dataObj.properties.some(
-					(p) =>
-						(t.isObjectProperty(p) || t.isObjectMethod(p)) &&
-						getObjectKeyName(p.key) === "stdout",
+				const hasStdout = dataObj.properties.some((p) =>
+					hasObjectKeyName(p, "stdout"),
 				);
-				const hasDangerous = dataObj.properties.some(
-					(p) =>
-						(t.isObjectProperty(p) || t.isObjectMethod(p)) &&
-						getObjectKeyName(p.key) === "dangerouslyDisableSandbox",
+				const hasDangerous = dataObj.properties.some((p) =>
+					hasObjectKeyName(p, "dangerouslyDisableSandbox"),
 				);
 				if (!hasStdout || !hasDangerous) return;
 				for (const prop of dataObj.properties) {
@@ -715,31 +599,25 @@ export const bashOutputTail: Patch = {
 				}
 			},
 
-			// Check 3: globalThis.__bashTailOpts = { ... } assignment
+			// Global setter check
 			AssignmentExpression(path) {
 				const left = path.node.left;
 				if (!t.isMemberExpression(left)) return;
 				if (
 					t.isIdentifier(left.object, { name: "globalThis" }) &&
-					isMemberPropertyName(left, "__bashTailOpts")
+					isMemberPropertyName(left, "__bashTailOpts") &&
+					t.isObjectExpression(path.node.right)
 				) {
-					// Verify right-hand side is an object (the setter, not the null clear)
-					if (t.isObjectExpression(path.node.right)) {
-						hasGlobalSetter = true;
-					}
+					hasGlobalSetter = true;
 				}
 			},
 
-			// Check 4: Truncation body -- look for __bashTailOpts consumption
-			// and slice(- tail logic. The patched truncation function reads
-			// globalThis.__bashTailOpts and uses .slice(-_limit)
+			// Truncation bridge consumer check
 			MemberExpression(path) {
 				if (
 					t.isIdentifier(path.node.object, { name: "globalThis" }) &&
 					isMemberPropertyName(path.node, "__bashTailOpts")
 				) {
-					// Distinguish from the setter: the setter is an AssignmentExpression LHS,
-					// the consumer is a VariableDeclarator init or standalone read
 					const parent = path.parentPath;
 					if (
 						parent &&
@@ -750,22 +628,20 @@ export const bashOutputTail: Patch = {
 				}
 			},
 
-			// Check 4b: tail-slice -- find .slice(- pattern (unary minus in slice call)
+			// Tail slice check
 			CallExpression(path) {
 				const callee = path.node.callee;
 				if (
 					t.isMemberExpression(callee) &&
 					isMemberPropertyName(callee, "slice") &&
-					path.node.arguments.length === 1
+					path.node.arguments.length === 1 &&
+					t.isUnaryExpression(path.node.arguments[0], { operator: "-" })
 				) {
-					const arg = path.node.arguments[0];
-					if (t.isUnaryExpression(arg, { operator: "-" })) {
-						hasTailSlice = true;
-					}
+					hasTailSlice = true;
 				}
 			},
 
-			// Check 5: outputTail in mapToolResultToToolResultBlockParam destructuring
+			// Destructuring check
 			ObjectMethod(path) {
 				if (
 					getObjectKeyName(path.node.key) !==
@@ -774,26 +650,17 @@ export const bashOutputTail: Patch = {
 					return;
 				const firstParam = path.node.params[0];
 				if (!t.isObjectPattern(firstParam)) return;
-				// Verify this is the Bash tool's method by checking for stdout
-				const hasStdout = firstParam.properties.some(
-					(p) =>
-						t.isObjectProperty(p) &&
-						(t.isIdentifier(p.key, { name: "stdout" }) ||
-							t.isStringLiteral(p.key, { value: "stdout" })),
-				);
-				if (!hasStdout) return;
-				if (objectPatternHasKey(firstParam, "outputTail")) {
+				if (!firstParam.properties.some((p) => hasObjectKeyName(p, "stdout")))
+					return;
+				if (objectPatternHasKey(firstParam, "outputTail"))
 					hasDestructuringOutputTail = true;
-				}
 			},
 
-			// Check 6: Persistence threshold -- conditional using data?.maxOutput
-			// Pattern: result.data?.maxOutput > 0 ? result.data.maxOutput : <original>
+			// Persistence maxOutput conditional check
 			ConditionalExpression(path) {
 				const test = path.node.test;
 				if (!t.isBinaryExpression(test, { operator: ">" })) return;
 				const left = test.left;
-				// Match data?.maxOutput (optional member) or data.maxOutput
 				if (
 					(t.isOptionalMemberExpression(left) &&
 						isMemberPropertyName(left, "maxOutput")) ||
@@ -805,48 +672,27 @@ export const bashOutputTail: Patch = {
 			},
 		});
 
-		// Report AST verification results
-		if (!foundBashInputSchema) {
-			return "Bash input schema object not found in AST";
-		}
-		if (!schemaHasOutputTail) {
-			return "Missing output_tail property in Bash tool schema";
-		}
-		if (!schemaHasMaxOutput) {
-			return "Missing max_output property in Bash tool schema";
-		}
-		if (!resultHasMaxOutput) {
-			return "Missing maxOutput field in Bash result data object";
-		}
-		if (!resultHasOutputTail) {
-			return "Missing outputTail field in Bash result data object";
-		}
-		if (!hasGlobalSetter) {
-			return "Missing globalThis.__bashTailOpts setter assignment";
-		}
-		if (!hasTruncationBridge) {
-			return "Missing __bashTailOpts consumption in truncation function";
-		}
-		if (!hasTailSlice) {
-			return "Missing tail slice(-) in truncation function";
-		}
-		if (!hasDestructuringOutputTail) {
-			return "Missing outputTail in mapToolResultToToolResultBlockParam destructuring";
-		}
-		if (!hasPersistenceMaxOutput) {
-			return "Missing maxOutput conditional in persistence threshold";
-		}
+		if (!foundBashSchema) return "Bash input schema not found";
+		if (!schemaHasOutputTail) return "Missing output_tail in Bash schema";
+		if (!schemaHasMaxOutput) return "Missing max_output in Bash schema";
+		if (!resultHasMaxOutput) return "Missing maxOutput in Bash result data";
+		if (!resultHasOutputTail) return "Missing outputTail in Bash result data";
+		if (!hasGlobalSetter) return "Missing __bashTailOpts setter";
+		if (!hasTruncationBridge) return "Missing __bashTailOpts consumer";
+		if (!hasTailSlice) return "Missing tail slice(-) in truncation";
+		if (!hasDestructuringOutputTail)
+			return "Missing outputTail in mapToolResult destructuring";
+		if (!hasPersistenceMaxOutput)
+			return "Missing maxOutput conditional in persistence";
 
-		// --- String-based checks for prompt content (appropriate per project policy) ---
-		if (!code.includes("Disk persistence")) {
-			return "Missing disk persistence explanation in prompt";
-		}
-		if (!code.includes("build commands") || !code.includes("test runners")) {
-			return "Missing proactive output_tail guidance in prompt";
-		}
-		if (!code.includes("preventing disk saves")) {
-			return "Missing max_output disk prevention guidance in prompt";
-		}
+		// Prompt checks
+		if (!code.includes("Disk persistence"))
+			return "Missing disk persistence guidance in prompt";
+		if (!code.includes("build commands") || !code.includes("test runners"))
+			return "Missing output_tail guidance in prompt";
+		if (!code.includes("preventing disk saves"))
+			return "Missing max_output guidance in prompt";
+
 		return true;
 	},
 };

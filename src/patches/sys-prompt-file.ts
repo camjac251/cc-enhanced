@@ -2,7 +2,7 @@ import template from "@babel/template";
 import traverse from "@babel/traverse";
 import * as t from "@babel/types";
 import type { Patch } from "../types.js";
-import { getObjectKeyName } from "./ast-helpers.js";
+import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
 function isMemberOnOptions(
 	node: t.Node,
@@ -26,7 +26,7 @@ function hasEnvOverrideStrings(node: t.Statement): boolean {
 		StringLiteral(path) {
 			if (
 				path.node.value === "CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE" ||
-				path.node.value === "~/.claude/system-prompt.md"
+				path.node.value === "/etc/claude-code/system-prompt.md"
 			) {
 				found = true;
 				path.stop();
@@ -185,6 +185,111 @@ function isProcessEnvOverrideAccess(node: t.Node): boolean {
 	);
 }
 
+function inspectAutoAppendGuard(path: traverse.NodePath<t.IfStatement>): {
+	hasEnvOverride: boolean;
+	hasDefaultPath: boolean;
+	hasAppendAssignment: boolean;
+	hasExistsSync: boolean;
+} | null {
+	if (!t.isLogicalExpression(path.node.test, { operator: "&&" })) return null;
+	const { left, right } = path.node.test;
+	if (!isUndefinedCheckForOptionProp(left, "appendSystemPromptFile"))
+		return null;
+	if (!isUndefinedCheckForOptionProp(right, "appendSystemPrompt")) return null;
+
+	let hasEnvOverride = false;
+	let hasDefaultPath = false;
+	let hasAppendAssignment = false;
+	let hasExistsSync = false;
+
+	path.traverse({
+		StringLiteral(innerPath) {
+			if (innerPath.node.value === "/etc/claude-code/system-prompt.md") {
+				hasDefaultPath = true;
+			}
+		},
+		MemberExpression(innerPath) {
+			if (!isProcessEnvOverrideAccess(innerPath.node)) return;
+			hasEnvOverride = true;
+		},
+		AssignmentExpression(innerPath) {
+			if (
+				!t.isMemberExpression(innerPath.node.left) ||
+				getObjectKeyName(
+					innerPath.node.left.property as t.Expression | t.Identifier,
+				) !== "appendSystemPromptFile" ||
+				!t.isIdentifier(innerPath.node.right)
+			) {
+				return;
+			}
+			hasAppendAssignment = true;
+		},
+		CallExpression(innerPath) {
+			const callee = innerPath.node.callee;
+			if (t.isIdentifier(callee) && callee.name.includes("existsSync")) {
+				hasExistsSync = true;
+				return;
+			}
+			if (
+				t.isMemberExpression(callee) &&
+				getObjectKeyName(callee.property as t.Expression | t.Identifier) ===
+					"existsSync"
+			) {
+				hasExistsSync = true;
+			}
+		},
+	});
+
+	return {
+		hasEnvOverride,
+		hasDefaultPath,
+		hasAppendAssignment,
+		hasExistsSync,
+	};
+}
+
+function findAutoAppendGuard(ast: t.File): {
+	hasEnvOverride: boolean;
+	hasDefaultPath: boolean;
+	hasAppendAssignment: boolean;
+	hasExistsSync: boolean;
+} | null {
+	let found: {
+		hasEnvOverride: boolean;
+		hasDefaultPath: boolean;
+		hasAppendAssignment: boolean;
+		hasExistsSync: boolean;
+	} | null = null;
+
+	traverse.default(ast, {
+		IfStatement(path) {
+			const inspected = inspectAutoAppendGuard(path);
+			if (!inspected) return;
+			found = inspected;
+			path.stop();
+		},
+	});
+
+	return found;
+}
+
+function isAppendSystemPromptFileBranch(
+	path: traverse.NodePath<t.IfStatement>,
+): path is traverse.NodePath<t.IfStatement> {
+	if (!t.isMemberExpression(path.node.test)) return false;
+	if (
+		getObjectKeyName(path.node.test.property as t.Expression | t.Identifier) !==
+		"appendSystemPromptFile"
+	) {
+		return false;
+	}
+	if (!t.isIdentifier(path.node.test.object)) return false;
+	return (
+		hasAppendPromptConflictCheck(path.node, path.node.test.object.name) &&
+		findPathHelpers(path.node, path.node.test.object.name) !== null
+	);
+}
+
 export const systemPromptFile: Patch = {
 	tag: "sys-prompt-file",
 
@@ -195,82 +300,25 @@ export const systemPromptFile: Patch = {
 		},
 	],
 
-	verify: (_code, ast) => {
-		if (!ast) return "Missing AST for sys-prompt-file verification";
+	verify: (code, ast) => {
+		const verifyAst = getVerifyAst(code, ast);
+		if (!verifyAst)
+			return "Unable to parse AST during sys-prompt-file verification";
 
-		let hasEnvOverride = false;
-		let hasDefaultPath = false;
-		let hasAutoAppendGuard = false;
-		let hasAppendAssignment = false;
-		let hasExistsSyncInGuard = false;
-
-		traverse.default(ast, {
-			StringLiteral(path) {
-				if (path.node.value === "~/.claude/system-prompt.md") {
-					hasDefaultPath = true;
-				}
-			},
-			IfStatement(path) {
-				if (!t.isLogicalExpression(path.node.test, { operator: "&&" })) return;
-				const { left, right } = path.node.test;
-				if (!isUndefinedCheckForOptionProp(left, "appendSystemPromptFile"))
-					return;
-				if (!isUndefinedCheckForOptionProp(right, "appendSystemPrompt")) return;
-
-				hasAutoAppendGuard = true;
-
-				// Check env override is co-located within the same auto-append guard
-				path.traverse({
-					MemberExpression(innerPath) {
-						if (!isProcessEnvOverrideAccess(innerPath.node)) return;
-						hasEnvOverride = true;
-					},
-					AssignmentExpression(innerPath) {
-						if (
-							!t.isMemberExpression(innerPath.node.left) ||
-							getObjectKeyName(
-								innerPath.node.left.property as t.Expression | t.Identifier,
-							) !== "appendSystemPromptFile" ||
-							!t.isIdentifier(innerPath.node.right)
-						) {
-							return;
-						}
-						hasAppendAssignment = true;
-					},
-					CallExpression(innerPath) {
-						const callee = innerPath.node.callee;
-						// existsSync as identifier (extracted binding)
-						if (t.isIdentifier(callee) && callee.name.includes("existsSync")) {
-							hasExistsSyncInGuard = true;
-							return;
-						}
-						// existsSync as member expression (e.g. fs.existsSync)
-						if (
-							t.isMemberExpression(callee) &&
-							getObjectKeyName(
-								callee.property as t.Expression | t.Identifier,
-							) === "existsSync"
-						) {
-							hasExistsSyncInGuard = true;
-						}
-					},
-				});
-			},
-		});
-
-		if (!hasEnvOverride) {
-			return "Missing CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE override";
-		}
-		if (!hasDefaultPath) {
-			return "Missing default ~/.claude/system-prompt.md path";
-		}
-		if (!hasAutoAppendGuard) {
+		const autoAppendGuard = findAutoAppendGuard(verifyAst);
+		if (!autoAppendGuard) {
 			return "Missing auto-append guard for appendSystemPromptFile/appendSystemPrompt";
 		}
-		if (!hasAppendAssignment) {
+		if (!autoAppendGuard.hasEnvOverride) {
+			return "Missing CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE override";
+		}
+		if (!autoAppendGuard.hasDefaultPath) {
+			return "Missing default /etc/claude-code/system-prompt.md path";
+		}
+		if (!autoAppendGuard.hasAppendAssignment) {
 			return "Missing appendSystemPromptFile assignment in auto-append flow";
 		}
-		if (!hasExistsSyncInGuard) {
+		if (!autoAppendGuard.hasExistsSync) {
 			return "Missing existsSync call within auto-append guard body";
 		}
 
@@ -284,13 +332,8 @@ function createSystemPromptFileMutator(): traverse.Visitor {
 		IfStatement(path) {
 			if (patched) return;
 
+			if (!isAppendSystemPromptFileBranch(path)) return;
 			if (!t.isMemberExpression(path.node.test)) return;
-			if (
-				getObjectKeyName(
-					path.node.test.property as t.Expression | t.Identifier,
-				) !== "appendSystemPromptFile"
-			)
-				return;
 			if (!t.isIdentifier(path.node.test.object)) return;
 
 			const optionsName = path.node.test.object.name;
@@ -315,7 +358,7 @@ function createSystemPromptFileMutator(): traverse.Visitor {
 			const [autoAppendIf] = template.default.statements(
 				`
 				if (OPTIONS.appendSystemPromptFile === void 0 && OPTIONS.appendSystemPrompt === void 0) {
-					let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "~/.claude/system-prompt.md";
+					let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";
 					try {
 						let resolvedSystemPromptFile = RESOLVE(configuredSystemPromptFilePath);
 						if (EXISTS(resolvedSystemPromptFile)) {

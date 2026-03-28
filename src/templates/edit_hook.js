@@ -105,8 +105,6 @@ function _claudeFuzzyMatch(content, search) {
 
 // --- Core Edit Logic ---
 
-const _claudeExtendedLinePositions = ["before", "after"];
-
 function _claudeEditUnwrapQuotedScalar(A) {
 	if (typeof A !== "string") return A;
 	let B = A.trim();
@@ -124,42 +122,8 @@ function _claudeEditUnwrapQuotedScalar(A) {
 
 function _claudeEditHasExtendedFields(A) {
 	if (!A) return false;
-	const hasOwn = (k) => Object.hasOwn(A, k);
-
-	// Edits array always triggers extended mode
-	if (Array.isArray(A.edits) && A.edits.length > 0) return true;
-
-	// Presence of any structured key triggers extended mode
-	if (
-		hasOwn("line_number") ||
-		hasOwn("start_line") ||
-		hasOwn("end_line") ||
-		hasOwn("diff") ||
-		hasOwn("pattern") ||
-		hasOwn("lineNumber") ||
-		hasOwn("startLine") ||
-		hasOwn("endLine")
-	)
-		return true;
-
-	// Fallback to value checks
-	return (
-		_claudeEditSanitizeLine(A.line_number ?? A.lineNumber) !== null ||
-		_claudeEditSanitizeLine(A.start_line ?? A.startLine) !== null ||
-		_claudeEditSanitizeLine(A.end_line ?? A.endLine) !== null ||
-		(typeof A.diff === "string" && A.diff.trim().length > 0) ||
-		(typeof A.pattern === "string" && A.pattern.length > 0)
-	);
-}
-
-function _claudeEditSanitizeLine(A) {
-	if (A === void 0 || A === null || A === "") return null;
-	const B = _claudeEditUnwrapQuotedScalar(A);
-	const C = typeof B === "string" ? Number(B) : B;
-	if (!Number.isFinite(C)) return null;
-	if (!Number.isInteger(C)) return null;
-	if (C < 1) return null;
-	return C;
+	// Batch edits array triggers extended mode
+	return Array.isArray(A.edits) && A.edits.length > 0;
 }
 
 function _claudeEditParseBoolean(A, fallback = false) {
@@ -175,94 +139,20 @@ function _claudeEditParseBoolean(A, fallback = false) {
 	return !!A;
 }
 
-function _claudeParseDiffHunks(diffText) {
-	const chunks = diffText
-		.split(/(^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@.*$)/gm)
-		.filter(Boolean);
-	const hunks = [];
-	let currentHeader = null;
-
-	for (const chunk of chunks) {
-		if (chunk.trim().startsWith("@@")) {
-			currentHeader = chunk.trim();
-			continue;
-		}
-		if (!currentHeader) continue;
-
-		const blockLines = chunk.split(/\r?\n/);
-		if (blockLines.length > 0 && blockLines[0] === "") blockLines.shift();
-		while (blockLines.length > 0 && blockLines[blockLines.length - 1] === "")
-			blockLines.pop();
-
-		const searchLines = [];
-		const replaceLines = [];
-
-		for (const line of blockLines) {
-			if (line.startsWith(" ")) {
-				searchLines.push(line.slice(1));
-				replaceLines.push(line.slice(1));
-			} else if (line.startsWith("-")) {
-				searchLines.push(line.slice(1));
-			} else if (line.startsWith("+")) {
-				replaceLines.push(line.slice(1));
-			} else if (line === "") {
-				searchLines.push("");
-				replaceLines.push("");
-			}
-		}
-
-		if (searchLines.length > 0 || replaceLines.length > 0) {
-			hunks.push({
-				searchText: searchLines.join("\n"),
-				replaceText: replaceLines.join("\n"),
-			});
-		}
-		currentHeader = null;
-	}
-
-	return hunks;
+function _claudeEditBatchError(message, errorCode) {
+	return {
+		error: {
+			result: false,
+			behavior: "ask",
+			message,
+			errorCode,
+		},
+	};
 }
 
 function _claudeEditNormalizeEdits(A) {
-	const B =
-		Array.isArray(A.edits) && A.edits.length > 0
-			? A.edits
-			: [
-					{
-						old_string: A.old_string ?? A.oldString,
-						new_string: A.new_string ?? A.newString,
-						replace_all: A.replace_all ?? A.replaceAll,
-						line_number: A.line_number ?? A.lineNumber,
-						line_position: A.line_position ?? A.linePosition,
-						start_line: A.start_line ?? A.startLine,
-						end_line: A.end_line ?? A.endLine,
-						diff: A.diff,
-						pattern: A.pattern,
-					},
-				];
-	if (!B || B.length === 0) {
-		return {
-			error: {
-				result: false,
-				behavior: "ask",
-				message: "At least one edit must be specified.",
-				errorCode: 13,
-			},
-		};
-	}
-
-	const Q = [];
-
 	const normalizeEntry = (obj) => {
 		if (!obj || typeof obj !== "object") return obj;
-		if (obj.lineNumber !== undefined && obj.line_number === undefined)
-			obj.line_number = obj.lineNumber;
-		if (obj.startLine !== undefined && obj.start_line === undefined)
-			obj.start_line = obj.startLine;
-		if (obj.endLine !== undefined && obj.end_line === undefined)
-			obj.end_line = obj.endLine;
-		if (obj.linePosition !== undefined && obj.line_position === undefined)
-			obj.line_position = obj.linePosition;
 		if (obj.replaceAll !== undefined && obj.replace_all === undefined)
 			obj.replace_all = obj.replaceAll;
 		if (obj.oldString !== undefined && obj.old_string === undefined)
@@ -274,267 +164,60 @@ function _claudeEditNormalizeEdits(A) {
 
 	A = normalizeEntry(A);
 
+	const B =
+		Array.isArray(A.edits) && A.edits.length > 0
+			? A.edits
+			: [
+					{
+						old_string: A.old_string,
+						new_string: A.new_string,
+						replace_all: A.replace_all,
+					},
+				];
+
+	if (!B || B.length === 0) {
+		return _claudeEditBatchError("At least one edit must be specified.", 13);
+	}
+
+	const Q = [];
+
 	for (let I of B) {
 		I = normalizeEntry(I);
 
-		let J = _claudeEditSanitizeLine(I.line_number);
-		let X = _claudeEditSanitizeLine(I.start_line);
-		let W = _claudeEditSanitizeLine(I.end_line);
-		const hasDiffMode = typeof I.diff === "string" && I.diff.trim().length > 0;
-		const hasRegexMode =
-			typeof I.pattern === "string" && String(I.pattern).length > 0;
-		const hasDiffKey = I.diff !== undefined;
-		const hasPatternKey = I.pattern !== undefined;
-		const hasLineKey = I.line_number !== undefined;
-		const hasStartKey = I.start_line !== undefined;
-		const hasEndKey = I.end_line !== undefined;
-		const hasRangeKey = hasStartKey || hasEndKey;
-		const hasExplicitModeKey =
-			hasDiffKey || hasPatternKey || hasLineKey || hasRangeKey;
-		const hasOldStringKey = I.old_string !== undefined;
-		const hasRangeMode = X !== null || W !== null;
-		const hasLineMode = J !== null;
-		const explicitModeCount =
-			(hasDiffMode ? 1 : 0) +
-			(hasRegexMode ? 1 : 0) +
-			(hasRangeMode ? 1 : 0) +
-			(hasLineMode ? 1 : 0);
-
-		if (hasPatternKey && !hasRegexMode) {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message: "Invalid regex mode: pattern must be a non-empty string.",
-					errorCode: 20,
-				},
-			};
-		}
-
-		if (hasDiffKey && !hasDiffMode) {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message: "Invalid diff mode: diff must be a non-empty string.",
-					errorCode: 21,
-				},
-			};
-		}
-
-		if (hasLineKey && !hasLineMode) {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message: "Invalid line mode: line_number must be a positive integer.",
-					errorCode: 22,
-				},
-			};
-		}
-
-		if (hasStartKey && X === null) {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message:
-						"Invalid range mode: start_line/end_line must be positive integers.",
-					errorCode: 23,
-				},
-			};
-		}
-
-		if (hasEndKey && W === null) {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message:
-						"Invalid range mode: start_line/end_line must be positive integers.",
-					errorCode: 23,
-				},
-			};
-		}
-
-		if (!hasStartKey && hasEndKey) {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message:
-						"Invalid range mode: start_line is required when end_line is provided.",
-					errorCode: 24,
-				},
-			};
-		}
-
-		if (hasRangeKey && !hasRangeMode) {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message:
-						"Invalid range mode: start_line/end_line must be positive integers.",
-					errorCode: 23,
-				},
-			};
-		}
-
-		if (explicitModeCount > 1) {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message:
-						"Each edit must specify exactly one explicit mode: diff, regex (pattern), line_number, or range (start_line/end_line).",
-					errorCode: 18,
-				},
-			};
-		}
-		if (hasOldStringKey && hasExplicitModeKey) {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message:
-						"Invalid edit: old_string cannot be combined with explicit modes (diff, pattern, line_number, start_line/end_line).",
-					errorCode: 28,
-				},
-			};
-		}
-
-		// Diff Mode - convert hunks to string replaces
-		if (hasDiffMode) {
-			const hunks = _claudeParseDiffHunks(I.diff);
-			if (hunks.length === 0) {
-				return {
-					error: {
-						result: false,
-						behavior: "ask",
-						message:
-							"Invalid diff format. Expected @@ -old +new @@ header with context/change lines.",
-						errorCode: 15,
-					},
-				};
-			}
-			for (const hunk of hunks) {
-				if (hunk.searchText === "") {
-					return {
-						error: {
-							result: false,
-							behavior: "ask",
-							message:
-								"Unsupported diff hunk: pure insertion hunks must include at least one context or removal line.",
-							errorCode: 16,
-						},
-					};
-				}
-				Q.push({
-					mode: "string",
-					oldString: hunk.searchText,
-					newString: hunk.replaceText,
-					replaceAll: false,
-				});
-			}
-			continue;
-		}
-
-		// Regex Mode
-		if (hasRegexMode) {
-			const newStr = typeof I.new_string === "string" ? I.new_string : "";
-			Q.push({
-				mode: "regex",
-				pattern: I.pattern,
-				newString: newStr,
-				replaceAll: _claudeEditParseBoolean(I.replace_all, false),
-			});
-			continue;
-		}
-
-		const rawNewString =
-			typeof I.new_string === "string" ? I.new_string : (I.new_string ?? "");
 		const hasOldStringInput =
 			I.old_string !== undefined && I.old_string !== null;
 		const hasNewStringInput =
 			I.new_string !== undefined && I.new_string !== null;
 		const Z = typeof I.old_string === "string" ? I.old_string : "";
+		const rawNewString =
+			typeof I.new_string === "string" ? I.new_string : (I.new_string ?? "");
 		const Y = _claudeEditParseBoolean(I.replace_all, false);
-		const posCandidate =
-			typeof I.line_position === "string"
-				? String(_claudeEditUnwrapQuotedScalar(I.line_position)).toLowerCase()
-				: "before";
-		const pos = _claudeExtendedLinePositions.includes(posCandidate)
-			? posCandidate
-			: "before";
-		let F = "string";
 
-		if (X !== null || W !== null) {
-			if (X === null) X = W;
-			if (X === null) {
-				return {
-					error: {
-						result: false,
-						behavior: "ask",
-						message: "start_line is required when specifying a range.",
-						errorCode: 12,
-					},
-				};
-			}
-			if (W === null) W = X;
-			if (W < X) W = X;
-			F = "range";
-		} else if (J !== null) {
-			F = "line";
-		} else if (!hasOldStringInput && !hasNewStringInput) {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message:
-						"Invalid edit: provide either explicit mode fields (diff/pattern/line_number/start_line) or string mode fields (old_string/new_string).",
-					errorCode: 25,
-				},
-			};
-		} else if (Z === "" && rawNewString === "") {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message:
-						"Invalid edit: old_string and new_string cannot both be empty. Use range/line mode for positional edits.",
-					errorCode: 26,
-				},
-			};
-		} else if (Z === "" && !Y) {
-			// No location, no old_string - treat as append
-			F = "line";
-			J = Number.MAX_SAFE_INTEGER;
+		if (!hasOldStringInput && !hasNewStringInput) {
+			return _claudeEditBatchError(
+				"Invalid edit: provide old_string and new_string.",
+				25,
+			);
 		}
-
-		const normalizedNewString = String(rawNewString).replace(/\r\n/g, "\n");
-
-		if (F === "string" && Z === "" && Y) {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message:
-						"Invalid edit: old_string cannot be empty when replace_all is true. Use range mode, line insertion, or set replace_all to false.",
-					errorCode: 19,
-				},
-			};
+		if (Z === "" && rawNewString === "") {
+			return _claudeEditBatchError(
+				"Invalid edit: old_string and new_string cannot both be empty.",
+				26,
+			);
+		}
+		if (Z === "" && Y) {
+			return _claudeEditBatchError(
+				"Invalid edit: old_string cannot be empty when replace_all is true.",
+				19,
+			);
 		}
 
 		Q.push({
-			mode: F,
+			mode: "string",
 			oldString: Z,
-			newString: normalizedNewString,
+			newString: String(rawNewString).replace(/\r\n/g, "\n"),
 			replaceAll: Y,
-			lineNumber: J,
-			linePosition: pos,
-			startLine: X,
-			endLine: F === "range" ? W : null,
+			isAppend: Z === "",
 		});
 	}
 
@@ -542,6 +225,12 @@ function _claudeEditNormalizeEdits(A) {
 }
 
 function _claudeEditApplyString(content, edit) {
+	// Append mode: empty old_string adds to end of file
+	if (edit.isAppend) {
+		const sep = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
+		return { content: content + sep + edit.newString };
+	}
+
 	// Use fuzzy matching for robustness
 	const matched = _claudeFuzzyMatch(content, edit.oldString);
 
@@ -611,206 +300,42 @@ function _claudeEditApplyString(content, edit) {
 	}
 }
 
-function _claudeEditApplyLine(content, edit) {
-	const lines = content === "" ? [] : content.split("\n");
-
-	if (edit.lineNumber === null) {
-		return {
-			error: {
-				result: false,
-				behavior: "ask",
-				message: "line_number is required for line insert.",
-				errorCode: 11,
-			},
-		};
-	}
-
-	let insertIdx = Math.min(Math.max(edit.lineNumber - 1, 0), lines.length);
-	if (edit.linePosition === "after")
-		insertIdx = Math.min(insertIdx + 1, lines.length);
-
-	const newLines = edit.newString === "" ? [""] : edit.newString.split("\n");
-	lines.splice(insertIdx, 0, ...newLines);
-
-	return { content: lines.join("\n") };
-}
-
-function _claudeEditApplyRange(content, edit) {
-	const lines = content === "" ? [] : content.split("\n");
-	const lineCount = lines.length;
-
-	if (edit.startLine === null) {
-		return {
-			error: {
-				result: false,
-				behavior: "ask",
-				message: "start_line is required for range replace.",
-				errorCode: 12,
-			},
-		};
-	}
-
-	if (lineCount === 0 && edit.startLine > 1) {
-		return {
-			error: {
-				result: false,
-				behavior: "ask",
-				message:
-					"Invalid range: start_line exceeds file length. Use start_line:1 for empty files or line mode to append.",
-				errorCode: 27,
-			},
-		};
-	}
-
-	if (lineCount > 0 && edit.startLine > lineCount) {
-		return {
-			error: {
-				result: false,
-				behavior: "ask",
-				message:
-					"Invalid range: start_line exceeds file length. Use line mode for append-after-end behavior.",
-				errorCode: 27,
-			},
-		};
-	}
-
-	const startIdx = lineCount === 0 ? 0 : edit.startLine - 1;
-	let endLine = edit.endLine ?? edit.startLine;
-	if (endLine < edit.startLine) endLine = edit.startLine;
-	const endIdx =
-		lineCount === 0
-			? -1
-			: Math.min(Math.max(endLine - 1, startIdx), lineCount - 1);
-	const deleteCount = lineCount === 0 ? 0 : endIdx - startIdx + 1;
-
-	const newLines = edit.newString === "" ? [] : edit.newString.split("\n");
-	lines.splice(startIdx, deleteCount, ...newLines);
-
-	return { content: lines.join("\n") };
-}
-
-function _claudeEditApplyRegex(content, edit) {
-	try {
-		// Parse regex - support /pattern/flags format or plain pattern
-		let pattern = edit.pattern;
-		let flags = edit.replaceAll ? "g" : "";
-
-		// Check if pattern is in /pattern/flags format
-		const regexMatch = pattern.match(/^\/(.+)\/([gimsuy]*)$/);
-		if (regexMatch) {
-			pattern = regexMatch[1];
-			flags = regexMatch[2] || "";
-		}
-
-		if (edit.replaceAll) {
-			// Ensure global replacement when replace_all is explicitly true.
-			if (!flags.includes("g")) flags += "g";
-		} else {
-			// Keep regex mode aligned with replace_all semantics even if user passed /.../g.
-			flags = flags.replace(/g/g, "");
-		}
-
-		const regex = new RegExp(pattern, flags);
-		const matches = content.match(regex);
-
-		if (!matches || matches.length === 0) {
-			return {
-				error: {
-					result: false,
-					behavior: "ask",
-					message: `Regex pattern not found in file.\nPattern: ${edit.pattern}`,
-					errorCode: 17,
-				},
-			};
-		}
-
-		const newContent = content.replace(regex, edit.newString);
-		const matchCount = matches.length;
-
-		// Get the actual interpolated replacement for first match (for diff display)
-		const firstMatchRegex = new RegExp(pattern, flags.replace("g", ""));
-		const actualNewString = matches[0].replace(firstMatchRegex, edit.newString);
-
-		return {
-			content: newContent,
-			matchCount,
-			// For display purposes, show first match as "old"
-			oldString: matches[0],
-			// Actual interpolated replacement (with $1, $2 etc resolved)
-			newString: actualNewString,
-		};
-	} catch (e) {
-		return {
-			error: {
-				result: false,
-				behavior: "ask",
-				message: `Invalid regex pattern: ${e.message}`,
-				errorCode: 18,
-			},
-		};
-	}
-}
-
 function _claudeApplyExtendedFileEdits(content, edits) {
 	let result = content;
 	let firstStringEdit = null;
 	const warnings = [];
 	const appliedEdits = [];
 
-	// Apply in user-provided order to preserve deterministic intent.
+	// All edits are string replace (content-addressed), applied in order
 	for (const edit of edits) {
-		let outcome;
-
-		if (edit.mode === "regex") outcome = _claudeEditApplyRegex(result, edit);
-		else if (edit.mode === "range")
-			outcome = _claudeEditApplyRange(result, edit);
-		else if (edit.mode === "line") outcome = _claudeEditApplyLine(result, edit);
-		else outcome = _claudeEditApplyString(result, edit);
-
+		const outcome = _claudeEditApplyString(result, edit);
 		if (outcome.error) return outcome;
 
-		// Collect warnings from partial application
-		if (outcome.warning) {
-			warnings.push(outcome.warning);
-		}
+		if (outcome.warning) warnings.push(outcome.warning);
 
-		// Track applied edits for structured patch generation
-		if (
-			(edit.mode === "string" || edit.mode === "regex") &&
-			outcome.oldString !== undefined
-		) {
-			// Use outcome.newString for regex (interpolated $1,$2) or edit.newString for string mode
-			const displayNewString =
-				outcome.newString !== undefined ? outcome.newString : edit.newString;
-			// For replaceAll with multiple matches, expand into individual edits for better patch generation
+		if (outcome.oldString !== undefined) {
 			const matchCount = outcome.matchCount || 1;
 			if (edit.replaceAll && matchCount > 1) {
 				for (let i = 0; i < matchCount; i++) {
 					appliedEdits.push({
 						oldString: outcome.oldString,
-						newString: displayNewString,
-						replaceAll: false, // Individual replacements
+						newString: edit.newString,
+						replaceAll: false,
 					});
 				}
 			} else {
 				appliedEdits.push({
 					oldString: outcome.oldString,
-					newString: displayNewString,
+					newString: edit.newString,
 					replaceAll: edit.replaceAll || false,
 				});
 			}
 		}
 
-		if (
-			!firstStringEdit &&
-			(edit.mode === "string" || edit.mode === "regex") &&
-			outcome.oldString !== undefined
-		) {
-			const displayNewString =
-				outcome.newString !== undefined ? outcome.newString : edit.newString;
+		if (!firstStringEdit && outcome.oldString !== undefined) {
 			firstStringEdit = {
 				oldString: outcome.oldString,
-				newString: displayNewString,
+				newString: edit.newString,
 				replaceAll: edit.replaceAll,
 			};
 		}

@@ -8,6 +8,7 @@
         "inspect": "tsx src/inspector.ts",
         "diff": "tsx src/diff.ts",
         "verify:anchors": "tsx src/index.ts --verify-anchors",
+        "verify:prompt-surfaces": "tsx src/index.ts --verify-prompt-surfaces",
         "verify:cache": "tsx src/verification/verify-cache-efficiency.ts",
         "prompts:export": "tsx scripts/export-prompts-current.ts",
         "test": "tsx --test src/*.test.ts src/**/*.test.ts",

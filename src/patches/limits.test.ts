@@ -91,7 +91,7 @@ test("limits patch modifies all six numeric targets via combined AST passes", as
 		"new tokenBudget should be present",
 	);
 
-	// resultSizeCap (ZPA): 50000 -> 120000
+	// resultSizeCap: 50000 -> 120000
 	assert.equal(
 		output.includes("ZPA = 50000"),
 		false,
@@ -184,22 +184,29 @@ test("limits verify detects wrong tokenBudget value", async () => {
 });
 
 test("limits verify requires resultSizeCap < readMaxResultSize", async () => {
-	// Create a fixture where resultSizeCap >= readMaxResultSize after patching
-	// by making the Read tool maxResultSizeChars equal to ZPA's patched value
-	const badFixture = LIMITS_FIXTURE.replace(
-		"maxResultSizeChars: 100000",
-		"maxResultSizeChars: 120000",
-	);
-	const ast = parse(badFixture);
+	// After patching, resultSizeCap=120000 and readMaxResultSize=250000 (120000 < 250000 = OK).
+	// Manually set readMaxResultSize to 120000 in the patched output to trigger the invariant.
+	const ast = parse(LIMITS_FIXTURE);
 	await runLimitsViaPasses(ast);
 	const output = print(ast);
-	// After patch: ZPA=120000, readMaxResultSize stays at 120000 (doesn't match 1e5 check)
-	// So readMaxResultSize won't be patched, collectCurrentLimits will find 120000
-	// But the mutation checks for value===100000, so readMaxResultSize won't be found
-	// Let's instead verify the structural invariant check with a manual AST tweak
-	const result = limits.verify(output, ast);
-	// readMaxResultSize won't be found (120000 != 100000 in the mutation check)
-	assert.equal(typeof result, "string");
+
+	// Tamper: replace patched readMaxResultSize (250000) with resultSizeCap value (120000)
+	const tampered = output.replace(
+		"maxResultSizeChars: 250000",
+		"maxResultSizeChars: 120000",
+	);
+	const tamperedAst = parse(tampered);
+	const result = limits.verify(tampered, tamperedAst);
+	assert.equal(
+		typeof result,
+		"string",
+		"verify should fail when readMaxResultSize is too small",
+	);
+	assert.equal(
+		String(result).includes("readMaxResultSize"),
+		true,
+		"should reference readMaxResultSize in failure",
+	);
 });
 
 test("limits verify requires CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS env var reference", async () => {
@@ -218,7 +225,7 @@ test("limits verify requires CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS env var ref
 	// Strip the env var name from the output. collectCurrentLimits also uses
 	// this env var to find the token budget function, so it won't find tokenBudget.
 	// The verify will fail on "Could not resolve limit tokenBudget" first.
-	// That's still a valid failure -- verify catches the env var removal indirectly.
+	// That's still a valid failure. Verify catches the env var removal indirectly.
 	const stripped = output.replaceAll(
 		"CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS",
 		"SOME_OTHER_ENV_VAR",

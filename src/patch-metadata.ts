@@ -16,26 +16,16 @@ const GROUP_ORDER = [
 ] as const;
 
 const BY_TAG: Record<string, PatchMetadata> = {
+"bash-tail": {
+		tag: "bash-tail",
+		label: "Bash output tail",
+		group: "Tooling",
+	},
 	"bash-prompt": { tag: "bash-prompt", label: "Bash prompt", group: "Prompt" },
 	"built-in-agent-prompt": {
 		tag: "built-in-agent-prompt",
 		label: "Built-in agent prompts",
 		group: "Prompt",
-	},
-	"bash-tail": {
-		tag: "bash-tail",
-		label: "Bash output tail",
-		group: "Tooling",
-	},
-	"prompt-rewrite": {
-		tag: "prompt-rewrite",
-		label: "Prompt rewrite",
-		group: "Prompt",
-	},
-	"taskout-ext": {
-		tag: "taskout-ext",
-		label: "Task output tool",
-		group: "Tooling",
 	},
 	"claudemd-strong": {
 		tag: "claudemd-strong",
@@ -46,11 +36,6 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		tag: "mcp-server-name",
 		label: "MCP server name validation",
 		group: "Tooling",
-	},
-	"skill-tools": {
-		tag: "skill-tools",
-		label: "Skill allowed tools",
-		group: "Prompt",
 	},
 	"todo-use": { tag: "todo-use", label: "Todo prompt", group: "Prompt" },
 
@@ -85,19 +70,14 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Read with bat",
 		group: "Tooling",
 	},
-	"write-result-trim": {
-		tag: "write-result-trim",
-		label: "Shrink write result",
-		group: "Tooling",
-	},
-	"memory-write-ui": {
-		tag: "memory-write-ui",
-		label: "Memory write UI",
-		group: "UX",
-	},
 	"agents-off": {
 		tag: "agents-off",
 		label: "Disable agent tools",
+		group: "Agent",
+	},
+	"commands-off": {
+		tag: "commands-off",
+		label: "Disable built-in commands",
 		group: "Agent",
 	},
 	"no-collapse": {
@@ -115,15 +95,30 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Session memory",
 		group: "System",
 	},
+	"shell-quote-fix": {
+		tag: "shell-quote-fix",
+		label: "Shell quote fix",
+		group: "Tooling",
+	},
 	"sys-prompt-file": {
 		tag: "sys-prompt-file",
 		label: "System prompt file",
 		group: "System",
 	},
-	"flag-bypass": {
-		tag: "flag-bypass",
-		label: "Feature flag bypass",
-		group: "System",
+	"taskout-ext": {
+		tag: "taskout-ext",
+		label: "Task output metadata",
+		group: "Tooling",
+	},
+	"lsp-multi-server": {
+		tag: "lsp-multi-server",
+		label: "LSP multi-server",
+		group: "Tooling",
+	},
+	"lsp-workspace-symbol": {
+		tag: "lsp-workspace-symbol",
+		label: "LSP workspaceSymbol query",
+		group: "Tooling",
 	},
 	limits: { tag: "limits", label: "Limits", group: "System" },
 	signature: { tag: "signature", label: "Signature", group: "Metadata" },

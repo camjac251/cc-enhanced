@@ -56,11 +56,35 @@ You will be provided with a set of requirements and optionally a perspective on 
    - Identify dependencies and sequencing
    - Anticipate potential challenges
 
+## Required Output
+
+End your response with:
+
 ### Critical Files for Implementation
 List 3-5 files most critical for implementing this plan:
 - path/to/file1.ts - [Brief reason: e.g., "Core logic to modify"]
 - path/to/file2.ts - [Brief reason: e.g., "Interfaces to implement"]
 - path/to/file3.ts - [Brief reason: e.g., "Pattern to follow"]\`;
+`;
+
+const EXPLORE_PLACEHOLDER_FIXTURE = `
+return \`You are a deep codebase researcher for Claude Code. Your job is to investigate code structure, trace execution paths, and surface the highest-signal files, call chains, and patterns quickly.
+
+- Guidelines:
+\${value_22}
+\${value_23}
+- Use \${Of} when you know the specific file path you need to read
+- Use \${FD} ONLY for read-only operations (ls, git status, git log, git diff, find\${H ? ", grep" : ""}, cat, head, tail)
+- NEVER use \${FD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification
+
+Complete the user's research request efficiently and report your findings clearly.\`;
+`;
+
+const PLAN_PLACEHOLDER_FIXTURE = `
+return \`3. **Inspect the Existing Architecture**:
+   - Find existing patterns and conventions using \${YO() ? \\\`find\\\`, \\\`grep\\\`, and \${Of} : \${eM}, \${T_}, and \${Of}}
+   - Use \${FD} ONLY for read-only operations (ls, git status, git log, git diff, find\${YO() ? ", grep" : ""}, cat, head, tail)
+   - NEVER use \${FD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification\`;
 `;
 
 test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
@@ -76,24 +100,48 @@ test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
 	assert.equal(output.includes("Analysis methodology:"), true);
 	assert.equal(
 		output.includes(
+			"Feature discovery: find entry points, core implementation files, feature boundaries, and relevant configuration.",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"Start with semantic or focused structural search, then escalate to deeper codebase research only for multi-file architecture questions",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
 			"Entry points: exact file:line references where the relevant functionality starts",
 		),
 		true,
 	);
-    assert.equal(
-        output.includes(
-            "prefer ast-grep or other syntax-aware code search over broad text matching",
-        ),
-        true,
-    );
-    assert.equal(
-        output.includes(
-            "modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
-        ),
-        true,
-    );
-    assert.equal(output.includes("Complete the user's research request"), true);
-    assert.equal(builtInAgentPrompt.verify(output), true);
+	assert.equal(
+		output.includes(
+			'Before recommending code changes, answer: "What specific defect or gap does this address?"',
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"Security-sensitive findings, trust-boundary questions, or auth concerns -> recommend security-reviewer",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"prefer ast-grep or other syntax-aware code search over broad text matching",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+		),
+		true,
+	);
+	assert.equal(output.includes("Complete the user's research request"), true);
+	assert.equal(builtInAgentPrompt.verify(output), true);
 });
 
 test("built-in-agent-prompt rewrites Plan prompt and whenToUse", () => {
@@ -112,20 +160,97 @@ test("built-in-agent-prompt rewrites Plan prompt and whenToUse", () => {
 		),
 		true,
 	);
-    assert.equal(
-        output.includes(
-            "Extract any CLAUDE.md guidance or local conventions that materially constrain the design",
-        ),
-        true,
-    );
-    assert.equal(
-        output.includes(
-            "modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
-        ),
-        true,
-    );
-    assert.equal(output.includes("[Why it matters to the implementation]"), true);
+	assert.equal(
+		output.includes(
+			"Testability > Readability > Consistency > Simplicity > Reversibility",
+		),
+		true,
+	);
+	assert.equal(output.includes("state management"), true);
+	assert.equal(
+		output.includes(
+			"Extract any CLAUDE.md guidance or local conventions that materially constrain the design",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+		),
+		true,
+	);
+	assert.equal(output.includes("[Why it matters to the implementation]"), true);
+	assert.equal(output.includes("security reviewer should validate it"), true);
+	assert.equal(
+		output.includes(
+			"docs researcher should verify assumptions before implementation",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"switch to review mode and return an architecture overview, issues by severity, recommendations, and risk assessment",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes("test engineer should shape the verification plan"),
+		true,
+	);
 	assert.equal(builtInAgentPrompt.verify(output), true);
+});
+
+test("built-in-agent-prompt rewrites placeholder-backed read-only bash guidance", () => {
+	const output =
+		builtInAgentPrompt.string?.(EXPLORE_PLACEHOLDER_FIXTURE) ??
+		EXPLORE_PLACEHOLDER_FIXTURE;
+	assert.equal(output.includes("${value_22}"), false);
+	assert.equal(output.includes("${value_23}"), false);
+	assert.equal(
+		output.includes(
+			"ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"- Use Read when you know the specific file path you need to read",
+		),
+		true,
+	);
+	assert.equal(output.includes("cat, head, tail"), false);
+});
+
+test("built-in-agent-prompt rewrites indented helper-backed plan bash guidance", () => {
+	const output =
+		builtInAgentPrompt.string?.(PLAN_PLACEHOLDER_FIXTURE) ??
+		PLAN_PLACEHOLDER_FIXTURE;
+	assert.equal(
+		output.includes(
+			"   - Use ${FD} ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"   - Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"   - NEVER use ${FD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification",
+		),
+		true,
+	);
+	assert.equal(output.includes("${YO()"), false);
+	assert.equal(output.includes("cat, head, tail"), false);
 });
 
 test("built-in-agent-prompt verify rejects unpatched built-in prompt text", () => {
@@ -133,7 +258,18 @@ test("built-in-agent-prompt verify rejects unpatched built-in prompt text", () =
 		`${EXPLORE_FIXTURE}\n${PLAN_FIXTURE}`,
 	);
 	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("Explore agent prompt"), true);
+	assert.equal(
+		String(result).includes("Explore agent") ||
+			String(result).includes("Plan agent"),
+		true,
+	);
+});
+
+test("built-in-agent-prompt verify ignores unrelated legacy guidance elsewhere in bundle", () => {
+	const output =
+		builtInAgentPrompt.string?.(EXPLORE_FIXTURE) ?? EXPLORE_FIXTURE;
+	const withUnrelatedLegacyText = `${output}\nconst unrelated = "Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find${'${conditional(", grep" | "")}'} , cat, head, tail)";`;
+	assert.equal(builtInAgentPrompt.verify(withUnrelatedLegacyText), true);
 });
 
 test("built-in-agent-prompt verify tolerates missing agent prompt section", () => {

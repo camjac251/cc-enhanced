@@ -96,7 +96,6 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 		"Always use bat to view files, not cat/head/tail.",
 		"Always use sg for code search, rg only for text/logs/config. Prefer sg over rg.",
 		"Never use cat/echo/printf for file writes - use Write or Edit tools.",
-		"Use ast-grep for code pattern matching (functions, classes, imports)",
 		'allowedTools: ["Read", "Bash"]',
 		"**Common tool matchers:** `Bash`, `Write`, `Edit`, `Read`, `Agent`",
 		"Line range using supported bat-style forms",
@@ -104,6 +103,7 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 		'args.push("-r", normalizedRange)',
 		"[TRUNCATED - changed-file diff head+tail summary]",
 		"The instructions above are MANDATORY when they apply to your current task. Follow them exactly as written.",
+		"Never use grep/find/ls/sed - use rg/fd/eza/sd instead.",
 		"Server name can only contain letters, numbers, hyphens, underscores, colons, dots, and slashes",
 		"CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE",
 		"ENABLE_SESSION_MEMORY",
@@ -180,7 +180,7 @@ test("verifyCliAnchors allow-forced mode allows present signature under tag filt
 	try {
 		await fs.writeFile(
 			patchedCliPath,
-			'const marker = "(Claude Code; patched: flag-bypass)";',
+			'const marker = "(Claude Code; patched: signature)";',
 			"utf-8",
 		);
 		await fs.writeFile(cleanCliPath, "const marker = 2;", "utf-8");

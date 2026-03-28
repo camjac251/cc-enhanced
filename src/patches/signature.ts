@@ -1,6 +1,49 @@
 import traverse from "@babel/traverse";
-import * as t from "@babel/types";
+import type * as t from "@babel/types";
 import type { Patch } from "../types.js";
+import { getVerifyAst } from "./ast-helpers.js";
+
+const VERSION_SUFFIX = " (Claude Code)";
+const UI_TITLE_PREFIX = "Claude Code v";
+
+function replaceVersionSuffix(text: string, sigFull: string): string {
+	return text.replace(VERSION_SUFFIX, ` (Claude Code; ${sigFull})`);
+}
+
+function isVersionStringTarget(text: string): boolean {
+	return text.endsWith(VERSION_SUFFIX) && !text.includes("patched:");
+}
+
+function hasPatchedVersionString(text: string): boolean {
+	return text.includes("(Claude Code; patched:");
+}
+
+function getTemplateText(quasi: t.TemplateElement): string {
+	return quasi.value.raw;
+}
+
+function isVersionTemplateTarget(node: t.TemplateLiteral): boolean {
+	const lastQuasi = node.quasis[node.quasis.length - 1];
+	if (!lastQuasi) return false;
+	return isVersionStringTarget(getTemplateText(lastQuasi));
+}
+
+function hasPatchedVersionTemplate(node: t.TemplateLiteral): boolean {
+	const lastQuasi = node.quasis[node.quasis.length - 1];
+	return !!lastQuasi && hasPatchedVersionString(getTemplateText(lastQuasi));
+}
+
+function isUiTitleTemplate(node: t.TemplateLiteral): boolean {
+	const firstQuasi = node.quasis[0];
+	return (
+		!!firstQuasi && getTemplateText(firstQuasi).startsWith(UI_TITLE_PREFIX)
+	);
+}
+
+function hasPatchedUiTitle(node: t.TemplateLiteral): boolean {
+	const lastQuasi = node.quasis[node.quasis.length - 1];
+	return !!lastQuasi && getTemplateText(lastQuasi).includes(" • patched");
+}
 
 /**
  * Inject signature into version strings.
@@ -22,100 +65,78 @@ export const signature: Patch = {
 		traverse.default(ast, {
 			StringLiteral(path: any) {
 				const val = path.node.value;
-				// --version output: use full signature
-				if (val.includes("(Claude Code)") && !val.includes("patched:")) {
-					path.node.value = val.replace(
-						"(Claude Code)",
-						`(Claude Code; ${sigFull})`,
-					);
+				if (isVersionStringTarget(val)) {
+					path.node.value = replaceVersionSuffix(val, sigFull);
 				}
 			},
 			TemplateLiteral(path: any) {
-				// --version output: use full signature
-				for (const quasi of path.node.quasis) {
-					if (
-						quasi.value.raw.includes("(Claude Code)") &&
-						!quasi.value.raw.includes("patched:")
-					) {
-						const newSig = `(Claude Code; ${sigFull})`;
-						quasi.value.raw = quasi.value.raw.replace("(Claude Code)", newSig);
-						if (quasi.value.cooked) {
-							quasi.value.cooked = quasi.value.cooked.replace(
-								"(Claude Code)",
-								newSig,
-							);
-						}
-					}
-				}
-
-				// UI elements: use short signature
-				if (
-					path.node.quasis.length > 0 &&
-					path.node.quasis[0].value.raw === "Claude Code v"
-				) {
+				if (isVersionTemplateTarget(path.node)) {
 					const lastQuasi = path.node.quasis[path.node.quasis.length - 1];
-					if (!lastQuasi.value.raw.includes("patched:")) {
-						const suffix = ` • ${sigShort}`;
-						lastQuasi.value.raw += suffix;
-						if (lastQuasi.value.cooked) {
-							lastQuasi.value.cooked += suffix;
-						}
-					}
+					const replaced = replaceVersionSuffix(
+						getTemplateText(lastQuasi),
+						sigFull,
+					);
+					lastQuasi.value.raw = replaced;
+					lastQuasi.value.cooked = replaced;
 				}
 
-				const exprs = path.node.expressions;
-				if (exprs.length >= 2) {
-					let claudeCodeIndex = -1;
-					let versionIndex = -1;
-
-					for (let i = 0; i < exprs.length; i++) {
-						const expr = exprs[i];
-						if (
-							t.isCallExpression(expr) &&
-							expr.arguments.length > 0 &&
-							t.isStringLiteral(expr.arguments[0]) &&
-							expr.arguments[0].value === "Claude Code"
-						) {
-							claudeCodeIndex = i;
-							continue;
-						}
-
-						if (
-							t.isCallExpression(expr) &&
-							expr.arguments.length > 0 &&
-							t.isTemplateLiteral(expr.arguments[0])
-						) {
-							const tpl = expr.arguments[0];
-							if (tpl.quasis.length > 0 && tpl.quasis[0].value.raw === "v") {
-								versionIndex = i;
-							}
-						}
-					}
-
-					// UI title: use short signature
-					if (
-						claudeCodeIndex !== -1 &&
-						versionIndex !== -1 &&
-						versionIndex > claudeCodeIndex
-					) {
-						const versionTpl = exprs[versionIndex].arguments[0];
-						const lastQuasi = versionTpl.quasis[versionTpl.quasis.length - 1];
-						if (!lastQuasi.value.raw.includes("patched:")) {
-							const suffix = ` • ${sigShort}`;
-							lastQuasi.value.raw += suffix;
-							if (lastQuasi.value.cooked) lastQuasi.value.cooked += suffix;
-						}
-					}
+				if (isUiTitleTemplate(path.node) && !hasPatchedUiTitle(path.node)) {
+					const lastQuasi = path.node.quasis[path.node.quasis.length - 1];
+					const suffix = ` • ${sigShort}`;
+					lastQuasi.value.raw += suffix;
+					lastQuasi.value.cooked = (lastQuasi.value.cooked ?? "") + suffix;
 				}
 			},
 		});
 	},
 
-	verify: (code) => {
-		// Verify signature was injected into the version string specifically,
-		// not just that "patched:" appears somewhere in 15MB of code
-		if (!code.includes("(Claude Code; patched:")) {
-			return "Missing 'patched:' signature in version string";
+	verify: (code, ast) => {
+		const verifyAst = getVerifyAst(code, ast);
+		if (!verifyAst) return "Unable to parse AST during signature verification";
+
+		let hasPatchedVersion = false;
+		let hasLegacyVersion = false;
+		let hasPatchedTitle = false;
+		let hasLegacyTitle = false;
+
+		traverse.default(verifyAst, {
+			StringLiteral(path) {
+				const value = path.node.value;
+				if (isVersionStringTarget(value)) {
+					hasLegacyVersion = true;
+				}
+				if (hasPatchedVersionString(value)) {
+					hasPatchedVersion = true;
+				}
+			},
+			TemplateLiteral(path) {
+				if (isVersionTemplateTarget(path.node)) {
+					hasLegacyVersion = true;
+				}
+				if (hasPatchedVersionTemplate(path.node)) {
+					hasPatchedVersion = true;
+				}
+				if (isUiTitleTemplate(path.node)) {
+					if (hasPatchedUiTitle(path.node)) {
+						hasPatchedTitle = true;
+					} else {
+						hasLegacyTitle = true;
+					}
+				}
+			},
+		});
+
+		if (hasLegacyVersion) {
+			return "Missing patched version signature in version output";
+		}
+		if (!hasPatchedVersion) {
+			return "Did not find patched version output";
+		}
+		if (hasLegacyTitle) {
+			return "Missing patched UI title signature";
+		}
+		if (!hasPatchedTitle) {
+			return "Did not find patched UI title";
 		}
 		return true;
 	},

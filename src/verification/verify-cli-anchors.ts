@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import { parse } from "../loader.js";
+import { hasStrongClaudeMdDisclaimer } from "../patches/claudemd-strong.js";
 import { allPatches } from "../patches/index.js";
 import type {
 	AnchorFailure,
@@ -19,12 +20,6 @@ const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 		reason: "Missing enforced file-write tool policy",
 	},
 	{
-		id: "agent-ast-grep",
-		needle:
-			"Use ast-grep for code pattern matching (functions, classes, imports)",
-		reason: "Missing agent ast-grep guidance",
-	},
-	{
 		id: "debug-read-bash",
 		needle: 'allowedTools: ["Read", "Bash"]',
 		reason: "Missing debug command Read+Bash restriction",
@@ -38,12 +33,6 @@ const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 		id: "changed-file-truncation",
 		needle: "[TRUNCATED - changed-file diff head+tail summary]",
 		reason: "Missing changed-file truncation marker",
-	},
-	{
-		id: "claudemd-wrapper",
-		needle:
-			"The instructions above are MANDATORY when they apply to your current task. Follow them exactly as written.",
-		reason: "Missing strong CLAUDE.md wrapper disclaimer",
 	},
 	{
 		id: "mcp-server-msg",
@@ -95,11 +84,6 @@ const FORBIDDEN_FIXED_PATCHED: AnchorRule[] = [
 		needle: "<h2>When to Use WebFetch</h2>",
 		reason: "Legacy HTML WebFetch heading still present",
 	},
-	{
-		id: "legacy-offset-limit-guidance",
-		needle: "offset and limit parameters to read specific portions of the file",
-		reason: "Legacy offset/limit guidance still present",
-	},
 ];
 
 const REQUIRED_REGEX_PATCHED: RegexRule[] = [
@@ -124,12 +108,9 @@ const REQUIRED_REGEX_PATCHED: RegexRule[] = [
 		pattern: /\*\*Common tool matchers:\*\* [^\n]*\\?`Agent\\?`/,
 		reason: "Missing updated hook matcher tool list with Agent",
 	},
-	{
-		id: "changed-file-guard",
-		pattern:
-			/if\s*\(\s*(\(\s*)?[A-Za-z_$][A-Za-z0-9_$]*\.offset\s*!==\s*void 0\s*\|\|\s*[A-Za-z_$][A-Za-z0-9_$]*\.limit\s*!==\s*void 0(\s*\))?\s*\|\|\s*[A-Za-z_$][A-Za-z0-9_$]*\.range\s*!==\s*void 0\s*\)\s*return null;/,
-		reason: "Missing range-aware changed-file watcher guard",
-	},
+	// changed-file-guard anchor removed: the readFileState.set() compat markers
+	// (offset: 1, limit: 1 for partial reads) already cause the upstream offset/limit
+	// guard to fire, making the explicit range check redundant.
 	{
 		id: "read-state-guard",
 		pattern:
@@ -254,6 +235,21 @@ function checkReadRangeMarker(
 			"patched",
 			"read-bat-range-marker",
 			"Missing read-bat normalized range usage (legacy or native marker)",
+		);
+	}
+	return 1;
+}
+
+function checkClaudeMdMarkers(
+	patchedCode: string,
+	failures: AnchorFailure[],
+): number {
+	if (!hasStrongClaudeMdDisclaimer(patchedCode)) {
+		pushFailure(
+			failures,
+			"patched",
+			"claudemd-wrapper",
+			"Missing strong CLAUDE.md wrapper disclaimer invariants",
 		);
 	}
 	return 1;
@@ -469,6 +465,7 @@ export async function verifyCliAnchors(
 	checksRun += checkRequiredRegex(patchedCode, "patched", failures);
 	checksRun += checkForbiddenRegex(patchedCode, "patched", failures);
 	checksRun += checkReadRangeMarker(patchedCode, failures);
+	checksRun += checkClaudeMdMarkers(patchedCode, failures);
 	if (!input.skipPatchVerifiers) {
 		checksRun += runPatchVerifiers(patchedCode, failures);
 	}

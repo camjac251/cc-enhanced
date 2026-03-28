@@ -8,14 +8,12 @@ const NEW_LINES_CAP = 5000;
 const NEW_LINE_CHARS = 5000;
 const NEW_BYTE_CEILING = 1048576;
 const NEW_TOKEN_BUDGET = 50000;
-// Persistence cap (ZPA): controls when formatted results get disk-persisted.
-// 120K chars ~ 30K tokens. Reads consuming >30K tokens formatted get persisted,
-// preventing large reads from bloating conversation context. The token budget
-// (50K raw tokens) remains the primary gate for whether a read succeeds;
-// this cap just ensures the formatted output doesn't stay inline forever.
+// Persistence cap: controls when formatted results get disk-persisted.
+// 120K chars ~ 30K tokens. The token budget (50K raw) remains the primary gate;
+// this cap prevents large formatted output from staying inline forever.
 const NEW_RESULT_SIZE_CAP = 120000;
-// Per-tool maxResultSizeChars fed into Math.min(maxResultSizeChars, ZPA).
-// Kept at 250K so ZPA (120K) is the effective governor: min(250K, 120K) = 120K.
+// Per-tool maxResultSizeChars. Kept at 250K so the persistence cap (120K)
+// is the effective governor: min(250K, 120K) = 120K.
 const NEW_READ_MAX_RESULT_SIZE = 250000;
 
 const READ_PROMPT_TRIGGERS = [
@@ -59,6 +57,20 @@ function isMathReference(node: t.Expression | t.Super): boolean {
 		t.isIdentifier(node.object) &&
 		node.object.name === "globalThis"
 	);
+}
+
+/** Resolve maxResultSizeChars value from NumericLiteral or BinaryExpression (1/0 = Infinity). */
+function resolveMaxResultSizeValue(node: t.Node): number | null {
+	if (t.isNumericLiteral(node)) return node.value;
+	// 1 / 0 = Infinity
+	if (
+		t.isBinaryExpression(node, { operator: "/" }) &&
+		t.isNumericLiteral(node.left, { value: 1 }) &&
+		t.isNumericLiteral(node.right, { value: 0 })
+	) {
+		return Infinity;
+	}
+	return null;
 }
 
 function collectCurrentLimits(ast: t.File): {
@@ -183,6 +195,7 @@ function collectCurrentLimits(ast: t.File): {
 			});
 			if (!hasEnv) return;
 
+			// Pattern 1 (<=2.1.74): function returns a variable bound to the default
 			path.traverse({
 				ReturnStatement(innerPath: any) {
 					if (current.tokenBudget !== undefined) return;
@@ -201,13 +214,28 @@ function collectCurrentLimits(ast: t.File): {
 				},
 			});
 
+			// Pattern 2 (2.1.75+): default is a sibling variable declared after the function
+			if (current.tokenBudget === undefined) {
+				const nextSibling = path.getNextSibling?.();
+				if (nextSibling?.node && t.isVariableDeclaration(nextSibling.node)) {
+					for (const decl of nextSibling.node.declarations) {
+						if (
+							t.isNumericLiteral(decl.init) &&
+							(decl.init.value === 25000 ||
+								decl.init.value === NEW_TOKEN_BUDGET)
+						) {
+							current.tokenBudget = decl.init.value;
+							break;
+						}
+					}
+				}
+			}
+
 			if (current.tokenBudget !== undefined) path.stop();
 		},
 	});
 
-	// Find ZPA (result size cap) via Math.min with a known persistence cap arg.
-	// Supports both old form: Math.min(X.maxResultSizeChars, Y) where Y=50000
-	// and new form (2.1.71+): Math.min($param, Y) where Y=50000 inside SLD()
+	// Find result size cap via Math.min with a known persistence cap arg.
 	const knownResultSizeValues = new Set([50000, NEW_RESULT_SIZE_CAP]);
 	traverse.default(ast, {
 		CallExpression(path: any) {
@@ -272,9 +300,11 @@ function collectCurrentLimits(ast: t.File): {
 					t.isObjectProperty(p) &&
 					getObjectKeyName(p.key) === "maxResultSizeChars",
 			);
-			if (!maxProp || !t.isNumericLiteral(maxProp.value)) return;
+			if (!maxProp) return;
+			const resolved = resolveMaxResultSizeValue(maxProp.value);
+			if (resolved === null) return;
 
-			current.readMaxResultSize = maxProp.value.value;
+			current.readMaxResultSize = resolved;
 			path.stop();
 		},
 	});
@@ -409,6 +439,7 @@ function runLimitsPatch(ast: t.File): void {
 				});
 				if (!hasEnv) return;
 
+				// Pattern 1 (<=2.1.74): function returns a variable bound to 25000
 				let tokenVarName: string | null = null;
 				path.traverse({
 					ReturnStatement(innerPath: any) {
@@ -426,21 +457,42 @@ function runLimitsPatch(ast: t.File): void {
 						innerPath.stop();
 					},
 				});
-				if (!tokenVarName) return;
 
-				const binding = path.scope.getBinding(tokenVarName);
-				if (!binding || !t.isVariableDeclarator(binding.path.node)) return;
+				if (tokenVarName) {
+					const binding = path.scope.getBinding(tokenVarName);
+					if (!binding || !t.isVariableDeclarator(binding.path.node)) return;
 
-				const init = binding.path.node.init;
-				if (!t.isNumericLiteral(init, { value: 25000 })) return;
+					const init = binding.path.node.init;
+					if (!t.isNumericLiteral(init, { value: 25000 })) return;
 
-				binding.path.node.init = t.numericLiteral(NEW_TOKEN_BUDGET);
-				limitsChanged.tokenBudget = [
-					String(init.value),
-					String(NEW_TOKEN_BUDGET),
-				];
-				patched = true;
-				path.stop();
+					binding.path.node.init = t.numericLiteral(NEW_TOKEN_BUDGET);
+					limitsChanged.tokenBudget = [
+						String(init.value),
+						String(NEW_TOKEN_BUDGET),
+					];
+					patched = true;
+					path.stop();
+					return;
+				}
+
+				// Pattern 2 (2.1.75+): default is a sibling variable after the function
+				const nextSibling = path.getNextSibling?.();
+				if (!nextSibling?.node || !t.isVariableDeclaration(nextSibling.node))
+					return;
+
+				for (const decl of nextSibling.node.declarations) {
+					if (t.isNumericLiteral(decl.init, { value: 25000 })) {
+						const oldValue = decl.init.value;
+						decl.init = t.numericLiteral(NEW_TOKEN_BUDGET);
+						limitsChanged.tokenBudget = [
+							String(oldValue),
+							String(NEW_TOKEN_BUDGET),
+						];
+						patched = true;
+						path.stop();
+						return;
+					}
+				}
 			},
 		});
 	}
@@ -519,12 +571,26 @@ function runLimitsPatch(ast: t.File): void {
 						t.isObjectProperty(p) &&
 						getObjectKeyName(p.key) === "maxResultSizeChars",
 				);
-				if (!maxProp || !t.isNumericLiteral(maxProp.value, { value: 1e5 }))
+				if (!maxProp) return;
+
+				// Handle both NumericLiteral (1e5) and BinaryExpression (1 / 0 = Infinity)
+				const resolvedValue = resolveMaxResultSizeValue(maxProp.value);
+				if (resolvedValue === null) return;
+
+				// Skip if already >= our target (e.g. Infinity)
+				if (resolvedValue >= NEW_READ_MAX_RESULT_SIZE) {
+					limitsChanged.readMaxResultSize = [
+						String(resolvedValue),
+						String(resolvedValue),
+					];
+					patched = true;
+					path.stop();
 					return;
+				}
 
 				maxProp.value = t.numericLiteral(NEW_READ_MAX_RESULT_SIZE);
 				limitsChanged.readMaxResultSize = [
-					String(1e5),
+					String(resolvedValue),
 					String(NEW_READ_MAX_RESULT_SIZE),
 				];
 				patched = true;
@@ -580,17 +646,19 @@ export const limits: Patch = {
 			["byteCeiling", NEW_BYTE_CEILING, current.byteCeiling],
 			["tokenBudget", NEW_TOKEN_BUDGET, current.tokenBudget],
 			["resultSizeCap", NEW_RESULT_SIZE_CAP, current.resultSizeCap],
-			[
-				"readMaxResultSize",
-				NEW_READ_MAX_RESULT_SIZE,
-				current.readMaxResultSize,
-			],
 		];
 		for (const [key, expected, actual] of requiredChecks) {
 			if (actual === undefined) return `Could not resolve limit ${key}`;
 			if (actual !== expected) {
 				return `Limit ${key} has unexpected value: ${actual} (expected ${expected})`;
 			}
+		}
+		// readMaxResultSize accepts values >= target (Infinity is fine — means no per-tool cap)
+		if (current.readMaxResultSize === undefined) {
+			return "Could not resolve limit readMaxResultSize";
+		}
+		if (current.readMaxResultSize < NEW_READ_MAX_RESULT_SIZE) {
+			return `Limit readMaxResultSize has unexpected value: ${current.readMaxResultSize} (expected >= ${NEW_READ_MAX_RESULT_SIZE})`;
 		}
 		const optionalPromptChecks: Array<
 			[keyof NonNullable<PatchResult["limits"]>, number, number | undefined]
@@ -605,8 +673,8 @@ export const limits: Patch = {
 			}
 		}
 
-		// Structural integrity: ZPA must be less than maxResultSizeChars so the
-		// persistence cap is the effective governor in Math.min(maxResultSizeChars, ZPA)
+		// Structural integrity: persistence cap must be less than maxResultSizeChars
+		// so it is the effective governor in the Math.min call
 		if (
 			current.resultSizeCap !== undefined &&
 			current.readMaxResultSize !== undefined &&

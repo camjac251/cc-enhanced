@@ -430,7 +430,7 @@ function createCacheTailPolicyMutator(): traverse.Visitor {
 }
 
 // ---------------------------------------------------------------------------
-// Sysprompt global scope mutator (McA fix)
+// Sysprompt global scope mutator
 // ---------------------------------------------------------------------------
 
 const SYSPROMPT_TOOL_CACHE_MARKER = "tengu_sysprompt_using_tool_based_cache";
@@ -464,7 +464,7 @@ function blockContainsSyspromptMarker(body: t.Statement[]): boolean {
  * Find the first .push({..., cacheScope: "org"}) call in a block of statements
  * and change the cacheScope value to "global".
  *
- * In the McA function, when skipGlobalCacheForSystemPrompt is true (MCP present),
+ * In the sysprompt function, when skipGlobalCacheForSystemPrompt is true (MCP present),
  * the identity block is the FIRST push with cacheScope: "org". The remaining prompt
  * text is the SECOND push with cacheScope: "org". We only change the first one.
  */
@@ -483,7 +483,7 @@ function tryPatchPushCacheScope(stmt: t.Statement): boolean {
 		if (getObjectKeyName(prop.key) !== "cacheScope") continue;
 		if (!t.isStringLiteral(prop.value, { value: "org" })) continue;
 
-		// Found cacheScope: "org" -- change to "global"
+		// Found cacheScope: "org", change to "global"
 		prop.value = t.stringLiteral("global");
 		return true;
 	}
@@ -1122,7 +1122,7 @@ export const cacheTailPolicy: Patch = {
 		});
 
 		// Sysprompt scope check: only fail if the marker exists but isn't patched.
-		// In test fixtures that lack McA, the marker won't be present -- that's OK.
+		// In test fixtures that lack the sysprompt function, the marker won't be present. That's OK.
 		if (foundSyspromptMarker && !hasGlobalScopeOnIdentity) {
 			return 'Sysprompt identity block not patched to cacheScope: "global"';
 		}
