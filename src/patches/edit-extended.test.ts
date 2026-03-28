@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { editTool } from "./edit-extended.js";
@@ -17,24 +21,64 @@ async function runEditToolViaPasses(ast: any): Promise<void> {
 	);
 }
 
+async function loadPatchedEditRuntimeModule() {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "edit-extended-"));
+	const modulePath = path.join(tempDir, "patched-edit-runtime.mjs");
+
+	await fs.writeFile(
+		modulePath,
+		`const toolChoice = { name: "Other" };
+const incoming = {};
+${output}
+export { EditTool, EditRenderer, GenericRenderer, renderEditDialog, _claudeEditNormalizeEdits, _claudeApplyExtendedFileEdits, _claudeEncodeExtendedEditTransport, _claudeDecodeExtendedEditTransport, kB, Pj, S6_, jM_, v58 };`,
+		"utf8",
+	);
+
+	const mod = await import(pathToFileURL(modulePath).href);
+	return {
+		mod,
+		cleanup: async () => {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		},
+	};
+}
+
 const EDIT_FIXTURE = `
+function makeSchema(shape) {
+  return {
+    shape,
+    parse(value) { return value; },
+    extend(extra) { return makeSchema({ ...(this.shape || {}), ...(extra || {}) }); },
+    optional() { return this; },
+    default() { return this; },
+    describe() { return this; },
+    int() { return this; },
+    positive() { return this; },
+    min() { return this; },
+  };
+}
+
 const z = {
-  strictObject(x) { return x; },
-  string() { return { optional() { return this; }, describe() { return this; } }; },
-  boolean() { return { optional() { return this; }, default() { return this; }, describe() { return this; } }; },
-  enum() { return { optional() { return this; }, default() { return this; }, describe() { return this; } }; },
-  array() { return { min() { return this; }, optional() { return this; }, describe() { return this; } }; },
+  strictObject(x) { return makeSchema(x); },
+  string() { return makeSchema(); },
+  boolean() { return makeSchema(); },
+  enum() { return makeSchema(); },
+  array() { return makeSchema(); },
   coerce: {
     number() {
-      return {
-        int() { return this; },
-        positive() { return this; },
-        optional() { return this; },
-        describe() { return this; },
-      };
+      return makeSchema();
     },
   },
 };
+
+const EditRenderer = { id: "edit" };
+const GenericRenderer = { id: "generic" };
+const BashTool = { name: "Bash" };
+const ReadTool = { name: "Read" };
+const OtherTool = { name: "Other" };
 
 const EditTool = {
   name: "Edit",
@@ -50,6 +94,9 @@ const EditTool = {
     new_string: z.string().describe("Replacement text"),
     replace_all: z.boolean().default(false),
   }),
+  get inputSchema() {
+    return this.input_schema;
+  },
   validateInput({ file_path: A, old_string: B, new_string: C }, context) {
     if (!context) {
       return { result: false, behavior: "ask", message: "File has not been read yet", errorCode: 5 };
@@ -61,7 +108,7 @@ const EditTool = {
     if (!context || Date.now() > context.timestamp) {
       throw Error("File must be read first");
     }
-    return { transformed };
+    return { transformed, observed: { old_string: B, new_string: C, replace_all: D } };
   },
   mapToolResultToToolResultBlockParam({ output }, id) {
     return { output, id };
@@ -76,6 +123,66 @@ function renderEditDialog(ARG) {
   const after = "beta";
   const rows = [{ old_string: before, new_string: after, replace_all: false }];
   return { title: "Edit file", rows };
+}
+
+function renderGenericToolConfirm(toolUseConfirm, ideDiffSupport, parseInput, context) {
+  const parsed = parseInput(toolUseConfirm.input);
+  const diffConfig = ideDiffSupport ? ideDiffSupport.getConfig(parsed) : null;
+  return { parsed, diffConfig, context };
+}
+
+function dEH(list) {
+  return list;
+}
+
+function kB() {
+  return [BashTool, EditTool, OtherTool];
+}
+
+function Pj(H) {
+  return dEH([BashTool, ReadTool, EditTool], H);
+}
+
+function S6_(H) {
+  return EditTool.inputSchema.parse(H);
+}
+
+function czD(input) {
+  return {
+    file_path: input.file_path,
+    edits: input.edits,
+  };
+}
+
+function v58(H, $, A) {
+  switch (H.name) {
+    case EditTool.name: {
+      let L = EditTool.inputSchema.parse($),
+        { file_path: D, edits: f } = czD({
+          file_path: L.file_path,
+          edits: [
+            { old_string: L.old_string, new_string: L.new_string, replace_all: L.replace_all },
+          ],
+        });
+      return {
+        replace_all: f[0].replace_all,
+        file_path: D,
+        old_string: f[0].old_string,
+        new_string: f[0].new_string,
+      };
+    }
+    default:
+      return $;
+  }
+}
+
+function jM_(H) {
+  switch (H) {
+    case EditTool:
+      return EditRenderer;
+    default:
+      return GenericRenderer;
+  }
 }
 
 switch (toolChoice.name) {
@@ -111,68 +218,252 @@ test("edit-extended injects unified preview via normalize+apply pipeline", async
 	assert.equal(output.includes("_claudeEditNormalizeEdits"), true);
 	assert.equal(output.includes("_claudeApplyExtendedFileEdits"), true);
 	assert.equal(
-		output.includes("Each edit must specify exactly one explicit mode"),
+		output.includes("old_string and new_string cannot both be empty."),
 		true,
 	);
 	assert.equal(
-		output.includes(
-			"old_string and new_string cannot both be empty. Use range/line mode for positional edits.",
-		),
+		output.includes("Edit files using string replace or batch"),
 		true,
 	);
+	assert.equal(output.includes("sd 'pattern' 'replacement'"), true);
 });
 
-test("edit-extended hardens schema and alias normalization for structured modes", async () => {
+test("edit-extended keeps Edit identity while routing structured inputs through transport helpers", async () => {
 	const ast = parse(EDIT_FIXTURE);
 	await runEditToolViaPasses(ast);
 	const output = print(ast);
 
 	assert.equal(
-		output.includes("line_number: z.coerce.number().int().positive()"),
+		output.includes("function _claudeEncodeExtendedEditTransport(INPUT)"),
 		true,
 	);
 	assert.equal(
-		output.includes("start_line: z.coerce.number().int().positive()"),
+		output.includes("function _claudeDecodeExtendedEditTransport(INPUT)"),
 		true,
 	);
 	assert.equal(
-		output.includes("end_line: z.coerce.number().int().positive()"),
-		true,
+		output.includes("function _claudeGetExtendedEditToolSchema()"),
+		false,
 	);
-	assert.equal(output.includes("diff: z.string().optional()"), true);
-	assert.equal(output.includes("edits: z.array(z.strictObject"), true);
-	assert.equal(
-		output.includes(
-			"obj.lineNumber !== undefined && obj.line_number === undefined",
-		),
-		true,
-	);
-	assert.equal(
-		output.includes(
-			"obj.startLine !== undefined && obj.start_line === undefined",
-		),
-		true,
-	);
-	assert.equal(
-		output.includes("obj.endLine !== undefined && obj.end_line === undefined"),
-		true,
-	);
+	assert.equal(output.includes("function _claudeGetExtendedEditTool()"), false);
 	assert.equal(output.includes("_args[0] = _input;"), true);
+	assert.equal(
+		output.includes("inputSchema.parse(_claudeEncodeExtendedEditTransport(H))"),
+		true,
+	);
+	assert.equal(
+		output.includes("_input = _claudeDecodeExtendedEditTransport(_input);"),
+		true,
+	);
+	assert.equal(output.includes("return EditTool.inputSchema.parse(H);"), false);
 });
 
-test("edit-extended verify fails when regex global-flag strip guard is broken", async () => {
+test("edit-extended bypasses ideDiffSupport.getConfig for structured edit confirmations", async () => {
 	const ast = parse(EDIT_FIXTURE);
 	await runEditToolViaPasses(ast);
 	const output = print(ast);
-	const mutated = output.replace('replace(/g/g, "")', 'replace(/g/g, "g")');
+
+	assert.equal(
+		output.includes(
+			"ideDiffSupport ? _claudeEditHasExtendedFields(_claudeDecodeExtendedEditTransport(parsed)) ? null : ideDiffSupport.getConfig(parsed) : null",
+		),
+		true,
+	);
+});
+
+test("edit-extended verify fails when transport parse wrapping falls back to stock input parsing", async () => {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+	const mutated = output.replaceAll(
+		"inputSchema.parse(_claudeEncodeExtendedEditTransport(H))",
+		"inputSchema.parse(H)",
+	);
 	assert.notEqual(mutated, output);
 
 	const result = editTool.verify(mutated);
 	assert.equal(typeof result, "string");
-	assert.equal(
-		String(result).includes(
-			"Regex mode still allows /.../g to bypass replace_all semantics",
-		),
-		true,
+});
+
+test("edit-extended runtime normalizes batch string edits and applies them in order", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const normalized = mod._claudeEditNormalizeEdits({
+			edits: [
+				{ oldString: "alpha", newString: "ALPHA" },
+				{ oldString: "gamma", newString: "GAMMA" },
+			],
+		});
+		assert.ok(!normalized.error);
+		assert.equal(normalized.edits.length, 2);
+		assert.equal(normalized.edits[0].mode, "string");
+		assert.equal(normalized.edits[0].oldString, "alpha");
+		assert.equal(normalized.edits[0].newString, "ALPHA");
+		assert.equal(normalized.edits[1].mode, "string");
+		assert.equal(normalized.edits[1].oldString, "gamma");
+		assert.equal(normalized.edits[1].newString, "GAMMA");
+
+		const applied = mod._claudeApplyExtendedFileEdits(
+			"alpha\nbeta\ngamma",
+			normalized.edits,
+		);
+		assert.equal(applied.error, undefined);
+		assert.equal(applied.content, "ALPHA\nbeta\nGAMMA");
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended runtime rejects empty old_string and new_string in batch", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const normalized = mod._claudeEditNormalizeEdits({
+			edits: [{ oldString: "", newString: "" }],
+		});
+		assert.ok(normalized.error);
+		assert.equal(normalized.error.errorCode, 26);
+		assert.ok(
+			normalized.error.message.includes(
+				"old_string and new_string cannot both be empty",
+			),
+		);
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended original Edit tool preserves Edit identity while parse transport encodes batch inputs", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		assert.equal(typeof mod._claudeEncodeExtendedEditTransport, "function");
+		assert.equal(typeof mod._claudeDecodeExtendedEditTransport, "function");
+		assert.equal(mod.kB()[1], mod.EditTool);
+		assert.equal(mod.Pj()[2], mod.EditTool);
+		assert.equal(mod.jM_(mod.EditTool), mod.EditRenderer);
+
+		// Batch edits get transported through the encode/decode pipeline
+		const transported = mod.S6_({
+			file_path: "/tmp/example.ts",
+			edits: [{ old_string: "foo", new_string: "bar" }],
+		});
+		assert.equal(typeof transported.old_string, "string");
+		assert.equal(transported.new_string, "");
+		assert.equal(transported.replace_all, false);
+
+		const decoded = mod._claudeDecodeExtendedEditTransport(transported);
+		assert.equal(decoded.file_path, "/tmp/example.ts");
+		assert.ok(Array.isArray(decoded.edits));
+		assert.equal(decoded.edits[0].old_string, "foo");
+		assert.equal(decoded.edits[0].new_string, "bar");
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended runtime preserves notebook rejection via batch edits", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const notebookValidation = mod.EditTool.validateInput(
+			{
+				file_path: "/tmp/example.ipynb",
+				edits: [{ old_string: "x", new_string: "y" }],
+			},
+			{},
+		);
+		assert.deepEqual(notebookValidation, {
+			result: false,
+			behavior: "ask",
+			message:
+				"File is a Jupyter Notebook. Use the NotebookEdit tool to edit this file.",
+			errorCode: 5,
+		});
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended runtime keeps plain string mode read-state guards intact", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const validateWithoutContext = mod.EditTool.validateInput(
+			{
+				file_path: "/tmp/example.txt",
+				old_string: "alpha",
+				new_string: "beta",
+			},
+			null,
+		);
+		assert.deepEqual(validateWithoutContext, {
+			result: false,
+			behavior: "ask",
+			message: "Read-state validation failed",
+			errorCode: 5,
+		});
+
+		await assert.rejects(
+			async () =>
+				mod.EditTool.call({
+					file_path: "/tmp/example.txt",
+					old_string: "alpha",
+					new_string: "beta",
+					structuredPatch: [],
+				}),
+			/Error editing file/,
+		);
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended runtime preserves CRLF semantics in batch call canonicalization", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "edit-extended-crlf-"),
 	);
+	try {
+		const filePath = path.join(tempDir, "example.txt");
+		await fs.writeFile(filePath, "alpha\r\nbeta\r\n", "utf8");
+
+		const result = await mod.EditTool.call(
+			{
+				file_path: filePath,
+				edits: [{ oldString: "beta", newString: "BETA" }],
+				structuredPatch: [],
+			},
+			{ timestamp: Date.now() + 60_000 },
+		);
+
+		assert.deepEqual(result.observed, {
+			old_string: "alpha\r\nbeta\r\n",
+			new_string: "alpha\r\nBETA\r\n",
+			replace_all: false,
+		});
+	} finally {
+		await cleanup();
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("edit-extended runtime preserves content-addressed batch order", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		// String edits should run in user-provided order, not sorted
+		const normalized = mod._claudeEditNormalizeEdits({
+			edits: [
+				{ oldString: "alpha", newString: "ALPHA" },
+				{ oldString: "beta", newString: "BETA" },
+				{ oldString: "gamma", newString: "GAMMA" },
+			],
+		});
+		assert.ok(!normalized.error);
+
+		const applied = mod._claudeApplyExtendedFileEdits(
+			"alpha beta gamma",
+			normalized.edits,
+		);
+		assert.equal(applied.error, undefined);
+		assert.equal(applied.content, "ALPHA BETA GAMMA");
+	} finally {
+		await cleanup();
+	}
 });

@@ -302,7 +302,7 @@ export class PatchRunner {
 			failedTags.length === 0 &&
 			appliedTags.length > 0
 		) {
-			const sigResult = signature.verify(finalOutput);
+			const sigResult = signature.verify(finalOutput, ast);
 			const sigMeta = getPatchMetadata(signature.tag);
 			if (sigResult === true) {
 				appliedTags.push("signature");

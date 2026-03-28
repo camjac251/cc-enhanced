@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import template from "@babel/template";
 import traverse from "@babel/traverse";
 import * as t from "@babel/types";
-import { parse, print } from "../loader.js";
+import { parse } from "../loader.js";
 import type { Patch } from "../types.js";
 import {
 	getObjectKeyName,
@@ -16,6 +16,10 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const EXTENDED_EDIT_TRANSPORT_PREFIX = "__claude_edit_extended_v1__:";
+const EXTENDED_EDIT_TRANSPORT_ENCODE = "_claudeEncodeExtendedEditTransport";
+const EXTENDED_EDIT_TRANSPORT_DECODE = "_claudeDecodeExtendedEditTransport";
 
 function adaptHookCodeForRuntime(hookCode: string): string {
 	const isNativeMode = process.env.CLAUDE_PATCHER_NATIVE_MODE === "1";
@@ -32,357 +36,116 @@ function adaptHookCodeForRuntime(hookCode: string): string {
 		);
 }
 
-function findEditSchemaObject(ast: t.File): t.ObjectExpression | null {
-	let found: t.ObjectExpression | null = null;
+function findNamedToolObjectPath(ast: t.File, toolName: string): any {
+	let found: any = null;
 	traverse.default(ast, {
 		ObjectExpression(path) {
 			if (found) return;
-			if (!isLikelyEditSchemaObject(path.node)) return;
-			const filePathProp = getObjectPropertyByName(path.node, "file_path");
-			const replaceAllProp = getObjectPropertyByName(path.node, "replace_all");
-			if (!filePathProp || !replaceAllProp) return;
-			if (
-				!t.isExpression(filePathProp.value) ||
-				!t.isExpression(replaceAllProp.value)
-			) {
-				return;
-			}
-			if (
-				(!t.isCallExpression(filePathProp.value) &&
-					!t.isMemberExpression(filePathProp.value)) ||
-				(!t.isCallExpression(replaceAllProp.value) &&
-					!t.isMemberExpression(replaceAllProp.value))
-			) {
-				return;
-			}
-			found = path.node;
+			if (resolveToolName(path) !== toolName) return;
+			found = path;
 			path.stop();
 		},
 	});
 	return found;
 }
 
-function isLikelyEditSchemaObject(objectExpr: t.ObjectExpression): boolean {
-	let hasFilePath = false;
-	let hasOldString = false;
-	let hasNewString = false;
-	let hasReplaceAll = false;
-
-	for (const prop of objectExpr.properties) {
-		if (!t.isObjectProperty(prop)) continue;
-		const keyName = getObjectKeyName(prop.key);
-		if (keyName === "file_path") hasFilePath = true;
-		if (keyName === "old_string") hasOldString = true;
-		if (keyName === "new_string") hasNewString = true;
-		if (keyName === "replace_all") hasReplaceAll = true;
-	}
-
-	return hasFilePath && hasOldString && hasNewString && hasReplaceAll;
-}
-
-function getEffectiveSchemaFieldProp(
-	schemaObject: t.ObjectExpression,
-	fieldName: string,
-): t.ObjectProperty | null {
-	for (let i = schemaObject.properties.length - 1; i >= 0; i -= 1) {
-		const prop = schemaObject.properties[i];
-		if (t.isObjectProperty(prop) && getObjectKeyName(prop.key) === fieldName) {
-			return prop;
-		}
-	}
-	return null;
-}
-
-function compactPrintedExpression(expr: t.Expression): string {
-	return print(expr).replace(/\s+/g, "");
-}
-
-function schemaFieldHasCoercePositive(
-	schemaObject: t.ObjectExpression,
-	fieldName: string,
-): boolean {
-	const fieldProp = getEffectiveSchemaFieldProp(schemaObject, fieldName);
-	if (!fieldProp || !t.isExpression(fieldProp.value)) return false;
-	const compact = compactPrintedExpression(fieldProp.value);
+function getToolObjectMethod(
+	toolObject: t.ObjectExpression,
+	methodName: string,
+): t.ObjectMethod | null {
 	return (
-		compact.includes(".coerce.number().int().positive()") ||
-		compact.includes(".coerce.number().int().min(1)") ||
-		compact.includes(".coerce.number().int().gte(1)")
+		toolObject.properties.find(
+			(prop): prop is t.ObjectMethod =>
+				t.isObjectMethod(prop) && getObjectKeyName(prop.key) === methodName,
+		) ?? null
 	);
 }
 
-function schemaFieldUsesAny(
-	schemaObject: t.ObjectExpression,
-	fieldName: string,
-): boolean {
-	const fieldProp = getEffectiveSchemaFieldProp(schemaObject, fieldName);
-	if (!fieldProp || !t.isExpression(fieldProp.value)) return false;
-	const compact = compactPrintedExpression(fieldProp.value);
-	return compact.includes(".any(") || compact.includes(".any()");
-}
-
-function inspectValidateExtendedBypass(ast: t.File): {
+function inspectValidateExtendedBypass(validateMethod: t.ObjectMethod | null): {
 	hasBypass: boolean;
 	hasFileReadsInBypass: boolean;
 } {
 	let hasBypass = false;
 	let hasFileReadsInBypass = false;
+	if (!validateMethod) {
+		return { hasBypass, hasFileReadsInBypass };
+	}
 
-	traverse.default(ast, {
-		ObjectMethod(path) {
-			if (getObjectKeyName(path.node.key) !== "validateInput") return;
+	const validateWrapper = t.file(
+		t.program([t.functionDeclaration(null, [], validateMethod.body)]),
+	);
+
+	traverse.default(validateWrapper, {
+		IfStatement(ifPath) {
+			const test = ifPath.node.test;
+			if (!t.isCallExpression(test)) return;
+			if (
+				!t.isIdentifier(test.callee, {
+					name: "_claudeEditHasExtendedFields",
+				})
+			) {
+				return;
+			}
+			if (
+				test.arguments.length !== 1 ||
+				!t.isIdentifier(test.arguments[0], { name: "_input" })
+			) {
+				return;
+			}
+			if (!t.isBlockStatement(ifPath.node.consequent)) return;
+
+			let sawNormalizeCall = false;
+			let sawReturnTrue = false;
+			let sawFileReads = false;
 
 			traverse.default(
-				path.node.body,
+				ifPath.node.consequent,
 				{
-					IfStatement(ifPath) {
-						const test = ifPath.node.test;
-						if (!t.isCallExpression(test)) return;
+					CallExpression(callPath) {
 						if (
-							!t.isIdentifier(test.callee, {
-								name: "_claudeEditHasExtendedFields",
+							t.isIdentifier(callPath.node.callee, {
+								name: "_claudeEditNormalizeEdits",
 							})
 						) {
-							return;
+							sawNormalizeCall = true;
 						}
 						if (
-							test.arguments.length !== 1 ||
-							!t.isIdentifier(test.arguments[0], { name: "_input" })
+							t.isMemberExpression(callPath.node.callee) &&
+							t.isIdentifier(callPath.node.callee.object, {
+								name: "_claudeFs",
+							}) &&
+							t.isIdentifier(callPath.node.callee.property) &&
+							(callPath.node.callee.property.name === "readFileSync" ||
+								callPath.node.callee.property.name === "existsSync" ||
+								callPath.node.callee.property.name === "statSync")
 						) {
-							return;
+							sawFileReads = true;
 						}
-						if (!t.isBlockStatement(ifPath.node.consequent)) return;
-
-						let sawNormalizeCall = false;
-						let sawReturnTrue = false;
-						let sawFileReads = false;
-
-						traverse.default(
-							ifPath.node.consequent,
-							{
-								CallExpression(callPath) {
-									if (
-										t.isIdentifier(callPath.node.callee, {
-											name: "_claudeEditNormalizeEdits",
-										})
-									) {
-										sawNormalizeCall = true;
-									}
-									if (
-										t.isMemberExpression(callPath.node.callee) &&
-										t.isIdentifier(callPath.node.callee.object, {
-											name: "_claudeFs",
-										}) &&
-										t.isIdentifier(callPath.node.callee.property) &&
-										(callPath.node.callee.property.name === "readFileSync" ||
-											callPath.node.callee.property.name === "existsSync" ||
-											callPath.node.callee.property.name === "statSync")
-									) {
-										sawFileReads = true;
-									}
-								},
-								ReturnStatement(returnPath) {
-									const arg = returnPath.node.argument;
-									if (!arg || !t.isObjectExpression(arg)) return;
-									const resultProp = getObjectPropertyByName(arg, "result");
-									if (!resultProp) return;
-									if (t.isBooleanLiteral(resultProp.value, { value: true })) {
-										sawReturnTrue = true;
-									}
-								},
-							},
-							ifPath.scope,
-							ifPath,
-						);
-
-						if (sawNormalizeCall && sawReturnTrue) {
-							hasBypass = true;
-						}
-						if (sawFileReads) {
-							hasFileReadsInBypass = true;
+					},
+					ReturnStatement(returnPath) {
+						const arg = returnPath.node.argument;
+						if (!arg || !t.isObjectExpression(arg)) return;
+						const resultProp = getObjectPropertyByName(arg, "result");
+						if (!resultProp) return;
+						if (t.isBooleanLiteral(resultProp.value, { value: true })) {
+							sawReturnTrue = true;
 						}
 					},
 				},
-				path.scope,
-				path,
+				ifPath.scope,
+				ifPath,
 			);
+
+			if (sawNormalizeCall && sawReturnTrue) {
+				hasBypass = true;
+			}
+			if (sawFileReads) {
+				hasFileReadsInBypass = true;
+			}
 		},
 	});
 
 	return { hasBypass, hasFileReadsInBypass };
-}
-
-function isInputFieldTypeofStringCheck(
-	test: t.Expression,
-	fieldName: string,
-): boolean {
-	if (!t.isBinaryExpression(test, { operator: "===" })) return false;
-	if (!t.isStringLiteral(test.right, { value: "string" })) return false;
-	if (!t.isUnaryExpression(test.left, { operator: "typeof" })) return false;
-	if (!t.isMemberExpression(test.left.argument)) return false;
-	const member = test.left.argument;
-	if (!t.isIdentifier(member.object, { name: "_input" })) return false;
-	return isMemberPropertyName(member, fieldName);
-}
-
-function hasStructuredHintOldNewGuard(ast: t.File): boolean {
-	let hasGuard = false;
-
-	traverse.default(ast, {
-		IfStatement(path) {
-			const test = path.node.test;
-			if (!t.isUnaryExpression(test, { operator: "!" })) return;
-			if (!t.isIdentifier(test.argument, { name: "hasStructuredHint" })) return;
-			if (!t.isBlockStatement(path.node.consequent)) return;
-
-			let oldStringGuarded = false;
-			let newStringGuarded = false;
-
-			traverse.default(
-				path.node.consequent,
-				{
-					AssignmentExpression(assignPath) {
-						if (assignPath.node.operator !== "=") return;
-						if (!t.isMemberExpression(assignPath.node.left)) return;
-						if (
-							!t.isIdentifier(assignPath.node.left.object, {
-								name: "_input",
-							})
-						) {
-							return;
-						}
-						if (!t.isConditionalExpression(assignPath.node.right)) return;
-
-						if (
-							isMemberPropertyName(assignPath.node.left, "old_string") &&
-							isInputFieldTypeofStringCheck(
-								assignPath.node.right.test,
-								"old_string",
-							)
-						) {
-							oldStringGuarded = true;
-						}
-						if (
-							isMemberPropertyName(assignPath.node.left, "new_string") &&
-							isInputFieldTypeofStringCheck(
-								assignPath.node.right.test,
-								"new_string",
-							)
-						) {
-							newStringGuarded = true;
-						}
-					},
-				},
-				path.scope,
-				path,
-			);
-
-			if (oldStringGuarded && newStringGuarded) {
-				hasGuard = true;
-				path.stop();
-			}
-		},
-	});
-
-	return hasGuard;
-}
-
-function hasRegexGlobalFlagStrip(ast: t.File): boolean {
-	let found = false;
-
-	traverse.default(ast, {
-		CallExpression(path) {
-			if (!t.isMemberExpression(path.node.callee)) return;
-			if (!isMemberPropertyName(path.node.callee, "replace")) return;
-			if (path.node.arguments.length < 2) return;
-			const [arg0, arg1] = path.node.arguments;
-			if (!t.isRegExpLiteral(arg0)) return;
-			if (arg0.pattern !== "g" || arg0.flags !== "g") return;
-			if (!t.isStringLiteral(arg1, { value: "" })) return;
-			found = true;
-			path.stop();
-		},
-	});
-
-	return found;
-}
-
-function patchPreprocessingSwitch(ast: any, editToolVarName: string | null) {
-	if (!editToolVarName) return;
-
-	traverse.default(ast, {
-		SwitchCase(path: any) {
-			const test = path.node.test;
-			if (!test) return;
-
-			if (!t.isMemberExpression(test)) return;
-			if (!t.isIdentifier(test.object) || test.object.name !== editToolVarName)
-				return;
-			if (!t.isIdentifier(test.property) || test.property.name !== "name")
-				return;
-
-			const consequent = path.node.consequent;
-			if (!consequent || consequent.length === 0) return;
-
-			const blockStmt = consequent.find((n: any) => t.isBlockStatement(n));
-			if (!blockStmt) return;
-			let patched = false;
-
-			for (let i = 0; i < blockStmt.body.length; i++) {
-				const stmt = blockStmt.body[i];
-				if (!t.isVariableDeclaration(stmt)) continue;
-				if (stmt.declarations.length < 2) continue;
-
-				const firstDecl = stmt.declarations[0];
-				const secondDecl = stmt.declarations[1];
-				const remainingDecls = stmt.declarations.slice(2);
-
-				if (!t.isIdentifier(firstDecl.id)) continue;
-				if (!t.isObjectPattern(secondDecl.id)) continue;
-
-				const inputVarName = firstDecl.id.name;
-
-				const stmt1 = t.variableDeclaration(stmt.kind, [firstDecl]);
-				const stmt2 = t.variableDeclaration(stmt.kind, [secondDecl]);
-				const stmt3 =
-					remainingDecls.length > 0
-						? t.variableDeclaration(stmt.kind, remainingDecls)
-						: null;
-
-				const buildExtendedFieldCheck = template.default.statements(
-					`
-					if (INPUT.line_number !== undefined || INPUT.lineNumber !== undefined ||
-						INPUT.start_line !== undefined || INPUT.startLine !== undefined ||
-						INPUT.end_line !== undefined || INPUT.endLine !== undefined ||
-						INPUT.diff !== undefined ||
-						INPUT.pattern !== undefined ||
-						(Array.isArray(INPUT.edits) && INPUT.edits.length > 0)) {
-						return INPUT;
-					}
-				`,
-					{ placeholderPattern: /^INPUT$/ },
-				);
-				const extendedFieldCheck = buildExtendedFieldCheck({
-					INPUT: t.identifier(inputVarName),
-				});
-
-				blockStmt.body.splice(
-					i,
-					1,
-					stmt1,
-					...extendedFieldCheck,
-					stmt2,
-					...(stmt3 ? [stmt3] : []),
-				);
-				patched = true;
-				break;
-			}
-
-			if (patched) {
-				path.stop();
-			}
-		},
-	});
 }
 
 function patchApprovalDialog(ast: any) {
@@ -452,18 +215,11 @@ function patchApprovalDialog(ast: any) {
 				`
                     const _claudeEditPreviewMarker = "EXTENDED_EDIT_PREVIEW_v1";
                     try {
-                        const INPUT = ARG && ARG.toolUseConfirm ? ARG.toolUseConfirm.input : null;
+                        const INPUT_RAW = ARG && ARG.toolUseConfirm ? ARG.toolUseConfirm.input : null;
+                        const INPUT = ${EXTENDED_EDIT_TRANSPORT_DECODE}(INPUT_RAW);
                         const _hasExtended =
                             INPUT &&
-                            (INPUT.line_number !== undefined ||
-                                INPUT.lineNumber !== undefined ||
-                                INPUT.start_line !== undefined ||
-                                INPUT.startLine !== undefined ||
-                                INPUT.end_line !== undefined ||
-                                INPUT.endLine !== undefined ||
-                                (typeof INPUT.diff === "string" && INPUT.diff.trim().length > 0) ||
-                                (typeof INPUT.pattern === "string" && INPUT.pattern.length > 0) ||
-                                (Array.isArray(INPUT.edits) && INPUT.edits.length > 0));
+                            _claudeEditHasExtendedFields(INPUT);
 
                         if (_hasExtended) {
                             const _rawFilePath = INPUT.file_path;
@@ -473,13 +229,16 @@ function patchApprovalDialog(ast: any) {
                             const _encoding = _fileExists
                                 ? _claudeGetEncoding(_absFilePath)
                                 : "utf8";
+                            const _newline = _fileExists
+                                ? _claudeGetNewline(_absFilePath)
+                                : "LF";
 
-                            let _content = _fileExists
+                            let _contentRaw = _fileExists
                                 ? _claudeFs.readFileSync(_absFilePath, _encoding)
                                 : "";
-                            if (_content && typeof _content !== "string")
-                                _content = _content.toString();
-                            _content = String(_content).replace(/\\r\\n/g, "\\n");
+                            if (_contentRaw && typeof _contentRaw !== "string")
+                                _contentRaw = _contentRaw.toString();
+                            let _content = String(_contentRaw).replace(/\\r\\n/g, "\\n");
 
                             const _normalized = _claudeEditNormalizeEdits(INPUT);
                             if (
@@ -492,7 +251,10 @@ function patchApprovalDialog(ast: any) {
                                     _normalized.edits,
                                 );
                                 if (!_previewResult.error) {
-                                    OLD_VAR = _content;
+                                    if (_newline === "CRLF") {
+                                        _previewResult.content = _previewResult.content.replace(/\\n/g, "\\r\\n");
+                                    }
+                                    OLD_VAR = _contentRaw;
                                     NEW_VAR = _previewResult.content;
                                 }
                             }
@@ -546,52 +308,11 @@ function resolveToolName(path: any): string | null {
 	return null;
 }
 
-function isReadStateGuardObject(expr: t.ObjectExpression): boolean {
-	return expr.properties.some((prop) => {
-		if (!t.isObjectProperty(prop)) return false;
-		if (getObjectPropertyName(prop) !== "message") return false;
-		if (!t.isStringLiteral(prop.value)) return false;
-		return (
-			prop.value.value.includes("File has not been read yet") ||
-			prop.value.value.includes("File has been modified since read")
-		);
-	});
-}
-
 function patchReadStateGuards(ast: any): void {
 	traverse.default(ast, {
 		ObjectExpression(path: any) {
 			const toolName = resolveToolName(path);
-			if (toolName !== "Edit" && toolName !== "Write") return;
-
-			const validateMethod = path.node.properties.find(
-				(p: any): p is t.ObjectMethod =>
-					t.isObjectMethod(p) && getObjectPropertyName(p) === "validateInput",
-			);
-			if (validateMethod) {
-				traverse.default(
-					validateMethod.body,
-					{
-						ReturnStatement(retPath: any) {
-							if (
-								!retPath.node.argument ||
-								!t.isObjectExpression(retPath.node.argument)
-							)
-								return;
-							if (!isReadStateGuardObject(retPath.node.argument)) return;
-
-							retPath.node.argument = t.objectExpression([
-								t.objectProperty(
-									t.identifier("result"),
-									t.booleanLiteral(true),
-								),
-							]);
-						},
-					},
-					path.scope,
-					path,
-				);
-			}
+			if (toolName !== "Edit") return;
 
 			const callMethod = path.node.properties.find(
 				(p: any): p is t.ObjectMethod =>
@@ -616,8 +337,18 @@ function patchReadStateGuards(ast: any): void {
 
 							ifPath.node.test = t.logicalExpression(
 								"&&",
-								t.identifier(stateVar),
-								t.cloneNode(test.right),
+								t.logicalExpression(
+									"||",
+									t.unaryExpression("!", t.identifier(stateVar)),
+									t.cloneNode(test.right),
+								),
+								t.unaryExpression(
+									"!",
+									t.callExpression(
+										t.identifier("_claudeEditHasExtendedFields"),
+										[t.identifier("_input")],
+									),
+								),
 							);
 						},
 					},
@@ -625,6 +356,298 @@ function patchReadStateGuards(ast: any): void {
 					path,
 				);
 			}
+		},
+	});
+}
+
+function patchIdeDiffConfigGuards(ast: t.File): void {
+	traverse.default(ast, {
+		ConditionalExpression(path: any) {
+			if (!t.isNullLiteral(path.node.alternate)) return;
+			if (!t.isCallExpression(path.node.consequent)) return;
+			if (!t.isMemberExpression(path.node.consequent.callee)) return;
+			if (
+				!t.isIdentifier(path.node.consequent.callee.property, {
+					name: "getConfig",
+				})
+			) {
+				return;
+			}
+			if (path.node.consequent.arguments.length !== 1) return;
+			const [parsedInput] = path.node.consequent.arguments;
+			if (!t.isExpression(parsedInput)) return;
+
+			const diffSupportRef = path.node.consequent.callee.object;
+			if (
+				!t.isIdentifier(diffSupportRef) ||
+				!t.isIdentifier(path.node.test, { name: diffSupportRef.name })
+			) {
+				return;
+			}
+
+			path.node.consequent = t.conditionalExpression(
+				t.callExpression(t.identifier("_claudeEditHasExtendedFields"), [
+					t.callExpression(t.identifier(EXTENDED_EDIT_TRANSPORT_DECODE), [
+						t.cloneNode(parsedInput),
+					]),
+				]),
+				t.nullLiteral(),
+				t.callExpression(
+					t.memberExpression(
+						t.cloneNode(diffSupportRef),
+						t.identifier("getConfig"),
+					),
+					[t.cloneNode(parsedInput)],
+				),
+			);
+		},
+	});
+}
+
+function injectExtendedEditTransportHelpers(ast: t.File): void {
+	const existing = ast.program.body.some(
+		(stmt) =>
+			t.isFunctionDeclaration(stmt) &&
+			(t.isIdentifier(stmt.id, {
+				name: EXTENDED_EDIT_TRANSPORT_ENCODE,
+			}) ||
+				t.isIdentifier(stmt.id, {
+					name: EXTENDED_EDIT_TRANSPORT_DECODE,
+				})),
+	);
+	if (existing) return;
+
+	const helperStatements = template.default.statements(
+		`
+        const _claudeExtendedEditTransportPrefix = ${JSON.stringify(EXTENDED_EDIT_TRANSPORT_PREFIX)};
+
+        function ${EXTENDED_EDIT_TRANSPORT_ENCODE}(INPUT) {
+            if (!INPUT || typeof INPUT !== "object") return INPUT;
+            if (
+                typeof INPUT.old_string === "string" &&
+                INPUT.old_string.startsWith(_claudeExtendedEditTransportPrefix)
+            ) {
+                return INPUT;
+            }
+            if (!_claudeEditHasExtendedFields(INPUT)) return INPUT;
+            try {
+                const payload = { ...INPUT };
+                if (payload.file_path === undefined) {
+                    payload.file_path =
+                        INPUT.file_path ?? INPUT.filePath ?? INPUT.filepath ?? INPUT.path;
+                }
+                if (Array.isArray(INPUT.edits)) {
+                    payload.edits = INPUT.edits.map((edit) =>
+                        edit && typeof edit === "object" ? { ...edit } : edit,
+                    );
+                }
+                return {
+                    file_path: payload.file_path,
+                    old_string:
+                        _claudeExtendedEditTransportPrefix + JSON.stringify(payload),
+                    new_string: "",
+                    replace_all: false,
+                };
+            } catch {
+                return INPUT;
+            }
+        }
+
+        function ${EXTENDED_EDIT_TRANSPORT_DECODE}(INPUT) {
+            if (!INPUT || typeof INPUT !== "object") return INPUT;
+            if (_claudeEditHasExtendedFields(INPUT)) return INPUT;
+            if (typeof INPUT.old_string !== "string") return INPUT;
+            if (!INPUT.old_string.startsWith(_claudeExtendedEditTransportPrefix)) {
+                return INPUT;
+            }
+            if (typeof INPUT.new_string === "string" && INPUT.new_string !== "") {
+                return INPUT;
+            }
+            try {
+                const payload = JSON.parse(
+                    INPUT.old_string.slice(_claudeExtendedEditTransportPrefix.length),
+                );
+                if (!payload || typeof payload !== "object") return INPUT;
+                if (payload.file_path === undefined && INPUT.file_path !== undefined) {
+                    payload.file_path = INPUT.file_path;
+                }
+                return payload;
+            } catch {
+                return INPUT;
+            }
+        }
+        `,
+		{ placeholderPattern: false },
+	)();
+
+	ast.program.body.push(...helperStatements);
+}
+
+function patchExtendedEditSchemaParsing(
+	ast: t.File,
+	toolVarName: string,
+): void {
+	traverse.default(ast, {
+		CallExpression(path) {
+			if (!t.isMemberExpression(path.node.callee)) return;
+			if (!t.isIdentifier(path.node.callee.property, { name: "parse" })) return;
+			if (!t.isMemberExpression(path.node.callee.object)) return;
+
+			const schemaRef = path.node.callee.object;
+			if (
+				!t.isIdentifier(schemaRef.object, { name: toolVarName }) ||
+				!t.isIdentifier(schemaRef.property) ||
+				schemaRef.property.name !== "inputSchema"
+			) {
+				return;
+			}
+
+			const [inputArg] = path.node.arguments;
+			if (!inputArg) return;
+			if (
+				t.isCallExpression(inputArg) &&
+				t.isIdentifier(inputArg.callee, {
+					name: EXTENDED_EDIT_TRANSPORT_ENCODE,
+				})
+			) {
+				return;
+			}
+
+			path.node.arguments[0] = t.callExpression(
+				t.identifier(EXTENDED_EDIT_TRANSPORT_ENCODE),
+				[t.cloneNode(inputArg, true)],
+			);
+		},
+	});
+}
+
+/**
+ * Modify the Edit tool's Zod strictObject schema for batch edit support:
+ * 1. Add `edits` as an optional array field
+ * 2. Make `old_string` and `new_string` optional (required enforcement moves to validateInput)
+ *
+ * Without this, the generic tool dispatch calls `safeParse()` before the transport
+ * encoding can convert `edits` into `old_string`, causing "unexpected parameter" and
+ * "required parameter missing" rejections. Making the fields optional lets `safeParse`
+ * accept batch payloads, and the existing validateInput/call hooks handle enforcement.
+ */
+function patchEditSchemaForBatchEdits(ast: t.File): void {
+	traverse.default(ast, {
+		CallExpression(path) {
+			if (!t.isMemberExpression(path.node.callee)) return;
+			if (!isMemberPropertyName(path.node.callee, "strictObject")) return;
+			if (path.node.arguments.length < 1) return;
+
+			const arg0 = path.node.arguments[0];
+			if (!t.isObjectExpression(arg0)) return;
+
+			// Match the Edit schema by old_string + new_string + replace_all
+			const hasOldString = arg0.properties.some(
+				(p) => t.isObjectProperty(p) && hasObjectKeyName(p, "old_string"),
+			);
+			const hasNewString = arg0.properties.some(
+				(p) => t.isObjectProperty(p) && hasObjectKeyName(p, "new_string"),
+			);
+			const hasReplaceAll = arg0.properties.some(
+				(p) => t.isObjectProperty(p) && hasObjectKeyName(p, "replace_all"),
+			);
+			if (!hasOldString || !hasNewString || !hasReplaceAll) return;
+
+			// Already patched?
+			const hasEdits = arg0.properties.some(
+				(p) => t.isObjectProperty(p) && hasObjectKeyName(p, "edits"),
+			);
+			if (hasEdits) return;
+
+			// Resolve the Zod variable name from the method receiver
+			if (!t.isIdentifier(path.node.callee.object)) return;
+			const zodVar = path.node.callee.object.name;
+
+			// Make old_string and new_string optional so batch-only payloads pass safeParse.
+			// Wrap: y.string().describe(...) -> y.string().optional().describe(...)
+			for (const prop of arg0.properties) {
+				if (!t.isObjectProperty(prop)) continue;
+				const keyName = getObjectKeyName(prop.key);
+				if (keyName !== "old_string" && keyName !== "new_string") continue;
+				if (!t.isCallExpression(prop.value)) continue;
+
+				// Pattern: z.string().describe("...") - insert .optional() before .describe()
+				const describeCall = prop.value;
+				if (!t.isMemberExpression(describeCall.callee)) continue;
+				if (!isMemberPropertyName(describeCall.callee, "describe")) continue;
+
+				// Wrap the receiver with .optional(): receiver.describe(...) -> receiver.optional().describe(...)
+				const receiver = describeCall.callee.object;
+				describeCall.callee.object = t.callExpression(
+					t.memberExpression(
+						t.cloneNode(receiver, true) as t.Expression,
+						t.identifier("optional"),
+					),
+					[],
+				);
+			}
+
+			// Add edits field: z.array(z.object({ old_string, new_string, replace_all })).optional()
+			const editEntrySchema = t.callExpression(
+				t.memberExpression(t.identifier(zodVar), t.identifier("object")),
+				[
+					t.objectExpression([
+						t.objectProperty(
+							t.identifier("old_string"),
+							t.callExpression(
+								t.memberExpression(
+									t.identifier(zodVar),
+									t.identifier("string"),
+								),
+								[],
+							),
+						),
+						t.objectProperty(
+							t.identifier("new_string"),
+							t.callExpression(
+								t.memberExpression(
+									t.identifier(zodVar),
+									t.identifier("string"),
+								),
+								[],
+							),
+						),
+						t.objectProperty(
+							t.identifier("replace_all"),
+							t.callExpression(
+								t.memberExpression(
+									t.callExpression(
+										t.memberExpression(
+											t.identifier(zodVar),
+											t.identifier("boolean"),
+										),
+										[],
+									),
+									t.identifier("optional"),
+								),
+								[],
+							),
+						),
+					]),
+				],
+			);
+
+			const editsSchema = t.callExpression(
+				t.memberExpression(
+					t.callExpression(
+						t.memberExpression(t.identifier(zodVar), t.identifier("array")),
+						[editEntrySchema],
+					),
+					t.identifier("optional"),
+				),
+				[],
+			);
+
+			arg0.properties.push(
+				t.objectProperty(t.identifier("edits"), editsSchema),
+			);
+
+			path.stop();
 		},
 	});
 }
@@ -637,7 +660,6 @@ function runEditToolPatch(ast: t.File): void {
 	_appliedAsts.add(ast);
 
 	let toolVarName: string | null = null;
-	let schemaObject: any = null;
 	let editToolObj: any = null;
 
 	traverse.default(ast, {
@@ -655,26 +677,6 @@ function runEditToolPatch(ast: t.File): void {
 					}
 					p = p.parentPath;
 				}
-			}
-		},
-		ObjectExpression(path: any) {
-			if (schemaObject || !isLikelyEditSchemaObject(path.node)) return;
-			const filePathProp = getObjectPropertyByName(path.node, "file_path");
-			const replaceAllProp = getObjectPropertyByName(path.node, "replace_all");
-			if (!filePathProp || !replaceAllProp) return;
-			if (
-				!t.isExpression(filePathProp.value) ||
-				!t.isExpression(replaceAllProp.value)
-			) {
-				return;
-			}
-			if (
-				(t.isCallExpression(filePathProp.value) ||
-					t.isMemberExpression(filePathProp.value)) &&
-				(t.isCallExpression(replaceAllProp.value) ||
-					t.isMemberExpression(replaceAllProp.value))
-			) {
-				schemaObject = path.node;
 			}
 		},
 		ObjectMethod(path: any) {
@@ -713,24 +715,18 @@ function runEditToolPatch(ast: t.File): void {
                 {
                     const _normalizeKeys = (obj) => {
                         if (!obj || typeof obj !== "object") return obj;
-                        if (obj.lineNumber !== undefined && obj.line_number === undefined) obj.line_number = obj.lineNumber;
-                        if (obj.startLine !== undefined && obj.start_line === undefined) obj.start_line = obj.startLine;
-                        if (obj.endLine !== undefined && obj.end_line === undefined) obj.end_line = obj.endLine;
-                        if (obj.linePosition !== undefined && obj.line_position === undefined) obj.line_position = obj.linePosition;
                         if (obj.replaceAll !== undefined && obj.replace_all === undefined) obj.replace_all = obj.replaceAll;
                         if (obj.oldString !== undefined && obj.old_string === undefined) obj.old_string = obj.oldString;
                         if (obj.newString !== undefined && obj.new_string === undefined) obj.new_string = obj.newString;
                         return obj;
                     };
+                    _input = ${EXTENDED_EDIT_TRANSPORT_DECODE}(_input);
                     _input = _normalizeKeys(_input);
                     if (Array.isArray(_input.edits)) {
                         _input.edits = _input.edits.map(_normalizeKeys);
                     }
 
-                    const hasOwn = (k) => Object.prototype.hasOwnProperty.call(_input, k);
-                    const hasStructuredHint = hasOwn("line_number") || hasOwn("start_line") || hasOwn("end_line") || hasOwn("diff") || hasOwn("pattern") ||
-                        (Array.isArray(_input.edits) && _input.edits.length > 0);
-                    if (!hasStructuredHint) {
+                    if (!(Array.isArray(_input.edits) && _input.edits.length > 0)) {
                         _input.old_string = typeof _input.old_string === "string" ? _input.old_string : (_input.old_string ?? "");
                         _input.new_string = typeof _input.new_string === "string" ? _input.new_string : (_input.new_string ?? "");
                     }
@@ -755,24 +751,18 @@ function runEditToolPatch(ast: t.File): void {
                 {
                     const _normalizeKeys = (obj) => {
                         if (!obj || typeof obj !== "object") return obj;
-                        if (obj.lineNumber !== undefined && obj.line_number === undefined) obj.line_number = obj.lineNumber;
-                        if (obj.startLine !== undefined && obj.start_line === undefined) obj.start_line = obj.startLine;
-                        if (obj.endLine !== undefined && obj.end_line === undefined) obj.end_line = obj.endLine;
-                        if (obj.linePosition !== undefined && obj.line_position === undefined) obj.line_position = obj.linePosition;
                         if (obj.replaceAll !== undefined && obj.replace_all === undefined) obj.replace_all = obj.replaceAll;
                         if (obj.oldString !== undefined && obj.old_string === undefined) obj.old_string = obj.oldString;
                         if (obj.newString !== undefined && obj.new_string === undefined) obj.new_string = obj.newString;
                         return obj;
                     };
+                    _input = ${EXTENDED_EDIT_TRANSPORT_DECODE}(_input);
                     _input = _normalizeKeys(_input);
                     if (Array.isArray(_input.edits)) {
                         _input.edits = _input.edits.map(_normalizeKeys);
                     }
 
-                    const hasOwn = (k) => Object.prototype.hasOwnProperty.call(_input, k);
-                    const hasStructuredHint = hasOwn("line_number") || hasOwn("start_line") || hasOwn("end_line") || hasOwn("diff") || hasOwn("pattern") ||
-                        (Array.isArray(_input.edits) && _input.edits.length > 0);
-                    if (!hasStructuredHint) {
+                    if (!(Array.isArray(_input.edits) && _input.edits.length > 0)) {
                         _input.old_string = typeof _input.old_string === "string" ? _input.old_string : (_input.old_string ?? "");
                         _input.new_string = typeof _input.new_string === "string" ? _input.new_string : (_input.new_string ?? "");
                     }
@@ -783,11 +773,14 @@ function runEditToolPatch(ast: t.File): void {
                         let J = _claudeResolvePath(_input.file_path);
                         let X = _claudeFs.existsSync(J);
                         let encoding = X ? _claudeGetEncoding(J) : "utf8";
+                        let newline = X ? _claudeGetNewline(J) : "LF";
                         let W = X ? _claudeFs.readFileSync(J, encoding) : "";
                         if (W && typeof W !== "string") W = W.toString();
+                        let WNormalized = String(W).replace(/\\r\\n/g, "\\n");
 
-                        let L = _claudeApplyExtendedFileEdits(W, Z.edits);
+                        let L = _claudeApplyExtendedFileEdits(WNormalized, Z.edits);
                         if (L.error) throw Error(L.error.message);
+                        if (newline === "CRLF") L.content = L.content.replace(/\\n/g, "\\r\\n");
                         _input.old_string = W;
                         _input.new_string = L.content;
                         _input.replace_all = false;
@@ -929,8 +922,10 @@ function runEditToolPatch(ast: t.File): void {
 
 				const eqLogic = `
                     {
-                        if (_claudeEditHasExtendedFields(${arg1}) || _claudeEditHasExtendedFields(${arg2})) {
-                            return JSON.stringify(${arg1}) === JSON.stringify(${arg2});
+                        const _leftInput = ${EXTENDED_EDIT_TRANSPORT_DECODE}(${arg1});
+                        const _rightInput = ${EXTENDED_EDIT_TRANSPORT_DECODE}(${arg2});
+                        if (_claudeEditHasExtendedFields(_leftInput) || _claudeEditHasExtendedFields(_rightInput)) {
+                            return JSON.stringify(_leftInput) === JSON.stringify(_rightInput);
                         }
                     }`;
 				const logicAst = template.default.statements(eqLogic, {
@@ -941,80 +936,13 @@ function runEditToolPatch(ast: t.File): void {
 		}
 	}
 
-	if (schemaObject && t.isObjectExpression(schemaObject)) {
-		const schemaExtensionCode = `
-            ({
-                line_number: __ZOD__.coerce.number().int().positive().optional().describe("Line insert: 1-based line number for insertion point"),
-                line_position: __ZOD__.enum(["before", "after"]).default("before").optional().describe("Insert before (default) or after the line"),
-                start_line: __ZOD__.coerce.number().int().positive().optional().describe("Range replace: start line (1-based)"),
-                end_line: __ZOD__.coerce.number().int().positive().optional().describe("Range replace: end line (inclusive)"),
-                diff: __ZOD__.string().optional().describe("Unified diff: apply patch with @@ -old +new @@ headers"),
-                pattern: __ZOD__.string().optional().describe("Regex pattern to match (use with new_string for replacement)"),
-                edits: __ZOD__.array(__ZOD__.strictObject({
-                    old_string: __ZOD__.string().optional().describe("Text to replace (string mode)"),
-                    new_string: __ZOD__.string().optional().describe("Replacement text"),
-                    replace_all: __ZOD__.boolean().default(false).optional(),
-                    line_number: __ZOD__.coerce.number().int().positive().optional(),
-                    line_position: __ZOD__.enum(["before", "after"]).default("before").optional(),
-                    start_line: __ZOD__.coerce.number().int().positive().optional(),
-                    end_line: __ZOD__.coerce.number().int().positive().optional(),
-                    diff: __ZOD__.string().optional().describe("Unified diff hunk for this edit"),
-                    pattern: __ZOD__.string().optional().describe("Regex pattern to match (use with new_string)")
-                })).min(1).optional().describe("Batch edits: array of edit operations (any mode)")
-            })
-            `;
-
-		try {
-			const replaceAllProp = schemaObject.properties.find(
-				(p: any) => t.isObjectProperty(p) && hasObjectKeyName(p, "replace_all"),
-			);
-			if (replaceAllProp) {
-				let zodVar = "_";
-				let curr = (replaceAllProp as any).value;
-				while (curr) {
-					if (t.isCallExpression(curr)) curr = curr.callee;
-					else if (t.isMemberExpression(curr)) curr = curr.object;
-					else if (t.isIdentifier(curr)) {
-						zodVar = curr.name;
-						break;
-					} else break;
-				}
-
-				const schemaExtensionSource = schemaExtensionCode.replaceAll(
-					"__ZOD__",
-					zodVar,
-				);
-				const extAst = template.default.expression(schemaExtensionSource, {
-					placeholderPattern: false,
-				})() as any;
-				if (!t.isObjectExpression(extAst)) {
-					throw new Error(
-						"Edit schema extension template did not produce an object expression",
-					);
-				}
-				schemaObject.properties.push(...extAst.properties);
-
-				for (const fieldName of ["old_string", "new_string"]) {
-					const prop = schemaObject.properties.find(
-						(p: any) => t.isObjectProperty(p) && hasObjectKeyName(p, fieldName),
-					);
-					if (prop) {
-						const code = print((prop as any).value);
-						if (!code.includes("optional()")) {
-							(prop as any).value = template.default.expression(
-								`(${code}).optional()`,
-								{ placeholderPattern: false },
-							)();
-						}
-					}
-				}
-			}
-		} catch (e) {
-			console.error("Failed to extend edit schema", e);
-		}
+	if (toolVarName) {
+		injectExtendedEditTransportHelpers(ast);
+		patchExtendedEditSchemaParsing(ast, toolVarName);
+		patchEditSchemaForBatchEdits(ast);
 	}
 
-	const newPrompt = `Edit files using multiple modes: string replace, line insert, range replace, unified diff, regex, or batch.
+	const newPrompt = `Edit files using string replace or batch mode.
 
 Usage:
 - The file_path parameter must be an absolute path, not relative
@@ -1024,8 +952,6 @@ Usage:
 - Only use emojis if the user explicitly requests them
 - File encoding (UTF-8/UTF-16) and line endings (LF/CRLF) are preserved automatically
 
-Modes (choose one explicit mode per edit entry):
-
 **String replace** (old_string/new_string):
 - Best when you can provide unique surrounding context
 - Fuzzy matching normalizes smart quotes and trailing whitespace
@@ -1033,73 +959,32 @@ Modes (choose one explicit mode per edit entry):
 - If old_string is not unique, add surrounding context or use replace_all intentionally
 - Empty old_string with non-empty new_string appends content
 
-**Line insert** (line_number + new_string):
-- line_number is 1-based
-- Use line_position:"after" to insert below the line (default: "before")
-- Good for imports, comments, or small additions at known locations
-- Line numbers beyond file length append to the end of file
-
-**Range replace** (start_line/end_line + new_string):
-- start_line/end_line are 1-based and inclusive
-- end_line is optional (single-line replace when omitted)
-- Use new_string:"" to delete a line range
-- start_line/end_line must be positive integers; invalid values are rejected
-- start_line beyond file length is rejected (use line mode for append semantics)
-
-**Unified diff** (diff):
-- Use standard hunks with @@ -old,+new @@ headers
-- Supports multiple hunks in one edit entry
-- Useful for grouped non-adjacent edits
-- Hunks are converted into string-replace operations and use the same fuzzy/uniqueness rules as string mode
-
-**Regex** (pattern + new_string):
-- Supports /pattern/flags or plain pattern syntax
-- replace_all:true enables global replacement behavior
-- Capture groups ($1, $2, ...) can be referenced in new_string
-
 **Batch edits** (edits[]):
-- Multiple operations in one call
-- Each entry must declare exactly one explicit mode key:
-  diff, pattern, line_number, or start_line/end_line
+- Multiple string replace operations in one call
+- Each entry: { old_string, new_string, replace_all }
+- Edits run in the order provided against the cumulative result
+- Use for related changes that should be atomic (renames, refactors)
+- Prefer one batch call over multiple separate Edit calls
 
-Field rules:
-- line_number/start_line/end_line are 1-based positive integers
-- Exactly one explicit mode key is allowed per edit entry
-- Fuzzy matching is applied in string mode
-
-Diff format reference:
-\`\`\`
-@@ -10,4 +10,5 @@
- context line
--old line
-+new line
- context line
-\`\`\`
+For regex/pattern replacement, use Bash: \`sd 'pattern' 'replacement' file.ts\`
+For structural code transforms, use Bash: \`sg -p 'old($A)' -r 'new($A)' -U src/\`
+For large multi-file refactoring, use Bash with sg rules or jscodeshift
 
 Examples:
 - String replace: \`{ file_path: "/abs/path/file.ts", old_string: "const x = 1;", new_string: "const x = 2;" }\`
 - Bulk rename: \`{ file_path: "/abs/path/file.ts", old_string: "oldName", new_string: "newName", replace_all: true }\`
 - Append content: \`{ file_path: "/abs/path/file.ts", old_string: "", new_string: "// appended content" }\`
-- Line insert: \`{ file_path: "/abs/path/file.ts", line_number: 1, new_string: "import { foo } from 'bar';" }\`
-- Insert after line: \`{ file_path: "/abs/path/file.ts", line_number: 10, line_position: "after", new_string: "// TODO: refactor" }\`
-- Range replace: \`{ file_path: "/abs/path/file.ts", start_line: 15, end_line: 20, new_string: "// simplified block" }\`
-- Range delete: \`{ file_path: "/abs/path/file.ts", start_line: 5, end_line: 8, new_string: "" }\`
-- Regex replace: \`{ file_path: "/abs/path/file.ts", pattern: "console\\\\.log\\\\(.*?\\\\);?", new_string: "", replace_all: true }\`
-- Regex capture: \`{ file_path: "/abs/path/file.ts", pattern: "version: '(\\\\d+)\\\\.(\\\\d+)'", new_string: "version: '$1.$2.0'" }\`
-- Unified diff: \`{ file_path: "/abs/path/file.ts", diff: "@@ -5,3 +5,4 @@\\n function foo() {\\n-  return 1;\\n+  // Updated\\n+  return 2;\\n }" }\`
-- Multi-hunk diff: \`{ file_path: "/abs/path/file.ts", diff: "@@ -1,2 +1,2 @@\\n-old header\\n+new header\\n context\\n@@ -50,2 +50,2 @@\\n context\\n-old footer\\n+new footer" }\`
-- Batch edits: \`{ file_path: "/abs/path/file.ts", edits: [{ old_string: "foo", new_string: "bar" }, { line_number: 1, new_string: "// Header" }, { start_line: 100, end_line: 105, new_string: "" }] }\`
+- Batch edits: \`{ file_path: "/abs/path/file.ts", edits: [{ old_string: "foo", new_string: "bar" }, { old_string: "baz", new_string: "qux" }] }\`
 
 Error recovery:
 - "old_string matches N locations": add surrounding context or use replace_all:true
 - "String not found": re-read file and copy exact text
-- "Diff hunk not found": refresh context and regenerate hunks
 - "File modified since read": run Read again, then retry Edit
-- For large multi-site changes, prefer batch edits or multiple targeted calls over one very large diff`;
+- For large multi-site changes, prefer batch edits or multiple targeted calls`;
 
-	patchPreprocessingSwitch(ast, toolVarName);
 	patchApprovalDialog(ast);
 	patchReadStateGuards(ast);
+	patchIdeDiffConfigGuards(ast);
 
 	traverse.default(ast, {
 		StringLiteral(path: any) {
@@ -1110,8 +995,7 @@ Error recovery:
 			) {
 				path.node.value = newPrompt;
 			} else if (path.node.value === "A tool for editing files") {
-				path.node.value =
-					"Edit files (string replace, diff, insert, line-range)";
+				path.node.value = "Edit files (string replace, batch edits)";
 			} else if (path.node.value === "File has not been read yet") {
 				path.node.value = "Read-state validation failed";
 			} else if (path.node.value === "File must be read first") {
@@ -1170,83 +1054,17 @@ Error recovery:
 interface EditVerifyContext {
 	code: string;
 	ast: t.File;
-	schemaObject: t.ObjectExpression;
-}
-
-function verifyEditSchema(ctx: EditVerifyContext): string | null {
-	const { code, schemaObject } = ctx;
-	if (!code.includes("line_number")) {
-		return "Missing line_number field in Edit schema";
-	}
-	if (!schemaFieldHasCoercePositive(schemaObject, "line_number")) {
-		return "line_number is not typed with coercing number schema";
-	}
-	if (!schemaFieldHasCoercePositive(schemaObject, "start_line")) {
-		return "start_line is not typed with coercing number schema";
-	}
-	if (!schemaFieldHasCoercePositive(schemaObject, "end_line")) {
-		return "end_line is not typed with coercing number schema";
-	}
-	if (
-		schemaFieldUsesAny(schemaObject, "line_number") ||
-		schemaFieldUsesAny(schemaObject, "start_line") ||
-		schemaFieldUsesAny(schemaObject, "end_line")
-	) {
-		return "Line/range fields still use any() in Edit schema";
-	}
-	if (!code.includes("Each edit must specify exactly one explicit mode")) {
-		return "Missing explicit mode exclusivity validation";
-	}
-	if (!code.includes("old_string cannot be empty when replace_all is true")) {
-		return "Missing empty-old-string replace_all guard";
-	}
-	if (
-		!code.includes("Invalid regex mode: pattern must be a non-empty string.")
-	) {
-		return "Missing invalid-empty regex pattern guard";
-	}
-	if (!code.includes("Invalid diff mode: diff must be a non-empty string.")) {
-		return "Missing invalid-empty diff guard";
-	}
-	if (
-		!code.includes("Invalid line mode: line_number must be a positive integer.")
-	) {
-		return "Missing invalid line_number guard";
-	}
-	if (
-		!code.includes(
-			"Invalid range mode: start_line/end_line must be positive integers.",
-		)
-	) {
-		return "Missing invalid range mode guard";
-	}
-	// Check for the guard variables (semantic names from template, not minified vars)
-	if (!code.includes("hasStartKey")) {
-		return "Missing start_line null guard for explicit range mode";
-	}
-	if (!code.includes("hasEndKey")) {
-		return "Missing end_line null guard for explicit range mode";
-	}
-	if (
-		!code.includes(
-			"Invalid range mode: start_line is required when end_line is provided.",
-		)
-	) {
-		return "Missing end_line without start_line guard";
-	}
-	return null;
+	validateMethod: t.ObjectMethod | null;
+	callMethod: t.ObjectMethod | null;
 }
 
 function verifyEditPromptAndHook(ctx: EditVerifyContext): string | null {
-	const { code, ast } = ctx;
+	const { code } = ctx;
 	if (!code.includes("EXTENDED_EDIT_PREVIEW_v1")) {
 		return "Missing Edit approval preview marker injection";
 	}
-	if (!code.includes("Edit files using multiple modes")) {
+	if (!code.includes("Edit files using string replace or batch")) {
 		return "Missing updated Edit tool description";
-	}
-	if (!code.includes("Diff format reference")) {
-		return "Missing diff format reference section";
 	}
 	if (!code.includes("Error recovery")) {
 		return "Missing error recovery guidance";
@@ -1263,73 +1081,19 @@ function verifyEditPromptAndHook(ctx: EditVerifyContext): string | null {
 	if (!code.includes("_previewResult")) {
 		return "Preview block does not use unified normalize+apply pipeline";
 	}
-	if (code.includes("_previewLineInsert") || code.includes("_previewRange")) {
-		return "Legacy per-mode preview generators still present";
-	}
-	if (!code.includes("Number.isInteger(C)")) {
-		return "Line sanitizer no longer enforces integer-only line/range values";
-	}
-	if (code.includes("C = Math.floor(C)")) {
-		return "Line sanitizer still floors non-integer line/range values";
-	}
-	if (code.includes("if (C < 1) C = 1")) {
-		return "Line sanitizer still clamps non-positive line/range values to 1";
-	}
-	if (
-		!code.includes(
-			"Unsupported diff hunk: pure insertion hunks must include at least one context or removal line.",
-		)
-	) {
-		return "Missing pure-insertion diff hunk guard";
-	}
-	if (!hasRegexGlobalFlagStrip(ast)) {
-		return "Regex mode still allows /.../g to bypass replace_all semantics";
-	}
-	if (
-		!code.includes(
-			"old_string cannot be combined with explicit modes (diff, pattern, line_number, start_line/end_line).",
-		)
-	) {
-		return "Missing mixed old_string + explicit-mode guard";
-	}
-	if (code.includes("Values beyond file length are clamped to file bounds")) {
-		return "Prompt still claims range overflow clamping";
+	if (!code.includes("sd 'pattern' 'replacement'") || !code.includes("sg -p")) {
+		return "Missing Bash alternative guidance for regex/structural transforms";
 	}
 	return null;
 }
 
 function verifyEditValidateAndCallFlow(ctx: EditVerifyContext): string | null {
-	const { code, ast } = ctx;
-	if (
-		!code.includes(
-			"provide either explicit mode fields (diff/pattern/line_number/start_line) or string mode fields (old_string/new_string).",
-		)
-	) {
-		return "Missing empty-edit payload guard";
-	}
-	if (
-		!code.includes(
-			"old_string and new_string cannot both be empty. Use range/line mode for positional edits.",
-		)
-	) {
+	const { code, validateMethod } = ctx;
+	if (!code.includes("old_string and new_string cannot both be empty.")) {
 		return "Missing empty-string no-op guard";
 	}
-	if (
-		!code.includes(
-			"Invalid range: start_line exceeds file length. Use line mode for append-after-end behavior.",
-		)
-	) {
-		return "Missing range start overflow guard";
-	}
-	if (
-		!code.includes(
-			"Invalid range: start_line exceeds file length. Use start_line:1 for empty files or line mode to append.",
-		)
-	) {
-		return "Missing empty-file range start overflow guard";
-	}
 
-	const validateBypass = inspectValidateExtendedBypass(ast);
+	const validateBypass = inspectValidateExtendedBypass(validateMethod);
 	if (validateBypass.hasFileReadsInBypass) {
 		return "validateInput still performs file reads during extended mode preprocessing";
 	}
@@ -1343,62 +1107,128 @@ function verifyEditValidateAndCallFlow(ctx: EditVerifyContext): string | null {
 	) {
 		return "Extended validate bypass does not preserve structural notebook edit rejection";
 	}
-	if (code.includes("_claudeWriteFile(J, L.content, encoding, H)")) {
-		return "Legacy extended call path still writes files directly";
-	}
-	if (
-		code.includes(
-			"_context.readFileState.set(J, { content: L.content, timestamp: Date.now() })",
-		)
-	) {
-		return "Legacy extended call path still mutates readFileState directly";
-	}
 	if (!code.includes("_input.old_string = W;")) {
 		return "Extended call path does not canonicalize old_string from current file";
 	}
 	if (!code.includes("_input.new_string = L.content;")) {
 		return "Extended call path does not canonicalize new_string from transformed content";
 	}
-	if (!code.includes("_input.replace_all = false;")) {
-		return "Extended call path does not force replace_all=false after canonicalization";
-	}
 	if (!code.includes("_args[0] = _input;")) {
 		return "Extended call preprocess does not propagate normalized input back into call arguments";
-	}
-	if (code.includes("File must be read first")) {
-		return "Read-first guard display text still present";
-	}
-	if (code.includes("File has not been read yet")) {
-		return "Read-first guard matcher text still present";
 	}
 	return null;
 }
 
 function verifyEditAliasNormalization(ctx: EditVerifyContext): string | null {
-	const { code, ast } = ctx;
-	if (!code.includes('hasOwn("pattern")')) {
-		return "Extended call/validate preprocess does not treat regex pattern as structured mode";
+	const { code } = ctx;
+	if (!code.includes("oldString !== undefined")) {
+		return "Edit alias normalization is missing oldString -> old_string support";
 	}
-	if (!code.includes("start_line: A.start_line ?? A.startLine")) {
-		return "Top-level edit normalization is missing startLine -> start_line alias support";
+	if (!code.includes("newString !== undefined")) {
+		return "Edit alias normalization is missing newString -> new_string support";
 	}
-	if (!code.includes("end_line: A.end_line ?? A.endLine")) {
-		return "Top-level edit normalization is missing endLine -> end_line alias support";
+	return null;
+}
+
+function hasFunctionDeclaration(ast: t.File, name: string): boolean {
+	let found = false;
+	traverse.default(ast, {
+		FunctionDeclaration(path) {
+			if (t.isIdentifier(path.node.id, { name })) {
+				found = true;
+				path.stop();
+			}
+		},
+	});
+	return found;
+}
+
+function hasIdeDiffConfigGuard(ast: t.File): boolean {
+	let found = false;
+
+	traverse.default(ast, {
+		ConditionalExpression(path) {
+			if (found) {
+				path.stop();
+				return;
+			}
+			if (!t.isNullLiteral(path.node.alternate)) return;
+			if (!t.isConditionalExpression(path.node.consequent)) return;
+
+			const nested = path.node.consequent;
+			if (!t.isCallExpression(nested.test)) return;
+			if (
+				!t.isIdentifier(nested.test.callee, {
+					name: "_claudeEditHasExtendedFields",
+				})
+			) {
+				return;
+			}
+			if (nested.test.arguments.length !== 1) return;
+			const [guardArg] = nested.test.arguments;
+			// Guard arg must wrap DECODE (or be a direct identifier for legacy)
+			let hasDecodeWrapper = false;
+			if (t.isIdentifier(guardArg)) {
+				hasDecodeWrapper = true;
+			} else if (
+				t.isCallExpression(guardArg) &&
+				t.isIdentifier(guardArg.callee, {
+					name: EXTENDED_EDIT_TRANSPORT_DECODE,
+				}) &&
+				guardArg.arguments.length === 1
+			) {
+				hasDecodeWrapper = true;
+			}
+			if (!hasDecodeWrapper) return;
+			if (!t.isNullLiteral(nested.consequent)) return;
+			if (!t.isCallExpression(nested.alternate)) return;
+			if (!t.isMemberExpression(nested.alternate.callee)) return;
+			if (
+				!t.isIdentifier(nested.alternate.callee.property, {
+					name: "getConfig",
+				})
+			) {
+				return;
+			}
+			if (nested.alternate.arguments.length !== 1) return;
+
+			found = true;
+			path.stop();
+		},
+	});
+
+	return found;
+}
+
+function verifyExtendedEditTransportWiring(
+	ctx: EditVerifyContext,
+): string | null {
+	if (!hasFunctionDeclaration(ctx.ast, EXTENDED_EDIT_TRANSPORT_ENCODE)) {
+		return "Missing extended Edit transport encode helper";
 	}
-	if (!code.includes("line_number: A.line_number ?? A.lineNumber")) {
-		return "Top-level edit normalization is missing lineNumber -> line_number alias support";
+	if (!hasFunctionDeclaration(ctx.ast, EXTENDED_EDIT_TRANSPORT_DECODE)) {
+		return "Missing extended Edit transport decode helper";
 	}
-	if (!code.includes("lineNumber !== undefined")) {
-		return "Preprocessing switch guard missing lineNumber alias";
+	if (ctx.code.includes("_claudeGetExtendedEditToolSchema")) {
+		return "Extended Edit still injects schema replacement helpers instead of transport-only wiring";
 	}
-	if (!code.includes("startLine !== undefined")) {
-		return "Preprocessing switch guard missing startLine alias";
+	if (ctx.code.includes("_claudeGetExtendedEditTool")) {
+		return "Extended Edit still injects replacement tool helpers instead of transport-only wiring";
 	}
-	if (!code.includes("endLine !== undefined")) {
-		return "Preprocessing switch guard missing endLine alias";
+	if (
+		!ctx.code.includes(`inputSchema.parse(${EXTENDED_EDIT_TRANSPORT_ENCODE}(`)
+	) {
+		return "Extended Edit transport does not wrap Edit.inputSchema.parse inputs";
 	}
-	if (!hasStructuredHintOldNewGuard(ast)) {
-		return "Top-level explicit modes can still be broken by unconditional old_string coercion";
+	if (!ctx.code.includes(`${EXTENDED_EDIT_TRANSPORT_DECODE}(_input);`)) {
+		return "Extended Edit transport does not decode structured payloads before validate/call handling";
+	}
+	return null;
+}
+
+function verifyIdeDiffConfigGuard(ctx: EditVerifyContext): string | null {
+	if (!hasIdeDiffConfigGuard(ctx.ast)) {
+		return "Extended edit confirmation still routes structured payloads through ideDiffSupport.getConfig";
 	}
 	return null;
 }
@@ -1424,20 +1254,22 @@ export const editTool: Patch = {
 		if (!verifyAst) {
 			return "Unable to parse AST during edit-extended verification";
 		}
-		const schemaObject = findEditSchemaObject(verifyAst);
-		if (!schemaObject) {
-			return "Unable to resolve Edit schema object for verification";
+		const editToolPath = findNamedToolObjectPath(verifyAst, "Edit");
+		if (!editToolPath) {
+			return "Unable to resolve Edit tool object for verification";
 		}
 		const context: EditVerifyContext = {
 			code,
 			ast: verifyAst,
-			schemaObject,
+			validateMethod: getToolObjectMethod(editToolPath.node, "validateInput"),
+			callMethod: getToolObjectMethod(editToolPath.node, "call"),
 		};
 		const validators = [
-			verifyEditSchema,
 			verifyEditPromptAndHook,
+			verifyExtendedEditTransportWiring,
 			verifyEditValidateAndCallFlow,
 			verifyEditAliasNormalization,
+			verifyIdeDiffConfigGuard,
 		];
 		for (const validator of validators) {
 			const result = validator(context);

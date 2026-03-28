@@ -161,7 +161,22 @@ function createAgentArrayFilterMutator(): traverse.Visitor {
 						const bindingPath = binding.path;
 						if (!t.isVariableDeclarator(bindingPath.node)) return true;
 
-						const init = bindingPath.node.init;
+						let init = bindingPath.node.init;
+
+						// Handle lazy init pattern: var X; var Y = J(() => { X = {...} })
+						// The binding's init is undefined; the actual object is assigned
+						// inside a J() callback. Follow the constant violations to find it.
+						if (!t.isObjectExpression(init)) {
+							for (const violation of binding.constantViolations) {
+								if (
+									violation.isAssignmentExpression() &&
+									t.isObjectExpression(violation.node.right)
+								) {
+									init = violation.node.right;
+									break;
+								}
+							}
+						}
 						if (!t.isObjectExpression(init)) return true;
 
 						const agentTypeProp = getObjectPropertyByName(init, "agentType");
@@ -182,6 +197,75 @@ function createAgentArrayFilterMutator(): traverse.Visitor {
 					if (filteredElements.length < elements.length) {
 						decl.init.elements = filteredElements;
 					}
+
+					// Also handle .push() calls on the same array variable.
+					// Pattern: H.push(e7f) where e7f is a disabled agent.
+					const arrayVarName = decl.id.name;
+					path.traverse({
+						CallExpression(pushPath: any) {
+							const callee = pushPath.node.callee;
+							if (!t.isMemberExpression(callee)) return;
+							if (!t.isIdentifier(callee.object, { name: arrayVarName }))
+								return;
+							if (
+								!t.isIdentifier(callee.property, { name: "push" }) &&
+								!t.isStringLiteral(callee.property, { value: "push" })
+							)
+								return;
+
+							const filteredArgs = pushPath.node.arguments.filter(
+								(arg: t.Expression) => {
+									if (!t.isIdentifier(arg)) return true;
+									const argBinding = path.scope.getBinding(arg.name);
+									if (!argBinding) return true;
+									if (!t.isVariableDeclarator(argBinding.path.node))
+										return true;
+
+									let argInit = argBinding.path.node.init;
+									if (!t.isObjectExpression(argInit)) {
+										for (const v of argBinding.constantViolations) {
+											if (
+												v.isAssignmentExpression() &&
+												t.isObjectExpression(v.node.right)
+											) {
+												argInit = v.node.right;
+												break;
+											}
+										}
+									}
+									if (!t.isObjectExpression(argInit)) return true;
+
+									const agentTypeProp = getObjectPropertyByName(
+										argInit,
+										"agentType",
+									);
+									const agentType = resolveObjectPropertyStringValue(
+										argBinding.path,
+										agentTypeProp,
+									);
+									const sourceProp = getObjectPropertyByName(argInit, "source");
+									const isBI =
+										resolveObjectPropertyStringValue(
+											argBinding.path,
+											sourceProp,
+										) === "built-in";
+
+									if (!agentType || !isBI) return true;
+									return !AGENTS_TO_DISABLE.has(agentType);
+								},
+							);
+
+							if (filteredArgs.length === 0) {
+								// Remove the entire push statement
+								const exprStmt = pushPath.parentPath;
+								if (exprStmt?.isExpressionStatement()) {
+									exprStmt.remove();
+								}
+							} else if (filteredArgs.length < pushPath.node.arguments.length) {
+								pushPath.node.arguments = filteredArgs;
+							}
+						},
+					});
 				}
 			}
 		},

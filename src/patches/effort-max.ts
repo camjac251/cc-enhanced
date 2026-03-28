@@ -1,25 +1,15 @@
 import traverse from "@babel/traverse";
 import * as t from "@babel/types";
 import type { Patch } from "../types.js";
-import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
+import {
+	getObjectKeyName,
+	getVerifyAst,
+	isFalseLike,
+	isTrueLike,
+} from "./ast-helpers.js";
 
-const INTERACTIVE_MAX_ERROR =
-	'Effort level "max" is not available in interactive mode.';
-const SUBSCRIBER_MAX_ERROR =
-	'Effort level "max" is not available for Claude.ai subscribers.';
 const MAX_NOTIFICATION_TEXT = "Effort set to max for this turn";
 const HIGH_NOTIFICATION_TEXT = "Effort set to high for this turn";
-const CLI_EFFORT_HELP = "Effort level for the current session (low, medium, high)";
-const CLI_EFFORT_HELP_PATCHED =
-	"Effort level for the current session (low, medium, high, max)";
-
-function objectLabelValue(
-	prop: t.ObjectProperty | t.ObjectMethod | t.SpreadElement,
-): string | null {
-	if (!t.isObjectProperty(prop)) return null;
-	if (getObjectKeyName(prop.key) !== "label") return null;
-	return t.isStringLiteral(prop.value) ? prop.value.value : null;
-}
 
 function objectValueValue(
 	prop: t.ObjectProperty | t.ObjectMethod | t.SpreadElement,
@@ -41,73 +31,119 @@ function getObjectProp(
 	return null;
 }
 
-function isEffortOptionObject(
+function getSingleIdentifierParam(
+	path: traverse.NodePath<t.Function>,
+): t.Identifier | null {
+	return path.node.params.length === 1 && t.isIdentifier(path.node.params[0])
+		? path.node.params[0]
+		: null;
+}
+
+function getReturnedExpression(
+	path: traverse.NodePath<t.Function>,
+): t.Expression | null {
+	const body = path.node.body;
+	if (t.isExpression(body)) return body;
+	if (body.body.length !== 1) return null;
+	const [statement] = body.body;
+	return t.isReturnStatement(statement) ? (statement.argument ?? null) : null;
+}
+
+function isLowerCasedParam(
 	node: t.Node | null | undefined,
-	label: string,
+	paramName: string,
+): boolean {
+	if (!node || !t.isCallExpression(node)) return false;
+	if (
+		!t.isMemberExpression(node.callee) ||
+		!t.isIdentifier(node.callee.object, { name: paramName }) ||
+		!t.isIdentifier(node.callee.property, { name: "toLowerCase" })
+	) {
+		return false;
+	}
+	return node.arguments.length === 0;
+}
+
+function isStringIncludesOnLowerCasedParam(
+	node: t.Node | null | undefined,
+	paramName: string,
+	value: string,
+): boolean {
+	if (!node || !t.isCallExpression(node)) return false;
+	if (
+		!t.isMemberExpression(node.callee) ||
+		!t.isIdentifier(node.callee.property, { name: "includes" }) ||
+		node.arguments.length !== 1 ||
+		!t.isStringLiteral(node.arguments[0], { value })
+	) {
+		return false;
+	}
+	return isLowerCasedParam(node.callee.object, paramName);
+}
+
+function isLegacyMaxCapabilityGate(
+	path: traverse.NodePath<t.Function>,
+): boolean {
+	const param = getSingleIdentifierParam(path);
+	if (!param) return false;
+	const returned = getReturnedExpression(path);
+	if (isStringIncludesOnLowerCasedParam(returned, param.name, "opus-4-6")) {
+		return true;
+	}
+
+	const body = path.node.body;
+	if (!t.isBlockStatement(body)) return false;
+	// 2.1.84+ prepends a server flag check: let $ = Ms(H, "max_effort"); if ($ !== void 0) return $;
+	// Strip optional leading statements to find the 2-statement opus guard + fallback.
+	const stmts = body.body;
+	if (stmts.length < 2 || stmts.length > 4) return false;
+	const [guard, fallback] = stmts.slice(-2);
+	if (!t.isIfStatement(guard) || !t.isReturnStatement(fallback)) return false;
+	if (!isFalseLike(fallback.argument)) return false;
+	if (
+		!t.isReturnStatement(guard.consequent) ||
+		(guard.alternate !== null && !isFalseLike(guard.alternate)) ||
+		!isTrueLike(guard.consequent.argument)
+	) {
+		return false;
+	}
+	return isStringIncludesOnLowerCasedParam(guard.test, param.name, "opus-4-6");
+}
+
+function isPatchedMaxCapabilityGate(
+	path: traverse.NodePath<t.Function>,
+): boolean {
+	const returned = getReturnedExpression(path);
+	return !!returned && t.isBooleanLiteral(returned, { value: true });
+}
+
+function hasEffortOptionValue(
+	node: t.Node | null | undefined,
 	value: string,
 ): node is t.ObjectExpression {
 	if (!node || !t.isObjectExpression(node)) return false;
-	let hasLabel = false;
-	let hasValue = false;
-	for (const prop of node.properties) {
-		hasLabel ||= objectLabelValue(prop) === label;
-		hasValue ||= objectValueValue(prop) === value;
-	}
-	return hasLabel && hasValue;
+	return node.properties.some((prop) => objectValueValue(prop) === value);
 }
 
-function isEffortPickerArray(path: traverse.NodePath<t.ArrayExpression>): boolean {
+function isEffortPickerArray(
+	path: traverse.NodePath<t.ArrayExpression>,
+): boolean {
 	const values = new Set<string>();
-	const labels = new Set<string>();
 	for (const element of path.node.elements) {
 		if (!element || !t.isObjectExpression(element)) continue;
 		for (const prop of element.properties) {
-			const label = objectLabelValue(prop);
-			if (label) labels.add(label);
 			const value = objectValueValue(prop);
 			if (value) values.add(value);
 		}
 	}
-	return (
-		values.has("low") &&
-		values.has("medium") &&
-		values.has("high") &&
-		labels.has("Use medium effort (recommended)") &&
-		labels.has("Use high effort") &&
-		labels.has("Use low effort")
-	);
+	return values.has("low") && values.has("medium") && values.has("high");
 }
 
-function isInteractiveMaxGuard(path: traverse.NodePath<t.IfStatement>): boolean {
-	const test = path.node.test;
-	if (
-		!t.isLogicalExpression(test, { operator: "&&" }) ||
-		!t.isBinaryExpression(test.left, { operator: "===" }) ||
-		!t.isMemberExpression(test.left.left) ||
-		!t.isIdentifier(test.left.left.object, { name: "K" }) ||
-		!t.isIdentifier(test.left.left.property, { name: "effort" }) ||
-		!t.isStringLiteral(test.left.right, { value: "max" })
-	) {
-		return false;
-	}
-	if (!t.isLogicalExpression(test.right, { operator: "||" })) return false;
-
-	let hasInteractiveMessage = false;
-	let hasSubscriberMessage = false;
-	path.traverse({
-		Function(innerPath) {
-			innerPath.skip();
-		},
-		StringLiteral(stringPath) {
-			if (stringPath.node.value === INTERACTIVE_MAX_ERROR) {
-				hasInteractiveMessage = true;
-			}
-			if (stringPath.node.value === SUBSCRIBER_MAX_ERROR) {
-				hasSubscriberMessage = true;
-			}
-		},
-	});
-	return hasInteractiveMessage && hasSubscriberMessage;
+function makeMaxEffortOption(): t.ObjectExpression {
+	return t.objectExpression([
+		t.objectProperty(t.identifier("label"), t.stringLiteral("Max")),
+		t.objectProperty(t.identifier("value"), t.stringLiteral("max")),
+	]);
 }
 
 function isUltrathinkLevelObject(node: t.ObjectExpression): boolean {
@@ -152,63 +188,47 @@ function isPatchedUltrathinkLevelObject(node: t.ObjectExpression): boolean {
 	return hasType && hasLevel;
 }
 
-function isGhqSwitch(path: traverse.NodePath<t.SwitchStatement>): boolean {
-	if (!t.isIdentifier(path.node.discriminant, { name: "H" })) return false;
-	const seen = new Set<string>();
-	for (const switchCase of path.node.cases) {
-		if (switchCase.test && t.isStringLiteral(switchCase.test)) {
-			seen.add(switchCase.test.value);
-		}
-	}
-	return seen.has("low") && seen.has("medium") && seen.has("high") && seen.has("max");
-}
-
-function switchCaseReturns(
-	switchCase: t.SwitchCase,
-	value: number,
-): boolean {
-	return switchCase.consequent.some(
-		(statement) =>
-			t.isReturnStatement(statement) &&
-			t.isNumericLiteral(statement.argument, { value }),
-	);
-}
-
-function makeMaxEffortOption(): t.ObjectExpression {
-	return t.objectExpression([
-		t.objectProperty(
-			t.identifier("label"),
-			t.stringLiteral("Use max effort"),
-		),
-		t.objectProperty(t.identifier("value"), t.stringLiteral("max")),
-	]);
-}
-
 function createEffortMaxMutator(): traverse.Visitor {
-	let patchedInteractiveGuard = 0;
+	let patchedMaxCapabilityGate = 0;
 	let patchedPicker = 0;
 	let patchedUltrathinkLevel = 0;
 	let patchedNotification = 0;
-	let patchedMeter = 0;
-	let patchedMeterBarCount = 0;
-	let patchedCliHelp = 0;
+
+	function patchFunction(path: traverse.NodePath<t.Function>): void {
+		if (!isLegacyMaxCapabilityGate(path)) return;
+
+		path
+			.get("body")
+			.replaceWith(
+				t.blockStatement([t.returnStatement(t.booleanLiteral(true))]),
+			);
+		patchedMaxCapabilityGate += 1;
+	}
 
 	return {
-		IfStatement(path) {
-			if (!isInteractiveMaxGuard(path)) return;
-			path.node.test = t.booleanLiteral(false);
-			patchedInteractiveGuard += 1;
+		FunctionDeclaration(path) {
+			patchFunction(path);
+		},
+
+		FunctionExpression(path) {
+			patchFunction(path);
+		},
+
+		ArrowFunctionExpression(path) {
+			patchFunction(path);
 		},
 
 		ArrayExpression(path) {
 			if (!isEffortPickerArray(path)) return;
-			const hasMax = path.node.elements.some((element) =>
-				isEffortOptionObject(element, "Use max effort", "max"),
-			);
-			if (!hasMax) {
-				path.node.elements.splice(1, 0, makeMaxEffortOption());
-				patchedPicker += 1;
+			if (
+				path.node.elements.some((element) =>
+					hasEffortOptionValue(element, "max"),
+				)
+			) {
+				return;
 			}
+			path.node.elements.splice(1, 0, makeMaxEffortOption());
+			patchedPicker += 1;
 		},
 
 		ObjectExpression(path) {
@@ -234,57 +254,23 @@ function createEffortMaxMutator(): traverse.Visitor {
 			}
 		},
 
-		SwitchStatement(path) {
-			if (!isGhqSwitch(path)) return;
-			for (const switchCase of path.node.cases) {
-				if (switchCase.test && t.isStringLiteral(switchCase.test, { value: "max" })) {
-					if (!switchCaseReturns(switchCase, 4)) {
-						switchCase.consequent = [t.returnStatement(t.numericLiteral(4))];
-						patchedMeter += 1;
-					}
-				}
-			}
-		},
-
-		VariableDeclarator(path) {
-			if (
-				t.isIdentifier(path.node.id, { name: "Uhq" }) &&
-				t.isNumericLiteral(path.node.init, { value: 3 })
-			) {
-				path.node.init = t.numericLiteral(4);
-				patchedMeterBarCount += 1;
-			}
-		},
-
-		StringLiteral(path) {
-			if (path.node.value === CLI_EFFORT_HELP) {
-				path.node.value = CLI_EFFORT_HELP_PATCHED;
-				patchedCliHelp += 1;
-			}
-		},
-
 		Program: {
 			exit() {
-				if (patchedInteractiveGuard === 0) {
-					console.warn("effort-max: Could not find interactive max-effort guard");
+				if (patchedMaxCapabilityGate === 0) {
+					console.warn("effort-max: Could not find max-capability gate");
 				}
 				if (patchedPicker === 0) {
 					console.warn("effort-max: Could not find effort picker array");
 				}
 				if (patchedUltrathinkLevel === 0) {
-					console.warn("effort-max: Could not find ultrathink effort level object");
+					console.warn(
+						"effort-max: Could not find ultrathink effort level object",
+					);
 				}
 				if (patchedNotification === 0) {
-					console.warn("effort-max: Could not find ultrathink notification text");
-				}
-				if (patchedMeter === 0) {
-					console.warn("effort-max: Could not find max effort meter case");
-				}
-				if (patchedMeterBarCount === 0) {
-					console.warn("effort-max: Could not find effort meter bar count");
-				}
-				if (patchedCliHelp === 0) {
-					console.warn("effort-max: Could not find CLI effort help text");
+					console.warn(
+						"effort-max: Could not find ultrathink notification text",
+					);
 				}
 			},
 		},
@@ -305,42 +291,29 @@ export const effortMax: Patch = {
 		const verifyAst = getVerifyAst(_code, ast);
 		if (!verifyAst) return "Unable to parse AST during verification";
 
-		let hasInteractiveMaxGuard = false;
-		let hasPatchedInteractiveGuard = false;
-		let sawAnyInteractiveMaxGuardAnchor = false;
+		let hasLegacyMaxCapabilityGate = false;
+		let hasPatchedMaxCapabilityGate = false;
 		let hasPatchedPicker = false;
 		let hasUnpatchedUltrathinkLevel = false;
 		let hasPatchedUltrathinkLevel = false;
 		let hasHighUltrathinkNotification = false;
 		let hasMaxUltrathinkNotification = false;
-		let hasPatchedMeter = false;
-		let hasUnpatchedMeter = false;
-		let hasPatchedMeterBarCount = false;
-		let hasUnpatchedMeterBarCount = false;
-		let hasPatchedCliHelp = false;
 
 		traverse.default(verifyAst, {
-			IfStatement(path) {
-				if (isInteractiveMaxGuard(path)) {
-					hasInteractiveMaxGuard = true;
-					sawAnyInteractiveMaxGuardAnchor = true;
+			Function(path) {
+				if (isLegacyMaxCapabilityGate(path)) {
+					hasLegacyMaxCapabilityGate = true;
 				}
-				if (
-					t.isBooleanLiteral(path.node.test, { value: false }) &&
-					path.toString().includes(INTERACTIVE_MAX_ERROR) &&
-					path.toString().includes(SUBSCRIBER_MAX_ERROR)
-				) {
-					hasPatchedInteractiveGuard = true;
-					sawAnyInteractiveMaxGuardAnchor = true;
+				if (isPatchedMaxCapabilityGate(path)) {
+					hasPatchedMaxCapabilityGate = true;
 				}
 			},
 
 			ArrayExpression(path) {
-				if (isEffortPickerArray(path)) {
-					hasPatchedPicker = path.node.elements.some((element) =>
-						isEffortOptionObject(element, "Use max effort", "max"),
-					);
-				}
+				if (!isEffortPickerArray(path)) return;
+				hasPatchedPicker = path.node.elements.some((element) =>
+					hasEffortOptionValue(element, "max"),
+				);
 			},
 
 			ObjectExpression(path) {
@@ -359,41 +332,17 @@ export const effortMax: Patch = {
 				if (path.node.value === MAX_NOTIFICATION_TEXT) {
 					hasMaxUltrathinkNotification = true;
 				}
-				if (path.node.value === CLI_EFFORT_HELP_PATCHED) {
-					hasPatchedCliHelp = true;
-				}
-			},
-
-			SwitchStatement(path) {
-				if (!isGhqSwitch(path)) return;
-				for (const switchCase of path.node.cases) {
-					if (!switchCase.test || !t.isStringLiteral(switchCase.test, { value: "max" })) {
-						continue;
-					}
-					if (switchCaseReturns(switchCase, 4)) hasPatchedMeter = true;
-					if (switchCaseReturns(switchCase, 3)) hasUnpatchedMeter = true;
-				}
-			},
-
-			VariableDeclarator(path) {
-				if (!t.isIdentifier(path.node.id, { name: "Uhq" })) return;
-				if (t.isNumericLiteral(path.node.init, { value: 4 })) {
-					hasPatchedMeterBarCount = true;
-				}
-				if (t.isNumericLiteral(path.node.init, { value: 3 })) {
-					hasUnpatchedMeterBarCount = true;
-				}
 			},
 		});
 
-		if (hasInteractiveMaxGuard) {
-			return "Interactive max-effort guard is still present";
+		if (hasLegacyMaxCapabilityGate) {
+			return 'Model max-capability gate still restricts "max" to Opus 4.6';
 		}
-		if (sawAnyInteractiveMaxGuardAnchor && !hasPatchedInteractiveGuard) {
-			return "Did not find patched max-effort guard anchor";
+		if (!hasPatchedMaxCapabilityGate) {
+			return "Did not find patched max-capability gate";
 		}
 		if (!hasPatchedPicker) {
-			return 'Effort picker does not expose "Use max effort"';
+			return 'Effort picker does not expose "max"';
 		}
 		if (hasUnpatchedUltrathinkLevel) {
 			return 'Ultrathink still sets effort level to "high"';
@@ -407,22 +356,6 @@ export const effortMax: Patch = {
 		if (!hasMaxUltrathinkNotification) {
 			return 'Did not find "Effort set to max for this turn" notification';
 		}
-		if (hasUnpatchedMeter) {
-			return 'Effort meter still renders "max" with high-tier bars';
-		}
-		if (!hasPatchedMeter) {
-			return 'Did not find patched "max" effort meter case';
-		}
-		if (hasUnpatchedMeterBarCount) {
-			return "Effort meter bar count is still capped at 3";
-		}
-		if (!hasPatchedMeterBarCount) {
-			return "Did not find patched effort meter bar count";
-		}
-		if (!hasPatchedCliHelp) {
-			return 'CLI help text still omits "max" effort';
-		}
-
 		return true;
 	},
 };

@@ -109,6 +109,55 @@ interface SystemPromptVariant {
 	text: string;
 }
 
+interface SkillPrompt {
+	name: string;
+	slug: string;
+	sourceSymbol: string | null;
+	description: string | null;
+	whenToUse: string | null;
+	argumentHint: string | null;
+	userInvocable: boolean;
+	disableModelInvocation: boolean;
+	allowedTools: string[];
+	promptTexts: string[];
+}
+
+type CorpusCategory =
+	| "tool-prompt"
+	| "agent-prompt"
+	| "skill-prompt"
+	| "system-section"
+	| "system-variant"
+	| "system-reminder"
+	| "internal-agent"
+	| "data-reference"
+	| "output-style"
+	| "uncategorized";
+
+interface CategorizedCorpusEntry {
+	id: string;
+	category: CorpusCategory;
+	attribution: string | null;
+	name: string;
+	description: string;
+	text: string;
+	start: number;
+	end: number;
+}
+
+interface SystemReminder {
+	slug: string;
+	sourceSymbol: string | null;
+	template: string;
+	isDynamic: boolean;
+}
+
+interface ToolSubSection {
+	heading: string;
+	slug: string;
+	text: string;
+}
+
 interface RenderContext {
 	aliases: Map<string, string>;
 	stringBindings: Map<string, string>;
@@ -1460,6 +1509,766 @@ function extractBuilderOutline(
 	};
 }
 
+function isValidSkillName(name: string): boolean {
+	return /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(name) && name.length <= 80;
+}
+
+function extractBooleanValue(
+	objectNode: t.ObjectExpression,
+	propertyName: string,
+): boolean | null {
+	const prop = getObjectProperty(objectNode, propertyName);
+	if (!prop || !t.isObjectProperty(prop)) return null;
+	if (t.isBooleanLiteral(prop.value)) return prop.value.value;
+	if (
+		t.isUnaryExpression(prop.value) &&
+		prop.value.operator === "!" &&
+		t.isNumericLiteral(prop.value.argument)
+	) {
+		return prop.value.argument.value === 0;
+	}
+	return null;
+}
+
+function extractStringArrayFromObject(
+	objectNode: t.ObjectExpression,
+	propertyName: string,
+	context: RenderContext,
+): string[] {
+	const prop = getObjectProperty(objectNode, propertyName);
+	if (!prop || !t.isObjectProperty(prop)) return [];
+	if (!t.isExpression(prop.value)) return [];
+	if (t.isArrayExpression(prop.value)) {
+		const result: string[] = [];
+		for (const elem of prop.value.elements) {
+			if (!elem || t.isSpreadElement(elem)) continue;
+			if (t.isStringLiteral(elem)) {
+				result.push(elem.value);
+			} else if (t.isExpression(elem)) {
+				const rendered = renderStringLikeNode(elem, context);
+				if (rendered) result.push(rendered);
+			}
+		}
+		return result;
+	}
+	if (t.isIdentifier(prop.value)) {
+		return [`\${${resolveIdentifierName(prop.value.name, context)}}`];
+	}
+	return [];
+}
+
+function extractTextFromSkillReturn(
+	expression: t.Expression,
+	context: RenderContext,
+): string | null {
+	if (!t.isArrayExpression(expression)) return null;
+	const parts: string[] = [];
+	for (const element of expression.elements) {
+		if (
+			!element ||
+			t.isSpreadElement(element) ||
+			!t.isObjectExpression(element)
+		) {
+			continue;
+		}
+		const typeProp = getObjectProperty(element, "type");
+		if (!typeProp || !t.isObjectProperty(typeProp)) continue;
+		if (!t.isStringLiteral(typeProp.value) || typeProp.value.value !== "text") {
+			continue;
+		}
+		const textProp = getObjectProperty(element, "text");
+		if (!textProp || !t.isObjectProperty(textProp)) continue;
+		if (!t.isExpression(textProp.value)) continue;
+		const resolved = renderPromptExpression(textProp.value, context);
+		if (resolved) parts.push(resolved);
+	}
+	return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
+function collectReturnedSkillTexts(
+	body: t.BlockStatement,
+	context: RenderContext,
+): string[] {
+	const texts: string[] = [];
+	const seen = new Set<string>();
+
+	function walkStatements(stmts: t.Statement[]): void {
+		for (const stmt of stmts) {
+			if (
+				t.isReturnStatement(stmt) &&
+				stmt.argument &&
+				t.isExpression(stmt.argument)
+			) {
+				const text = extractTextFromSkillReturn(stmt.argument, context);
+				if (text && text.length >= 50 && !seen.has(text)) {
+					seen.add(text);
+					texts.push(text);
+				}
+			} else if (t.isIfStatement(stmt)) {
+				walkBlock(stmt.consequent);
+				if (stmt.alternate) walkBlock(stmt.alternate);
+			} else if (t.isBlockStatement(stmt)) {
+				walkStatements(stmt.body);
+			} else if (t.isTryStatement(stmt)) {
+				walkStatements(stmt.block.body);
+			} else if (t.isSwitchStatement(stmt)) {
+				for (const c of stmt.cases) walkStatements(c.consequent);
+			}
+		}
+	}
+
+	function walkBlock(node: t.Statement): void {
+		if (t.isBlockStatement(node)) walkStatements(node.body);
+		else walkStatements([node]);
+	}
+
+	walkStatements(body.body);
+	return texts;
+}
+
+function extractSkillPromptTexts(
+	functionNode: FunctionLikeNode,
+	context: RenderContext,
+): string[] {
+	if (!t.isBlockStatement(functionNode.body)) return [];
+	const localExprs = collectLocalBindings(functionNode.body.body);
+	const saved = new Map<string, string | undefined>();
+	for (const [name, expr] of localExprs) {
+		saved.set(name, context.stringBindings.get(name));
+		const resolved = renderPromptExpression(expr, context);
+		if (resolved !== null) context.stringBindings.set(name, resolved);
+	}
+	try {
+		return collectReturnedSkillTexts(functionNode.body, context);
+	} finally {
+		for (const [name, original] of saved) {
+			if (original === undefined) context.stringBindings.delete(name);
+			else context.stringBindings.set(name, original);
+		}
+	}
+}
+
+function collectSkillPrompts(
+	ast: t.File,
+	context: RenderContext,
+): SkillPrompt[] {
+	const byName = new Map<string, SkillPrompt>();
+	const usedSlugs = new Set<string>();
+
+	traverse.default(ast, {
+		ObjectExpression(pathRef) {
+			const nameProp = getObjectProperty(pathRef.node, "name");
+			const getPromptProp =
+				getObjectProperty(pathRef.node, "getPromptForCommand") ??
+				getObjectProperty(pathRef.node, "getPromptWhileMarketplaceIsPrivate");
+			if (!nameProp || !getPromptProp) return;
+
+			const name = extractPropertyText(nameProp, context)?.trim();
+			if (!name || !isValidSkillName(name)) return;
+
+			// Skip explicitly disabled skills: isEnabled: () => !1
+			const isEnabledProp = getObjectProperty(pathRef.node, "isEnabled");
+			if (isEnabledProp && t.isObjectProperty(isEnabledProp)) {
+				const val = isEnabledProp.value;
+				if (
+					t.isArrowFunctionExpression(val) &&
+					!t.isBlockStatement(val.body) &&
+					t.isUnaryExpression(val.body) &&
+					val.body.operator === "!" &&
+					t.isNumericLiteral(val.body.argument) &&
+					val.body.argument.value === 1
+				) {
+					return;
+				}
+			}
+
+			const descProp = getObjectProperty(pathRef.node, "description");
+			const description = descProp
+				? (extractPropertyText(descProp, context)?.trim() ?? null)
+				: null;
+
+			const whenToUseProp = getObjectProperty(pathRef.node, "whenToUse");
+			const whenToUse = whenToUseProp
+				? (extractPropertyText(whenToUseProp, context)?.trim() ?? null)
+				: null;
+
+			const argHintProp = getObjectProperty(pathRef.node, "argumentHint");
+			const argumentHint = argHintProp
+				? (extractPropertyText(argHintProp, context)?.trim() ?? null)
+				: null;
+
+			const userInvocable =
+				extractBooleanValue(pathRef.node, "userInvocable") ?? false;
+			const disableModelInvocation =
+				extractBooleanValue(pathRef.node, "disableModelInvocation") ?? false;
+			const allowedTools = extractStringArrayFromObject(
+				pathRef.node,
+				"allowedTools",
+				context,
+			);
+
+			const promptFunction = getFunctionFromPromptProperty(
+				getPromptProp,
+				context,
+			);
+			let promptTexts: string[] = [];
+			if (promptFunction) {
+				promptTexts = extractSkillPromptTexts(promptFunction, context);
+			}
+			// Fallback: try getPromptWhileMarketplaceIsPrivate
+			if (promptTexts.length === 0) {
+				const marketplaceProp = getObjectProperty(
+					pathRef.node,
+					"getPromptWhileMarketplaceIsPrivate",
+				);
+				if (marketplaceProp) {
+					const mpFunc = getFunctionFromPromptProperty(
+						marketplaceProp,
+						context,
+					);
+					if (mpFunc) {
+						promptTexts = extractSkillPromptTexts(mpFunc, context);
+					}
+				}
+			}
+
+			const sourceSymbol = inferAssignedSymbol(pathRef);
+			const existing = byName.get(name);
+			const candidate: SkillPrompt = {
+				name,
+				slug: existing?.slug ?? createUniqueSlug(slugify(name), usedSlugs),
+				sourceSymbol,
+				description,
+				whenToUse,
+				argumentHint,
+				userInvocable,
+				disableModelInvocation,
+				allowedTools,
+				promptTexts,
+			};
+
+			if (
+				!existing ||
+				candidate.promptTexts.length > existing.promptTexts.length ||
+				(candidate.promptTexts.length === existing.promptTexts.length &&
+					(candidate.description?.length ?? 0) >
+						(existing.description?.length ?? 0))
+			) {
+				byName.set(name, candidate);
+			}
+		},
+	});
+
+	return [...byName.values()].sort((left, right) =>
+		left.name.localeCompare(right.name),
+	);
+}
+
+function collectSystemReminders(
+	ast: t.File,
+	context: RenderContext,
+): SystemReminder[] {
+	const reminders: SystemReminder[] = [];
+	const seen = new Set<string>();
+	const usedSlugs = new Set<string>();
+
+	traverse.default(ast, {
+		TemplateLiteral(pathRef) {
+			const text = renderTemplateLiteral(pathRef.node, context);
+			if (!text.includes("<system-reminder>")) return;
+			// Extract content between tags
+			const match = text.match(
+				/<system-reminder>\n?([\s\S]*?)\n?<\/system-reminder>/,
+			);
+			if (!match) return;
+			const content = match[1].trim();
+			if (content.length < 20 || seen.has(content)) return;
+			seen.add(content);
+			const firstLine = content.split("\n")[0].trim().slice(0, 60);
+			const slug = createUniqueSlug(
+				slugify(firstLine) || "reminder",
+				usedSlugs,
+			);
+			const isDynamic = content.includes("${");
+			const parentPath = pathRef.parentPath;
+			let sourceSymbol: string | null = null;
+			if (
+				parentPath?.isVariableDeclarator() &&
+				t.isIdentifier(parentPath.node.id)
+			) {
+				sourceSymbol = parentPath.node.id.name;
+			} else if (
+				parentPath?.isAssignmentExpression() &&
+				t.isIdentifier(parentPath.node.left)
+			) {
+				sourceSymbol = parentPath.node.left.name;
+			}
+			reminders.push({ slug, sourceSymbol, template: content, isDynamic });
+		},
+		StringLiteral(pathRef) {
+			const text = pathRef.node.value;
+			if (!text.includes("<system-reminder>")) return;
+			const match = text.match(
+				/<system-reminder>\n?([\s\S]*?)\n?<\/system-reminder>/,
+			);
+			if (!match) return;
+			const content = match[1].trim();
+			if (content.length < 20 || seen.has(content)) return;
+			seen.add(content);
+			const firstLine = content.split("\n")[0].trim().slice(0, 60);
+			const slug = createUniqueSlug(
+				slugify(firstLine) || "reminder",
+				usedSlugs,
+			);
+			reminders.push({
+				slug,
+				sourceSymbol: null,
+				template: content,
+				isDynamic: content.includes("${"),
+			});
+		},
+	});
+
+	// Also find system-reminder wrapper calls with static content
+	traverse.default(ast, {
+		CallExpression(pathRef) {
+			if (!t.isIdentifier(pathRef.node.callee)) return;
+			// Look for calls to the system-reminder wrapper (single-arg, returns <system-reminder>)
+			if (pathRef.node.arguments.length !== 1) return;
+			const arg = pathRef.node.arguments[0];
+			if (!t.isExpression(arg)) return;
+			const resolved = renderPromptExpression(arg, context);
+			if (!resolved || resolved.length < 20 || seen.has(resolved)) return;
+			// Verify this is the wrapper by checking if caller resolves to system-reminder pattern
+			const calleeName = pathRef.node.callee.name;
+			const calleeFn = context.functionBindings.get(calleeName);
+			if (!calleeFn || !t.isBlockStatement(calleeFn.body)) return;
+			// Check if function body contains "<system-reminder>"
+			let isReminderWrapper = false;
+			for (const stmt of calleeFn.body.body) {
+				if (!t.isReturnStatement(stmt) || !stmt.argument) continue;
+				const returnText = renderPromptExpression(
+					stmt.argument as t.Expression,
+					context,
+				);
+				if (returnText?.includes("<system-reminder>")) {
+					isReminderWrapper = true;
+					break;
+				}
+			}
+			if (!isReminderWrapper) return;
+			seen.add(resolved);
+			const firstLine = resolved.split("\n")[0].trim().slice(0, 60);
+			const slug = createUniqueSlug(
+				slugify(firstLine) || "reminder",
+				usedSlugs,
+			);
+			reminders.push({
+				slug,
+				sourceSymbol: null,
+				template: resolved,
+				isDynamic: resolved.includes("${"),
+			});
+		},
+	});
+
+	return reminders.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+function decomposeToolSubSections(prompt: string): ToolSubSection[] {
+	const lines = prompt.split("\n");
+	const sections: ToolSubSection[] = [];
+	const usedSlugs = new Set<string>();
+	let currentHeading: string | null = null;
+	let currentLines: string[] = [];
+
+	for (const line of lines) {
+		const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
+		if (headingMatch) {
+			if (currentHeading && currentLines.length > 0) {
+				const text = currentLines.join("\n").trim();
+				if (text.length > 0) {
+					sections.push({
+						heading: currentHeading,
+						slug: createUniqueSlug(slugify(currentHeading), usedSlugs),
+						text,
+					});
+				}
+			}
+			currentHeading = headingMatch[2].trim();
+			currentLines = [];
+		} else {
+			currentLines.push(line);
+		}
+	}
+	if (currentHeading && currentLines.length > 0) {
+		const text = currentLines.join("\n").trim();
+		if (text.length > 0) {
+			sections.push({
+				heading: currentHeading,
+				slug: createUniqueSlug(slugify(currentHeading), usedSlugs),
+				text,
+			});
+		}
+	}
+	return sections;
+}
+
+function categorizeByContent(text: string): CorpusCategory {
+	const lower = text.toLowerCase();
+
+	// System reminders
+	if (text.includes("<system-reminder>") || text.includes("</system-reminder>"))
+		return "system-reminder";
+
+	// Data references (API docs, SDK examples)
+	if (
+		(text.includes("```python") || text.includes("```typescript")) &&
+		(lower.includes("import anthropic") ||
+			lower.includes("from anthropic") ||
+			lower.includes("@anthropic-ai/sdk"))
+	)
+		return "data-reference";
+	if (
+		text.length > 3000 &&
+		(text.match(/```/g)?.length ?? 0) >= 4 &&
+		(lower.includes("api") || lower.includes("sdk"))
+	)
+		return "data-reference";
+
+	// Internal agent prompts (not registered agents, but instructional)
+	// Declarative framing: "You are a/an..."
+	if (
+		(text.startsWith("You are a") ||
+			text.startsWith("You are an") ||
+			text.startsWith("Your task is") ||
+			text.startsWith("Your job is")) &&
+		!text.includes("You are Claude Code") &&
+		!text.includes("You are the Claude guide") &&
+		!text.includes("You are an interactive agent")
+	)
+		return "internal-agent";
+	// Imperative framing: "Generate/Write/Describe/Analyze..."
+	if (
+		/^(Generate|Write|Describe|Analyze|Create|Extract|Summarize|Evaluate|Convert|Parse|Determine)\s/i.test(
+			text,
+		) &&
+		text.length < 5000
+	)
+		return "internal-agent";
+	// Task-oriented with "your task" or "output" pattern
+	if (
+		lower.includes("your task") &&
+		lower.includes("output") &&
+		text.length < 2000
+	)
+		return "internal-agent";
+	// Policy/classifier documents
+	if (
+		text.includes("<policy_spec>") ||
+		(lower.includes("risk level") && lower.includes("block"))
+	)
+		return "internal-agent";
+	// Fork/worker agent base prompts
+	if (
+		text.startsWith("You are a forked worker") ||
+		text.startsWith("You are an agent for Claude Code")
+	)
+		return "internal-agent";
+
+	// System reminders injected via wrapper without literal tags
+	if (
+		text.startsWith("Note:") ||
+		text.startsWith("Warning:") ||
+		text.startsWith("Async agent launched") ||
+		text.startsWith("A message arrived from") ||
+		text.startsWith("Do not duplicate this agent") ||
+		text.startsWith("Plan mode is active") ||
+		text.startsWith("You have been working on the task") ||
+		text.startsWith("Ultraplan complete") ||
+		text.startsWith("Permission to use") ||
+		text.startsWith("IMPORTANT: This message and these instructions are NOT")
+	)
+		return "system-reminder";
+	// Plan mode / re-entry / compact reminders
+	if (
+		lower.includes("plan mode") &&
+		(lower.includes("re-entering") ||
+			lower.includes("is active") ||
+			lower.includes("interview"))
+	)
+		return "system-reminder";
+
+	// Tool descriptions and parameters
+	if (
+		text.startsWith("Wait for a specified") ||
+		text.startsWith("Use a mouse and keyboard") ||
+		text.startsWith("Lists available resources") ||
+		text.startsWith("Fetches content from") ||
+		text.startsWith("Clear, concise description") ||
+		text.startsWith("IMPORTANT: Avoid using this tool")
+	)
+		return "tool-prompt";
+	// Tool descriptions by content patterns
+	if (
+		/^(Execute|Search|Launch|Read|Write|Edit|Create|Send|Set|Stop|Exit)\s/i.test(
+			text,
+		) &&
+		lower.includes("tool") &&
+		text.length < 3000
+	)
+		return "tool-prompt";
+
+	// System sections (headings or IMPORTANT blocks)
+	if (/^#\s/.test(text) && text.length > 200) return "system-section";
+	if (/^#{2,3}\s/.test(text) && text.length > 100) return "system-section";
+	if (
+		text.startsWith("IMPORTANT:") &&
+		text.length > 200 &&
+		!text.includes("NOT part of")
+	)
+		return "system-section";
+
+	// System variant
+	if (text.startsWith("You are Claude Code")) return "system-variant";
+	if (text.startsWith("You are the Claude guide")) return "system-variant";
+	if (text.startsWith("You are an interactive agent")) return "system-variant";
+
+	// Agent sub-prompts (explore/plan strengths, fork instructions, etc.)
+	if (
+		lower.includes("general-purpose agent") ||
+		lower.includes("agent for claude code") ||
+		lower.includes("forked worker") ||
+		lower.includes("agent threads always")
+	)
+		return "agent-prompt";
+
+	// Tool descriptions with leading whitespace
+	const trimmed = text.trimStart();
+	if (
+		(trimmed.startsWith("Reads a file") ||
+			trimmed.startsWith("Lists available resources") ||
+			trimmed.startsWith("Fetches content from") ||
+			trimmed.startsWith("- Fetches content") ||
+			trimmed.startsWith("Browser extension is not")) &&
+		text.length < 3000
+	)
+		return "tool-prompt";
+	// Tool prompt sub-parts (constraints, notes, usage)
+	if (
+		trimmed.startsWith("**Tool constraints") ||
+		trimmed.startsWith("**Browser Automation") ||
+		trimmed.startsWith("**IMPORTANT: Before using") ||
+		trimmed.startsWith("You can use the `run_in_background`") ||
+		trimmed.startsWith("Usage notes:")
+	)
+		return "tool-prompt";
+	// Tool descriptions starting with "# ToolName" after trim
+	if (/^#\s+[A-Z][a-zA-Z]+\b/.test(trimmed) && lower.includes("when to use"))
+		return "tool-prompt";
+
+	// Memory prompt sub-parts (XML-tagged descriptions)
+	if (
+		trimmed.startsWith("<description>") ||
+		trimmed.startsWith("<how_to_use>") ||
+		trimmed.startsWith("<when_to_save>") ||
+		lower.includes("memory extraction subagent")
+	)
+		return "internal-agent";
+
+	// System sections with leading whitespace
+	if (/^#{1,3}\s/.test(trimmed) && trimmed.length > 200)
+		return "system-section";
+	// Numbered/bold sub-sections of system prompt
+	if (
+		/^\d+\.\s+\*\*/.test(trimmed) &&
+		trimmed.length > 200 &&
+		lower.includes("agent")
+	)
+		return "system-section";
+
+	// Config/schema descriptions
+	if (
+		lower.includes("glob patterns") ||
+		lower.includes("regex pattern") ||
+		lower.includes("allowlist of") ||
+		lower.includes("user-configurable values")
+	)
+		return "data-reference";
+
+	// Error/status messages with instructional content
+	if (
+		text.startsWith("Error:") ||
+		trimmed.startsWith("Error:") ||
+		text.startsWith("SSH host key") ||
+		text.startsWith("Environment is configured") ||
+		text.startsWith("It looks like you're running") ||
+		text.startsWith("Enable weaker network") ||
+		text.startsWith("Browser extension is not")
+	)
+		return "system-reminder";
+
+	// Bridge/transport messages (not really prompts, but captured by corpus)
+	if (text.startsWith("[bridge:repl]")) return "uncategorized";
+
+	// Internal agents missed by imperative check (starts with newline or interpolation)
+	if (
+		trimmed.startsWith("You are coming up with") ||
+		trimmed.startsWith("You are now acting as") ||
+		trimmed.startsWith("Provide a concise response")
+	)
+		return "internal-agent";
+
+	// Session/plan state messages
+	if (
+		lower.includes("the user has indicated") ||
+		lower.includes("stop asking clarify")
+	)
+		return "system-reminder";
+
+	return "uncategorized";
+}
+
+function categorizeCorpus(
+	debugCorpus: Array<{
+		id: string;
+		name: string;
+		description: string;
+		text: string;
+	}>,
+	corpus: PromptCorpusEntry[],
+	tools: ToolPrompt[],
+	agents: AgentPrompt[],
+	skills: SkillPrompt[],
+	sections: SectionPrompt[],
+	reminders: SystemReminder[],
+): CategorizedCorpusEntry[] {
+	// Build text index for attribution
+	const attributionIndex: Array<{
+		textSnippet: string;
+		category: CorpusCategory;
+		attribution: string;
+	}> = [];
+
+	for (const tool of tools) {
+		if (tool.prompt) {
+			attributionIndex.push({
+				textSnippet: tool.prompt.slice(0, 200),
+				category: "tool-prompt",
+				attribution: `tool:${tool.name}`,
+			});
+		}
+		if (tool.description) {
+			attributionIndex.push({
+				textSnippet: tool.description.slice(0, 200),
+				category: "tool-prompt",
+				attribution: `tool:${tool.name}`,
+			});
+		}
+	}
+	for (const agent of agents) {
+		attributionIndex.push({
+			textSnippet: agent.prompt.slice(0, 200),
+			category: "agent-prompt",
+			attribution: `agent:${agent.agentType}`,
+		});
+	}
+	for (const skill of skills) {
+		if (skill.description) {
+			attributionIndex.push({
+				textSnippet: skill.description.slice(0, 200),
+				category: "skill-prompt",
+				attribution: `skill:${skill.name}`,
+			});
+		}
+		for (const pt of skill.promptTexts) {
+			attributionIndex.push({
+				textSnippet: pt.slice(0, 200),
+				category: "skill-prompt",
+				attribution: `skill:${skill.name}`,
+			});
+		}
+	}
+	for (const section of sections) {
+		for (const snippet of section.snippets) {
+			attributionIndex.push({
+				textSnippet: snippet.slice(0, 200),
+				category: "system-section",
+				attribution: `section:${section.slug}`,
+			});
+		}
+	}
+	for (const reminder of reminders) {
+		attributionIndex.push({
+			textSnippet: reminder.template.slice(0, 200),
+			category: "system-reminder",
+			attribution: `reminder:${reminder.slug}`,
+		});
+	}
+
+	// Build corpus entry map
+	const corpusByIndex = new Map<number, PromptCorpusEntry>();
+	for (let i = 0; i < corpus.length; i++) {
+		corpusByIndex.set(i, corpus[i]);
+	}
+
+	return debugCorpus.map((entry, index) => {
+		const raw = corpusByIndex.get(index);
+		// Try attribution matching (first 200 chars prefix match)
+		const textPrefix = entry.text.slice(0, 200);
+		let bestMatch: {
+			category: CorpusCategory;
+			attribution: string;
+		} | null = null;
+		for (const candidate of attributionIndex) {
+			if (
+				textPrefix.startsWith(candidate.textSnippet.slice(0, 100)) ||
+				candidate.textSnippet.startsWith(textPrefix.slice(0, 100))
+			) {
+				bestMatch = {
+					category: candidate.category,
+					attribution: candidate.attribution,
+				};
+				break;
+			}
+		}
+
+		const category = bestMatch?.category ?? categorizeByContent(entry.text);
+		const attribution = bestMatch?.attribution ?? null;
+
+		return {
+			id: entry.id,
+			category,
+			attribution,
+			name: entry.name,
+			description: entry.description,
+			text: entry.text,
+			start: raw?.start ?? 0,
+			end: raw?.end ?? 0,
+		};
+	});
+}
+
+function labelSkillVariant(
+	text: string,
+	_skillName: string,
+): "prompt" | "usage" | "error" {
+	const lower = text.toLowerCase();
+	if (
+		lower.includes("provide an instruction") ||
+		lower.includes("usage:") ||
+		lower.includes("examples:\n")
+	)
+		return "usage";
+	if (
+		lower.includes("not a git repo") ||
+		lower.includes("error") ||
+		lower.includes("requires a git repo")
+	)
+		return "error";
+	return "prompt";
+}
+
 function main(): void {
 	try {
 		const resolved = resolveInput(process.argv[2]);
@@ -1485,6 +2294,7 @@ function main(): void {
 			new Set(builtInTools.map((tool) => tool.name)),
 		);
 		const builder = extractBuilderOutline(ast, context);
+		const skills = collectSkillPrompts(ast, context);
 		const sections = collectSectionPrompts(ast, context);
 		const promptCorpus = collectPromptCorpus(ast, context);
 		const promptCorpusIdMap = buildPromptCorpusIdMap(promptCorpus);
@@ -1502,6 +2312,16 @@ function main(): void {
 			promptCorpusDebug,
 			context,
 			ast,
+		);
+		const systemReminders = collectSystemReminders(ast, context);
+		const categorizedCorpus = categorizeCorpus(
+			promptCorpusDebug,
+			promptCorpus,
+			builtInTools,
+			agents,
+			skills,
+			sections,
+			systemReminders,
 		);
 
 		fs.rmSync(outputDir, { recursive: true, force: true });
@@ -1704,12 +2524,220 @@ function main(): void {
 			].join("\n"),
 		);
 
+		for (const skill of skills) {
+			const metaLines = [
+				`# Skill: ${skill.name}`,
+				"",
+				`- user_invocable: ${skill.userInvocable}`,
+				`- disable_model_invocation: ${skill.disableModelInvocation}`,
+				`- allowed_tools: ${skill.allowedTools.length > 0 ? skill.allowedTools.join(", ") : "none"}`,
+			];
+			if (skill.whenToUse) metaLines.push(`- when_to_use: ${skill.whenToUse}`);
+			if (skill.argumentHint)
+				metaLines.push(`- argument_hint: ${skill.argumentHint}`);
+			metaLines.push(`- source_symbol: ${skill.sourceSymbol ?? "unknown"}`);
+
+			const skillSections = [...metaLines];
+			if (skill.description) {
+				skillSections.push("", "## Description", "", skill.description);
+			}
+			if (skill.promptTexts.length === 1) {
+				skillSections.push("", "## Prompt", "", skill.promptTexts[0]);
+			} else if (skill.promptTexts.length > 1) {
+				for (let i = 0; i < skill.promptTexts.length; i++) {
+					const variantLabel = labelSkillVariant(
+						skill.promptTexts[i],
+						skill.name,
+					);
+					skillSections.push(
+						"",
+						`## Prompt (${variantLabel})`,
+						"",
+						skill.promptTexts[i],
+					);
+				}
+			} else {
+				skillSections.push(
+					"",
+					"## Prompt",
+					"",
+					"(Dynamic prompt: not statically resolved from cli.js AST.)",
+				);
+			}
+			writeArtifact(
+				outputDir,
+				written,
+				path.join("skills", `${skill.slug}.md`),
+				skillSections.join("\n"),
+			);
+		}
+		writeArtifact(
+			outputDir,
+			written,
+			"skills.json",
+			`${JSON.stringify(skills, null, 2)}\n`,
+		);
+		writeArtifact(
+			outputDir,
+			written,
+			path.join("skills", "README.md"),
+			[
+				"# Built-in Skills (Prompt)",
+				"",
+				`- Total: ${skills.length}`,
+				"",
+				...skills.map(
+					(skill, index) =>
+						`${index + 1}. [${skill.name}](./${skill.slug}.md)${skill.userInvocable ? "" : " (model-only)"}`,
+				),
+			].join("\n"),
+		);
+
 		if (outputStyles) {
 			writeArtifact(
 				outputDir,
 				written,
 				"output-styles.json",
 				`${JSON.stringify(outputStyles, null, 2)}\n`,
+			);
+		}
+
+		// System reminders
+		for (const reminder of systemReminders) {
+			writeArtifact(
+				outputDir,
+				written,
+				path.join("system", "reminders", `${reminder.slug}.md`),
+				[
+					`# System Reminder: ${reminder.slug}`,
+					"",
+					`- source_symbol: ${reminder.sourceSymbol ?? "unknown"}`,
+					`- is_dynamic: ${reminder.isDynamic}`,
+					"",
+					reminder.template,
+				].join("\n"),
+			);
+		}
+		writeArtifact(
+			outputDir,
+			written,
+			path.join("system", "reminders.json"),
+			`${JSON.stringify(systemReminders, null, 2)}\n`,
+		);
+
+		// Categorized corpus
+		const categorySummary = new Map<CorpusCategory, number>();
+		for (const entry of categorizedCorpus) {
+			categorySummary.set(
+				entry.category,
+				(categorySummary.get(entry.category) ?? 0) + 1,
+			);
+		}
+		writeArtifact(
+			outputDir,
+			written,
+			"corpus-categorized.json",
+			`${JSON.stringify(categorizedCorpus, null, 2)}\n`,
+		);
+		writeArtifact(
+			outputDir,
+			written,
+			"corpus-summary.json",
+			`${JSON.stringify(
+				{
+					total: categorizedCorpus.length,
+					byCategory: Object.fromEntries(
+						[...categorySummary.entries()].sort(([, a], [, b]) => b - a),
+					),
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		// Tool sub-sections (granular decomposition)
+		const toolSubSections: Record<string, ToolSubSection[]> = {};
+		for (const tool of builtInTools) {
+			if (!tool.prompt || tool.prompt.length < 500) continue;
+			const subs = decomposeToolSubSections(tool.prompt);
+			if (subs.length >= 2) {
+				toolSubSections[tool.name] = subs;
+				for (const sub of subs) {
+					writeArtifact(
+						outputDir,
+						written,
+						path.join("tools", "sections", tool.slug, `${sub.slug}.md`),
+						[`# ${tool.name}: ${sub.heading}`, "", sub.text].join("\n"),
+					);
+				}
+			}
+		}
+		if (Object.keys(toolSubSections).length > 0) {
+			writeArtifact(
+				outputDir,
+				written,
+				path.join("tools", "sections.json"),
+				`${JSON.stringify(toolSubSections, null, 2)}\n`,
+			);
+		}
+
+		// Data references (from categorized corpus)
+		const dataRefs = categorizedCorpus.filter(
+			(e) => e.category === "data-reference",
+		);
+		if (dataRefs.length > 0) {
+			writeArtifact(
+				outputDir,
+				written,
+				"data-references.json",
+				`${JSON.stringify(
+					dataRefs.map((d) => ({
+						id: d.id,
+						name: d.name,
+						attribution: d.attribution,
+						textLength: d.text.length,
+						preview: d.text.slice(0, 200),
+					})),
+					null,
+					2,
+				)}\n`,
+			);
+		}
+
+		// Internal agent prompts (from categorized corpus)
+		const internalAgents = categorizedCorpus.filter(
+			(e) => e.category === "internal-agent",
+		);
+		if (internalAgents.length > 0) {
+			for (const ia of internalAgents) {
+				const iaSlug = slugify(ia.name.slice(0, 80)) || ia.id;
+				writeArtifact(
+					outputDir,
+					written,
+					path.join("internal-agents", `${iaSlug}.md`),
+					[
+						`# Internal Agent: ${ia.name}`,
+						"",
+						`- id: ${ia.id}`,
+						`- attribution: ${ia.attribution ?? "unknown"}`,
+						"",
+						ia.text,
+					].join("\n"),
+				);
+			}
+			writeArtifact(
+				outputDir,
+				written,
+				path.join("internal-agents", "README.md"),
+				[
+					"# Internal Agent Prompts",
+					"",
+					`- Total: ${internalAgents.length}`,
+					"",
+					...internalAgents.map(
+						(ia, i) => `${i + 1}. ${ia.name} (${ia.text.length} chars)`,
+					),
+				].join("\n"),
 			);
 		}
 
@@ -1749,12 +2777,23 @@ function main(): void {
 				`# Prompt Export: ${resolved.label}`,
 				"",
 				`- [Built-in agents](./agents/README.md)`,
+				`- [Skills](./skills/README.md)`,
 				`- [System prompts](./system/README.md)`,
 				`- [Tool prompts](./tools/README.md)`,
+				internalAgents.length > 0
+					? `- [Internal agents](./internal-agents/README.md)`
+					: null,
+				`- [Corpus (categorized)](./corpus-categorized.json)`,
+				`- [Corpus summary](./corpus-summary.json)`,
+				dataRefs.length > 0
+					? `- [Data references](./data-references.json)`
+					: null,
 				`- [Prompt corpus JSON](./prompt-corpus.json)`,
 				`- [Prompt dataset JSON](./${buildPromptDatasetFilename(resolved.label)})`,
 				`- [Prompt hash index JSON](./prompt-hash-index.json)`,
-			].join("\n"),
+			]
+				.filter(Boolean)
+				.join("\n"),
 		);
 
 		const manifest = {
@@ -1763,12 +2802,17 @@ function main(): void {
 			generatedAt: new Date().toISOString(),
 			counts: {
 				agents: agents.length,
+				skills: skills.length,
 				sections: sections.length,
 				systemVariants: systemVariants.length,
+				systemReminders: systemReminders.length,
 				builtInTools: builtInTools.length,
 				schemaTools: schemaTools.length,
 				outputStyles: outputStyles?.styles.length ?? 0,
+				internalAgents: internalAgents.length,
+				dataReferences: dataRefs.length,
 				promptCorpus: promptCorpusDebug.length,
+				categorizedCorpus: Object.fromEntries(categorySummary),
 				promptDataset: promptDataset.prompts.length,
 				aliases: aliasEntries.length,
 			},
@@ -1784,7 +2828,7 @@ function main(): void {
 		console.log(`Exported prompt artifacts from ${resolved.cliPath}`);
 		console.log(`Output directory: ${outputDir}`);
 		console.log(
-			`Counts: agents=${agents.length}, sections=${sections.length}, systemVariants=${systemVariants.length}, builtInTools=${builtInTools.length}, schemaTools=${schemaTools.length}, styles=${outputStyles?.styles.length ?? 0}, corpus=${promptCorpusDebug.length}, aliases=${aliasEntries.length}`,
+			`Counts: agents=${agents.length}, skills=${skills.length}, sections=${sections.length}, variants=${systemVariants.length}, reminders=${systemReminders.length}, tools=${builtInTools.length}, schemas=${schemaTools.length}, styles=${outputStyles?.styles.length ?? 0}, internalAgents=${internalAgents.length}, dataRefs=${dataRefs.length}, corpus=${promptCorpusDebug.length}, aliases=${aliasEntries.length}`,
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);

@@ -18,44 +18,35 @@ async function runEffortMaxViaPasses(ast: any): Promise<void> {
 }
 
 const EFFORT_MAX_FIXTURE = `
-function m8() { return !1; }
-function L8() { return !1; }
-
-function cli(K, qH, process, w$) {
-  if (K.effort === "max" && (!qH || L8())) {
-    let S$ = !qH
-      ? 'Effort level "max" is not available in interactive mode.'
-      : 'Effort level "max" is not available for Claude.ai subscribers.';
-    process.stderr.write(w$.red(\`Error: \${S$} Please use "low", "medium", or "high".\`));
-    process.exit(1);
-  }
+function wS(H) {
+  return H.includes("sonnet-4-6") || H.includes("opus-4-6");
 }
+
+function DSH(H) {
+  return H.toLowerCase().includes("opus-4-6");
+}
+
+const ZfH = ["low", "medium", "high", "max"];
 
 function picker() {
   return [
-    { label: "Use medium effort (recommended)", value: "medium" },
-    { label: "Use high effort", value: "high" },
-    { label: "Use low effort", value: "low" },
+    { label: createElement(QoA, { level: "medium", text: "Medium (recommended)" }), value: "medium" },
+    { label: createElement(QoA, { level: "high", text: "High" }), value: "high" },
+    { label: createElement(QoA, { level: "low", text: "Low" }), value: "low" },
   ];
 }
 
-function ghq(H) {
-  switch (H) {
-    case "low":
-      return 1;
-    case "medium":
-      return 2;
-    case "high":
-      return 3;
-    case "max":
-      return 3;
-  }
+function describeModel(QH) {
+  return {
+    supportedEffortLevels: DSH(QH) ? [...ZfH] : ZfH.filter((iH) => iH !== "max"),
+  };
 }
 
-var Uhq = 3;
-var HELP = "Effort level for the current session (low, medium, high)";
+function cliHelp() {
+  return "Effort level for the current session (low, medium, high, max)";
+}
 
-function uM1(H) {
+function Ex1() {
   return [{ type: "ultrathink_effort", level: "high" }];
 }
 
@@ -69,7 +60,7 @@ function notify(EL) {
 }
 `;
 
-test("verify rejects unpatched interactive max-effort code", () => {
+test("verify rejects unpatched 2.1.72-style max-effort code", () => {
 	const ast = parse(EFFORT_MAX_FIXTURE);
 	const code = print(ast);
 	const result = effortMax.verify(code, ast);
@@ -77,25 +68,93 @@ test("verify rejects unpatched interactive max-effort code", () => {
 	assert.equal(typeof result, "string");
 });
 
-test("effort-max enables interactive max effort and updates UI affordances", async () => {
+test("effort-max patches the 2.1.72-style gate, picker, and ultrathink affordances", async () => {
 	const ast = parse(EFFORT_MAX_FIXTURE);
 	await runEffortMaxViaPasses(ast);
 	const output = print(ast);
 
-	assert.equal(output.includes('if (false) {'), true);
-	assert.equal(output.includes('label: "Use max effort"'), true);
+	assert.equal(output.includes("return true;"), true);
+	assert.equal(output.includes('value: "max"'), true);
 	assert.equal(output.includes('level: "max"'), true);
-	assert.equal(output.includes('text: "Effort set to max for this turn"'), true);
-	assert.equal(output.includes('case "max"'), true);
-	assert.equal(output.includes("return 4;"), true);
-	assert.equal(output.includes("var Uhq = 4;"), true);
 	assert.equal(
-		output.includes(
-			'"Effort level for the current session (low, medium, high, max)"',
-		),
+		output.includes('text: "Effort set to max for this turn"'),
 		true,
 	);
 
 	assert.equal(effortMax.verify(output, ast), true);
 	assert.equal(effortMax.verify(output), true);
+});
+
+test("effort-max matcher handles expression-bodied gate functions structurally", async () => {
+	const structuralFixture = `
+const DSH = (ModelId) => ModelId.toLowerCase().includes("opus-4-6");
+function wS(H) {
+  return H.includes("sonnet-4-6") || H.includes("opus-4-6");
+}
+const picker = () => [
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" },
+  { label: "Low", value: "low" },
+];
+function Ex1() {
+  return [{ type: "ultrathink_effort", level: "high" }];
+}
+function notify(EL) {
+  EL({ key: "ultrathink-active", text: "Effort set to high for this turn" });
+}
+`;
+	const ast = parse(structuralFixture);
+	await runEffortMaxViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		output.includes('ModelId.toLowerCase().includes("opus-4-6")'),
+		false,
+	);
+	assert.equal(output.includes("return true;"), true);
+	assert.equal(output.includes('value: "max"'), true);
+	assert.equal(effortMax.verify(output, ast), true);
+});
+
+test("effort-max patches helper gates that use if-return true/false blocks", async () => {
+	const blockGateFixture = `
+function wS(H) {
+  return H.includes("sonnet-4-6") || H.includes("opus-4-6");
+}
+function OCH(H) {
+  if (H.toLowerCase().includes("opus-4-6")) return true;
+  return false;
+}
+function WfH(H, level) {
+  if (level === "max" && !OCH(H)) return "high";
+  return level;
+}
+const picker = () => [
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" },
+  { label: "Low", value: "low" },
+  { label: "Max", value: "max" },
+];
+function Ex1() {
+  return [{ type: "ultrathink_effort", level: "high" }];
+}
+function notify(EL) {
+  EL({ key: "ultrathink-active", text: "Effort set to high for this turn" });
+}
+`;
+	const ast = parse(blockGateFixture);
+	await runEffortMaxViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		output.includes('if (H.toLowerCase().includes("opus-4-6"))'),
+		false,
+	);
+	assert.equal(output.includes("return true;"), true);
+	assert.equal(output.includes('level: "max"'), true);
+	assert.equal(
+		output.includes('text: "Effort set to max for this turn"'),
+		true,
+	);
+	assert.equal(effortMax.verify(output, ast), true);
 });

@@ -1,5 +1,5 @@
 import template from "@babel/template";
-import traverse from "@babel/traverse";
+import traverse, { type NodePath } from "@babel/traverse";
 import * as t from "@babel/types";
 import { print } from "../loader.js";
 import type { Patch } from "../types.js";
@@ -34,7 +34,7 @@ import {
 // limits.ts. This patch replaces the prompt body, while limits modifies
 // variable declarations. Both can coexist safely.
 
-// Note: Code only supports png/jpg/jpeg/gif/webp (bN1 set) - upstream prompt is wrong about BMP/TIFF/HEIC
+// Note: Code only supports png/jpg/jpeg/gif/webp - upstream prompt is wrong about BMP/TIFF/HEIC
 const NEW_READ_DESCRIPTION = `Read files from the local filesystem.
 
 You can access any file directly by using this tool.
@@ -66,8 +66,8 @@ Range parameter (for text files only, supported bat-style forms):
 - \`100::10\` - line 100 with 10 lines of context each side
 - \`30:40:2\` - lines 30-40 with 2 lines of context
 - If \`range\` is omitted for \`*.output\` files, Read defaults to \`-500:\` (tail) to avoid oversized reads
-- TaskStatus \`summary\` fields are previews, not full output
-- To reconstruct full large output, read chunk ranges from \`output_file\` (e.g. \`1:2000\`, then \`2001:4000\`)
+- If \`range\` is omitted and the file exceeds the size limit, Read auto-previews the first 200 lines with a truncation notice. Use a range to read further.
+- For large background task output, use TaskOutput to get the \`output_file\` path, then read chunk ranges (e.g. \`1:2000\`, then \`2001:4000\`)
 
 Optional parameters:
 - \`pages: "1-5"\` - For PDF files only. Required for large PDFs; max 20 pages per request.
@@ -81,7 +81,13 @@ Examples:
 - Debug whitespace: \`{ file_path: "/path/to/file.ts", show_whitespace: true }\``;
 
 function findReadToolObject(ast: t.File): t.ObjectExpression | null {
-	let found: t.ObjectExpression | null = null;
+	return findReadToolObjectPath(ast)?.node ?? null;
+}
+
+function findReadToolObjectPath(
+	ast: t.File,
+): NodePath<t.ObjectExpression> | null {
+	let found: NodePath<t.ObjectExpression> | null = null;
 	traverse.default(ast, {
 		ObjectExpression(path) {
 			if (found) return;
@@ -89,11 +95,53 @@ function findReadToolObject(ast: t.File): t.ObjectExpression | null {
 			if (!nameProp || !t.isExpression(nameProp.value)) return;
 			const toolName = resolveStringValue(path, nameProp.value);
 			if (toolName !== "Read") return;
-			found = path.node;
+			found = path;
 			path.stop();
 		},
 	});
 	return found;
+}
+
+function getReadToolPromptText(ast: t.File): string | null {
+	const readToolPath = findReadToolObjectPath(ast);
+	if (!readToolPath) return null;
+	for (const prop of readToolPath.node.properties) {
+		if (t.isObjectMethod(prop) && hasObjectKeyName(prop, "prompt")) {
+			for (const stmt of prop.body.body) {
+				if (!t.isReturnStatement(stmt) || !stmt.argument) continue;
+				return resolveStringValue(readToolPath, stmt.argument);
+			}
+		}
+		if (
+			t.isObjectProperty(prop) &&
+			hasObjectKeyName(prop, "prompt") &&
+			t.isExpression(prop.value)
+		) {
+			return resolveStringValue(readToolPath, prop.value);
+		}
+	}
+	return null;
+}
+
+function getReadToolDescriptionText(ast: t.File): string | null {
+	const readToolPath = findReadToolObjectPath(ast);
+	if (!readToolPath) return null;
+	for (const prop of readToolPath.node.properties) {
+		if (t.isObjectMethod(prop) && hasObjectKeyName(prop, "description")) {
+			for (const stmt of prop.body.body) {
+				if (!t.isReturnStatement(stmt) || !stmt.argument) continue;
+				return resolveStringValue(readToolPath, stmt.argument);
+			}
+		}
+		if (
+			t.isObjectProperty(prop) &&
+			hasObjectKeyName(prop, "description") &&
+			t.isExpression(prop.value)
+		) {
+			return resolveStringValue(readToolPath, prop.value);
+		}
+	}
+	return null;
 }
 
 function isReadFilePathSchemaDescription(expr: t.Expression): boolean {
@@ -236,16 +284,6 @@ function hasFallbackFnBoundedArgs(ast: t.File): boolean {
 	return found;
 }
 
-function flattenLogicalOrTerms(expr: t.Expression): t.Expression[] {
-	if (t.isLogicalExpression(expr, { operator: "||" })) {
-		return [
-			...flattenLogicalOrTerms(expr.left as t.Expression),
-			...flattenLogicalOrTerms(expr.right as t.Expression),
-		];
-	}
-	return [expr];
-}
-
 function isVoidZeroMemberComparison(
 	expr: t.Expression,
 	propertyName: string,
@@ -260,33 +298,6 @@ function isVoidZeroMemberComparison(
 		return !left.computed && isMemberPropertyName(left, propertyName);
 	}
 	return false;
-}
-
-function hasChangedFileRangeNullGuard(ast: t.File): boolean {
-	let found = false;
-	traverse.default(ast, {
-		IfStatement(path) {
-			const { test, consequent } = path.node;
-			if (!t.isExpression(test)) return;
-			if (!t.isReturnStatement(consequent)) return;
-			if (!t.isNullLiteral(consequent.argument)) return;
-
-			const terms = flattenLogicalOrTerms(test);
-			const hasOffset = terms.some((term) =>
-				isVoidZeroMemberComparison(term, "offset"),
-			);
-			const hasLimit = terms.some((term) =>
-				isVoidZeroMemberComparison(term, "limit"),
-			);
-			const hasRange = terms.some((term) =>
-				isVoidZeroMemberComparison(term, "range"),
-			);
-			if (!hasOffset || !hasLimit || !hasRange) return;
-			found = true;
-			path.stop();
-		},
-	});
-	return found;
 }
 
 function flattenLogicalAndTerms(expr: t.Expression): t.Expression[] {
@@ -328,6 +339,46 @@ function getObjectPatternBindingName(
 		}
 	}
 	return null;
+}
+
+function setBindingStringValue(
+	path: traverse.NodePath<t.ObjectExpression>,
+	valueNode: t.Expression,
+	nextValue: string,
+): boolean {
+	if (t.isStringLiteral(valueNode)) {
+		valueNode.value = nextValue;
+		return true;
+	}
+	if (!t.isIdentifier(valueNode)) return false;
+	const binding = path.scope.getBinding(valueNode.name);
+	const declarator = binding?.path.node;
+	if (
+		!binding ||
+		!t.isVariableDeclarator(declarator) ||
+		binding.referencePaths.length !== 1 ||
+		!declarator.init ||
+		(!t.isStringLiteral(declarator.init) &&
+			!t.isTemplateLiteral(declarator.init))
+	) {
+		return false;
+	}
+	declarator.init = t.stringLiteral(nextValue);
+	return true;
+}
+
+function setOrReplaceObjectPropertyStringValue(
+	path: traverse.NodePath<t.ObjectExpression>,
+	property: t.ObjectProperty,
+	nextValue: string,
+): void {
+	if (
+		t.isExpression(property.value) &&
+		setBindingStringValue(path, property.value, nextValue)
+	) {
+		return;
+	}
+	property.value = t.stringLiteral(nextValue);
 }
 
 function containsRangeVoidGuard(
@@ -689,30 +740,44 @@ interface ReadVerifyContext {
 }
 
 function verifyReadSchemaAndPrompt(ctx: ReadVerifyContext): string | null {
-	const { code, schemaObject } = ctx;
-	if (!code.includes("Line range using supported bat-style forms")) {
+	const { ast, schemaObject } = ctx;
+	const promptText = getReadToolPromptText(ast);
+	if (promptText == null) {
+		return "Unable to resolve Read prompt text after patching";
+	}
+	const descriptionText = getReadToolDescriptionText(ast);
+	if (descriptionText !== "Read files from the local filesystem.") {
+		return "Read description was not rewritten to the expected text";
+	}
+	if (
+		!promptText.includes(
+			"Range parameter (for text files only, supported bat-style forms):",
+		)
+	) {
 		return "Missing range parameter description";
 	}
-	if (!code.includes("-30:")) {
+	if (!promptText.includes("-30:")) {
 		return "Missing negative range example in description";
 	}
-	if (!code.includes("30:40:2")) {
+	if (!promptText.includes("30:40:2")) {
 		return "Missing range-with-context example in description";
 	}
-	if (!code.includes("show_whitespace: true")) {
+	if (!promptText.includes("show_whitespace: true")) {
 		return "Missing show_whitespace parameter description";
 	}
-	if (!code.includes('pages: "1-5"')) {
+	if (!promptText.includes('pages: "1-5"')) {
 		return "Missing pages parameter documentation/example";
 	}
-	if (!code.includes("Jupyter notebooks (.ipynb)")) {
+	if (!promptText.includes("Jupyter notebooks (.ipynb)")) {
 		return "Missing notebook support note in Read prompt";
 	}
-	if (!code.includes("can only read files, not directories")) {
+	if (!promptText.includes("can only read files, not directories")) {
 		return "Missing file-only constraint in Read prompt";
 	}
 	if (
-		!code.includes("If a file does not exist, the read will return an error")
+		!promptText.includes(
+			"If a file does not exist, the read will return an error",
+		)
 	) {
 		return "Missing non-existent file behavior note in Read prompt";
 	}
@@ -725,8 +790,19 @@ function verifyReadSchemaAndPrompt(ctx: ReadVerifyContext): string | null {
 	if (schemaHasLegacyOffsetOrLimit(schemaObject)) {
 		return "Old offset/limit parameter still in Read schema";
 	}
-	if (code.includes("offset and limit parameters")) {
+	if (promptText.includes("offset and limit parameters")) {
 		return "Old offset/limit guidance still present";
+	}
+	// Verify error messages outside Read tool scope were patched
+	if (
+		ctx.code.includes(
+			"Use offset and limit parameters to read specific portions",
+		)
+	) {
+		return "Error messages outside Read tool still reference offset/limit";
+	}
+	if (ctx.code.includes("use offset and limit for larger files")) {
+		return "Size guidance still references offset/limit instead of range";
 	}
 	return null;
 }
@@ -738,6 +814,9 @@ function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 	}
 	if (!code.includes("normalizedRange")) {
 		return "Bat IIFE not injected (D2I call site not found in call body or helper)";
+	}
+	if (!code.includes('var style = "numbers"')) {
+		return "Bat success path is not configured to emit numbered lines";
 	}
 	if (code.includes("offsetLegacy") || code.includes("limitLegacy")) {
 		return "Legacy offset/limit compatibility markers still present";
@@ -778,6 +857,12 @@ function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 	}
 	if (code.includes("stat.size > 102400")) {
 		return "Unexpected generic size-based auto-tail remains; full-file reads should be allowed";
+	}
+	if (!code.includes("autoRanged")) {
+		return "Missing auto-range for oversized files without explicit range";
+	}
+	if (!code.includes("FILE TRUNCATED")) {
+		return "Missing auto-range truncation notice in output";
 	}
 	if (hasRawRangePass) {
 		return "Read command still passes raw range directly to bat";
@@ -861,11 +946,18 @@ function verifyReadLineAccounting(ctx: ReadVerifyContext): string | null {
 
 function verifyReadExamplesAndValidate(ctx: ReadVerifyContext): string | null {
 	const { code, validateKeys } = ctx;
-	if (!code.includes('/Users/username/project/design-doc.pdf", pages: "1-5"')) {
-		return "Read input_examples missing PDF pages example";
-	}
-	if (!code.includes('/Users/username/project/README.md", range: "50:+100"')) {
-		return "Read input_examples missing range example";
+	// input_examples removed upstream in 2.1.84+. Skip checks when absent.
+	if (code.includes("input_examples")) {
+		if (
+			!code.includes('/Users/username/project/design-doc.pdf", pages: "1-5"')
+		) {
+			return "Read input_examples missing PDF pages example";
+		}
+		if (
+			!code.includes('/Users/username/project/README.md", range: "50:+100"')
+		) {
+			return "Read input_examples missing range example";
+		}
 	}
 	if (
 		code.includes(
@@ -909,14 +1001,11 @@ function verifyReadStateAndSnippetGuards(
 	if (!code.includes('endsWith(".output")')) {
 		return "readFileState compatibility markers missing implicit .output tail handling";
 	}
-	if (!hasChangedFileRangeNullGuard(ast)) {
-		return "changed-file watcher guard missing range partial-read check";
-	}
 	if (!hasReadStateRebuildRangeGuard(ast)) {
 		return "read-state rebuild guard missing range-aware partial-read check";
 	}
 	if (!code.includes("changedSnippetRaw")) {
-		return "changed-file watcher still computes GwA inline (missing single-call memoization)";
+		return "changed-file watcher still computes diff inline (missing single-call memoization)";
 	}
 	if (!code.includes("maxChangedSnippetChars")) {
 		return "changed-file watcher missing snippet cap variable";
@@ -981,6 +1070,28 @@ function verifyReadRangeRegexAndFallbackMarkers(
 export const readWithBat: Patch = {
 	tag: "read-bat",
 
+	// Patch error messages outside Read tool scope to reference range instead of offset/limit.
+	// These live in FileTooLargeError / MaxFileReadTokenExceededError classes and other prompt
+	// strings that the scoped readToolPath.traverse() in astPasses does not reach.
+	string: (code) =>
+		code
+			.replace(
+				/Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file\./g,
+				"Use the range parameter to read specific portions of the file, or use Bash text-search tooling to search for specific content.",
+			)
+			.replace(
+				/use offset and limit for larger files/g,
+				"use the range parameter for larger files",
+			)
+			.replace(
+				/Use offset and limit parameters to read specific portions of the file, search within it for specific content, and jq to make structured queries\./g,
+				"Use the range parameter to read specific portions of the file, or use Bash text-search tooling to search for specific content.",
+			)
+			.replace(
+				/Use offset and limit parameters to read only the sections you need\./g,
+				"Use the range parameter to read only the sections you need.",
+			),
+
 	// AST patches for structural changes (robust against minified names)
 	astPasses: (ast) => [
 		{
@@ -1020,26 +1131,31 @@ export const readWithBat: Patch = {
 							return updated;
 						};
 
-						// 0. Replace remaining offset/limit guidance strings (2.1.12+)
-						traverse.default(ast, {
-							StringLiteral(path) {
-								const updated = patchText(path.node.value);
-								if (updated !== path.node.value) path.node.value = updated;
-							},
-							TemplateLiteral(path) {
-								for (const quasi of path.node.quasis) {
-									const rawUpdated = patchText(quasi.value.raw);
-									if (rawUpdated !== quasi.value.raw)
-										quasi.value.raw = rawUpdated;
+						// 0. Replace remaining offset/limit guidance strings only within the Read tool surface.
+						const readToolPath = findReadToolObjectPath(ast);
+						if (readToolPath) {
+							readToolPath.traverse({
+								StringLiteral(path) {
+									const updated = patchText(path.node.value);
+									if (updated !== path.node.value) path.node.value = updated;
+								},
+								TemplateLiteral(path) {
+									for (const quasi of path.node.quasis) {
+										const rawUpdated = patchText(quasi.value.raw);
+										if (rawUpdated !== quasi.value.raw) {
+											quasi.value.raw = rawUpdated;
+										}
 
-									if (typeof quasi.value.cooked === "string") {
-										const cookedUpdated = patchText(quasi.value.cooked);
-										if (cookedUpdated !== quasi.value.cooked)
-											quasi.value.cooked = cookedUpdated;
+										if (typeof quasi.value.cooked === "string") {
+											const cookedUpdated = patchText(quasi.value.cooked);
+											if (cookedUpdated !== quasi.value.cooked) {
+												quasi.value.cooked = cookedUpdated;
+											}
+										}
 									}
-								}
-							},
-						});
+								},
+							});
+						}
 
 						// 0b. Patch Read tool schema (offset/limit -> range/show_whitespace)
 						traverse.default(ast, {
@@ -1144,26 +1260,6 @@ export const readWithBat: Patch = {
 							node: t.Expression | null | undefined,
 						): t.Expression | null | undefined =>
 							t.isAwaitExpression(node) ? node.argument : node;
-						const getVoidZeroCheckedMemberObject = (
-							expr: t.Expression,
-							propName: string,
-						): t.Expression | null => {
-							if (!t.isBinaryExpression(expr, { operator: "!==" })) return null;
-							if (
-								!t.isUnaryExpression(expr.right, { operator: "void" }) ||
-								!t.isNumericLiteral(expr.right.argument, { value: 0 })
-							) {
-								return null;
-							}
-							if (
-								!t.isMemberExpression(expr.left) ||
-								expr.left.computed ||
-								!isMemberPropertyName(expr.left, propName)
-							) {
-								return null;
-							}
-							return expr.left.object;
-						};
 						const getTruthyMemberObjectName = (
 							expr: t.Expression,
 							propName: string,
@@ -1254,26 +1350,49 @@ export const readWithBat: Patch = {
 								if (nameVal !== "Read") return;
 
 								// 1. Replace Read tool prompt/description strings (AST-only, avoids brittle string matching)
-								const promptMethod = path.node.properties.find(
-									(p): p is t.ObjectMethod =>
-										t.isObjectMethod(p) && hasObjectKeyName(p, "prompt"),
+								const promptProp = path.node.properties.find(
+									(p): p is t.ObjectMethod | t.ObjectProperty =>
+										(t.isObjectMethod(p) || t.isObjectProperty(p)) &&
+										hasObjectKeyName(p, "prompt"),
 								);
-								if (promptMethod) {
-									promptMethod.body = t.blockStatement([
-										t.returnStatement(t.stringLiteral(NEW_READ_DESCRIPTION)),
-									]);
+								if (promptProp) {
+									if (t.isObjectMethod(promptProp)) {
+										promptProp.body = t.blockStatement([
+											t.returnStatement(t.stringLiteral(NEW_READ_DESCRIPTION)),
+										]);
+									} else if (t.isExpression(promptProp.value)) {
+										setOrReplaceObjectPropertyStringValue(
+											path,
+											promptProp,
+											NEW_READ_DESCRIPTION,
+										);
+									}
 								}
 
-								const descMethod = path.node.properties.find(
-									(p): p is t.ObjectMethod =>
-										t.isObjectMethod(p) && hasObjectKeyName(p, "description"),
+								const descProp = path.node.properties.find(
+									(p): p is t.ObjectMethod | t.ObjectProperty =>
+										(t.isObjectMethod(p) || t.isObjectProperty(p)) &&
+										hasObjectKeyName(p, "description"),
 								);
-								if (descMethod) {
-									descMethod.body = t.blockStatement([
-										t.returnStatement(
-											t.stringLiteral("Read files from the local filesystem."),
-										),
-									]);
+								if (descProp) {
+									if (t.isObjectMethod(descProp)) {
+										descProp.body = t.blockStatement([
+											t.returnStatement(
+												t.stringLiteral(
+													"Read files from the local filesystem.",
+												),
+											),
+										]);
+									} else if (
+										t.isObjectProperty(descProp) &&
+										t.isExpression(descProp.value)
+									) {
+										setOrReplaceObjectPropertyStringValue(
+											path,
+											descProp,
+											"Read files from the local filesystem.",
+										);
+									}
 								}
 
 								// Keep Read examples aligned with range/pages semantics (avoid stale offset/limit examples).
@@ -1602,6 +1721,113 @@ export const readWithBat: Patch = {
 									}
 								}
 
+								// === 1c. Patch dedup check in call body ===
+								// Upstream: if (J && !J.isPartialView && J.offset !== void 0) {
+								//             if (J.offset === $ && J.limit === q) ...
+								// The removed vars ($ for offset, q for limit) cause ReferenceError
+								// on the second read of any file. Rewrite to compare range instead.
+								if (removedCallCompatVars.size > 0) {
+									traverse.default(
+										callMethod.body,
+										{
+											IfStatement(ifPath) {
+												const { test } = ifPath.node;
+												if (!t.isLogicalExpression(test, { operator: "&&" }))
+													return;
+
+												// Match: ... && J.offset !== void 0
+												const outerTerms = flattenLogicalAndTerms(
+													test as t.Expression,
+												);
+												let dedupObjName: string | null = null;
+												let offsetGuardIdx = -1;
+												for (let i = 0; i < outerTerms.length; i++) {
+													const term = outerTerms[i];
+													if (
+														!t.isBinaryExpression(term, {
+															operator: "!==",
+														})
+													)
+														continue;
+													if (!isVoidZeroExpression(term.right)) continue;
+													if (
+														t.isMemberExpression(term.left) &&
+														!term.left.computed &&
+														isMemberPropertyName(term.left, "offset") &&
+														t.isIdentifier(term.left.object)
+													) {
+														dedupObjName = term.left.object.name;
+														offsetGuardIdx = i;
+														break;
+													}
+												}
+												if (!dedupObjName || offsetGuardIdx < 0) return;
+
+												// Verify inner if compares removed vars
+												const consequent = ifPath.node.consequent;
+												const innerBlock = t.isBlockStatement(consequent)
+													? consequent.body
+													: [consequent];
+												const innerIf = innerBlock.find(
+													(s): s is t.IfStatement => t.isIfStatement(s),
+												);
+												if (!innerIf) return;
+
+												const innerTerms = flattenLogicalAndTerms(
+													innerIf.test as t.Expression,
+												);
+												const refsRemovedVars = innerTerms.some((term) => {
+													if (!t.isBinaryExpression(term, { operator: "===" }))
+														return false;
+													return (
+														(t.isIdentifier(term.right) &&
+															removedCallCompatVars.has(term.right.name)) ||
+														(t.isIdentifier(term.left) &&
+															removedCallCompatVars.has(
+																(term.left as t.Identifier).name,
+															))
+													);
+												});
+												if (!refsRemovedVars) return;
+
+												// Rewrite outer guard: J.offset !== void 0 -> J.range !== void 0
+												outerTerms[offsetGuardIdx] = t.binaryExpression(
+													"!==",
+													t.memberExpression(
+														t.identifier(dedupObjName),
+														t.identifier("range"),
+													),
+													t.unaryExpression("void", t.numericLiteral(0)),
+												);
+												// Rebuild the && chain
+												let newOuterTest = outerTerms[0];
+												for (let i = 1; i < outerTerms.length; i++) {
+													newOuterTest = t.logicalExpression(
+														"&&",
+														newOuterTest as t.Expression,
+														outerTerms[i],
+													);
+												}
+												ifPath.node.test = newOuterTest;
+
+												// Rewrite inner comparison: J.offset === $ && J.limit === q -> J.range === R
+												innerIf.test = t.binaryExpression(
+													"===",
+													t.memberExpression(
+														t.identifier(dedupObjName),
+														t.identifier("range"),
+													),
+													t.identifier(rangeVarName || "R"),
+												);
+
+												ifPath.stop();
+											},
+										},
+										path.scope,
+										path,
+									);
+								}
+
 								// === Probe for inline vs delegation ===
 								// In 2.1.42+, the D2I() text-reading call was extracted from call()
 								// into a separate helper function (name varies per version: JZI, XwI, …).
@@ -1849,6 +2075,20 @@ export const readWithBat: Patch = {
     normalizedRange = "-500:";
   }
 
+  var autoRanged = false;
+  var autoRangeLines = 0;
+  var autoRangeTokenEstimate = Math.ceil(stat.size / 4);
+  var autoRangeTokenBudget = 50000;
+  if (!normalizedRange && (
+    (fallbackMaxBytes !== void 0 && stat.size > fallbackMaxBytes) ||
+    autoRangeTokenEstimate > autoRangeTokenBudget
+  )) {
+    fileTotalLines = ensureTotalLines();
+    autoRangeLines = Math.min(200, fileTotalLines);
+    normalizedRange = ":" + String(autoRangeLines);
+    autoRanged = true;
+  }
+
   if (normalizedRange) {
     var r = normalizedRange;
     if (r.indexOf("::") !== -1) {
@@ -1922,13 +2162,16 @@ export const readWithBat: Patch = {
   }
 
   var cp = await import("child_process");
-  var style = "plain";
+  var style = "numbers";
   var args = ["--style=" + style, "--color=never", "--paging=never"];
   if (showWs) args.push("-A");
   if (normalizedRange) args.push("-r", normalizedRange);
   args.push(filePath);
   try {
     var output = cp.execFileSync("bat", args, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024, timeout: 30000 });
+    if (autoRanged) {
+      output += "\\n\\n[FILE TRUNCATED: " + fileTotalLines + " total lines, showing first " + autoRangeLines + ". Use range parameter (e.g. '" + (autoRangeLines + 1) + ":" + Math.min(autoRangeLines + 200, fileTotalLines) + "') to read more.]";
+    }
     var normalizedOutput = output.endsWith("\\n") ? output.slice(0, -1) : output;
     var lineCount = normalizedOutput.length === 0 ? 0 : normalizedOutput.split("\\n").length;
     var totalLines = fileTotalLines != null ? fileTotalLines : lineCount;
@@ -2354,44 +2597,9 @@ export const readWithBat: Patch = {
 							},
 						});
 
-						// === 6. Harden changed-file watcher: treat range reads as partial ===
-						// Upstream changed-file attachment logic skips diff injection for partial reads
-						// using offset/limit markers. Add explicit range awareness so range-based reads
-						// don't trigger full-file diff reminders when the file changes.
-						traverse.default(ast, {
-							IfStatement(path) {
-								const { test, consequent } = path.node;
-								if (!t.isReturnStatement(consequent)) return;
-								if (!t.isNullLiteral(consequent.argument)) return;
-								if (!t.isLogicalExpression(test, { operator: "||" })) return;
-
-								const offsetObj = getVoidZeroCheckedMemberObject(
-									test.left,
-									"offset",
-								);
-								const limitObj = getVoidZeroCheckedMemberObject(
-									test.right,
-									"limit",
-								);
-								if (!offsetObj || !limitObj) return;
-								if (!t.isNodesEquivalent(offsetObj, limitObj)) return;
-
-								const rangeCheck = t.binaryExpression(
-									"!==",
-									t.memberExpression(
-										t.cloneNode(offsetObj, true) as t.Expression,
-										t.identifier("range"),
-									),
-									t.unaryExpression("void", t.numericLiteral(0)),
-								);
-								path.node.test = t.logicalExpression(
-									"||",
-									t.cloneNode(test, true) as t.Expression,
-									rangeCheck,
-								);
-								path.stop();
-							},
-						});
+						// Section 6 (changed-file watcher range hardening) removed. Redundant:
+						// The readFileState.set() compat markers (offset: 1, limit: 1 for partial
+						// reads) already cause the upstream offset/limit guard to fire.
 
 						// === 7. Harden read-state rebuild on resume/compaction: range reads are partial ===
 						// p8H reconstructs readFileState from transcript tool_use/tool_result pairs.
@@ -2481,8 +2689,8 @@ export const readWithBat: Patch = {
 						});
 
 						// === 8. Reduce changed-file attachment token spikes ===
-						// Cb1 computes GwA(old,new) for edited_text_file attachments. Upstream calls
-						// GwA twice (emptiness check + snippet payload) and emits unbounded snippets.
+						// The changed-file handler computes diffs for edited_text_file attachments.
+						// It calls the diff function twice (emptiness check + snippet payload) and emits unbounded snippets.
 						// Compute once and cap payload size before it is injected as system-reminder text.
 						let patchedChangedFileSnippet = false;
 						traverse.default(ast, {

@@ -87,6 +87,11 @@ async function main() {
 						description:
 							"Verify patched/clean cli.js anchors using positional args: <patched_cli> <clean_cli>",
 					})
+					.option("verify-prompt-surfaces", {
+						type: "boolean",
+						description:
+							"Verify exported live prompt surfaces using positional arg: <export_dir>",
+					})
 					.option("summary-path", {
 						type: "string",
 						description: "Write JSON summary to file",
@@ -234,6 +239,47 @@ async function main() {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			console.error(chalk.red(`Anchor verification failed: ${message}`));
+			process.exit(1);
+			return;
+		}
+	}
+	if (opts.verifyPromptSurfaces) {
+		const positionalArgs = ((opts._ as unknown[]) ?? [])
+			.map((value) => String(value))
+			.filter((value) => value !== "$0");
+		if (positionalArgs.length !== 1) {
+			console.error(
+				chalk.red(
+					"--verify-prompt-surfaces requires exactly one positional path: <export_dir>",
+				),
+			);
+			process.exit(1);
+			return;
+		}
+		try {
+			const exportDir = path.resolve(positionalArgs[0]);
+			const { verifyPromptSurfaces } = await import(
+				"./verification/verify-prompt-surfaces.js"
+			);
+			const result = await verifyPromptSurfaces({ exportDir });
+			if (!result.ok) {
+				for (const failure of result.failures) {
+					console.error(
+						chalk.red(
+							`FAIL [prompt-surface] ${failure.file} ${failure.id}: ${failure.reason}`,
+						),
+					);
+				}
+				process.exit(1);
+				return;
+			}
+			console.log("Prompt surface checks passed.");
+			return;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(
+				chalk.red(`Prompt surface verification failed: ${message}`),
+			);
 			process.exit(1);
 			return;
 		}

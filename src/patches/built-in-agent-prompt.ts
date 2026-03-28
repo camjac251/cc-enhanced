@@ -1,4 +1,9 @@
 import type { Patch } from "../types.js";
+import {
+	buildModernReadonlyReplacement,
+	MODERN_READONLY_OPS,
+	MODERN_TOOL_PREFERENCE,
+} from "./modern-cli.js";
 
 const EXPLORE_WHEN_TO_USE_SOURCE =
 	'Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.';
@@ -40,38 +45,26 @@ const EXPLORE_SECTION_REPLACEMENTS: Array<[string, string]> = [
 - Tracing how functionality works end-to-end before code changes are made
 - Narrowing broad search results down to the highest-signal files`,
 	],
-    [
-        `- Use Read when you know the specific file path you need to read
+	[
+		`- Use Read when you know the specific file path you need to read
 - Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find\${conditional(", grep" | "")}, cat, head, tail)
 - NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-        `- Use Read when you know the specific file path you need to read
+		`- Use Read when you know the specific file path you need to read
 - For multi-file architecture questions, prefer semantic codebase research and deep cross-file analysis when available before ad hoc searching
 - For structural code patterns, prefer ast-grep or other syntax-aware code search over broad text matching
 - Use broad text search primarily for logs, config, comments, or other non-code text
 - Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)
 - Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail
 - NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-    ],
-    [
-        `- Use \${pD} when you know the specific file path you need to read
-- Use \${WD} ONLY for read-only operations (ls, git status, git log, git diff, find\${H ? ", grep" : ""}, cat, head, tail)
-- NEVER use \${WD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-        `- Use \${pD} when you know the specific file path you need to read
-- For multi-file architecture questions, prefer semantic codebase research and deep cross-file analysis when available before ad hoc searching
-- For structural code patterns, prefer ast-grep or other syntax-aware code search over broad text matching
-- Use broad text search primarily for logs, config, comments, or other non-code text
-- Use \${WD} ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)
-- Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail
-- NEVER use \${WD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-    ],
+	],
 	[
 		`- Adapt your search approach based on the thoroughness level specified by the caller`,
 		`- Start broad, then narrow down to the highest-signal files, functions, and call paths`,
 	],
-    [
-        `- Return file paths as absolute paths in your final response`,
-        `- Support your conclusions with concrete file:line references and concise reasoning`,
-    ],
+	[
+		`- Return file paths as absolute paths in your final response`,
+		`- Support your conclusions with concrete file:line references and concise reasoning`,
+	],
 	[
 		`- Communicate your final report directly as a regular message - do NOT attempt to create files`,
 		`- Return absolute file paths in your final response and communicate findings directly as a regular message`,
@@ -87,12 +80,13 @@ const EXPLORE_SECTION_REPLACEMENTS: Array<[string, string]> = [
 4. Summarize only the findings that materially help the caller decide what to do next.
 
 Analysis methodology:
-1. Feature discovery -- find entry points, core implementation files, and feature boundaries.
-2. Code flow tracing -- follow call chains, data transformations, dependencies, and side effects.
-3. Architecture analysis -- identify abstractions, design patterns, and cross-cutting concerns.
-4. Implementation details -- note edge cases, performance considerations, and technical debt.
+1. Feature discovery: find entry points, core implementation files, feature boundaries, and relevant configuration.
+2. Code flow tracing: follow call chains, data transformations, dependencies, and side effects.
+3. Architecture analysis: identify abstractions, design patterns, and cross-cutting concerns.
+4. Implementation details: note edge cases, performance considerations, and technical debt.
 
 Efficiency rules:
+- Start with semantic or focused structural search, then escalate to deeper codebase research only for multi-file architecture questions
 - Make efficient use of the tools that you have at your disposal: search broadly only when needed, then read selectively
 - Wherever possible you should try to spawn multiple parallel tool calls for searching and reading files`,
 	],
@@ -107,6 +101,16 @@ Efficiency rules:
 - Essential files list: the top files to read next
 
 Support conclusions with concrete file:line references and concise reasoning.
+
+Research-to-action gate:
+- Before recommending code changes, answer: "What specific defect or gap does this address?"
+- If there is no concrete defect, implementation need, or decision to unblock, present findings as informational rather than prescriptive.
+
+Specialist handoffs:
+- Security-sensitive findings, trust-boundary questions, or auth concerns -> recommend security-reviewer
+- Frontend/UI behavior, accessibility, or design-system questions -> recommend ui-specialist
+- External library/framework/API documentation questions -> recommend docs-researcher
+- When the caller needs a concrete implementation blueprint -> recommend Plan or code-architect
 
 Complete the user's research request efficiently and report your findings clearly.`,
 	],
@@ -137,24 +141,24 @@ const PLAN_SECTION_REPLACEMENTS: Array<[string, string]> = [
 		`   - Identify similar features as reference`,
 		`   - Identify similar features, reusable helpers, and reference implementations`,
 	],
-    [
-        `   - Trace through relevant code paths`,
-        `   - Trace the relevant code paths deeply enough to avoid speculative design and cite the key files that justify the design`,
-    ],
-    [
-        `   - Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find\${conditional(", grep" | "")}, cat, head, tail)
+	[
+		`   - Trace through relevant code paths`,
+		`   - Trace the relevant code paths deeply enough to avoid speculative design and cite the key files that justify the design`,
+	],
+	[
+		`   - Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find\${conditional(", grep" | "")}, cat, head, tail)
    - NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-        `   - Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)
+		`   - Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)
    - Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail
    - NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-    ],
-    [
-        `   - Use \${WD} ONLY for read-only operations (ls, git status, git log, git diff, find\${Yz() ? ", grep" : ""}, cat, head, tail)
+	],
+	[
+		`   - Use \${WD} ONLY for read-only operations (ls, git status, git log, git diff, find\${Yz() ? ", grep" : ""}, cat, head, tail)
    - NEVER use \${WD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-        `   - Use \${WD} ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)
+		`   - Use \${WD} ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)
    - Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail
    - NEVER use \${WD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-    ],
+	],
 	[`3. **Design Solution**:`, `3. **Design the Implementation Blueprint**:`],
 	[
 		`   - Create implementation approach based on your assigned perspective`,
@@ -162,7 +166,8 @@ const PLAN_SECTION_REPLACEMENTS: Array<[string, string]> = [
 	],
 	[
 		`   - Consider trade-offs and architectural decisions`,
-		`   - Cover interfaces, dependencies, sequencing, verification, and likely edge cases`,
+		`   - Cover interfaces, dependencies, sequencing, verification, and likely edge cases
+   - Use this decision priority ladder when trade-offs are close: Testability > Readability > Consistency > Simplicity > Reversibility`,
 	],
 	[
 		`   - Follow existing patterns where appropriate`,
@@ -190,49 +195,40 @@ Deliver a concrete implementation blueprint with:
 - Implementation map: what changes belong in which files or modules
 - Data flow: entry points through transformations to outputs
 - Build sequence: phased implementation checklist
-- Critical details: testing, error handling, performance, security, and migration concerns
+- Critical details: testing, error handling, state management, performance, security, and migration concerns
 
 Make confident choices rather than presenting too many options. Be specific about file paths, responsibilities, and sequencing.
 
+If the user is asking for an architecture assessment rather than a build plan, switch to review mode and return an architecture overview, issues by severity, recommendations, and risk assessment.
 If the work is frontend-heavy, call out when a dedicated UI specialist should shape the design details.
+If the plan introduces security-sensitive trust boundaries or auth changes, call out when a dedicated security reviewer should validate it.
+If external API or library behavior is uncertain, call out when a docs researcher should verify assumptions before implementation.
+If testing strategy is non-trivial or risk-heavy, call out when a dedicated test engineer should shape the verification plan.
 
 End your response with:`,
 	],
-	[
-		`### Critical Files for Implementation
-List 3-5 files most critical for implementing this plan:
-- path/to/file1.ts - [Brief reason: e.g., "Core logic to modify"]
-- path/to/file2.ts - [Brief reason: e.g., "Interfaces to implement"]
-- path/to/file3.ts - [Brief reason: e.g., "Pattern to follow"]`,
-		`### Critical Files for Implementation
-List 3-5 files most critical for implementing this plan:
-- path/to/file1.ts - [Why it matters to the implementation]
-- path/to/file2.ts - [Why it matters to the implementation]
-- path/to/file3.ts - [Why it matters to the implementation]`,
-	],
 ];
 
-const EXPLORE_SOURCE_SIGNALS = [
-	EXPLORE_PROMPT_SOURCE,
-	EXPLORE_WHEN_TO_USE_SOURCE,
-];
+const EXPLORE_SOURCE_SIGNALS = [EXPLORE_PROMPT_SOURCE];
 
 const EXPLORE_PATCHED_SIGNALS = [
 	EXPLORE_PROMPT_REPLACEMENT,
-	EXPLORE_WHEN_TO_USE_REPLACEMENT,
 	"Mapping entry points, dependencies, and data flow across multiple files",
 	"Analysis methodology:",
+	"Feature discovery: find entry points, core implementation files, feature boundaries, and relevant configuration.",
+	"Start with semantic or focused structural search, then escalate to deeper codebase research only for multi-file architecture questions",
 	"Entry points: exact file:line references where the relevant functionality starts",
+	'Before recommending code changes, answer: "What specific defect or gap does this address?"',
+	"Security-sensitive findings, trust-boundary questions, or auth concerns -> recommend security-reviewer",
 	"Complete the user's research request efficiently and report your findings clearly.",
 ];
 
-const PLAN_SOURCE_SIGNALS = [PLAN_PROMPT_SOURCE, PLAN_WHEN_TO_USE_SOURCE];
+const PLAN_SOURCE_SIGNALS = [PLAN_PROMPT_SOURCE];
 
 const PLAN_PATCHED_SIGNALS = [
 	PLAN_PROMPT_REPLACEMENT,
-	PLAN_WHEN_TO_USE_REPLACEMENT,
 	"Design the Implementation Blueprint",
-	"[Why it matters to the implementation]",
+	"Testability > Readability > Consistency > Simplicity > Reversibility",
 ];
 
 const PLAN_OPTIONAL_SOURCE_SIGNALS = [
@@ -244,57 +240,168 @@ End your response with:`,
 const PLAN_OPTIONAL_PATCHED_SIGNALS = [
 	"Deliver a concrete implementation blueprint with:",
 	"Architecture decision: the chosen approach with rationale and key trade-offs",
+	"state management",
+	"switch to review mode and return an architecture overview, issues by severity, recommendations, and risk assessment",
+	"security reviewer should validate it",
+	"docs researcher should verify assumptions before implementation",
+	"test engineer should shape the verification plan",
+];
+
+const PLACEHOLDER_TOOL_EXPR = "\\$\\{[^}]+\\}|Bash";
+const PLACEHOLDER_FIND_EXPR = "find\\$\\{[^}]+\\}";
+const PLACEHOLDER_INTERPOLATION_EXPR = "\\$\\{[^}]+\\}";
+const LEGACY_READONLY_OPS_RE = new RegExp(
+	`(^|\\n)([ \\t]*)- Use (${PLACEHOLDER_TOOL_EXPR}) ONLY for read-only operations \\(ls, git status, git log, git diff, ${PLACEHOLDER_FIND_EXPR}, cat, head, tail\\)\\n\\2- NEVER use (${PLACEHOLDER_TOOL_EXPR}) for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation\\/modification`,
+	"g",
+);
+const EXPLORE_HELPER_GUIDELINES_RE = new RegExp(
+	`Guidelines:\\n${PLACEHOLDER_INTERPOLATION_EXPR}\\n${PLACEHOLDER_INTERPOLATION_EXPR}\\n- Use ${PLACEHOLDER_INTERPOLATION_EXPR} when you know the specific file path you need to read\\n- Use (${PLACEHOLDER_TOOL_EXPR}) ONLY for read-only operations \\(ls, git status, git log, git diff, ${PLACEHOLDER_FIND_EXPR}, cat, head, tail\\)\\n- NEVER use (${PLACEHOLDER_TOOL_EXPR}) for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation\\/modification`,
+	"g",
+);
+const PLAN_HELPER_FIND_LINE_RE =
+	/^[ \t]*- Find existing patterns and conventions using \$\{.+\}$/gm;
+
+// Re-export shared builder so callers in this file don't need a second import
+const MODERN_READONLY_REPLACEMENT = buildModernReadonlyReplacement;
+
+function findFirstSignalIndex(code: string, signals: string[]): number {
+	for (const signal of signals) {
+		const index = code.indexOf(signal);
+		if (index !== -1) return index;
+	}
+	return -1;
+}
+
+function extractPromptSlice(
+	code: string,
+	startSignals: string[],
+	endSignals: string[],
+	fallbackLength = 8000,
+): string | null {
+	const startIndex = findFirstSignalIndex(code, startSignals);
+	if (startIndex === -1) return null;
+
+	let endIndex = -1;
+	for (const signal of endSignals) {
+		const candidateIndex = code.indexOf(signal, startIndex);
+		if (candidateIndex === -1) continue;
+		const candidateEnd = candidateIndex + signal.length;
+		if (candidateEnd > endIndex) endIndex = candidateEnd;
+	}
+
+	if (endIndex === -1) {
+		endIndex = Math.min(code.length, startIndex + fallbackLength);
+	}
+
+	return code.slice(startIndex, endIndex);
+}
+
+const EXPLORE_SCOPE_END_SIGNALS = [
+	"Complete the user's research request efficiently and report your findings clearly.",
+	"Complete the user's search request efficiently and report your findings clearly.",
+];
+
+const PLAN_SCOPE_END_SIGNALS = [
+	"REMEMBER: You can ONLY explore and plan. You CANNOT and MUST NOT write, edit, or modify any files. You do NOT have access to file editing tools.",
+	"[Why it matters to the implementation]",
 ];
 
 export const builtInAgentPrompt: Patch = {
 	tag: "built-in-agent-prompt",
 
-    string: (code) => {
-        let result = code;
+	string: (code) => {
+		let result = code;
 
-        result = result.replaceAll(
-            EXPLORE_WHEN_TO_USE_SOURCE,
-            EXPLORE_WHEN_TO_USE_REPLACEMENT,
-        );
-        result = result.replaceAll(
-            PLAN_WHEN_TO_USE_SOURCE,
-            PLAN_WHEN_TO_USE_REPLACEMENT,
-        );
-        result = result.replaceAll(EXPLORE_PROMPT_SOURCE, EXPLORE_PROMPT_REPLACEMENT);
-        result = result.replaceAll(PLAN_PROMPT_SOURCE, PLAN_PROMPT_REPLACEMENT);
+		result = result.replaceAll(
+			EXPLORE_WHEN_TO_USE_SOURCE,
+			EXPLORE_WHEN_TO_USE_REPLACEMENT,
+		);
+		result = result.replaceAll(
+			PLAN_WHEN_TO_USE_SOURCE,
+			PLAN_WHEN_TO_USE_REPLACEMENT,
+		);
+		result = result.replaceAll(
+			EXPLORE_PROMPT_SOURCE,
+			EXPLORE_PROMPT_REPLACEMENT,
+		);
+		result = result.replaceAll(PLAN_PROMPT_SOURCE, PLAN_PROMPT_REPLACEMENT);
+		result = result.replace(
+			EXPLORE_HELPER_GUIDELINES_RE,
+			(match, toolExprA: string, toolExprB: string) =>
+				toolExprA === toolExprB
+					? `Guidelines:\n${MODERN_READONLY_REPLACEMENT(toolExprA)}`
+					: match,
+		);
+		result = result.replace(
+			LEGACY_READONLY_OPS_RE,
+			(
+				match,
+				prefix: string,
+				indent: string,
+				toolExprA: string,
+				toolExprB: string,
+			) =>
+				toolExprA === toolExprB
+					? `${prefix}${MODERN_READONLY_REPLACEMENT(toolExprA, indent)}`
+					: match,
+		);
+		result = result.replaceAll(
+			PLAN_HELPER_FIND_LINE_RE,
+			"   - Use syntax-aware code search and focused reads to locate relevant implementations",
+		);
 
-        for (const [source, replacement] of EXPLORE_SECTION_REPLACEMENTS) {
-            result = result.replaceAll(source, replacement);
-        }
-        for (const [source, replacement] of PLAN_SECTION_REPLACEMENTS) {
-            result = result.replaceAll(source, replacement);
-        }
+		for (const [source, replacement] of EXPLORE_SECTION_REPLACEMENTS) {
+			result = result.replaceAll(source, replacement);
+		}
+		for (const [source, replacement] of PLAN_SECTION_REPLACEMENTS) {
+			result = result.replaceAll(source, replacement);
+		}
 
-        return result;
+		return result;
 	},
 
 	verify: (code) => {
+		const verifyExactReplacement = (
+			source: string,
+			replacement: string,
+			label: string,
+		): true | string => {
+			const hasSource = code.includes(source);
+			const hasReplacement = code.includes(replacement);
+			if (!hasSource && !hasReplacement) return true;
+			if (!hasReplacement) {
+				return `Missing rewritten ${label} signal: ${replacement}`;
+			}
+			if (hasSource) {
+				return `Unpatched ${label} source text remains: ${source}`;
+			}
+			return true;
+		};
+
 		const verifySection = (
+			scope: string | null,
 			sourceSignals: string[],
 			patchedSignals: string[],
 			label: string,
 		): true | string => {
+			if (scope == null) return true;
+
 			const hasSourceSignals = sourceSignals.some((signal) =>
-				code.includes(signal),
+				scope.includes(signal),
 			);
 			const hasPatchedSignals = patchedSignals.some((signal) =>
-				code.includes(signal),
+				scope.includes(signal),
 			);
 			if (!hasSourceSignals && !hasPatchedSignals) return true;
 
 			for (const signal of patchedSignals) {
-				if (!code.includes(signal)) {
+				if (!scope.includes(signal)) {
 					return `Missing rewritten ${label} signal: ${signal}`;
 				}
 			}
 
 			for (const signal of sourceSignals) {
-				if (code.includes(signal)) {
+				if (scope.includes(signal)) {
 					return `Unpatched ${label} source text remains: ${signal}`;
 				}
 			}
@@ -302,7 +409,33 @@ export const builtInAgentPrompt: Patch = {
 			return true;
 		};
 
+		const exploreWhenToUseResult = verifyExactReplacement(
+			EXPLORE_WHEN_TO_USE_SOURCE,
+			EXPLORE_WHEN_TO_USE_REPLACEMENT,
+			"Explore agent whenToUse",
+		);
+		if (exploreWhenToUseResult !== true) return exploreWhenToUseResult;
+
+		const planWhenToUseResult = verifyExactReplacement(
+			PLAN_WHEN_TO_USE_SOURCE,
+			PLAN_WHEN_TO_USE_REPLACEMENT,
+			"Plan agent whenToUse",
+		);
+		if (planWhenToUseResult !== true) return planWhenToUseResult;
+
+		const exploreScope = extractPromptSlice(
+			code,
+			[EXPLORE_PROMPT_SOURCE, EXPLORE_PROMPT_REPLACEMENT],
+			EXPLORE_SCOPE_END_SIGNALS,
+		);
+		const planScope = extractPromptSlice(
+			code,
+			[PLAN_PROMPT_SOURCE, PLAN_PROMPT_REPLACEMENT],
+			PLAN_SCOPE_END_SIGNALS,
+		);
+
 		const exploreResult = verifySection(
+			exploreScope,
 			EXPLORE_SOURCE_SIGNALS,
 			EXPLORE_PATCHED_SIGNALS,
 			"Explore agent prompt",
@@ -310,6 +443,7 @@ export const builtInAgentPrompt: Patch = {
 		if (exploreResult !== true) return exploreResult;
 
 		const planResult = verifySection(
+			planScope,
 			PLAN_SOURCE_SIGNALS,
 			PLAN_PATCHED_SIGNALS,
 			"Plan agent prompt",
@@ -317,15 +451,46 @@ export const builtInAgentPrompt: Patch = {
 		if (planResult !== true) return planResult;
 
 		const planOptionalResult = verifySection(
+			planScope,
 			PLAN_OPTIONAL_SOURCE_SIGNALS,
 			PLAN_OPTIONAL_PATCHED_SIGNALS,
 			"Plan agent prompt required-output section",
 		);
 		if (planOptionalResult !== true) return planOptionalResult;
+		const scopedPrompts = [exploreScope, planScope].filter(
+			(scope): scope is string => scope != null,
+		);
+		const hasAnyBuiltInAgentPromptSignal = scopedPrompts.length > 0;
+		if (!hasAnyBuiltInAgentPromptSignal) {
+			return true;
+		}
+		if (!scopedPrompts.some((scope) => scope.includes(MODERN_READONLY_OPS))) {
+			return "Missing modern read-only operations guidance in built-in agent prompts";
+		}
+		if (
+			!scopedPrompts.some((scope) => scope.includes(MODERN_TOOL_PREFERENCE))
+		) {
+			return "Missing sg/fd/bat guidance in built-in agent prompts";
+		}
+		if (
+			scopedPrompts.some(
+				(scope) =>
+					!scope.includes(MODERN_READONLY_OPS) &&
+					scope.includes(
+						"ONLY for read-only operations (ls, git status, git log, git diff, find",
+					) &&
+					scope.includes("cat, head, tail"),
+			)
+		) {
+			return "Legacy read-only bash guidance still present in built-in agent prompts";
+		}
 
 		if (
-			!code.includes(EXPLORE_PROMPT_REPLACEMENT) &&
-			!code.includes(PLAN_PROMPT_REPLACEMENT)
+			!scopedPrompts.some(
+				(scope) =>
+					scope.includes(EXPLORE_PROMPT_REPLACEMENT) ||
+					scope.includes(PLAN_PROMPT_REPLACEMENT),
+			)
 		) {
 			return true;
 		}

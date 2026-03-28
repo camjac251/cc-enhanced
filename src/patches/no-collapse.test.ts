@@ -62,6 +62,18 @@ function renderUI(block, msg, ctx) {
   var collapsed = UT$(block, msg.input, ctx);
   return collapsed;
 }
+
+function renderMemoryWriteResult(H, A) {
+  if (H.type !== "memory_write") return null;
+  return {
+    filePath: A,
+    isCollapsible: !0,
+    isMemoryWrite: !0,
+    isSearch: !1,
+    isRead: !1,
+    isREPL: !1,
+  };
+}
 `;
 
 test("no-collapse patches guard and wrapper while preserving Z8H isCollapsible", async () => {
@@ -83,6 +95,10 @@ test("no-collapse patches guard and wrapper while preserving Z8H isCollapsible",
 		true,
 	);
 
+	// Memory write flags flipped to false
+	assert.equal(output.includes("isCollapsible: !1"), true);
+	assert.equal(output.includes("isMemoryWrite: !1"), true);
+
 	// Verify passes on patched output
 	assert.equal(noCollapse.verify(output, ast), true);
 });
@@ -91,13 +107,14 @@ test("no-collapse verify rejects unpatched fixture", () => {
 	const ast = parse(NO_COLLAPSE_FIXTURE);
 	const result = noCollapse.verify(NO_COLLAPSE_FIXTURE, ast);
 	assert.equal(typeof result, "string");
-	// Should detect original guard or wrapper still present
+	// Should detect original guard, wrapper, or unpatched memory write
 	assert.equal(
 		typeof result === "string" &&
 			(result.includes("Original collapse-metadata guard") ||
-				result.includes("Original isCollapsible wrapper")),
+				result.includes("Original isCollapsible wrapper") ||
+				result.includes("Unpatched memory write result object")),
 		true,
-		`Expected original pattern failure, got: ${result}`,
+		`Expected unpatched pattern failure, got: ${result}`,
 	);
 });
 
@@ -150,8 +167,23 @@ test("no-collapse verify requires AST argument", () => {
 	assert.equal(result, "Missing AST for no-collapse verification");
 });
 
+// ---------------------------------------------------------------------------
+// Memory write UI tests
+// ---------------------------------------------------------------------------
+
+test("no-collapse flips memory-write result flags to false", async () => {
+	// NO_COLLAPSE_FIXTURE already includes the memory write result object
+	const ast = parse(NO_COLLAPSE_FIXTURE);
+	await runNoCollapseViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes("isCollapsible: !1"), true);
+	assert.equal(output.includes("isMemoryWrite: !1"), true);
+	assert.equal(noCollapse.verify(output, ast), true);
+});
+
 test("no-collapse verify detects missing Z8H isCollapsible", async () => {
-	// Fixture missing the Z8H central function entirely
+	// Fixture missing the Z8H central function entirely but has memory write result
 	const fixtureNoZ8H = `
 function innerZ8H(H, $, A) {
   return { isSearch: true, isRead: false, isREPL: false, isMemoryWrite: false };
@@ -174,6 +206,10 @@ function UT$(H, $, A) {
 function renderUI(block, msg, ctx) {
   var collapsed = UT$(block, msg.input, ctx);
   return collapsed;
+}
+
+function renderMemoryWriteResult(H, A) {
+  return { filePath: A, isCollapsible: !1, isMemoryWrite: !1, isSearch: !1, isRead: !1, isREPL: !1 };
 }
 `;
 	const ast = parse(fixtureNoZ8H);
