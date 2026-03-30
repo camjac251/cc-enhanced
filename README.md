@@ -131,7 +131,7 @@ Patches that improve the terminal interface.
 | Patch | What it does |
 |-------|-------------|
 | `plan-diff-ui` | Shows actual "Write"/"Read" labels and full diffs in plan mode instead of generic "Updated plan" with suppressed content. |
-| `no-collapse` | Stops the UI from collapsing Read/Search/Grep results into one-line summaries. Makes memory file writes visible with full path and diff. Adds content snippet preview to "Saved N memories" notifications. |
+| `no-collapse` | Stops the UI from collapsing Read/Search/Grep results into one-line summaries. Makes memory file writes visible with full path and diff. |
 | `subagent-model-tag` | Hides the redundant model name on Task subagent rows when the subagent model is globally pinned. |
 
 ### Metadata
@@ -168,6 +168,10 @@ pnpm test                           # Run test suite
 ```
 
 See `pnpm cli --help` for all options and `mise.toml` for all tasks.
+
+## Compatibility
+
+Tested against **Claude Code 2.1.87**. Only the latest upstream version is targeted. Older versions may work but are not maintained or tested.
 
 ## Requirements
 
