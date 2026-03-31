@@ -605,16 +605,12 @@ function createCacheControlTtlMutator(): traverse.Visitor {
 			});
 			if (!hasEphemeral) return;
 
-			// Find and patch the TTL conditional: tx9($) ? {ttl: "1h"} : {}
-			// Change to: (H || tx9($)) ? {ttl: "1h"} : {}
+			// Find {ttl: "1h"} guarded by fn($) && {ttl:"1h"} and inject scope:
+			// fn($) && {ttl:"1h"} -> (scope || fn($)) && {ttl:"1h"}
 			path.traverse({
-				ConditionalExpression(condPath) {
+				ObjectExpression(objPath) {
 					if (patched) return;
-					const test = condPath.node.test;
-
-					// The consequent must be {ttl: "1h"}
-					if (!t.isObjectExpression(condPath.node.consequent)) return;
-					const hasTtl = condPath.node.consequent.properties.some(
+					const hasTtl = objPath.node.properties.some(
 						(p) =>
 							t.isObjectProperty(p) &&
 							getObjectKeyName(p.key) === "ttl" &&
@@ -622,23 +618,27 @@ function createCacheControlTtlMutator(): traverse.Visitor {
 					);
 					if (!hasTtl) return;
 
-					// The test should be a CallExpression (the tx9 call)
-					// Skip if already patched (LogicalExpression with scopeLocalName)
+					const parent = objPath.parentPath;
 					if (
-						t.isLogicalExpression(test) &&
-						t.isIdentifier(test.left, { name: scopeLocalName })
+						!parent?.isLogicalExpression({ operator: "&&" }) ||
+						parent.node.right !== objPath.node
 					) {
-						patched = true; // already patched
 						return;
 					}
 
-					if (!t.isCallExpression(test)) return;
-
-					// Wrap: tx9($) -> (H || tx9($))
-					condPath.node.test = t.logicalExpression(
+					const left = parent.node.left;
+					if (
+						t.isLogicalExpression(left, { operator: "||" }) &&
+						t.isIdentifier(left.left, { name: scopeLocalName })
+					) {
+						patched = true;
+						return;
+					}
+					if (!t.isCallExpression(left)) return;
+					parent.node.left = t.logicalExpression(
 						"||",
 						t.identifier(scopeLocalName),
-						test,
+						left,
 					);
 					patched = true;
 				},
@@ -1160,13 +1160,11 @@ export const cacheTailPolicy: Patch = {
 
 				foundCacheControlBuilder = true;
 
-				// Check for the patched TTL gate: (H || tx9($)) ? {ttl: "1h"} : {}
+				// Check for (scope || fn($)) && {ttl: "1h"}
 				path.traverse({
-					ConditionalExpression(condPath) {
+					ObjectExpression(objPath) {
 						if (hasScopeTtlGate) return;
-						// Consequent must have ttl: "1h"
-						if (!t.isObjectExpression(condPath.node.consequent)) return;
-						const hasTtl = condPath.node.consequent.properties.some(
+						const hasTtl = objPath.node.properties.some(
 							(p) =>
 								t.isObjectProperty(p) &&
 								getObjectKeyName(p.key) === "ttl" &&
@@ -1174,13 +1172,18 @@ export const cacheTailPolicy: Patch = {
 						);
 						if (!hasTtl) return;
 
-						// Test must be LogicalExpression with || where left is an identifier
-						// (the scope param) and right is a CallExpression (the tx9 call)
-						const test = condPath.node.test;
+						const parent = objPath.parentPath;
 						if (
-							t.isLogicalExpression(test, { operator: "||" }) &&
-							t.isIdentifier(test.left) &&
-							t.isCallExpression(test.right)
+							!parent?.isLogicalExpression({ operator: "&&" }) ||
+							parent.node.right !== objPath.node
+						) {
+							return;
+						}
+						const left = parent.node.left;
+						if (
+							t.isLogicalExpression(left, { operator: "||" }) &&
+							t.isIdentifier(left.left) &&
+							t.isCallExpression(left.right)
 						) {
 							hasScopeTtlGate = true;
 						}

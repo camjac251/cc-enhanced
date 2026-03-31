@@ -1,5 +1,7 @@
 # cc-enhanced
 
+**NEVER add backward-compatibility fallbacks for older upstream versions.** Target only the latest upstream. When a patch breaks on a new version, update it for the new form and drop the old one. Do not handle both.
+
 AST-based patcher for customizing the Claude Code CLI. Patches a ~16MB minified cli.js embedded in a native Bun binary.
 
 ## Architecture
@@ -41,7 +43,7 @@ Look at an existing patch for the pattern. Use the `/new-patch` skill to scaffol
 
 - Verify behavior/invariants, not exact minified expression shape.
 - Never use generic minified identifier-name heuristics as a failure signal.
-- Support both legacy and current schema layouts when upstream may switch forms.
+- Target only the current upstream form. Do not add fallbacks for old versions.
 - Keep mutation and verification consistent: a verifier must not reject constructs injected by the same patch.
 - Prefer semantic checks for prohibited behavior over proxy checks.
 - When a verifier fails against latest clean upstream, first validate whether it is a false positive before changing mutation logic.
