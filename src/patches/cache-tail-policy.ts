@@ -139,26 +139,10 @@ function patchTailGateExpression(node: t.Expression): boolean {
 	return false;
 }
 
-function buildTailPolicyDeclarations(): t.VariableDeclaration[] {
-	return [
-		t.variableDeclaration("var", [
-			t.variableDeclarator(
-				t.identifier("cacheTailWindow"),
-				t.numericLiteral(3),
-			),
-		]),
-		t.variableDeclaration("var", [
-			t.variableDeclarator(
-				t.identifier("cacheUserOnly"),
-				t.booleanLiteral(true),
-			),
-		]),
-	];
-}
-
 function ensureTailPolicyDeclarations(body: t.Statement[]): {
 	hasTailWindowDecl: boolean;
 	hasUserOnlyDecl: boolean;
+	missingDeclarations: t.VariableDeclaration[];
 } {
 	let hasTailWindowDecl = false;
 	let hasUserOnlyDecl = false;
@@ -169,7 +153,7 @@ function ensureTailPolicyDeclarations(body: t.Statement[]): {
 			if (!t.isIdentifier(decl.id)) continue;
 			if (
 				decl.id.name === "cacheTailWindow" &&
-				t.isNumericLiteral(decl.init, { value: 2 })
+				t.isNumericLiteral(decl.init, { value: 3 })
 			) {
 				hasTailWindowDecl = true;
 			}
@@ -182,7 +166,29 @@ function ensureTailPolicyDeclarations(body: t.Statement[]): {
 		}
 	}
 
-	return { hasTailWindowDecl, hasUserOnlyDecl };
+	const missingDeclarations: t.VariableDeclaration[] = [];
+	if (!hasTailWindowDecl) {
+		missingDeclarations.push(
+			t.variableDeclaration("var", [
+				t.variableDeclarator(
+					t.identifier("cacheTailWindow"),
+					t.numericLiteral(3),
+				),
+			]),
+		);
+	}
+	if (!hasUserOnlyDecl) {
+		missingDeclarations.push(
+			t.variableDeclaration("var", [
+				t.variableDeclarator(
+					t.identifier("cacheUserOnly"),
+					t.booleanLiteral(true),
+				),
+			]),
+		);
+	}
+
+	return { hasTailWindowDecl, hasUserOnlyDecl, missingDeclarations };
 }
 
 function nodeContainsMarker(node: t.Node | null | undefined): boolean {
@@ -246,10 +252,9 @@ function createCacheTailPolicyMutator(): traverse.Visitor {
 			);
 			if (markerStmtIndex < 0) return;
 
-			const { hasTailWindowDecl, hasUserOnlyDecl } =
-				ensureTailPolicyDeclarations(body);
-			if (!hasTailWindowDecl || !hasUserOnlyDecl) {
-				body.splice(markerStmtIndex, 0, ...buildTailPolicyDeclarations());
+			const { missingDeclarations } = ensureTailPolicyDeclarations(body);
+			if (missingDeclarations.length > 0) {
+				body.splice(markerStmtIndex, 0, ...missingDeclarations);
 				patchedDecls = true;
 			}
 
@@ -1130,9 +1135,10 @@ export const cacheTailPolicy: Patch = {
 			},
 		});
 
-		// Sysprompt scope check: only fail if the marker exists but isn't patched.
-		// In test fixtures that lack the sysprompt function, the marker won't be present. That's OK.
-		if (foundSyspromptMarker && !hasGlobalScopeOnIdentity) {
+		if (!foundSyspromptMarker) {
+			return "Could not locate sysprompt tool-based cache anchor";
+		}
+		if (!hasGlobalScopeOnIdentity) {
 			return 'Sysprompt identity block not patched to cacheScope: "global"';
 		}
 
@@ -1203,40 +1209,43 @@ export const cacheTailPolicy: Patch = {
 			},
 		});
 
-		// TTL check: only fail if the builder function exists but isn't patched.
-		if (foundCacheControlBuilder && !hasScopeTtlGate) {
+		if (!foundCacheControlBuilder) {
+			return "Could not locate cache control builder anchor";
+		}
+		if (!hasScopeTtlGate) {
 			return "Cache control builder not patched for 1h TTL on scoped blocks";
 		}
 
 		const requestClampAnchor = findRequestClampFunction(verifyAst);
-		if (requestClampAnchor) {
-			let hasCacheControlBlockCap = false;
+		if (!requestClampAnchor) {
+			return "Could not locate request clamp helper for cache_control cap";
+		}
+		let hasCacheControlBlockCap = false;
 
-			traverse.default(verifyAst, {
-				Function(path) {
-					if (
-						!path.isFunctionDeclaration() &&
-						!path.isFunctionExpression() &&
-						!path.isArrowFunctionExpression()
-					) {
-						return;
-					}
-					const functionName = getFunctionIdentifierName(path.node);
-					if (functionName !== requestClampAnchor.functionName) return;
-					if (!t.isBlockStatement(path.node.body)) return;
-					hasCacheControlBlockCap = path.node.body.body.some(
-						(stmt) =>
-							t.isVariableDeclaration(stmt) &&
-							stmt.declarations.some((decl) =>
-								t.isIdentifier(decl.id, { name: "cacheControlExcess" }),
-							),
-					);
-				},
-			});
+		traverse.default(verifyAst, {
+			Function(path) {
+				if (
+					!path.isFunctionDeclaration() &&
+					!path.isFunctionExpression() &&
+					!path.isArrowFunctionExpression()
+				) {
+					return;
+				}
+				const functionName = getFunctionIdentifierName(path.node);
+				if (functionName !== requestClampAnchor.functionName) return;
+				if (!t.isBlockStatement(path.node.body)) return;
+				hasCacheControlBlockCap = path.node.body.body.some(
+					(stmt) =>
+						t.isVariableDeclaration(stmt) &&
+						stmt.declarations.some((decl) =>
+							t.isIdentifier(decl.id, { name: "cacheControlExcess" }),
+						),
+				);
+			},
+		});
 
-			if (!hasCacheControlBlockCap) {
-				return "Request clamp helper missing cache_control block cap";
-			}
+		if (!hasCacheControlBlockCap) {
+			return "Request clamp helper missing cache_control block cap";
 		}
 
 		return true;
