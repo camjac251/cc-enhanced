@@ -61,14 +61,19 @@ function isPermCtxSpread(node: t.ObjectExpression): boolean {
 }
 
 /**
- * Build: if (worktreeExpr) { permVar.additionalWorkingDirectories.set(worktreeExpr, "session"); }
+ * Build: if (guardExpr) { permVar.additionalWorkingDirectories.set(valueExpr, "session"); }
+ *
+ * guardExpr is used as the if-test (may use optional chaining like e?.worktreePath).
+ * valueExpr is used inside the body (safe to use regular access since guard passed).
  */
 function buildWorktreeSetStatement(
 	permVarName: string,
-	worktreeExpr: t.Expression,
+	guardExpr: t.Expression,
+	valueExpr?: t.Expression,
 ): t.IfStatement {
+	const setArg = valueExpr ?? t.cloneNode(guardExpr);
 	return t.ifStatement(
-		worktreeExpr,
+		guardExpr,
 		t.blockStatement([
 			t.expressionStatement(
 				t.callExpression(
@@ -79,7 +84,7 @@ function buildWorktreeSetStatement(
 						),
 						t.identifier("set"),
 					),
-					[t.cloneNode(worktreeExpr), t.stringLiteral("session")],
+					[setArg, t.stringLiteral("session")],
 				),
 			),
 		]),
@@ -166,14 +171,23 @@ function createMutateVisitor(): traverse.Visitor {
 
 					if (!worktreeVarName) return;
 
-					// Build: if (worktreeVar) { permVar.additionalWorkingDirectories.set(worktreeVar.worktreePath, "session"); }
-					const worktreePathExpr = t.memberExpression(
+					// Build: if (worktreeVar?.worktreePath) { permVar.additionalWorkingDirectories.set(worktreeVar.worktreePath, "session"); }
+					// Use optional chaining for the guard since worktreeVar is null when no worktree is created
+					const worktreePathExpr = t.optionalMemberExpression(
+						t.identifier(worktreeVarName),
+						t.identifier("worktreePath"),
+						false,
+						true,
+					);
+					// Regular member access for the .set() arg (safe inside the if-guard)
+					const worktreePathValue = t.memberExpression(
 						t.identifier(worktreeVarName),
 						t.identifier("worktreePath"),
 					);
 					const ifStmt = buildWorktreeSetStatement(
 						permVarName,
 						worktreePathExpr,
+						worktreePathValue,
 					);
 
 					// Insert after the worktree if-block
