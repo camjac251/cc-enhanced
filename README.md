@@ -7,7 +7,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Node_24-339933.svg" alt="Node 24">
-  <img src="https://img.shields.io/badge/Patches-25-orange.svg" alt="25 Patches">
+  <img src="https://img.shields.io/badge/Patches-26-orange.svg" alt="25 Patches">
 </p>
 
 ---
@@ -23,14 +23,14 @@ cc-enhanced patches the Claude Code CLI binary to unlock capabilities, fix bugs,
 graph LR
     A[Native Binary] -->|unpack| B[cli.js]
     B -->|prettier| C[Formatted JS]
-    C -->|25 AST patches| D[Patched JS]
+    C -->|26 AST patches| D[Patched JS]
     D -->|verify each| E{All OK?}
     E -->|yes| F[Repack Binary]
     E -->|no| G[Abort + Report]
     F -->|atomic symlink| H[Active]
 ```
 
-The patcher extracts the embedded JavaScript from the Claude Code binary, applies 25 AST patches in a single optimized pass (`discover` -> `mutate` -> `finalize`), verifies each patch independently, and repacks the result. The binary stays exactly the same size through in-place bytecode replacement.
+The patcher extracts the embedded JavaScript from the Claude Code binary, applies 26 AST patches in a single optimized pass (`discover` -> `mutate` -> `finalize`), verifies each patch independently, and repacks the result. The binary stays exactly the same size through in-place bytecode replacement.
 
 ```mermaid
 stateDiagram-v2
@@ -103,6 +103,7 @@ Patches that modify runtime behavior, caching, and configuration.
 | `no-autoupdate` | Prevents Claude Code from silently replacing itself with a newer version (which would undo patches), while keeping plugin marketplace updates working. |
 | `session-mem` | Makes session memory controllable via environment variables (`ENABLE_SESSION_MEMORY`, `ENABLE_SESSION_MEMORY_PAST`) regardless of server-side flags. Token caps and update thresholds become configurable. |
 | `sys-prompt-file` | Loads a system prompt from `/etc/claude-code/system-prompt.md` (or a custom path via env var) and appends it to every conversation automatically. |
+| `worktree-perms` | Fixes agent worktree permissions by adding the worktree path to `additionalWorkingDirectories`. Without this, every Edit/Write in an agent worktree triggers a permission prompt even in `acceptEdits` mode. |
 
 ### Prompt
 
@@ -145,7 +146,7 @@ Patches that improve the terminal interface.
 ```mermaid
 pie showData title Patches by Category
     "Tooling" : 10
-    "System" : 6
+    "System" : 7
     "Prompt" : 4
     "UX" : 3
     "Agent" : 2
