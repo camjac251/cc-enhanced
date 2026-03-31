@@ -153,7 +153,7 @@ function ensureTailPolicyDeclarations(body: t.Statement[]): {
 			if (!t.isIdentifier(decl.id)) continue;
 			if (
 				decl.id.name === "cacheTailWindow" &&
-				t.isNumericLiteral(decl.init, { value: 3 })
+				t.isNumericLiteral(decl.init, { value: 2 })
 			) {
 				hasTailWindowDecl = true;
 			}
@@ -172,7 +172,7 @@ function ensureTailPolicyDeclarations(body: t.Statement[]): {
 			t.variableDeclaration("var", [
 				t.variableDeclarator(
 					t.identifier("cacheTailWindow"),
-					t.numericLiteral(3),
+					t.numericLiteral(2),
 				),
 			]),
 		);
@@ -859,6 +859,13 @@ function createCacheControlBlockCapClampInjector(
 				const injected = template.statements(
 					`
 					let cacheControlExcess = -4;
+					if (Array.isArray(REQUEST.tools)) {
+						for (let cacheTool of REQUEST.tools) {
+							if (cacheTool && typeof cacheTool === "object" && "cache_control" in cacheTool) {
+								cacheControlExcess++;
+							}
+						}
+					}
 					if (Array.isArray(REQUEST.system)) {
 						for (let cacheBlock of REQUEST.system) {
 							if (cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
@@ -900,6 +907,16 @@ function createCacheControlBlockCapClampInjector(
 								return cacheBlockRest;
 							}
 							return cacheBlock;
+						});
+					}
+					if (cacheControlExcess > 0 && Array.isArray(REQUEST.tools)) {
+						REQUEST.tools = REQUEST.tools.map((cacheTool) => {
+							if (cacheControlExcess > 0 && cacheTool && typeof cacheTool === "object" && "cache_control" in cacheTool) {
+								cacheControlExcess--;
+								let { cache_control: removedCacheControl, ...cacheToolRest } = cacheTool;
+								return cacheToolRest;
+							}
+							return cacheTool;
 						});
 					}
 				`,
@@ -970,7 +987,7 @@ export const cacheTailPolicy: Patch = {
 						if (!t.isIdentifier(varPath.node.id)) return;
 						if (varPath.node.id.name === "cacheTailWindow") {
 							tailWindowDeclCount += 1;
-							if (t.isNumericLiteral(varPath.node.init, { value: 3 })) {
+							if (t.isNumericLiteral(varPath.node.init, { value: 2 })) {
 								hasTailWindowDecl = true;
 							}
 						}

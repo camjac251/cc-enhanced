@@ -55,7 +55,7 @@ test("cache-tail-policy applies declarations, window gate, and user-only conditi
 	const output = print(ast);
 
 	// Declarations injected
-	assert.equal(output.includes("var cacheTailWindow = 3;"), true);
+	assert.equal(output.includes("var cacheTailWindow = 2;"), true);
 	assert.equal(output.includes("var cacheUserOnly = true;"), true);
 
 	// The === operator was replaced with >
@@ -149,7 +149,7 @@ test("cache-tail-policy handles ternary return pattern", async () => {
 	const output = print(ast);
 
 	// Declarations injected
-	assert.equal(output.includes("var cacheTailWindow = 3;"), true);
+	assert.equal(output.includes("var cacheTailWindow = 2;"), true);
 	assert.equal(output.includes("var cacheUserOnly = true;"), true);
 
 	// Gate was patched in ternary branches
@@ -243,7 +243,7 @@ test("cache-tail-policy patches all required features in full fixture", async ()
 	const output = print(ast);
 
 	assert.equal(
-		output.includes("var cacheTailWindow = 3;"),
+		output.includes("var cacheTailWindow = 2;"),
 		true,
 		"tail window decl",
 	);
@@ -362,6 +362,16 @@ test("cache-tail-policy caps cache_control blocks in the request clamp helper", 
 		true,
 		"message breakpoints should be evicted before system breakpoints",
 	);
+	assert.equal(
+		output.indexOf(".system = ") < output.indexOf(".tools = "),
+		true,
+		"system breakpoints should be evicted before tool breakpoints",
+	);
+	assert.equal(
+		output.includes("Array.isArray(L.tools)"),
+		true,
+		"tools array should be counted for cache_control blocks",
+	);
 });
 
 const NESTED_MARKER_FIXTURE = `
@@ -383,7 +393,7 @@ test("cache-tail-policy does not insert duplicate declarations when nested funct
 	const output = print(ast);
 
 	assert.equal(
-		(output.match(/var cacheTailWindow = 3;/g) ?? []).length,
+		(output.match(/var cacheTailWindow = 2;/g) ?? []).length,
 		1,
 		"cacheTailWindow should be declared once",
 	);
@@ -401,7 +411,7 @@ test("cache-tail-policy is idempotent on already-patched input", async () => {
 	const output = print(ast);
 
 	assert.equal(
-		(output.match(/var cacheTailWindow = 3;/g) ?? []).length,
+		(output.match(/var cacheTailWindow = 2;/g) ?? []).length,
 		1,
 		"cacheTailWindow should not be reinserted on reapply",
 	);
@@ -419,7 +429,7 @@ test("cache-tail-policy only injects missing tail policy declarations", async ()
 	const output = print(ast);
 
 	assert.equal(
-		(output.match(/var cacheTailWindow = 3;/g) ?? []).length,
+		(output.match(/var cacheTailWindow = 2;/g) ?? []).length,
 		1,
 		"missing cacheTailWindow should be inserted once",
 	);
