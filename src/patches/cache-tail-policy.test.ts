@@ -4,17 +4,30 @@ import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { cacheTailPolicy } from "./cache-tail-policy.js";
 
-async function runCacheTailViaPasses(ast: any): Promise<void> {
+async function runCacheTailViaPasses(
+	ast: any,
+	passIndexes?: number[],
+): Promise<void> {
 	const passes = (await cacheTailPolicy.astPasses?.(ast)) ?? [];
-	await runCombinedAstPasses(
-		ast,
-		passes.map((pass) => ({ tag: cacheTailPolicy.tag, pass })),
-		() => {},
-		() => {},
-		(_tag, error) => {
-			throw error;
-		},
-	);
+	const selectedPasses =
+		passIndexes === undefined
+			? passes
+			: passIndexes.map((index) => passes[index]).filter(Boolean);
+	const originalWarn = console.warn;
+	console.warn = () => {};
+	try {
+		await runCombinedAstPasses(
+			ast,
+			selectedPasses.map((pass) => ({ tag: cacheTailPolicy.tag, pass })),
+			() => {},
+			() => {},
+			(_tag, error) => {
+				throw error;
+			},
+		);
+	} finally {
+		console.warn = originalWarn;
+	}
 }
 
 // Minimal fixture that mirrors the real cache breakpoint function structure:
@@ -54,16 +67,12 @@ test("cache-tail-policy applies declarations, window gate, and user-only conditi
 
 	// The user return was NOT wrapped (buildUser is the userFnName)
 	assert.equal(output.includes("buildUser(item, isTail)"), true);
-
-	// Verify passes on patched output
-	assert.equal(cacheTailPolicy.verify(output, ast), true);
 });
 
-test("cache-tail-policy verify rejects unpatched fixture", () => {
-	const ast = parse(CACHE_TAIL_FIXTURE);
-	const result = cacheTailPolicy.verify(CACHE_TAIL_FIXTURE, ast);
+test("cache-tail-policy verify rejects unpatched full fixture", () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	const result = cacheTailPolicy.verify(FULL_VERIFY_FIXTURE, ast);
 	assert.equal(typeof result, "string");
-	// Should fail on missing declarations or legacy gate
 	assert.equal(
 		typeof result === "string" &&
 			(result.includes("Missing") ||
@@ -76,7 +85,7 @@ test("cache-tail-policy verify rejects unpatched fixture", () => {
 });
 
 test("cache-tail-policy verify detects === operator regression", async () => {
-	const ast = parse(CACHE_TAIL_FIXTURE);
+	const ast = parse(FULL_VERIFY_FIXTURE);
 	await runCacheTailViaPasses(ast);
 	const output = print(ast);
 
@@ -100,11 +109,9 @@ test("cache-tail-policy verify detects === operator regression", async () => {
 });
 
 test("cache-tail-policy verify detects legacy === length - 1 gate", () => {
-	// Verify that the original unpatched form (=== length - 1) is flagged
-	const ast = parse(CACHE_TAIL_FIXTURE);
-	const result = cacheTailPolicy.verify(CACHE_TAIL_FIXTURE, ast);
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	const result = cacheTailPolicy.verify(FULL_VERIFY_FIXTURE, ast);
 	assert.equal(typeof result, "string");
-	// The unpatched fixture has === length - 1 which triggers the legacy check
 	assert.equal(
 		String(result).includes("Legacy tail cache gate") ||
 			String(result).includes("Missing") ||
@@ -151,9 +158,6 @@ test("cache-tail-policy handles ternary return pattern", async () => {
 
 	// The assistant branch got the user-only conditional
 	assert.equal(output.includes("cacheUserOnly ? false :"), true);
-
-	// Verify passes
-	assert.equal(cacheTailPolicy.verify(output, ast), true);
 });
 
 // ---------------------------------------------------------------------------
@@ -202,22 +206,8 @@ test("cache-tail-policy patches sysprompt identity block to global scope", async
 });
 
 test("cache-tail-policy verify rejects unpatched sysprompt scope in combined fixture", async () => {
-	// Combine tail-window fixture + sysprompt fixture so tail-window checks pass
-	const combined = CACHE_TAIL_FIXTURE + SYSPROMPT_SCOPE_FIXTURE;
-	const ast = parse(combined);
-	// Only run the tail-window passes (not the scope mutator) so scope stays "org"
-	const tailVisitor = (await cacheTailPolicy.astPasses?.(ast))?.[0];
-	if (tailVisitor) {
-		await runCombinedAstPasses(
-			ast,
-			[{ tag: cacheTailPolicy.tag, pass: tailVisitor }],
-			() => {},
-			() => {},
-			(_tag, error) => {
-				throw error;
-			},
-		);
-	}
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast, [0, 2, 3]);
 	const output = print(ast);
 	const result = cacheTailPolicy.verify(output, parse(output));
 	assert.equal(typeof result, "string");
@@ -247,16 +237,11 @@ test("cache-tail-policy patches cache control builder for 1h TTL on scoped block
 	assert.equal(output.includes("H || checkAllowlist"), true);
 });
 
-test("cache-tail-policy patches all three features in combined fixture", async () => {
-	const combined =
-		CACHE_TAIL_FIXTURE +
-		SYSPROMPT_SCOPE_FIXTURE +
-		CACHE_CONTROL_BUILDER_FIXTURE;
-	const ast = parse(combined);
+test("cache-tail-policy patches all required features in full fixture", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
 	await runCacheTailViaPasses(ast);
 	const output = print(ast);
 
-	// All three mutations should be present
 	assert.equal(
 		output.includes("var cacheTailWindow = 3;"),
 		true,
@@ -272,18 +257,18 @@ test("cache-tail-policy patches all three features in combined fixture", async (
 		true,
 		"scope-gated 1h TTL",
 	);
+	assert.equal(
+		output.includes("let cacheControlExcess = -4;"),
+		true,
+		"cache_control block cap",
+	);
 
 	// Full verify should pass
 	assert.equal(cacheTailPolicy.verify(output, parse(output)), true);
 });
 
 test("cache-tail-policy verify rejects unpatched cache control builder in combined fixture", async () => {
-	// Combine all fixtures, patch fully, then revert TTL to simulate drift
-	const combined =
-		CACHE_TAIL_FIXTURE +
-		SYSPROMPT_SCOPE_FIXTURE +
-		CACHE_CONTROL_BUILDER_FIXTURE;
-	const ast = parse(combined);
+	const ast = parse(FULL_VERIFY_FIXTURE);
 	await runCacheTailViaPasses(ast);
 	let output = print(ast);
 
@@ -335,6 +320,28 @@ async function sendStream(client, request, signal) {
 }
 `;
 
+const FULL_VERIFY_FIXTURE =
+	CACHE_TAIL_FIXTURE +
+	SYSPROMPT_SCOPE_FIXTURE +
+	CACHE_CONTROL_BUILDER_FIXTURE +
+	CACHE_CONTROL_BLOCK_CAP_FIXTURE;
+
+const PARTIAL_DECL_FIXTURE =
+	`
+function buildCacheBreakpoints(messages) {
+  var marker = gate("tengu_api_cache_breakpoints", !1);
+  var cacheUserOnly = true;
+  var arr = messages.filter(function(m) { return m.role; });
+  return arr.map(function(item, idx, list) {
+    var isTail = idx === list.length - 1;
+    return buildAssistant(item, isTail);
+  });
+}
+` +
+	SYSPROMPT_SCOPE_FIXTURE +
+	CACHE_CONTROL_BUILDER_FIXTURE +
+	CACHE_CONTROL_BLOCK_CAP_FIXTURE;
+
 test("cache-tail-policy caps cache_control blocks in the request clamp helper", async () => {
 	const ast = parse(CACHE_TAIL_FIXTURE + CACHE_CONTROL_BLOCK_CAP_FIXTURE);
 	await runCacheTailViaPasses(ast);
@@ -355,7 +362,6 @@ test("cache-tail-policy caps cache_control blocks in the request clamp helper", 
 		true,
 		"message breakpoints should be evicted before system breakpoints",
 	);
-	assert.equal(cacheTailPolicy.verify(output, parse(output)), true);
 });
 
 const NESTED_MARKER_FIXTURE = `
@@ -386,5 +392,57 @@ test("cache-tail-policy does not insert duplicate declarations when nested funct
 		1,
 		"cacheUserOnly should be declared once",
 	);
+});
+
+test("cache-tail-policy is idempotent on already-patched input", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		(output.match(/var cacheTailWindow = 3;/g) ?? []).length,
+		1,
+		"cacheTailWindow should not be reinserted on reapply",
+	);
+	assert.equal(
+		(output.match(/var cacheUserOnly = true;/g) ?? []).length,
+		1,
+		"cacheUserOnly should not be reinserted on reapply",
+	);
 	assert.equal(cacheTailPolicy.verify(output, parse(output)), true);
+});
+
+test("cache-tail-policy only injects missing tail policy declarations", async () => {
+	const ast = parse(PARTIAL_DECL_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		(output.match(/var cacheTailWindow = 3;/g) ?? []).length,
+		1,
+		"missing cacheTailWindow should be inserted once",
+	);
+	assert.equal(
+		(output.match(/var cacheUserOnly = true;/g) ?? []).length,
+		1,
+		"existing cacheUserOnly should not be duplicated",
+	);
+	assert.equal(cacheTailPolicy.verify(output, parse(output)), true);
+});
+
+test("cache-tail-policy verify rejects patched code missing required anchors", async () => {
+	const ast = parse(CACHE_TAIL_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const result = cacheTailPolicy.verify(output, parse(output));
+
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("sysprompt") ||
+			String(result).includes("cache control builder") ||
+			String(result).includes("request clamp helper"),
+		true,
+		`Expected missing-anchor failure, got: ${result}`,
+	);
 });
