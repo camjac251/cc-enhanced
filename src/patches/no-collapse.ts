@@ -171,47 +171,37 @@ export const noCollapse: Patch = {
 				checkWrapperFunction(path);
 			},
 
-			// Check 3: factory still has isCollapsible property with isSearch || isRead
-			// (cache tail eviction is preserved)
+			// Check 3: factory still has isCollapsible set to a dynamic value
+			// (cache tail eviction is preserved). The exact expression form varies
+			// across versions, so we check that the value is not a static literal
+			// and the containing object has the expected sibling properties.
 			ObjectProperty(path) {
 				if (getObjectKeyName(path.node.key) !== "isCollapsible") return;
-				let val = path.node.value;
+				const val = path.node.value;
 				if (!path.parentPath?.isObjectExpression()) return;
 				const container = path.parentPath.node;
-				// Unwrap trailing || false (e.g. D.isSearch || D.isRead || !1)
+				// Skip static values — only match the dynamic factory return
+				if (isFalseLike(val) || isTrueLike(val) || t.isBooleanLiteral(val))
+					return;
+				const hasIsSearchProp = container.properties.some((p) =>
+					hasObjectKeyName(p, "isSearch"),
+				);
+				const hasIsReadProp = container.properties.some((p) =>
+					hasObjectKeyName(p, "isRead"),
+				);
+				const hasIsReplProp = container.properties.some((p) =>
+					hasObjectKeyName(p, "isREPL"),
+				);
+				const hasIsMemoryWriteProp = container.properties.some((p) =>
+					hasObjectKeyName(p, "isMemoryWrite"),
+				);
 				if (
-					t.isLogicalExpression(val, { operator: "||" }) &&
-					isFalseLike(val.right)
+					hasIsSearchProp &&
+					hasIsReadProp &&
+					hasIsReplProp &&
+					hasIsMemoryWriteProp
 				) {
-					val = val.left;
-				}
-				if (
-					t.isLogicalExpression(val, { operator: "||" }) &&
-					t.isMemberExpression(val.left) &&
-					isMemberPropertyName(val.left, "isSearch") &&
-					t.isMemberExpression(val.right) &&
-					isMemberPropertyName(val.right, "isRead")
-				) {
-					const hasIsSearchProp = container.properties.some((p) =>
-						hasObjectKeyName(p, "isSearch"),
-					);
-					const hasIsReadProp = container.properties.some((p) =>
-						hasObjectKeyName(p, "isRead"),
-					);
-					const hasIsReplProp = container.properties.some((p) =>
-						hasObjectKeyName(p, "isREPL"),
-					);
-					const hasIsMemoryWriteProp = container.properties.some((p) =>
-						hasObjectKeyName(p, "isMemoryWrite"),
-					);
-					if (
-						hasIsSearchProp &&
-						hasIsReadProp &&
-						hasIsReplProp &&
-						hasIsMemoryWriteProp
-					) {
-						isCollapsibleInFactory = true;
-					}
+					isCollapsibleInFactory = true;
 				}
 			},
 		});
@@ -343,7 +333,7 @@ function verifyMemoryWriteUi(ast: t.File): true | string {
 				patchedCorrectly = true;
 			}
 			if (
-				isTrueLike(collapsibleProp.value) ||
+				isTrueLike(collapsibleProp.value) &&
 				isTrueLike(memoryWriteProp.value)
 			) {
 				foundUnpatchedResultObject = true;

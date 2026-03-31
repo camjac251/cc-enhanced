@@ -172,7 +172,7 @@ See `pnpm cli --help` for all options and `mise.toml` for all tasks.
 
 ## Compatibility
 
-Tested against **Claude Code 2.1.87**. Only the latest upstream version is targeted. Older versions may work but are not maintained or tested.
+Tested against **Claude Code 2.1.88**. Only the latest upstream version is targeted. Older versions are not maintained or tested.
 
 ## Requirements
 
