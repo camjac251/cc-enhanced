@@ -6,7 +6,7 @@ AST-based patcher for customizing the Claude Code CLI. Patches a ~16MB minified 
 
 **AST-Pass-First Patching**: all logic/structure changes use Babel AST traversal via a unified combined-pass engine (`discover` -> `mutate` -> `finalize`). String patches are only acceptable for replacing prompt text where AST adds no value. Each patch includes a co-located `verify` function. See `src/types.ts` for the `Patch` interface.
 
-25 active patches grouped in `src/patch-metadata.ts`. Run `pnpm cli --list` to see them.
+26 active patches grouped in `src/patch-metadata.ts`. Run `pnpm cli --list` to see them.
 
 ## Commands
 

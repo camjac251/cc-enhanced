@@ -25,6 +25,7 @@ export { systemPromptFile } from "./sys-prompt-file.js";
 export { taskOutputExt } from "./taskout-ext.js";
 export { todo } from "./todo-use.js";
 export { disableTools } from "./tools-off.js";
+export { worktreePerms } from "./worktree-perms.js";
 
 import type { Patch } from "../types.js";
 // Re-export all patches as an array for easy iteration
@@ -53,6 +54,7 @@ import { systemPromptFile } from "./sys-prompt-file.js";
 import { taskOutputExt } from "./taskout-ext.js";
 import { todo } from "./todo-use.js";
 import { disableTools } from "./tools-off.js";
+import { worktreePerms } from "./worktree-perms.js";
 
 function parsePatchTagList(value: string | undefined): Set<string> | null {
 	if (!value) return null;
@@ -90,6 +92,7 @@ const basePatches: Patch[] = [
 	subagentModelTag,
 	sessionMemory,
 	systemPromptFile,
+	worktreePerms,
 	limits,
 
 	// Signature runs last
