@@ -42,7 +42,7 @@ test("cache-tail-policy applies declarations, window gate, and user-only conditi
 	const output = print(ast);
 
 	// Declarations injected
-	assert.equal(output.includes("var cacheTailWindow = 2;"), true);
+	assert.equal(output.includes("var cacheTailWindow = 3;"), true);
 	assert.equal(output.includes("var cacheUserOnly = true;"), true);
 
 	// The === operator was replaced with >
@@ -142,7 +142,7 @@ test("cache-tail-policy handles ternary return pattern", async () => {
 	const output = print(ast);
 
 	// Declarations injected
-	assert.equal(output.includes("var cacheTailWindow = 2;"), true);
+	assert.equal(output.includes("var cacheTailWindow = 3;"), true);
 	assert.equal(output.includes("var cacheUserOnly = true;"), true);
 
 	// Gate was patched in ternary branches
@@ -234,11 +234,7 @@ test("cache-tail-policy verify rejects unpatched sysprompt scope in combined fix
 
 const CACHE_CONTROL_BUILDER_FIXTURE = `
 function buildCacheControl({ scope: H, querySource: $ } = {}) {
-  return {
-    type: "ephemeral",
-    ...(checkAllowlist($) ? { ttl: "1h" } : {}),
-    ...(H === "global" ? { scope: H } : {}),
-  };
+  return { type: "ephemeral", ...(checkAllowlist($) && { ttl: "1h" }), ...(H === "global" && { scope: H }) };
 }
 `;
 
@@ -262,7 +258,7 @@ test("cache-tail-policy patches all three features in combined fixture", async (
 
 	// All three mutations should be present
 	assert.equal(
-		output.includes("var cacheTailWindow = 2;"),
+		output.includes("var cacheTailWindow = 3;"),
 		true,
 		"tail window decl",
 	);
@@ -381,7 +377,7 @@ test("cache-tail-policy does not insert duplicate declarations when nested funct
 	const output = print(ast);
 
 	assert.equal(
-		(output.match(/var cacheTailWindow = 2;/g) ?? []).length,
+		(output.match(/var cacheTailWindow = 3;/g) ?? []).length,
 		1,
 		"cacheTailWindow should be declared once",
 	);

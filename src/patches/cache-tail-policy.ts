@@ -144,7 +144,7 @@ function buildTailPolicyDeclarations(): t.VariableDeclaration[] {
 		t.variableDeclaration("var", [
 			t.variableDeclarator(
 				t.identifier("cacheTailWindow"),
-				t.numericLiteral(2),
+				t.numericLiteral(3),
 			),
 		]),
 		t.variableDeclaration("var", [
@@ -956,7 +956,7 @@ export const cacheTailPolicy: Patch = {
 						if (!t.isIdentifier(varPath.node.id)) return;
 						if (varPath.node.id.name === "cacheTailWindow") {
 							tailWindowDeclCount += 1;
-							if (t.isNumericLiteral(varPath.node.init, { value: 2 })) {
+							if (t.isNumericLiteral(varPath.node.init, { value: 3 })) {
 								hasTailWindowDecl = true;
 							}
 						}
