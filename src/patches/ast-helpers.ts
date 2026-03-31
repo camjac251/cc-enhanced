@@ -25,11 +25,18 @@ export function resolveStringValue(
 ): string | null {
 	if (!node) return null;
 	if (t.isStringLiteral(node)) return node.value;
+	if (t.isTemplateLiteral(node) && node.expressions.length === 0) {
+		return node.quasis
+			.map((quasi) => quasi.value.cooked ?? quasi.value.raw)
+			.join("");
+	}
 	if (t.isIdentifier(node)) {
 		const binding = path.scope.getBinding(node.name);
 		if (binding && t.isVariableDeclarator(binding.path.node)) {
 			const init = binding.path.node.init;
-			if (t.isStringLiteral(init)) return init.value;
+			if (t.isExpression(init)) {
+				return resolveStringValue(path, init);
+			}
 		}
 	}
 	return null;

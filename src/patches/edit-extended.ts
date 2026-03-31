@@ -61,14 +61,14 @@ function getToolObjectMethod(
 	);
 }
 
-function inspectValidateExtendedBypass(validateMethod: t.ObjectMethod | null): {
-	hasBypass: boolean;
-	hasFileReadsInBypass: boolean;
+function inspectValidateExtendedFlow(validateMethod: t.ObjectMethod | null): {
+	hasCanonicalization: boolean;
+	hasEarlyReturnTrue: boolean;
 } {
-	let hasBypass = false;
-	let hasFileReadsInBypass = false;
+	let hasCanonicalization = false;
+	let hasEarlyReturnTrue = false;
 	if (!validateMethod) {
-		return { hasBypass, hasFileReadsInBypass };
+		return { hasCanonicalization, hasEarlyReturnTrue };
 	}
 
 	const validateWrapper = t.file(
@@ -95,8 +95,8 @@ function inspectValidateExtendedBypass(validateMethod: t.ObjectMethod | null): {
 			if (!t.isBlockStatement(ifPath.node.consequent)) return;
 
 			let sawNormalizeCall = false;
+			let sawCanonicalizeCall = false;
 			let sawReturnTrue = false;
-			let sawFileReads = false;
 
 			traverse.default(
 				ifPath.node.consequent,
@@ -110,16 +110,11 @@ function inspectValidateExtendedBypass(validateMethod: t.ObjectMethod | null): {
 							sawNormalizeCall = true;
 						}
 						if (
-							t.isMemberExpression(callPath.node.callee) &&
-							t.isIdentifier(callPath.node.callee.object, {
-								name: "_claudeFs",
-							}) &&
-							t.isIdentifier(callPath.node.callee.property) &&
-							(callPath.node.callee.property.name === "readFileSync" ||
-								callPath.node.callee.property.name === "existsSync" ||
-								callPath.node.callee.property.name === "statSync")
+							t.isIdentifier(callPath.node.callee, {
+								name: "_claudeEditCanonicalizeInput",
+							})
 						) {
-							sawFileReads = true;
+							sawCanonicalizeCall = true;
 						}
 					},
 					ReturnStatement(returnPath) {
@@ -136,16 +131,16 @@ function inspectValidateExtendedBypass(validateMethod: t.ObjectMethod | null): {
 				ifPath,
 			);
 
-			if (sawNormalizeCall && sawReturnTrue) {
-				hasBypass = true;
+			if (sawNormalizeCall && sawCanonicalizeCall) {
+				hasCanonicalization = true;
 			}
-			if (sawFileReads) {
-				hasFileReadsInBypass = true;
+			if (sawReturnTrue) {
+				hasEarlyReturnTrue = true;
 			}
 		},
 	});
 
-	return { hasBypass, hasFileReadsInBypass };
+	return { hasCanonicalization, hasEarlyReturnTrue };
 }
 
 function patchApprovalDialog(ast: any) {
@@ -222,41 +217,10 @@ function patchApprovalDialog(ast: any) {
                             _claudeEditHasExtendedFields(INPUT);
 
                         if (_hasExtended) {
-                            const _rawFilePath = INPUT.file_path;
-                            const _absFilePath = _claudeResolvePath(String(_rawFilePath || ""));
-                            const _fileExists =
-                                _absFilePath && _claudeFs.existsSync(_absFilePath);
-                            const _encoding = _fileExists
-                                ? _claudeGetEncoding(_absFilePath)
-                                : "utf8";
-                            const _newline = _fileExists
-                                ? _claudeGetNewline(_absFilePath)
-                                : "LF";
-
-                            let _contentRaw = _fileExists
-                                ? _claudeFs.readFileSync(_absFilePath, _encoding)
-                                : "";
-                            if (_contentRaw && typeof _contentRaw !== "string")
-                                _contentRaw = _contentRaw.toString();
-                            let _content = String(_contentRaw).replace(/\\r\\n/g, "\\n");
-
-                            const _normalized = _claudeEditNormalizeEdits(INPUT);
-                            if (
-                                !_normalized.error &&
-                                _normalized.edits &&
-                                _normalized.edits.length > 0
-                            ) {
-                                const _previewResult = _claudeApplyExtendedFileEdits(
-                                    _content,
-                                    _normalized.edits,
-                                );
-                                if (!_previewResult.error) {
-                                    if (_newline === "CRLF") {
-                                        _previewResult.content = _previewResult.content.replace(/\\n/g, "\\r\\n");
-                                    }
-                                    OLD_VAR = _contentRaw;
-                                    NEW_VAR = _previewResult.content;
-                                }
+                            const _previewResult = _claudeEditCanonicalizeInput(INPUT);
+                            if (!_previewResult.error) {
+                                OLD_VAR = _previewResult.oldString;
+                                NEW_VAR = _previewResult.newString;
                             }
                         }
                     } catch (_e) {}
@@ -731,19 +695,16 @@ function runEditToolPatch(ast: t.File): void {
                         _input.new_string = typeof _input.new_string === "string" ? _input.new_string : (_input.new_string ?? "");
                     }
                     if (_claudeEditHasExtendedFields(_input)) {
+                        if (!_context) {
+                            return { result: false, behavior: "ask", message: "Read-state validation failed", errorCode: 5 };
+                        }
                         let Q = _claudeEditNormalizeEdits(_input);
                         if (Q.error) return Q.error;
-                        const _resolvedPath = _claudeResolvePath(String(_input.file_path || ""));
-                        const _normalizedPath = String(_resolvedPath || "").toLowerCase();
-                        if (_normalizedPath.endsWith(".ipynb")) {
-                            return {
-                                result: false,
-                                behavior: "ask",
-                                message: "File is a Jupyter Notebook. Use the NotebookEdit tool to edit this file.",
-                                errorCode: 5
-                            };
-                        }
-                        return { result: true };
+                        const _canonical = _claudeEditCanonicalizeInput(_input, Q.edits);
+                        if (_canonical.error) return _canonical.error;
+                        _input.old_string = _canonical.oldString;
+                        _input.new_string = _canonical.newString;
+                        _input.replace_all = false;
                     }
                 }`;
 
@@ -769,20 +730,10 @@ function runEditToolPatch(ast: t.File): void {
                     if (_claudeEditHasExtendedFields(_input)) {
                         let Z = _claudeEditNormalizeEdits(_input);
                         if (Z.error) throw Error(Z.error.message);
-
-                        let J = _claudeResolvePath(_input.file_path);
-                        let X = _claudeFs.existsSync(J);
-                        let encoding = X ? _claudeGetEncoding(J) : "utf8";
-                        let newline = X ? _claudeGetNewline(J) : "LF";
-                        let W = X ? _claudeFs.readFileSync(J, encoding) : "";
-                        if (W && typeof W !== "string") W = W.toString();
-                        let WNormalized = String(W).replace(/\\r\\n/g, "\\n");
-
-                        let L = _claudeApplyExtendedFileEdits(WNormalized, Z.edits);
+                        let L = _claudeEditCanonicalizeInput(_input, Z.edits);
                         if (L.error) throw Error(L.error.message);
-                        if (newline === "CRLF") L.content = L.content.replace(/\\n/g, "\\r\\n");
-                        _input.old_string = W;
-                        _input.new_string = L.content;
+                        _input.old_string = L.oldString;
+                        _input.new_string = L.newString;
                         _input.replace_all = false;
                     }
                     _args[0] = _input;
@@ -862,51 +813,6 @@ function runEditToolPatch(ast: t.File): void {
 				callMethod.body.body.splice(2, 0, ...logicAst);
 			}
 
-			const mapResultLogic = `
-                {
-                    if (_result && typeof _result.appliedEditsCount === "number" && _result.appliedEditsCount > 0) {
-                        let Q = _result.appliedEditsCount === 1 ? "1 edit" : _result.appliedEditsCount + " edits";
-                        let msg = "The file " + _result.filePath + " has been updated with " + Q + ".";
-                        if (_result.warning) {
-                            msg += "\\n\\nWarning: " + _result.warning;
-                        }
-                        return {
-                            tool_use_id: _toolUseId,
-                            type: "tool_result",
-                            content: msg
-                        };
-                    }
-                }`;
-
-			const mapMethod = editToolObj.properties.find(
-				(p: any) =>
-					t.isObjectMethod(p) &&
-					getObjectKeyName(p.key) === "mapToolResultToToolResultBlockParam",
-			);
-			if (mapMethod) {
-				const originalParams = mapMethod.params;
-				mapMethod.params = [
-					t.identifier("_result"),
-					t.identifier("_toolUseId"),
-				];
-
-				const restoreParams = t.variableDeclaration("let", [
-					t.variableDeclarator(
-						t.arrayPattern(originalParams),
-						t.arrayExpression([
-							t.identifier("_result"),
-							t.identifier("_toolUseId"),
-						]),
-					),
-				]);
-
-				const logicAst = template.default.statements(mapResultLogic, {
-					placeholderPattern: false,
-				})();
-				mapMethod.body.body.unshift(restoreParams);
-				mapMethod.body.body.splice(1, 0, ...logicAst);
-			}
-
 			const eqMethod = editToolObj.properties.find(
 				(p: any) =>
 					t.isObjectMethod(p) && getObjectKeyName(p.key) === "inputsEquivalent",
@@ -925,7 +831,7 @@ function runEditToolPatch(ast: t.File): void {
                         const _leftInput = ${EXTENDED_EDIT_TRANSPORT_DECODE}(${arg1});
                         const _rightInput = ${EXTENDED_EDIT_TRANSPORT_DECODE}(${arg2});
                         if (_claudeEditHasExtendedFields(_leftInput) || _claudeEditHasExtendedFields(_rightInput)) {
-                            return JSON.stringify(_leftInput) === JSON.stringify(_rightInput);
+                            return _claudeEditInputsEquivalent(_leftInput, _rightInput);
                         }
                     }`;
 				const logicAst = template.default.statements(eqLogic, {
@@ -1093,24 +999,30 @@ function verifyEditValidateAndCallFlow(ctx: EditVerifyContext): string | null {
 		return "Missing empty-string no-op guard";
 	}
 
-	const validateBypass = inspectValidateExtendedBypass(validateMethod);
-	if (validateBypass.hasFileReadsInBypass) {
-		return "validateInput still performs file reads during extended mode preprocessing";
+	const validateFlow = inspectValidateExtendedFlow(validateMethod);
+	if (!validateFlow.hasCanonicalization) {
+		return "validateInput does not canonicalize extended edits before legacy validation";
 	}
-	if (!validateBypass.hasBypass) {
-		return "validateInput does not bypass legacy string-mode checks for extended edit modes";
+	if (validateFlow.hasEarlyReturnTrue) {
+		return "validateInput still bypasses legacy string-mode checks for extended edit modes";
 	}
 	if (
-		!code.includes("toLowerCase().endsWith(") ||
+		!code.includes("_claudeEditCanonicalizeInput") ||
 		!code.includes(".ipynb") ||
 		!code.includes("NotebookEdit")
 	) {
-		return "Extended validate bypass does not preserve structural notebook edit rejection";
+		return "Extended edit canonicalization does not preserve structural notebook edit rejection";
 	}
-	if (!code.includes("_input.old_string = W;")) {
+	if (!code.includes("_input.old_string = _canonical.oldString;")) {
 		return "Extended call path does not canonicalize old_string from current file";
 	}
-	if (!code.includes("_input.new_string = L.content;")) {
+	if (!code.includes("_input.new_string = _canonical.newString;")) {
+		return "Extended validate path does not feed canonicalized new_string into legacy validation";
+	}
+	if (!code.includes("_input.old_string = L.oldString;")) {
+		return "Extended call path does not canonicalize old_string from current file";
+	}
+	if (!code.includes("_input.new_string = L.newString;")) {
 		return "Extended call path does not canonicalize new_string from transformed content";
 	}
 	if (!code.includes("_args[0] = _input;")) {

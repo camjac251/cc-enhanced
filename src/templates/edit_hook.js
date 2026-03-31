@@ -224,6 +224,116 @@ function _claudeEditNormalizeEdits(A) {
 	return { edits: Q };
 }
 
+const _claudeMaxEditFileSize = 1024 * 1024 * 1024;
+
+function _claudeEditCanonicalizeInput(A, normalizedEdits) {
+	const normalized =
+		normalizedEdits !== undefined
+			? { edits: normalizedEdits }
+			: _claudeEditNormalizeEdits(A);
+	if (normalized.error) {
+		return normalized;
+	}
+
+	const resolvedPath = _claudeResolvePath(String(A?.file_path || ""));
+	const normalizedPath = String(resolvedPath || "").toLowerCase();
+	if (normalizedPath.endsWith(".ipynb")) {
+		return _claudeEditBatchError(
+			"File is a Jupyter Notebook. Use the NotebookEdit tool to edit this file.",
+			5,
+		);
+	}
+
+	const fileExists = !!resolvedPath && _claudeFs.existsSync(resolvedPath);
+	if (fileExists) {
+		try {
+			const stat = _claudeFs.statSync(resolvedPath);
+			if (stat.size > _claudeMaxEditFileSize) {
+				return _claudeEditBatchError(
+					"File is too large to edit. Maximum editable file size is 1073741824 bytes.",
+					10,
+				);
+			}
+		} catch {}
+	}
+
+	const encoding = fileExists ? _claudeGetEncoding(resolvedPath) : "utf8";
+	const newline = fileExists ? _claudeGetNewline(resolvedPath) : "LF";
+	let contentRaw = fileExists
+		? _claudeFs.readFileSync(resolvedPath, encoding)
+		: "";
+	if (contentRaw && typeof contentRaw !== "string") {
+		contentRaw = contentRaw.toString();
+	}
+	const normalizedContent = String(contentRaw).replace(/\r\n/g, "\n");
+	const applied = _claudeApplyExtendedFileEdits(
+		normalizedContent,
+		normalized.edits,
+	);
+	if (applied.error) {
+		return applied;
+	}
+
+	let nextContent = applied.content;
+	if (newline === "CRLF") {
+		nextContent = nextContent.replace(/\n/g, "\r\n");
+	}
+
+	return {
+		edits: normalized.edits,
+		oldString: contentRaw,
+		newString: nextContent,
+		resolvedPath,
+		fileExists,
+		encoding,
+		newline,
+		appliedEdits: applied.appliedEdits,
+		appliedEditsCount:
+			applied.appliedEditsCount ?? applied.appliedEdits?.length ?? 0,
+		warning: applied.warning,
+	};
+}
+
+function _claudeEditInputsEquivalent(left, right) {
+	if (!left || !right) return left === right;
+	if (String(left.file_path || "") !== String(right.file_path || "")) {
+		return false;
+	}
+
+	const leftNormalized = _claudeEditNormalizeEdits(left);
+	const rightNormalized = _claudeEditNormalizeEdits(right);
+	if (leftNormalized.error || rightNormalized.error) {
+		return (
+			String(leftNormalized.error?.message || "") ===
+				String(rightNormalized.error?.message || "") &&
+			Number(leftNormalized.error?.errorCode || 0) ===
+				Number(rightNormalized.error?.errorCode || 0)
+		);
+	}
+
+	const leftCanonical = _claudeEditCanonicalizeInput(
+		left,
+		leftNormalized.edits,
+	);
+	const rightCanonical = _claudeEditCanonicalizeInput(
+		right,
+		rightNormalized.edits,
+	);
+	if (leftCanonical.error || rightCanonical.error) {
+		return (
+			String(leftCanonical.error?.message || "") ===
+				String(rightCanonical.error?.message || "") &&
+			Number(leftCanonical.error?.errorCode || 0) ===
+				Number(rightCanonical.error?.errorCode || 0)
+		);
+	}
+
+	return (
+		leftCanonical.oldString === rightCanonical.oldString &&
+		leftCanonical.newString === rightCanonical.newString
+	);
+}
+
 function _claudeEditApplyString(content, edit) {
 	// Append mode: empty old_string adds to end of file
 	if (edit.isAppend) {
@@ -347,6 +457,7 @@ function _claudeApplyExtendedFileEdits(content, edits) {
 		content: result,
 		firstString: firstStringEdit,
 		appliedEdits: appliedEdits.length > 0 ? appliedEdits : undefined,
+		appliedEditsCount: appliedEdits.length,
 		warning: warnings.length > 0 ? warnings.join("\n") : undefined,
 	};
 }

@@ -1,10 +1,10 @@
 import * as fs from "node:fs";
-import * as parser from "@babel/parser";
 import traverse from "@babel/traverse";
 import * as t from "@babel/types";
 import chalk from "chalk";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
+import { parse } from "./loader.js";
 
 function getSourceLines(
 	lines: string[],
@@ -134,11 +134,7 @@ async function runSearch(argv: any) {
 	console.log(chalk.blue(`Analyzing ${file}...`));
 	const code = fs.readFileSync(file, "utf-8");
 	const lines = code.split("\n");
-	const ast = parser.parse(code, {
-		sourceType: "module",
-		plugins: [],
-		tokens: false,
-	});
+	const ast = parse(code);
 
 	let matches = 0;
 	const seen = new Set<string>();

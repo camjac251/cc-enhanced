@@ -355,7 +355,7 @@ test("read-bat patches identifier-backed prompt/description bindings used by lat
 
 	assert.equal(
 		output.includes(
-			'const READ_DESCRIPTION = "Read files from the local filesystem."',
+			'const READ_DESCRIPTION = "Read a file from the local filesystem."',
 		),
 		true,
 	);
@@ -363,8 +363,12 @@ test("read-bat patches identifier-backed prompt/description bindings used by lat
 		output.includes("Line range using supported bat-style forms"),
 		true,
 	);
-	assert.equal(output.includes("line offset and limit"), false);
-	assert.equal(output.includes("cat -n format"), false);
+	assert.equal(
+		output.includes(
+			'const READ_PROMPT = "Read files from the local filesystem.',
+		),
+		true,
+	);
 });
 
 test("read-bat replaces Read properties directly when prompt bindings are shared", async () => {
@@ -395,14 +399,17 @@ test("read-bat replaces unsupported Read prompt expressions directly on the tool
 	await runReadWithBatViaPasses(ast);
 	const output = print(ast);
 	assert.equal(
-		output.includes('description: "Read files from the local filesystem."'),
+		output.includes("description: _claudePatchReadDescription(maybePrompt())"),
 		true,
 	);
 	assert.equal(
-		output.includes('prompt: "Read files from the local filesystem.'),
+		output.includes("prompt: _claudePatchReadPrompt(maybePrompt())"),
 		true,
 	);
-	assert.equal(output.includes("prompt: maybePrompt()"), false);
+	assert.equal(
+		output.includes("function _claudePatchReadPrompt(prompt)"),
+		true,
+	);
 });
 
 test("read-bat patches delegated helper calls and appends range/whitespace params", async () => {

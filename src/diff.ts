@@ -1,12 +1,12 @@
 import * as fs from "node:fs";
 import generator from "@babel/generator";
-import * as parser from "@babel/parser";
 import traverse from "@babel/traverse";
 import * as t from "@babel/types";
 import chalk from "chalk";
 import * as Diff from "diff";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
+import { parse } from "./loader.js";
 
 async function main() {
 	await yargs(hideBin(process.argv))
@@ -30,11 +30,7 @@ function parseFile(path: string) {
 	const code = fs.readFileSync(path, "utf-8");
 	return {
 		code,
-		ast: parser.parse(code, {
-			sourceType: "module",
-			plugins: [],
-			tokens: false,
-		}),
+		ast: parse(code),
 	};
 }
 
@@ -130,10 +126,10 @@ async function runDiff(argv: any) {
 				let pretty1 = code1;
 				let pretty2 = code2;
 				try {
-					pretty1 = generator.default(parser.parse(code1).program.body[0], {
+					pretty1 = generator.default(parse(code1).program.body[0], {
 						minified: false,
 					}).code;
-					pretty2 = generator.default(parser.parse(code2).program.body[0], {
+					pretty2 = generator.default(parse(code2).program.body[0], {
 						minified: false,
 					}).code;
 				} catch {}

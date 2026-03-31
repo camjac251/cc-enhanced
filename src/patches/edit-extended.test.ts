@@ -63,6 +63,7 @@ function makeSchema(shape) {
 
 const z = {
   strictObject(x) { return makeSchema(x); },
+  object(x) { return makeSchema(x); },
   string() { return makeSchema(); },
   boolean() { return makeSchema(); },
   enum() { return makeSchema(); },
@@ -217,6 +218,7 @@ test("edit-extended injects unified preview via normalize+apply pipeline", async
 	assert.equal(output.includes("EXTENDED_EDIT_PREVIEW_v1"), true);
 	assert.equal(output.includes("_claudeEditNormalizeEdits"), true);
 	assert.equal(output.includes("_claudeApplyExtendedFileEdits"), true);
+	assert.equal(output.includes("_claudeEditCanonicalizeInput"), true);
 	assert.equal(
 		output.includes("old_string and new_string cannot both be empty."),
 		true,
@@ -255,6 +257,8 @@ test("edit-extended keeps Edit identity while routing structured inputs through 
 		output.includes("_input = _claudeDecodeExtendedEditTransport(_input);"),
 		true,
 	);
+	assert.equal(output.includes("_claudeEditInputsEquivalent"), true);
+	assert.equal(output.includes("JSON.stringify(_leftInput)"), false);
 	assert.equal(output.includes("return EditTool.inputSchema.parse(H);"), false);
 });
 
@@ -271,13 +275,13 @@ test("edit-extended bypasses ideDiffSupport.getConfig for structured edit confir
 	);
 });
 
-test("edit-extended verify fails when transport parse wrapping falls back to stock input parsing", async () => {
+test("edit-extended verify fails when transport helper wiring is broken", async () => {
 	const ast = parse(EDIT_FIXTURE);
 	await runEditToolViaPasses(ast);
 	const output = print(ast);
 	const mutated = output.replaceAll(
-		"inputSchema.parse(_claudeEncodeExtendedEditTransport(H))",
-		"inputSchema.parse(H)",
+		"_claudeEncodeExtendedEditTransport",
+		"_claudeEncodeExtendedEditTransportBroken",
 	);
 	assert.notEqual(mutated, output);
 
@@ -382,6 +386,27 @@ test("edit-extended runtime preserves notebook rejection via batch edits", async
 	}
 });
 
+test("edit-extended runtime keeps structured batch validation on the legacy read-state path", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const validateWithoutContext = mod.EditTool.validateInput(
+			{
+				file_path: "/tmp/example.txt",
+				edits: [{ old_string: "alpha", new_string: "beta" }],
+			},
+			null,
+		);
+		assert.deepEqual(validateWithoutContext, {
+			result: false,
+			behavior: "ask",
+			message: "Read-state validation failed",
+			errorCode: 5,
+		});
+	} finally {
+		await cleanup();
+	}
+});
+
 test("edit-extended runtime keeps plain string mode read-state guards intact", async () => {
 	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
 	try {
@@ -465,5 +490,30 @@ test("edit-extended runtime preserves content-addressed batch order", async () =
 		assert.equal(applied.content, "ALPHA BETA GAMMA");
 	} finally {
 		await cleanup();
+	}
+});
+
+test("edit-extended runtime uses semantic equality for structured edits", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "edit-extended-eq-"));
+	try {
+		const filePath = path.join(tempDir, "example.txt");
+		await fs.writeFile(filePath, "alpha alpha\n", "utf8");
+
+		const equivalent = mod.EditTool.inputsEquivalent(
+			{
+				file_path: filePath,
+				edits: [{ oldString: "alpha", newString: "ALPHA", replaceAll: true }],
+			},
+			{
+				file_path: filePath,
+				edits: [{ oldString: "alpha alpha\n", newString: "ALPHA ALPHA\n" }],
+			},
+		);
+
+		assert.equal(equivalent, true);
+	} finally {
+		await cleanup();
+		await fs.rm(tempDir, { recursive: true, force: true });
 	}
 });

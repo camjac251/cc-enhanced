@@ -35,7 +35,11 @@ import {
 // variable declarations. Both can coexist safely.
 
 // Note: Code only supports png/jpg/jpeg/gif/webp - upstream prompt is wrong about BMP/TIFF/HEIC
-const NEW_READ_DESCRIPTION = `Read files from the local filesystem.
+const READ_DESCRIPTION_TEXT = "Read a file from the local filesystem.";
+const READ_PROMPT_PATCH_HELPER = "_claudePatchReadPrompt";
+const READ_DESCRIPTION_PATCH_HELPER = "_claudePatchReadDescription";
+
+const STATIC_READ_PROMPT = `Read files from the local filesystem.
 
 You can access any file directly by using this tool.
 Assume this tool can read all files on the machine.
@@ -75,6 +79,27 @@ Optional parameters:
 
 Examples:
 - Read entire file: \`{ file_path: "/path/to/file.ts" }\`
+- Read lines 100-200: \`{ file_path: "/path/to/file.ts", range: "100:200" }\`
+- Read last 50 lines: \`{ file_path: "/path/to/file.ts", range: "-50:" }\`
+- Read PDF pages 1-5: \`{ file_path: "/path/to/doc.pdf", pages: "1-5" }\`
+- Debug whitespace: \`{ file_path: "/path/to/file.ts", show_whitespace: true }\``;
+
+const DYNAMIC_READ_PROMPT_APPENDIX = `Range parameter (for text files only, supported bat-style forms):
+- \`30:40\` - lines 30 to 40
+- \`40:\` - line 40 to end of file
+- \`:40\` - start to line 40
+- \`-30:\` - last 30 lines
+- \`50:+20\` - line 50 plus 20 more lines
+- \`100::10\` - line 100 with 10 lines of context each side
+- \`30:40:2\` - lines 30-40 with 2 lines of context
+- If \`range\` is omitted for \`*.output\` files, Read defaults to \`-500:\` (tail) to avoid oversized reads
+- If \`range\` is omitted and the file exceeds the size limit, Read auto-previews the first 200 lines with a truncation notice. Use a range to read further.
+- For large background task output, use TaskOutput to get the \`output_file\` path, then read chunk ranges (e.g. \`1:2000\`, then \`2001:4000\`)
+
+Optional parameters:
+- \`show_whitespace: true\` - Reveal invisible characters (tabs→, spaces·, newlines␊). Use to debug indentation issues.
+
+Examples:
 - Read lines 100-200: \`{ file_path: "/path/to/file.ts", range: "100:200" }\`
 - Read last 50 lines: \`{ file_path: "/path/to/file.ts", range: "-50:" }\`
 - Read PDF pages 1-5: \`{ file_path: "/path/to/doc.pdf", pages: "1-5" }\`
@@ -142,6 +167,108 @@ function getReadToolDescriptionText(ast: t.File): string | null {
 		}
 	}
 	return null;
+}
+
+function isHelperWrappedCall(
+	expr: t.Expression,
+	helperName: string,
+): expr is t.CallExpression {
+	return (
+		t.isCallExpression(expr) &&
+		t.isIdentifier(expr.callee, { name: helperName }) &&
+		expr.arguments.length >= 1 &&
+		t.isExpression(expr.arguments[0])
+	);
+}
+
+function ensureReadPromptPatchHelpers(ast: t.File): void {
+	let hasPromptHelper = false;
+	let hasDescriptionHelper = false;
+
+	traverse.default(ast, {
+		FunctionDeclaration(path) {
+			if (t.isIdentifier(path.node.id, { name: READ_PROMPT_PATCH_HELPER })) {
+				hasPromptHelper = true;
+			}
+			if (
+				t.isIdentifier(path.node.id, { name: READ_DESCRIPTION_PATCH_HELPER })
+			) {
+				hasDescriptionHelper = true;
+			}
+			if (hasPromptHelper && hasDescriptionHelper) {
+				path.stop();
+			}
+		},
+	});
+
+	if (hasPromptHelper && hasDescriptionHelper) {
+		return;
+	}
+
+	const helpers = template.default.statements(
+		`
+function ${READ_DESCRIPTION_PATCH_HELPER}(description) {
+  const canonical = ${JSON.stringify(READ_DESCRIPTION_TEXT)};
+  if (description === void 0 || description === null) return canonical;
+  const text = String(description);
+  if (text === canonical) return text;
+  if (text === "A tool for reading files") return canonical;
+  return canonical;
+}
+
+function ${READ_PROMPT_PATCH_HELPER}(prompt) {
+  if (prompt === void 0 || prompt === null) return prompt;
+  let updated = String(prompt);
+  updated = updated.replace(
+    /- You can optionally specify a line offset and limit[^\\n]*/g,
+    "- Use the range parameter with supported bat-style forms when you only need part of a file.",
+  );
+  updated = updated.replace(
+    /- When you already know which part of the file you need,[^\\n]*/g,
+    "- When you already know which part of the file you need, prefer the range parameter over full-file reads.",
+  );
+  updated = updated.replace(
+    /- Results are returned using cat -n format, with line numbers starting at 1/g,
+    "- Results are returned with line numbers starting at 1.",
+  );
+  updated = updated.replace(
+    /To read a directory, use an ls command via the .*? tool\\./g,
+    "To inspect directories, use Bash with eza or fd rather than Read.",
+  );
+  if (!updated.includes("Range parameter (for text files only, supported bat-style forms):")) {
+    updated += (updated.endsWith("\\n") ? "\\n" : "\\n\\n") + ${JSON.stringify(DYNAMIC_READ_PROMPT_APPENDIX)};
+  }
+  const missingNotes = [];
+  if (!updated.includes("Jupyter notebooks (.ipynb")) {
+    missingNotes.push(${JSON.stringify("- This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs, combining code, text, and visualizations.")});
+  }
+  if (!updated.includes("can only read files, not directories")) {
+    missingNotes.push(${JSON.stringify("- This tool can only read files, not directories. Use Bash for directory listings.")});
+  }
+  if (!updated.includes("does not exist")) {
+    missingNotes.push(${JSON.stringify("- If a file does not exist, the read will return an error.")});
+  }
+  if (missingNotes.length > 0) {
+    updated += (updated.endsWith("\\n") ? "\\n" : "\\n\\n") + missingNotes.join("\\n");
+  }
+  return updated;
+}
+`,
+		{
+			placeholderPattern: false,
+		},
+	)();
+
+	ast.program.body.unshift(...helpers);
+}
+
+function wrapReadPromptExpression(
+	expr: t.Expression,
+	helperName: string,
+): t.Expression {
+	return isHelperWrappedCall(expr, helperName)
+		? expr
+		: t.callExpression(t.identifier(helperName), [expr]);
 }
 
 function isReadFilePathSchemaDescription(expr: t.Expression): boolean {
@@ -742,40 +869,44 @@ interface ReadVerifyContext {
 function verifyReadSchemaAndPrompt(ctx: ReadVerifyContext): string | null {
 	const { ast, schemaObject } = ctx;
 	const promptText = getReadToolPromptText(ast);
-	if (promptText == null) {
+	const hasPromptHelper =
+		ctx.code.includes(`function ${READ_PROMPT_PATCH_HELPER}`) &&
+		ctx.code.includes(`function ${READ_DESCRIPTION_PATCH_HELPER}`);
+	if (promptText == null && !hasPromptHelper) {
 		return "Unable to resolve Read prompt text after patching";
 	}
 	const descriptionText = getReadToolDescriptionText(ast);
-	if (descriptionText !== "Read files from the local filesystem.") {
+	if (descriptionText !== null && descriptionText !== READ_DESCRIPTION_TEXT) {
 		return "Read description was not rewritten to the expected text";
 	}
+	const promptSurface = promptText ?? ctx.code;
 	if (
-		!promptText.includes(
+		!promptSurface.includes(
 			"Range parameter (for text files only, supported bat-style forms):",
 		)
 	) {
 		return "Missing range parameter description";
 	}
-	if (!promptText.includes("-30:")) {
+	if (!promptSurface.includes("-30:")) {
 		return "Missing negative range example in description";
 	}
-	if (!promptText.includes("30:40:2")) {
+	if (!promptSurface.includes("30:40:2")) {
 		return "Missing range-with-context example in description";
 	}
-	if (!promptText.includes("show_whitespace: true")) {
+	if (!promptSurface.includes("show_whitespace: true")) {
 		return "Missing show_whitespace parameter description";
 	}
-	if (!promptText.includes('pages: "1-5"')) {
+	if (!promptSurface.includes('pages: "1-5"')) {
 		return "Missing pages parameter documentation/example";
 	}
-	if (!promptText.includes("Jupyter notebooks (.ipynb)")) {
+	if (!promptSurface.includes("Jupyter notebooks (.ipynb")) {
 		return "Missing notebook support note in Read prompt";
 	}
-	if (!promptText.includes("can only read files, not directories")) {
+	if (!promptSurface.includes("can only read files, not directories")) {
 		return "Missing file-only constraint in Read prompt";
 	}
 	if (
-		!promptText.includes(
+		!promptSurface.includes(
 			"If a file does not exist, the read will return an error",
 		)
 	) {
@@ -790,19 +921,23 @@ function verifyReadSchemaAndPrompt(ctx: ReadVerifyContext): string | null {
 	if (schemaHasLegacyOffsetOrLimit(schemaObject)) {
 		return "Old offset/limit parameter still in Read schema";
 	}
-	if (promptText.includes("offset and limit parameters")) {
+	if (
+		promptText != null &&
+		(promptText.includes("offset and limit parameters") ||
+			promptText.includes("line offset and limit"))
+	) {
 		return "Old offset/limit guidance still present";
 	}
-	// Verify error messages outside Read tool scope were patched
+	if (promptText?.includes("cat -n format")) {
+		return "Read prompt still references cat -n formatting";
+	}
 	if (
-		ctx.code.includes(
-			"Use offset and limit parameters to read specific portions",
+		ctx.code.includes("sections you need.") &&
+		!ctx.code.includes(
+			"Use the range parameter to read only the sections you need.",
 		)
 	) {
-		return "Error messages outside Read tool still reference offset/limit";
-	}
-	if (ctx.code.includes("use offset and limit for larger files")) {
-		return "Size guidance still references offset/limit instead of range";
+		return "Context suggestion guidance was not updated to range language";
 	}
 	return null;
 }
@@ -1131,6 +1266,8 @@ export const readWithBat: Patch = {
 							return updated;
 						};
 
+						ensureReadPromptPatchHelpers(ast);
+
 						// 0. Replace remaining offset/limit guidance strings only within the Read tool surface.
 						const readToolPath = findReadToolObjectPath(ast);
 						if (readToolPath) {
@@ -1357,15 +1494,38 @@ export const readWithBat: Patch = {
 								);
 								if (promptProp) {
 									if (t.isObjectMethod(promptProp)) {
-										promptProp.body = t.blockStatement([
-											t.returnStatement(t.stringLiteral(NEW_READ_DESCRIPTION)),
-										]);
+										for (const stmt of promptProp.body.body) {
+											if (!t.isReturnStatement(stmt) || !stmt.argument)
+												continue;
+											const resolvedPrompt = resolveStringValue(
+												path,
+												stmt.argument,
+											);
+											stmt.argument =
+												resolvedPrompt == null
+													? wrapReadPromptExpression(
+															stmt.argument,
+															READ_PROMPT_PATCH_HELPER,
+														)
+													: t.stringLiteral(STATIC_READ_PROMPT);
+										}
 									} else if (t.isExpression(promptProp.value)) {
-										setOrReplaceObjectPropertyStringValue(
+										const resolvedPrompt = resolveStringValue(
 											path,
-											promptProp,
-											NEW_READ_DESCRIPTION,
+											promptProp.value,
 										);
+										if (resolvedPrompt != null) {
+											setOrReplaceObjectPropertyStringValue(
+												path,
+												promptProp,
+												STATIC_READ_PROMPT,
+											);
+										} else {
+											promptProp.value = wrapReadPromptExpression(
+												promptProp.value,
+												READ_PROMPT_PATCH_HELPER,
+											);
+										}
 									}
 								}
 
@@ -1376,22 +1536,41 @@ export const readWithBat: Patch = {
 								);
 								if (descProp) {
 									if (t.isObjectMethod(descProp)) {
-										descProp.body = t.blockStatement([
-											t.returnStatement(
-												t.stringLiteral(
-													"Read files from the local filesystem.",
-												),
-											),
-										]);
+										for (const stmt of descProp.body.body) {
+											if (!t.isReturnStatement(stmt) || !stmt.argument)
+												continue;
+											const resolvedDescription = resolveStringValue(
+												path,
+												stmt.argument,
+											);
+											stmt.argument =
+												resolvedDescription == null
+													? wrapReadPromptExpression(
+															stmt.argument,
+															READ_DESCRIPTION_PATCH_HELPER,
+														)
+													: t.stringLiteral(READ_DESCRIPTION_TEXT);
+										}
 									} else if (
 										t.isObjectProperty(descProp) &&
 										t.isExpression(descProp.value)
 									) {
-										setOrReplaceObjectPropertyStringValue(
+										const resolvedDescription = resolveStringValue(
 											path,
-											descProp,
-											"Read files from the local filesystem.",
+											descProp.value,
 										);
+										if (resolvedDescription != null) {
+											setOrReplaceObjectPropertyStringValue(
+												path,
+												descProp,
+												READ_DESCRIPTION_TEXT,
+											);
+										} else {
+											descProp.value = wrapReadPromptExpression(
+												descProp.value,
+												READ_DESCRIPTION_PATCH_HELPER,
+											);
+										}
 									}
 								}
 
