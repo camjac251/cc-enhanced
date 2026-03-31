@@ -293,13 +293,22 @@ function createCacheTailPolicyMutator(): traverse.Visitor {
 								continue;
 							}
 
-							cbDecl.init = t.binaryExpression(
-								">",
-								t.identifier(indexParamName),
+							const tailIndexId = cbDecl.init.right;
+							cbDecl.init = t.logicalExpression(
+								"&&",
 								t.binaryExpression(
-									"-",
-									t.cloneNode(cbDecl.init.right),
-									t.identifier("cacheTailWindow"),
+									"<=",
+									t.identifier(indexParamName),
+									t.cloneNode(tailIndexId),
+								),
+								t.binaryExpression(
+									">",
+									t.identifier(indexParamName),
+									t.binaryExpression(
+										"-",
+										t.cloneNode(tailIndexId),
+										t.identifier("cacheTailWindow"),
+									),
 								),
 							);
 							tailVars.add(cbDecl.id.name);
