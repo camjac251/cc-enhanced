@@ -27,7 +27,7 @@ async function createValidSurfaceFixture(root: string): Promise<void> {
 	await writeSurface(
 		root,
 		"tools/builtin/edit.md",
-		"In regex mode, `new_string` is literal replacement text. Do not use `\\n` expecting it to become a newline; provide actual newline characters or use diff/range mode for multiline edits",
+		"For regex/pattern replacement, use Bash: `sd 'pattern' 'replacement' file.ts`",
 	);
 	await writeSurface(
 		root,
@@ -46,8 +46,8 @@ async function createValidSurfaceFixture(root: string): Promise<void> {
 		root,
 		"system/sections/using-your-tools.md",
 		[
-			"To search for files use available file-search tooling instead of find or ls",
-			"To search the content of files use available content-search tooling instead of grep",
+			"For shell-native file discovery use `fd` and `eza`.",
+			"For text search use `rg`; use `sg` for structural code search when available.",
 		].join("\n"),
 	);
 	await writeSurface(
@@ -70,6 +70,25 @@ test("verifyPromptSurfaces reports unreadable surface files", async () => {
 		assert.ok(
 			result.failures.some((failure) => failure.id === "surface-not-readable"),
 		);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("verifyPromptSurfaces allows dynamic Read prompt exports", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "verify-prompt-surfaces-dynamic-read-"),
+	);
+	try {
+		await createValidSurfaceFixture(tempDir);
+		await writeSurface(
+			tempDir,
+			"tools/builtin/read.md",
+			"# Tool: Read\n\n## Prompt\n\n(Dynamic prompt: not statically resolved from cli.js AST.)",
+		);
+		const result = await verifyPromptSurfaces({ exportDir: tempDir });
+		assert.equal(result.ok, true);
+		assert.deepEqual(result.failures, []);
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}

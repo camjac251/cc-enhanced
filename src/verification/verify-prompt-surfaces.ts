@@ -24,6 +24,8 @@ type PromptSurfaceRule = {
 };
 
 const PLAN_LITERAL_PLACEHOLDER = /^\$\{[A-Z][A-Z0-9_]*\}$/;
+const DYNAMIC_PROMPT_MARKER =
+	"(Dynamic prompt: not statically resolved from cli.js AST.)";
 
 function verifyPlanSurface(content: string): PromptSurfaceFailure[] {
 	const failures: PromptSurfaceFailure[] = [];
@@ -86,10 +88,10 @@ const SURFACE_RULES: PromptSurfaceRule[] = [
 		file: "tools/builtin/edit.md",
 		required: [
 			{
-				id: "edit-regex-newline-warning",
+				id: "edit-regex-bash-guidance",
 				needle:
-					"In regex mode, `new_string` is literal replacement text. Do not use `\\n` expecting it to become a newline; provide actual newline characters or use diff/range mode for multiline edits",
-				reason: "Edit surface missing regex newline replacement warning",
+					"For regex/pattern replacement, use Bash: `sd 'pattern' 'replacement' file.ts`",
+				reason: "Edit surface missing regex replacement Bash guidance",
 			},
 		],
 	},
@@ -152,15 +154,16 @@ const SURFACE_RULES: PromptSurfaceRule[] = [
 		required: [
 			{
 				id: "using-tools-file-search",
-				needle:
-					"To search for files use available file-search tooling instead of find or ls",
-				reason: "Using-your-tools surface missing file-search rewrite",
+				needle: "For shell-native file discovery use `fd` and `eza`.",
+				reason:
+					"Using-your-tools surface missing fd/eza file-discovery guidance",
 			},
 			{
 				id: "using-tools-content-search",
 				needle:
-					"To search the content of files use available content-search tooling instead of grep",
-				reason: "Using-your-tools surface missing content-search rewrite",
+					"For text search use `rg`; use `sg` for structural code search when available.",
+				reason:
+					"Using-your-tools surface missing rg/sg content-search guidance",
 			},
 		],
 		forbidden: [
@@ -227,6 +230,18 @@ async function readSurfaceFile(
 	}
 }
 
+function shouldSkipRequiredCheck(
+	rule: PromptSurfaceRule,
+	requiredId: string,
+	content: string,
+): boolean {
+	return (
+		rule.file === "tools/builtin/read.md" &&
+		content.includes(DYNAMIC_PROMPT_MARKER) &&
+		(requiredId === "read-range" || requiredId === "read-whitespace")
+	);
+}
+
 export async function verifyPromptSurfaces(
 	input: VerifyPromptSurfacesInput,
 ): Promise<VerifyPromptSurfacesResult> {
@@ -240,6 +255,9 @@ export async function verifyPromptSurfaces(
 
 		for (const required of rule.required ?? []) {
 			checksRun++;
+			if (shouldSkipRequiredCheck(rule, required.id, content)) {
+				continue;
+			}
 			if (!content.includes(required.needle)) {
 				failures.push({
 					file: rule.file,

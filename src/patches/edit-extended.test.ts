@@ -364,6 +364,28 @@ test("edit-extended original Edit tool preserves Edit identity while parse trans
 	}
 });
 
+test("edit-extended runtime preserves transport bridge through source-like parse dispatch", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const bridged = mod.v58(mod.EditTool, {
+			file_path: "/tmp/example.ts",
+			edits: [{ old_string: "foo", new_string: "bar", replace_all: true }],
+		});
+		assert.equal(bridged.file_path, "/tmp/example.ts");
+		assert.equal(typeof bridged.old_string, "string");
+		assert.equal(bridged.new_string, "");
+		assert.equal(bridged.replace_all, false);
+
+		const decoded = mod._claudeDecodeExtendedEditTransport(bridged);
+		assert.equal(decoded.file_path, "/tmp/example.ts");
+		assert.deepEqual(decoded.edits, [
+			{ old_string: "foo", new_string: "bar", replace_all: true },
+		]);
+	} finally {
+		await cleanup();
+	}
+});
+
 test("edit-extended runtime preserves notebook rejection via batch edits", async () => {
 	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
 	try {
