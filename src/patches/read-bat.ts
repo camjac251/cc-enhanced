@@ -181,6 +181,24 @@ function isHelperWrappedCall(
 	);
 }
 
+function hasNotebookSupportNote(promptSurface: string): boolean {
+	return promptSurface.includes("Jupyter notebooks (.ipynb");
+}
+
+function hasFileOnlyConstraint(promptSurface: string): boolean {
+	return promptSurface.includes("only read files, not directories");
+}
+
+function hasMissingFileNote(promptSurface: string): boolean {
+	return (
+		promptSurface.includes(
+			"If a file does not exist, the read will return an error",
+		) ||
+		(promptSurface.includes("does not exist") &&
+			promptSurface.includes("return an error"))
+	);
+}
+
 function ensureReadPromptPatchHelpers(ast: t.File): void {
 	let hasPromptHelper = false;
 	let hasDescriptionHelper = false;
@@ -899,17 +917,13 @@ function verifyReadSchemaAndPrompt(ctx: ReadVerifyContext): string | null {
 	if (!promptSurface.includes('pages: "1-5"')) {
 		return "Missing pages parameter documentation/example";
 	}
-	if (!promptSurface.includes("Jupyter notebooks (.ipynb")) {
+	if (!hasNotebookSupportNote(promptSurface)) {
 		return "Missing notebook support note in Read prompt";
 	}
-	if (!promptSurface.includes("can only read files, not directories")) {
+	if (!hasFileOnlyConstraint(promptSurface)) {
 		return "Missing file-only constraint in Read prompt";
 	}
-	if (
-		!promptSurface.includes(
-			"If a file does not exist, the read will return an error",
-		)
-	) {
+	if (!hasMissingFileNote(promptSurface)) {
 		return "Missing non-existent file behavior note in Read prompt";
 	}
 	if (!schemaFieldHasMethodCall(schemaObject, "range", "string")) {
