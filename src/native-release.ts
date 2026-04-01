@@ -21,6 +21,32 @@ interface NativeManifest {
 	platforms: Record<string, NativeManifestPlatform>;
 }
 
+type NativeDownloadCandidateError = {
+	candidate: string;
+	message: string;
+};
+
+export function getNativeBinaryCandidates(platform: string): string[] {
+	return platform.startsWith("windows-")
+		? ["claude.exe", "claude"]
+		: ["claude", "claude.exe"];
+}
+
+export function formatNativeDownloadFailure(
+	version: string,
+	platform: string,
+	errors: NativeDownloadCandidateError[],
+): string {
+	if (errors.length === 0) {
+		return `Could not download native binary for ${version}/${platform}. No download attempts were made.`;
+	}
+
+	const detail = errors
+		.map(({ candidate, message }) => `  - ${candidate}: ${message}`)
+		.join("\n");
+	return `Could not download native binary for ${version}/${platform}. Attempts:\n${detail}`;
+}
+
 export interface NativeFetchOptions {
 	spec?: string;
 	platform?: string;
@@ -150,20 +176,112 @@ function fileSha256(filePath: string): string {
 	return hash.digest("hex");
 }
 
-async function downloadToFile(url: string, outPath: string): Promise<void> {
-	const res = await fetchWithTimeout(url, getDownloadTimeoutMs());
-	if (!res.ok) {
-		throw new Error(`Download failed for ${url}: HTTP ${res.status}`);
-	}
-	if (!res.body) {
-		throw new Error(`No response body from ${url}`);
-	}
-	const nodeStream = Readable.fromWeb(
-		res.body as Parameters<typeof Readable.fromWeb>[0],
-	);
-	await pipeline(nodeStream, fs.createWriteStream(outPath));
+function cleanupPartialDownload(filePath: string): void {
+	if (!fs.existsSync(filePath)) return;
+	fs.rmSync(filePath, { force: true });
 }
 
+function isCommandAvailable(command: string): boolean {
+	try {
+		execFileSync(command, ["--version"], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function downloadToFileViaExternal(
+	url: string,
+	outPath: string,
+): string | null {
+	const downloadTimeoutSeconds = Math.max(
+		1,
+		Math.ceil(getDownloadTimeoutMs() / 1000),
+	);
+	const requestTimeoutSeconds = Math.max(
+		1,
+		Math.ceil(getRequestTimeoutMs() / 1000),
+	);
+	const downloaders: Array<{
+		command: string;
+		args: string[];
+	}> = [
+		{
+			command: "curl",
+			args: [
+				"-fL",
+				"--retry",
+				"3",
+				"--retry-delay",
+				"1",
+				"--connect-timeout",
+				String(requestTimeoutSeconds),
+				"--max-time",
+				String(downloadTimeoutSeconds),
+				"-o",
+				outPath,
+				url,
+			],
+		},
+		{
+			command: "wget",
+			args: [
+				"-q",
+				"--tries=3",
+				"--timeout",
+				String(downloadTimeoutSeconds),
+				"-O",
+				outPath,
+				url,
+			],
+		},
+	];
+
+	const errors: string[] = [];
+	for (const downloader of downloaders) {
+		if (!isCommandAvailable(downloader.command)) continue;
+		try {
+			execFileSync(downloader.command, downloader.args, { stdio: "ignore" });
+			return null;
+		} catch (error) {
+			cleanupPartialDownload(outPath);
+			errors.push(
+				`${downloader.command}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	if (errors.length === 0) {
+		return "no external downloader available";
+	}
+	return errors.join("; ");
+}
+
+async function downloadToFile(url: string, outPath: string): Promise<void> {
+	try {
+		const res = await fetchWithTimeout(url, getDownloadTimeoutMs());
+		if (!res.ok) {
+			throw new Error(`Download failed for ${url}: HTTP ${res.status}`);
+		}
+		if (!res.body) {
+			throw new Error(`No response body from ${url}`);
+		}
+		const nodeStream = Readable.fromWeb(
+			res.body as Parameters<typeof Readable.fromWeb>[0],
+		);
+		await pipeline(nodeStream, fs.createWriteStream(outPath));
+	} catch (error) {
+		cleanupPartialDownload(outPath);
+		const fetchMessage = error instanceof Error ? error.message : String(error);
+		const externalMessage = downloadToFileViaExternal(url, outPath);
+		if (externalMessage === null) {
+			return;
+		}
+		throw new Error(
+			`Download failed for ${url} via fetch (${fetchMessage}); external fallback failed (${externalMessage})`,
+		);
+	}
+}
 function ensureExecutable(filePath: string): void {
 	if (process.platform === "win32") return;
 	fs.chmodSync(filePath, 0o755);
@@ -276,12 +394,10 @@ export async function fetchNativeRelease(
 		};
 	}
 
-	const binaryCandidates = platform.startsWith("windows-")
-		? ["claude.exe", "claude"]
-		: ["claude", "claude.exe"];
+	const binaryCandidates = getNativeBinaryCandidates(platform);
 	const tmpPath = `${binaryPath}.tmp-download`;
 	let selectedUrl = "";
-	let lastError = "";
+	const candidateErrors: NativeDownloadCandidateError[] = [];
 	try {
 		for (const candidate of binaryCandidates) {
 			const candidateUrl = `${bucketUrl}/${version}/${platform}/${candidate}`;
@@ -290,12 +406,15 @@ export async function fetchNativeRelease(
 				selectedUrl = candidateUrl;
 				break;
 			} catch (error) {
-				lastError = error instanceof Error ? error.message : String(error);
+				candidateErrors.push({
+					candidate,
+					message: error instanceof Error ? error.message : String(error),
+				});
 			}
 		}
 		if (!selectedUrl) {
 			throw new Error(
-				`Could not download native binary for ${version}/${platform}. Last error: ${lastError}`,
+				formatNativeDownloadFailure(version, platform, candidateErrors),
 			);
 		}
 		const actual = fileSha256(tmpPath);
