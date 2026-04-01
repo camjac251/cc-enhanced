@@ -515,6 +515,108 @@ test("edit-extended runtime preserves content-addressed batch order", async () =
 	}
 });
 
+test("edit-extended runtime preserves curly quote style when fuzzy matching smart quotes", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const normalized = mod._claudeEditNormalizeEdits({
+			edits: [{ oldString: '"alpha"', newString: '"beta"' }],
+		});
+		assert.ok(!normalized.error);
+
+		const applied = mod._claudeApplyExtendedFileEdits(
+			"const title = “alpha”;",
+			normalized.edits,
+		);
+		assert.equal(applied.error, undefined);
+		assert.equal(applied.content, "const title = “beta”;");
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended runtime rejects substring edits from prior replacements", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const normalized = mod._claudeEditNormalizeEdits({
+			edits: [
+				{ oldString: "alpha", newString: "ALPHA BETA" },
+				{ oldString: "BETA", newString: "gamma" },
+			],
+		});
+		assert.ok(!normalized.error);
+
+		const applied = mod._claudeApplyExtendedFileEdits(
+			"alpha",
+			normalized.edits,
+		);
+		assert.ok(applied.error);
+		assert.match(
+			String(applied.error.message),
+			/substring of a new_string from a previous edit/i,
+		);
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended runtime strips trailing whitespace for non-markdown batch edits", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "edit-extended-whitespace-"),
+	);
+	try {
+		const filePath = path.join(tempDir, "example.txt");
+		await fs.writeFile(filePath, "alpha\nbeta\n", "utf8");
+
+		const result = await mod.EditTool.call(
+			{
+				file_path: filePath,
+				edits: [{ oldString: "beta", newString: "BETA  " }],
+				structuredPatch: [],
+			},
+			{ timestamp: Date.now() + 60_000 },
+		);
+
+		assert.deepEqual(result.observed, {
+			old_string: "alpha\nbeta\n",
+			new_string: "alpha\nBETA\n",
+			replace_all: false,
+		});
+	} finally {
+		await cleanup();
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("edit-extended runtime preserves markdown hard breaks in batch edits", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "edit-extended-markdown-"),
+	);
+	try {
+		const filePath = path.join(tempDir, "example.md");
+		await fs.writeFile(filePath, "alpha\nbeta\n", "utf8");
+
+		const result = await mod.EditTool.call(
+			{
+				file_path: filePath,
+				edits: [{ oldString: "beta", newString: "BETA  " }],
+				structuredPatch: [],
+			},
+			{ timestamp: Date.now() + 60_000 },
+		);
+
+		assert.deepEqual(result.observed, {
+			old_string: "alpha\nbeta\n",
+			new_string: "alpha\nBETA  \n",
+			replace_all: false,
+		});
+	} finally {
+		await cleanup();
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
 test("edit-extended runtime uses semantic equality for structured edits", async () => {
 	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
 	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "edit-extended-eq-"));
