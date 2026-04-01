@@ -45,9 +45,64 @@ function findPropertyByKey(
 	return null;
 }
 
+const WORKSPACE_SYMBOL_PROMPT_BULLET =
+	"- workspaceSymbol: Search for symbols across the entire workspace";
+const WORKSPACE_SYMBOL_PROMPT_BULLET_PATCHED =
+	"- workspaceSymbol: Search for symbols across the entire workspace using an optional query";
+const WORKSPACE_SYMBOL_REQUIRED_HEADER = "All operations require:";
+const WORKSPACE_SYMBOL_REQUIRED_HEADER_PATCHED =
+	"All operations except workspaceSymbol require:";
+const WORKSPACE_SYMBOL_CHARACTER_LINE =
+	"- character: The character offset (1-based, as shown in editors)";
+const WORKSPACE_SYMBOL_QUERY_SECTION =
+	"workspaceSymbol optionally accepts:\n- query: Symbol name to search for across the workspace";
+
+function rewriteLspPromptText(text: string): string | null {
+	let next = text;
+	let touched = false;
+
+	if (
+		next.includes(WORKSPACE_SYMBOL_PROMPT_BULLET) &&
+		!next.includes(WORKSPACE_SYMBOL_PROMPT_BULLET_PATCHED)
+	) {
+		next = next.replace(
+			WORKSPACE_SYMBOL_PROMPT_BULLET,
+			WORKSPACE_SYMBOL_PROMPT_BULLET_PATCHED,
+		);
+		touched = true;
+	}
+
+	if (
+		next.includes(WORKSPACE_SYMBOL_REQUIRED_HEADER) &&
+		!next.includes(WORKSPACE_SYMBOL_REQUIRED_HEADER_PATCHED)
+	) {
+		next = next.replace(
+			WORKSPACE_SYMBOL_REQUIRED_HEADER,
+			WORKSPACE_SYMBOL_REQUIRED_HEADER_PATCHED,
+		);
+		touched = true;
+	}
+
+	if (
+		next.includes(WORKSPACE_SYMBOL_CHARACTER_LINE) &&
+		!next.includes(WORKSPACE_SYMBOL_QUERY_SECTION)
+	) {
+		next = next.replace(
+			WORKSPACE_SYMBOL_CHARACTER_LINE,
+			`${WORKSPACE_SYMBOL_CHARACTER_LINE}
+
+${WORKSPACE_SYMBOL_QUERY_SECTION}`,
+		);
+		touched = true;
+	}
+
+	return touched ? next : null;
+}
+
 function createMutateVisitor(): traverse.Visitor {
 	let schemaPatched = false;
 	let mappingPatched = false;
+	let promptPatched = false;
 
 	return {
 		// 1. Schema: find the strictObject call for workspaceSymbol
@@ -103,8 +158,25 @@ function createMutateVisitor(): traverse.Visitor {
 			schemaPatched = true;
 		},
 
+		TemplateLiteral(path) {
+			if (path.node.expressions.length !== 0) return;
+			const raw = path.node.quasis
+				.map((quasi) => quasi.value.cooked ?? quasi.value.raw)
+				.join("");
+			const rewritten = rewriteLspPromptText(raw);
+			if (rewritten === null) return;
+			path.replaceWith(t.stringLiteral(rewritten));
+			promptPatched = true;
+		},
+
 		// 2. Mapping: find case "workspaceSymbol" -> {query: ""} and replace with {query: H.query || ""}
 		StringLiteral(path) {
+			const rewritten = rewriteLspPromptText(path.node.value);
+			if (rewritten !== null) {
+				path.replaceWith(t.stringLiteral(rewritten));
+				promptPatched = true;
+				return;
+			}
 			if (path.node.value !== "") return;
 			if (mappingPatched) return;
 
@@ -180,6 +252,7 @@ function createMutateVisitor(): traverse.Visitor {
 				const parts = [];
 				if (schemaPatched) parts.push("schema");
 				if (mappingPatched) parts.push("mapping");
+				if (promptPatched) parts.push("prompt");
 				if (parts.length > 0) {
 					console.log(`LSP workspaceSymbol: patched ${parts.join(" + ")}`);
 				}
@@ -197,8 +270,37 @@ function verifyWorkspaceSymbol(code: string, ast?: t.File): true | string {
 
 	let hasQueryInSchema = false;
 	let hasQueryPassthrough = false;
+	let sawPromptSurface = false;
+	let hasPromptQueryGuidance = false;
 
 	traverse.default(verifyAst, {
+		StringLiteral(path) {
+			const value = path.node.value;
+			if (
+				value.includes(WORKSPACE_SYMBOL_PROMPT_BULLET) ||
+				value.includes(WORKSPACE_SYMBOL_PROMPT_BULLET_PATCHED)
+			) {
+				sawPromptSurface = true;
+				if (value.includes(WORKSPACE_SYMBOL_QUERY_SECTION)) {
+					hasPromptQueryGuidance = true;
+				}
+			}
+		},
+		TemplateLiteral(path) {
+			if (path.node.expressions.length !== 0) return;
+			const value = path.node.quasis
+				.map((quasi) => quasi.value.cooked ?? quasi.value.raw)
+				.join("");
+			if (
+				value.includes(WORKSPACE_SYMBOL_PROMPT_BULLET) ||
+				value.includes(WORKSPACE_SYMBOL_PROMPT_BULLET_PATCHED)
+			) {
+				sawPromptSurface = true;
+				if (value.includes(WORKSPACE_SYMBOL_QUERY_SECTION)) {
+					hasPromptQueryGuidance = true;
+				}
+			}
+		},
 		CallExpression(path) {
 			// Check schema has query field
 			if (!t.isMemberExpression(path.node.callee)) return;
@@ -251,6 +353,9 @@ function verifyWorkspaceSymbol(code: string, ast?: t.File): true | string {
 	if (!hasQueryInSchema) return "workspaceSymbol schema missing query field";
 	if (!hasQueryPassthrough)
 		return 'workspaceSymbol mapping still uses hardcoded ""';
+	if (sawPromptSurface && !hasPromptQueryGuidance) {
+		return "workspaceSymbol prompt missing query guidance";
+	}
 
 	return true;
 }

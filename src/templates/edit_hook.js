@@ -103,6 +103,123 @@ function _claudeFuzzyMatch(content, search) {
 	return null;
 }
 
+function _claudeEditStripTrailingWhitespace(str) {
+	const lines = str.split(/(\r\n|\n|\r)/);
+	let result = "";
+	for (let i = 0; i < lines.length; i++) {
+		const part = lines[i];
+		if (part === undefined) continue;
+		if (i % 2 === 0) {
+			result += part.replace(/\s+$/, "");
+		} else {
+			result += part;
+		}
+	}
+	return result;
+}
+
+function _claudeEditIsMarkdownPath(filePath) {
+	return /\.(md|mdx)$/i.test(String(filePath || ""));
+}
+
+const _claudeLeftSingleCurlyQuote = "‘";
+const _claudeRightSingleCurlyQuote = "’";
+const _claudeLeftDoubleCurlyQuote = "“";
+const _claudeRightDoubleCurlyQuote = "”";
+
+function _claudeEditIsOpeningQuote(chars, index) {
+	if (index === 0) return true;
+	const prev = chars[index - 1];
+	return (
+		prev === " " ||
+		prev === "\t" ||
+		prev === "\n" ||
+		prev === "\r" ||
+		prev === "(" ||
+		prev === "[" ||
+		prev === "{" ||
+		prev === "\u2014" ||
+		prev === "\u2013"
+	);
+}
+
+function _claudeEditApplyCurlyDoubleQuotes(str) {
+	const chars = [...str];
+	const result = [];
+	for (let i = 0; i < chars.length; i++) {
+		if (chars[i] === '"') {
+			result.push(
+				_claudeEditIsOpeningQuote(chars, i)
+					? _claudeLeftDoubleCurlyQuote
+					: _claudeRightDoubleCurlyQuote,
+			);
+		} else {
+			result.push(chars[i]);
+		}
+	}
+	return result.join("");
+}
+
+function _claudeEditApplyCurlySingleQuotes(str) {
+	const chars = [...str];
+	const result = [];
+	for (let i = 0; i < chars.length; i++) {
+		if (chars[i] === "'") {
+			const prev = i > 0 ? chars[i - 1] : undefined;
+			const next = i + 1 < chars.length ? chars[i + 1] : undefined;
+			const isContraction =
+				typeof prev === "string" &&
+				typeof next === "string" &&
+				/\p{L}/u.test(prev) &&
+				/\p{L}/u.test(next);
+			if (isContraction) {
+				result.push(_claudeRightSingleCurlyQuote);
+			} else {
+				result.push(
+					_claudeEditIsOpeningQuote(chars, i)
+						? _claudeLeftSingleCurlyQuote
+						: _claudeRightSingleCurlyQuote,
+				);
+			}
+		} else {
+			result.push(chars[i]);
+		}
+	}
+	return result.join("");
+}
+
+function _claudeEditPreserveQuoteStyle(oldString, actualOldString, newString) {
+	if (oldString === actualOldString) return newString;
+
+	const hasDoubleQuotes =
+		actualOldString.includes(_claudeLeftDoubleCurlyQuote) ||
+		actualOldString.includes(_claudeRightDoubleCurlyQuote);
+	const hasSingleQuotes =
+		actualOldString.includes(_claudeLeftSingleCurlyQuote) ||
+		actualOldString.includes(_claudeRightSingleCurlyQuote);
+
+	if (!hasDoubleQuotes && !hasSingleQuotes) return newString;
+
+	let result = newString;
+	if (hasDoubleQuotes) {
+		result = _claudeEditApplyCurlyDoubleQuotes(result);
+	}
+	if (hasSingleQuotes) {
+		result = _claudeEditApplyCurlySingleQuotes(result);
+	}
+	return result;
+}
+
+function _claudeEditPrepareEditsForPath(edits, filePath) {
+	const isMarkdown = _claudeEditIsMarkdownPath(filePath);
+	return edits.map((edit) => ({
+		...edit,
+		newString: isMarkdown
+			? edit.newString
+			: _claudeEditStripTrailingWhitespace(edit.newString),
+	}));
+}
+
 // --- Core Edit Logic ---
 
 function _claudeEditUnwrapQuotedScalar(A) {
@@ -258,6 +375,10 @@ function _claudeEditCanonicalizeInput(A, normalizedEdits) {
 	}
 
 	const encoding = fileExists ? _claudeGetEncoding(resolvedPath) : "utf8";
+	const preparedEdits = _claudeEditPrepareEditsForPath(
+		normalized.edits,
+		A?.file_path ?? resolvedPath,
+	);
 	const newline = fileExists ? _claudeGetNewline(resolvedPath) : "LF";
 	let contentRaw = fileExists
 		? _claudeFs.readFileSync(resolvedPath, encoding)
@@ -268,7 +389,7 @@ function _claudeEditCanonicalizeInput(A, normalizedEdits) {
 	const normalizedContent = String(contentRaw).replace(/\r\n/g, "\n");
 	const applied = _claudeApplyExtendedFileEdits(
 		normalizedContent,
-		normalized.edits,
+		preparedEdits,
 	);
 	if (applied.error) {
 		return applied;
@@ -280,7 +401,7 @@ function _claudeEditCanonicalizeInput(A, normalizedEdits) {
 	}
 
 	return {
-		edits: normalized.edits,
+		edits: preparedEdits,
 		oldString: contentRaw,
 		newString: nextContent,
 		resolvedPath,
@@ -359,6 +480,11 @@ function _claudeEditApplyString(content, edit) {
 	}
 
 	const searchStr = matched || edit.oldString;
+	const replacementString = _claudeEditPreserveQuoteStyle(
+		edit.oldString,
+		searchStr,
+		edit.newString,
+	);
 
 	// Count occurrences to check uniqueness
 	if (!edit.replaceAll && searchStr !== "") {
@@ -398,16 +524,17 @@ function _claudeEditApplyString(content, edit) {
 	if (edit.replaceAll) {
 		const parts = content.split(searchStr);
 		return {
-			content: parts.join(edit.newString),
+			content: parts.join(replacementString),
 			oldString: searchStr,
+			newString: replacementString,
 			matchCount: parts.length - 1,
 		};
-	} else {
-		return {
-			content: content.replace(searchStr, edit.newString),
-			oldString: searchStr,
-		};
 	}
+	return {
+		content: content.replace(searchStr, replacementString),
+		oldString: searchStr,
+		newString: replacementString,
+	};
 }
 
 function _claudeApplyExtendedFileEdits(content, edits) {
@@ -415,13 +542,34 @@ function _claudeApplyExtendedFileEdits(content, edits) {
 	let firstStringEdit = null;
 	const warnings = [];
 	const appliedEdits = [];
+	const appliedNewStrings = [];
 
 	// All edits are string replace (content-addressed), applied in order
 	for (const edit of edits) {
+		const oldStringToCheck =
+			typeof edit.oldString === "string"
+				? edit.oldString.replace(/\n+$/, "")
+				: "";
+		for (const previousNewString of appliedNewStrings) {
+			if (
+				oldStringToCheck !== "" &&
+				typeof previousNewString === "string" &&
+				previousNewString.includes(oldStringToCheck)
+			) {
+				return _claudeEditBatchError(
+					"Cannot edit file: old_string is a substring of a new_string from a previous edit.",
+					27,
+				);
+			}
+		}
+
 		const outcome = _claudeEditApplyString(result, edit);
 		if (outcome.error) return outcome;
 
 		if (outcome.warning) warnings.push(outcome.warning);
+
+		const appliedNewString =
+			outcome.newString !== undefined ? outcome.newString : edit.newString;
 
 		if (outcome.oldString !== undefined) {
 			const matchCount = outcome.matchCount || 1;
@@ -429,23 +577,24 @@ function _claudeApplyExtendedFileEdits(content, edits) {
 				for (let i = 0; i < matchCount; i++) {
 					appliedEdits.push({
 						oldString: outcome.oldString,
-						newString: edit.newString,
+						newString: appliedNewString,
 						replaceAll: false,
 					});
 				}
 			} else {
 				appliedEdits.push({
 					oldString: outcome.oldString,
-					newString: edit.newString,
+					newString: appliedNewString,
 					replaceAll: edit.replaceAll || false,
 				});
 			}
+			appliedNewStrings.push(appliedNewString);
 		}
 
 		if (!firstStringEdit && outcome.oldString !== undefined) {
 			firstStringEdit = {
 				oldString: outcome.oldString,
-				newString: edit.newString,
+				newString: appliedNewString,
 				replaceAll: edit.replaceAll,
 			};
 		}
