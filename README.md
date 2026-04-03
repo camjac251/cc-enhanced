@@ -123,7 +123,7 @@ Patches that control which agents and commands are available.
 | Patch | What it does |
 |-------|-------------|
 | `agents-off` | Disables the `statusline-setup` and `claude-code-guide` built-in agents. |
-| `commands-off` | Disables `/pr-comments`, `/review`, and `/security-review` slash commands, superseded by custom skills and dedicated agents with better functionality. |
+| `commands-off` | Disables `/review` and `/security-review` slash commands, superseded by custom skills and dedicated agents with better functionality. |
 
 ### UX
 
