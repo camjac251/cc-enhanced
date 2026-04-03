@@ -79,67 +79,69 @@ CLAUDE_PATCHER_EXCLUDE_TAGS=tools-off,agents-off mise run native:update
 
 Patches that enhance, fix, or extend Claude's built-in tools.
 
-| Patch | What it does |
-|-------|-------------|
-| `read-bat` | Replaces Read tool with `bat`-style range syntax (`30:40`, `-30:`, `100::10`), line-numbered output, auto-tailing for `.output` files, and oversized file preview with truncation notice. Caps changed-file diff snippets to prevent context bloat. |
-| `edit-extended` | Adds batch edit mode (`edits[]` for multiple find/replace in one call), rewrites the Edit prompt with fuzzy matching docs and error recovery tips, and fixes the diff preview for extended edits. |
-| `bash-tail` | Adds `output_tail` parameter (keeps the last N characters of truncated output so build errors are visible) and `max_output` (overrides inline threshold up to 500K to avoid disk saves). |
-| `limits` | Raises Read tool caps: byte ceiling 256KB to 1MB, token budget 25K to 50K, persistence threshold 50K to 120K chars. Formatted reads up to ~30K tokens stay inline instead of being saved to disk. |
-| `tools-off` | Disables Glob, Grep, WebSearch, WebFetch, and NotebookEdit so Claude uses Bash-based alternatives. Rewrites all prompt references to stop recommending disabled tools. |
-| `shell-quote-fix` | Fixes a bug where `!` in Bash commands (negation, `!==`, shell tests) was incorrectly backslash-escaped, corrupting generated commands. |
-| `mcp-server-name` | Fixes MCP server name validation so names with colons and dots (like `plugin:name:key`) are accepted in settings, instead of silently rejecting the settings file. |
-| `taskout-ext` | Adds structured `output_file` and `output_filename` fields to TaskOutput so Claude can reliably find and read full background task output. |
-| `lsp-multi-server` | Fixes LSP so file events are sent to all registered language servers for a file type, not just the first. Enables TypeScript + ESLint + Tailwind working simultaneously. |
-| `lsp-workspace-symbol` | Fixes `workspaceSymbol` to pass through the search query instead of always sending an empty string. |
+The tables below summarize the user-facing effect of each patch.
+
+| Patch | What's changed |
+|-------|----------------|
+| `read-bat` | Read accepts `bat`-style `range` syntax (`30:40`, `-30:`, `100::10`), returns line-numbered output, tails `.output` files by default, previews oversized files with truncation notices, and keeps changed-file diff snippets bounded. |
+| `edit-extended` | Edit accepts multi-edit batches through `edits[]`, shows the correct diff preview for extended edits, and includes stronger guidance for fuzzy matching and recovery. |
+| `bash-tail` | Bash accepts `output_tail` to preserve the end of truncated output and `max_output` to keep larger results inline up to 500K chars. |
+| `limits` | Read keeps larger files inline with a 1MB byte ceiling, a 50K token budget, a 120K-char persistence threshold, and higher formatted-read output limits. |
+| `tools-off` | Claude works through a Bash-centric file and search workflow without `Glob`, `Grep`, `WebSearch`, `WebFetch`, or `NotebookEdit`, and the prompt guidance points it toward the remaining shell-based toolchain. |
+| `shell-quote-fix` | Bash command generation preserves literal `!` usage for negation, comparisons, and shell tests. |
+| `mcp-server-name` | Settings accept MCP server names containing colons and dots, including multi-part plugin-style names. |
+| `taskout-ext` | Task output metadata includes structured `output_file` and `output_filename` fields so follow-up reads can locate full background logs reliably. |
+| `lsp-multi-server` | File lifecycle events fan out to every matching language server, so stacked setups like TypeScript + ESLint + Tailwind stay in sync. |
+| `lsp-workspace-symbol` | `workspaceSymbol` requests carry the actual search query through the tool pipeline. |
 
 ### System
 
 Patches that modify runtime behavior, caching, and configuration.
 
-| Patch | What it does |
-|-------|-------------|
-| `cache-tail-policy` | Optimizes API prompt caching: extends tail window to 2 turns, restricts breakpoints to user messages, promotes system prompt to global cache scope for cross-conversation hits, ensures 1-hour TTL, and caps cache blocks at 4. |
-| `effort-max` | Unlocks "max" effort level in the interactive picker for all models, not just Opus. |
-| `no-autoupdate` | Prevents Claude Code from silently replacing itself with a newer version (which would undo patches), while keeping plugin marketplace updates working. |
-| `session-mem` | Makes session memory controllable via environment variables (`ENABLE_SESSION_MEMORY`, `ENABLE_SESSION_MEMORY_PAST`) regardless of server-side flags. Token caps and update thresholds become configurable. |
-| `sys-prompt-file` | Loads a system prompt from `/etc/claude-code/system-prompt.md` (or a custom path via env var) and appends it to every conversation automatically. |
-| `worktree-perms` | Fixes agent worktree permissions by adding the worktree path to `additionalWorkingDirectories`. Without this, every Edit/Write in an agent worktree triggers a permission prompt even in `acceptEdits` mode. |
+| Patch | What's changed |
+|-------|----------------|
+| `cache-tail-policy` | Prompt caching uses a two-turn tail window, user-message breakpoints, global system-prompt scope, a one-hour TTL, and a four-block cap. |
+| `effort-max` | The interactive effort picker offers the full `max` tier across supported models. |
+| `no-autoupdate` | The promoted patched build stays in place while marketplace plugins continue to update normally. |
+| `session-mem` | Session memory behavior is controlled locally through environment variables, including enablement, past-session lookup, token caps, and update thresholds. |
+| `sys-prompt-file` | Every conversation automatically appends a system prompt file from `/etc/claude-code/system-prompt.md` or a configured path. |
+| `worktree-perms` | Agent worktrees automatically include their working directories in the allowed edit surface, so normal read and edit flows do not fall back to repeated permission prompts. |
 
 ### Prompt
 
 Patches that improve or replace prompt text sent to the model.
 
-| Patch | What it does |
-|-------|-------------|
-| `bash-prompt` | Replaces legacy tool guidance so Claude recommends modern CLI tools (`fd`, `rg`, `bat`, `sd`, `sg`, `eza`) instead of `find`, `grep`, `cat`, `sed`, `awk`. |
-| `built-in-agent-prompt` | Rewrites Explore and Plan agent prompts. Explore becomes a deep codebase researcher with execution path tracing. Plan becomes a senior architect delivering concrete blueprints with trade-off analysis. |
-| `claudemd-strong` | Replaces the weak CLAUDE.md disclaimer with mandatory enforcement, making CLAUDE.md instructions binding when applicable. |
-| `todo-use` | Condenses verbose Todo tool examples to two brief bullets, reducing prompt token overhead. |
+| Patch | What's changed |
+|-------|----------------|
+| `bash-prompt` | Bash guidance steers the model toward modern CLI tools such as `fd`, `rg`, `bat`, `sd`, `sg`, and `eza`. |
+| `built-in-agent-prompt` | Explore is framed as deep codebase research with execution-path tracing, and Plan is framed as blueprint-driven architecture work with concrete trade-offs, sequencing, and implementation guidance. |
+| `claudemd-strong` | CLAUDE.md instructions are treated as binding guidance whenever they apply. |
+| `todo-use` | Todo guidance stays short and high-signal with two compact usage bullets. |
 
 ### Agent
 
 Patches that control which agents and commands are available.
 
-| Patch | What it does |
-|-------|-------------|
-| `agents-off` | Disables the `statusline-setup` and `claude-code-guide` built-in agents. |
-| `commands-off` | Disables `/review` and `/security-review` slash commands, superseded by custom skills and dedicated agents with better functionality. |
+| Patch | What's changed |
+|-------|----------------|
+| `agents-off` | The built-in agent roster omits `statusline-setup` and `claude-code-guide`, keeping setup and guidance flows in user-controlled skills and prompts. |
+| `commands-off` | The slash-command surface omits `/security-review`, keeping `/review` as the single review entry point and leaving room for local skill shadowing. |
 
 ### UX
 
 Patches that improve the terminal interface.
 
-| Patch | What it does |
-|-------|-------------|
-| `plan-diff-ui` | Shows actual "Write"/"Read" labels and full diffs in plan mode instead of generic "Updated plan" with suppressed content. |
-| `no-collapse` | Stops the UI from collapsing Read/Search/Grep results into one-line summaries. Makes memory file writes visible with full path and diff. |
-| `subagent-model-tag` | Hides the redundant model name on Task subagent rows when the subagent model is globally pinned. |
+| Patch | What's changed |
+|-------|----------------|
+| `plan-diff-ui` | Plan mode shows the actual tool label and full diff content for read and write actions. |
+| `no-collapse` | Read, Search, and Grep results stay expanded, and memory-file writes show their full path and diff. |
+| `subagent-model-tag` | Task rows omit redundant model labels when the subagent model is already pinned globally, reducing repeated visual noise in busy sessions. |
 
 ### Metadata
 
-| Patch | What it does |
-|-------|-------------|
-| `signature` | Appends a "patched: tag1, tag2, ..." marker to `claude --version` and a " * patched" indicator to the UI title bar. |
+| Patch | What's changed |
+|-------|----------------|
+| `signature` | `claude --version` and the UI title bar show that the binary is patched and expose the active patch set for quick verification. |
 
 ## Patch Distribution
 

@@ -4,17 +4,14 @@ import type { Patch } from "../types.js";
 import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
 /**
- * Ensure superseded built-in commands stay unavailable.
+ * Ensure the superseded built-in security review command stays unavailable.
  *
- * If the current bundle still assembles them in a central registry array, we
- * remove them there instead of rewriting disabled stubs. If the bundle already
- * omits them entirely, this patch becomes a no-op and verification should pass.
+ * If the current bundle still assembles it in a central registry array, we
+ * remove it there instead of rewriting disabled stubs. If the bundle already
+ * omits it entirely, this patch becomes a no-op and verification should pass.
  */
 
-const COMMANDS_TO_DISABLE = new Set([
-	"review",
-	"security-review",
-]);
+const COMMANDS_TO_DISABLE = new Set(["security-review"]);
 
 function getCommandNameFromObject(obj: t.ObjectExpression): string | null {
 	for (const prop of obj.properties) {
