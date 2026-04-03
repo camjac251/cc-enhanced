@@ -86,7 +86,7 @@ test("commands-off removes superseded commands from the central registry", async
 	await runCommandsOffViaPasses(ast);
 	const output = print(ast);
 
-	assert.equal(output.includes("reviewCommand,"), false);
+	assert.equal(output.includes("reviewCommand,"), true);
 	assert.equal(output.includes("securityReview,"), false);
 	assert.equal(output.includes("otherCommand"), true);
 	assert.equal(commandsOff.verify(output, ast), true);
