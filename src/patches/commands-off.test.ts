@@ -17,7 +17,7 @@ async function runCommandsOffViaPasses(ast: any): Promise<void> {
 	);
 }
 
-const BUILTIN_COMMAND_FACTORY_FIXTURE = `
+const BUILTIN_COMMAND_REGISTRY_FIXTURE = `
 function makeBuiltinCommand({
   name: H,
   description: $,
@@ -32,37 +32,24 @@ function makeBuiltinCommand({
     description: $,
     progressMessage: A,
     contentLength: 0,
-    isEnabled: () => !0,
-    isHidden: !1,
-    userFacingName() { return H; },
     source: "builtin",
     async getPromptForCommand(_, M) { return f(_, M); },
   };
 }
 
-var prComments = makeBuiltinCommand({
-  name: "pr-comments",
-  description: "Get comments from a GitHub pull request",
-  progressMessage: "fetching PR comments",
-  pluginName: "pr-comments",
-  pluginCommand: "pr-comments",
-  async getPromptWhileMarketplaceIsPrivate(H) {
-    return [{ type: "text", text: "fetch pr comments: " + H }];
-  },
-});
-
-var reviewCmd = makeBuiltinCommand({
+const reviewCommand = {
+  type: "prompt",
   name: "review",
   description: "Review a pull request",
   progressMessage: "reviewing pull request",
-  pluginName: "code-review",
-  pluginCommand: "code-review",
-  async getPromptWhileMarketplaceIsPrivate(H) {
+  contentLength: 0,
+  source: "builtin",
+  async getPromptForCommand(H) {
     return [{ type: "text", text: "review: " + H }];
   },
-});
+};
 
-var secReview = makeBuiltinCommand({
+const securityReview = makeBuiltinCommand({
   name: "security-review",
   description: "Complete a security review",
   progressMessage: "analyzing code changes",
@@ -72,41 +59,41 @@ var secReview = makeBuiltinCommand({
     return [{ type: "text", text: "security review: " + H }];
   },
 });
+
+const otherCommand = {
+  type: "prompt",
+  name: "help",
+  description: "Show help",
+  source: "builtin",
+};
+
+const COMMANDS = memoize(() => [
+  reviewCommand,
+  securityReview,
+  otherCommand,
+]);
 `;
 
-test("commands-off verify rejects unpatched fixture", () => {
-	const ast = parse(BUILTIN_COMMAND_FACTORY_FIXTURE);
-	const result = commandsOff.verify(BUILTIN_COMMAND_FACTORY_FIXTURE, ast);
+test("commands-off verify rejects unpatched registry fixture", () => {
+	const ast = parse(BUILTIN_COMMAND_REGISTRY_FIXTURE);
+	const result = commandsOff.verify(BUILTIN_COMMAND_REGISTRY_FIXTURE, ast);
 	assert.notEqual(result, true);
 	assert.equal(typeof result, "string");
 });
 
-test("commands-off disables all three built-in commands", async () => {
-	const ast = parse(BUILTIN_COMMAND_FACTORY_FIXTURE);
+test("commands-off removes superseded commands from the central registry", async () => {
+	const ast = parse(BUILTIN_COMMAND_REGISTRY_FIXTURE);
 	await runCommandsOffViaPasses(ast);
 	const output = print(ast);
 
-	// The factory should now have a guard that checks the name
-	assert.equal(output.includes("indexOf"), true, "Should have indexOf check");
-	assert.equal(
-		output.includes('"pr-comments"'),
-		true,
-		"Should reference pr-comments",
-	);
-	assert.equal(output.includes('"review"'), true, "Should reference review");
-	assert.equal(
-		output.includes('"security-review"'),
-		true,
-		"Should reference security-review",
-	);
-
-	// Verify the patch passes verification
-	const verifyResult = commandsOff.verify(output, ast);
-	assert.equal(verifyResult, true, `Verify failed: ${verifyResult}`);
+	assert.equal(output.includes("reviewCommand,"), false);
+	assert.equal(output.includes("securityReview,"), false);
+	assert.equal(output.includes("otherCommand"), true);
+	assert.equal(commandsOff.verify(output, ast), true);
 });
 
-test("commands-off is idempotent", async () => {
-	const ast = parse(BUILTIN_COMMAND_FACTORY_FIXTURE);
+test("commands-off is idempotent against the registry shape", async () => {
+	const ast = parse(BUILTIN_COMMAND_REGISTRY_FIXTURE);
 	await runCommandsOffViaPasses(ast);
 	const firstPass = print(ast);
 
@@ -118,30 +105,18 @@ test("commands-off is idempotent", async () => {
 	assert.equal(commandsOff.verify(secondPass, ast2), true);
 });
 
-test("commands-off does not affect non-disabled commands", async () => {
-	const fixture =
-		BUILTIN_COMMAND_FACTORY_FIXTURE +
-		`
-var otherCmd = makeBuiltinCommand({
-  name: "some-other-command",
-  description: "A custom command",
-  progressMessage: "doing stuff",
-  pluginName: "other",
-  pluginCommand: "other",
-  async getPromptWhileMarketplaceIsPrivate(H) {
-    return [{ type: "text", text: "other: " + H }];
+test("commands-off passes when the current bundle already omits those commands", () => {
+	const alreadyAbsentFixture = `
+const COMMANDS = memoize(() => [
+  {
+    type: "prompt",
+    name: "help",
+    description: "Show help",
+    source: "builtin",
   },
-});
+]);
 `;
-	const ast = parse(fixture);
-	await runCommandsOffViaPasses(ast);
-	const output = print(ast);
 
-	// The other command should still have isEnabled: () => !0
-	// (the factory returns it from the original return path)
-	assert.equal(
-		output.includes('"some-other-command"'),
-		true,
-		"Other command should still be present",
-	);
+	const ast = parse(alreadyAbsentFixture);
+	assert.equal(commandsOff.verify(alreadyAbsentFixture, ast), true);
 });

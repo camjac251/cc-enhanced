@@ -18,12 +18,8 @@ async function runEffortMaxViaPasses(ast: any): Promise<void> {
 }
 
 const EFFORT_MAX_FIXTURE = `
-function wS(H) {
-  return H.includes("sonnet-4-6") || H.includes("opus-4-6");
-}
-
-function DSH(H) {
-  return H.toLowerCase().includes("opus-4-6");
+function O8H(H, key) {
+  return undefined;
 }
 
 const ZfH = ["low", "medium", "high", "max"];
@@ -36,9 +32,16 @@ function picker() {
   ];
 }
 
+function znH(H) {
+  let $ = O8H(H, "max_effort");
+  if ($ !== void 0) return $;
+  if (H.toLowerCase().includes("opus-4-6")) return true;
+  return false;
+}
+
 function describeModel(QH) {
   return {
-    supportedEffortLevels: DSH(QH) ? [...ZfH] : ZfH.filter((iH) => iH !== "max"),
+    supportedEffortLevels: znH(QH) ? [...ZfH] : ZfH.filter((iH) => iH !== "max"),
   };
 }
 
@@ -60,7 +63,7 @@ function notify(EL) {
 }
 `;
 
-test("verify rejects unpatched 2.1.72-style max-effort code", () => {
+test("verify rejects unpatched current max-effort code", () => {
 	const ast = parse(EFFORT_MAX_FIXTURE);
 	const code = print(ast);
 	const result = effortMax.verify(code, ast);
@@ -68,7 +71,7 @@ test("verify rejects unpatched 2.1.72-style max-effort code", () => {
 	assert.equal(typeof result, "string");
 });
 
-test("effort-max patches the 2.1.72-style gate, picker, and ultrathink affordances", async () => {
+test("effort-max patches the current gate, picker, and ultrathink affordances", async () => {
 	const ast = parse(EFFORT_MAX_FIXTURE);
 	await runEffortMaxViaPasses(ast);
 	const output = print(ast);
@@ -85,11 +88,16 @@ test("effort-max patches the 2.1.72-style gate, picker, and ultrathink affordanc
 	assert.equal(effortMax.verify(output), true);
 });
 
-test("effort-max matcher handles expression-bodied gate functions structurally", async () => {
+test("effort-max matches the current server-flag-prefixed gate structurally", async () => {
 	const structuralFixture = `
-const DSH = (ModelId) => ModelId.toLowerCase().includes("opus-4-6");
-function wS(H) {
-  return H.includes("sonnet-4-6") || H.includes("opus-4-6");
+function lookup(modelId, key) {
+  return undefined;
+}
+function OCH(ModelId) {
+  let configured = lookup(ModelId, "max_effort");
+  if (configured !== void 0) return configured;
+  if (ModelId.toLowerCase().includes("opus-4-6")) return true;
+  return false;
 }
 const picker = () => [
   { label: "Medium", value: "medium" },
@@ -113,48 +121,5 @@ function notify(EL) {
 	);
 	assert.equal(output.includes("return true;"), true);
 	assert.equal(output.includes('value: "max"'), true);
-	assert.equal(effortMax.verify(output, ast), true);
-});
-
-test("effort-max patches helper gates that use if-return true/false blocks", async () => {
-	const blockGateFixture = `
-function wS(H) {
-  return H.includes("sonnet-4-6") || H.includes("opus-4-6");
-}
-function OCH(H) {
-  if (H.toLowerCase().includes("opus-4-6")) return true;
-  return false;
-}
-function WfH(H, level) {
-  if (level === "max" && !OCH(H)) return "high";
-  return level;
-}
-const picker = () => [
-  { label: "Medium", value: "medium" },
-  { label: "High", value: "high" },
-  { label: "Low", value: "low" },
-  { label: "Max", value: "max" },
-];
-function Ex1() {
-  return [{ type: "ultrathink_effort", level: "high" }];
-}
-function notify(EL) {
-  EL({ key: "ultrathink-active", text: "Effort set to high for this turn" });
-}
-`;
-	const ast = parse(blockGateFixture);
-	await runEffortMaxViaPasses(ast);
-	const output = print(ast);
-
-	assert.equal(
-		output.includes('if (H.toLowerCase().includes("opus-4-6"))'),
-		false,
-	);
-	assert.equal(output.includes("return true;"), true);
-	assert.equal(output.includes('level: "max"'), true);
-	assert.equal(
-		output.includes('text: "Effort set to max for this turn"'),
-		true,
-	);
 	assert.equal(effortMax.verify(output, ast), true);
 });

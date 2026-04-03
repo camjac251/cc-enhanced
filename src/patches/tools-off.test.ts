@@ -71,7 +71,7 @@ const skillConfig = {
 };
 `;
 
-test("tools-off verify accepts upstream prompt cleanup when tools are still disabled", async () => {
+test("tools-off verify accepts prompt cleanup when tools are still disabled", async () => {
 	const stringPatched = disableTools.string?.(TOOL_FIXTURE) ?? TOOL_FIXTURE;
 	const ast = parse(stringPatched);
 	await runToolsOffViaPasses(ast);
@@ -79,34 +79,23 @@ test("tools-off verify accepts upstream prompt cleanup when tools are still disa
 	assert.equal(result, true);
 });
 
-test("tools-off rewrites legacy disabled-tool guidance to neutral wording", async () => {
-	const legacyPrompt = [
-		"Use Grep or Glob when you need to search broadly. Use Read when you know the specific file path.",
-		"or use the GrepTool to search for specific content.",
-		"any task that can be accomplished with direct Glob, Grep, or Read tool calls.",
-		"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using ${Read}, ${Glob}, and ${Grep}",
+test("tools-off rewrites current disabled-tool guidance to neutral wording", async () => {
+	const currentPrompt = [
 		"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using ${Read}",
-		'- If you are searching for a specific class definition like "class Foo", use ${Glob} instead, to find the match more quickly',
+		'- If you want to read a specific file path, use the ${Bq} tool or ${P} instead of the ${YK} tool, to find the match more quickly',
+		'- If you are searching for a specific class definition like "class Foo", use ${J} instead, to find the match more quickly',
 	].join("\n");
 
-	const input = `${TOOL_FIXTURE}\nconst prompt = \`${legacyPrompt}\`;`;
+	const input = `${TOOL_FIXTURE}\nconst prompt = \`${currentPrompt}\`;`;
 	const rewritten = disableTools.string?.(input) ?? input;
 	assert.ok(rewritten);
 	assert.match(
 		rewritten,
-		/Use available search tooling broadly, and use Read when you know the specific file path\./,
-	);
-	assert.match(
-		rewritten,
-		/or use available content-search tooling to search for specific content\./,
-	);
-	assert.match(
-		rewritten,
-		/any task that can be accomplished with direct Read and available search tool calls\./,
-	);
-	assert.match(
-		rewritten,
 		/Reference local project files \(CLAUDE\.md, \.claude\/ directory\) when relevant using Read/,
+	);
+	assert.match(
+		rewritten,
+		/use the \$\{Bq\} tool instead of the \$\{YK\} tool, for faster access/,
 	);
 	assert.match(
 		rewritten,
@@ -126,13 +115,13 @@ test("tools-off verify ignores unrelated GrepTool labels outside prompt guidance
 	assert.equal(disableTools.verify(print(ast), ast), true);
 });
 
-test("tools-off verify fails when legacy trigger survives without neutral rewrite", () => {
+test("tools-off verify fails when current class guidance survives without neutral rewrite", () => {
 	const ast = parse(
-		`${TOOL_FIXTURE}\nconst prompt = "Use Grep or Glob when you need to search broadly.";`,
+		`${TOOL_FIXTURE}\nconst prompt = '- If you are searching for a specific class definition like "class Foo", use \${J} instead, to find the match more quickly';`,
 	);
 	assert.equal(
 		disableTools.verify(print(ast), ast),
-		"Still contains disabled Grep/Glob guidance: Use Grep or Glob when you need to search broadly",
+		'Still contains disabled-tool prompt guidance: searching for a specific class definition like "class Foo"',
 	);
 });
 

@@ -979,7 +979,7 @@ function verifyEditPromptAndHook(ctx: EditVerifyContext): string | null {
 		return "Missing fuzzy matching documentation";
 	}
 	if (!code.includes("Only use emojis if the user explicitly requests")) {
-		return "Missing upstream emoji usage constraint";
+		return "Missing emoji usage constraint";
 	}
 	if (!code.includes("_claudeApplyExtendedFileEdits")) {
 		return "Missing injected edit hook (edit_hook.js not appended to AST)";

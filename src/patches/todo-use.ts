@@ -67,8 +67,8 @@ export const todo: Patch = {
 			!code.includes(TRIGGER) &&
 			(code.includes('"TodoWrite"') || code.includes('"Todo"'))
 		) {
-			// Tool exists but expected prompt section is missing (upstream drift)
-			return "Todo tool found but expected prompt section missing (upstream drift)";
+			// Tool exists but the expected prompt section is missing.
+			return "Todo tool found but expected prompt section missing (bundle drift)";
 		}
 		return true;
 	},

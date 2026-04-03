@@ -16,12 +16,16 @@ const GROUP_ORDER = [
 ] as const;
 
 const BY_TAG: Record<string, PatchMetadata> = {
-"bash-tail": {
+	"bash-tail": {
 		tag: "bash-tail",
 		label: "Bash output tail",
 		group: "Tooling",
 	},
-	"bash-prompt": { tag: "bash-prompt", label: "Bash prompt", group: "Prompt" },
+	"bash-prompt": {
+		tag: "bash-prompt",
+		label: "Bash prompt",
+		group: "Prompt",
+	},
 	"built-in-agent-prompt": {
 		tag: "built-in-agent-prompt",
 		label: "Built-in agent prompts",
@@ -37,8 +41,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "MCP server name validation",
 		group: "Tooling",
 	},
-	"todo-use": { tag: "todo-use", label: "Todo prompt", group: "Prompt" },
-
+	"todo-use": {
+		tag: "todo-use",
+		label: "Todo prompt",
+		group: "Prompt",
+	},
 	"cache-tail-policy": {
 		tag: "cache-tail-policy",
 		label: "Cache tail policy",
@@ -59,7 +66,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Plan diff UI",
 		group: "UX",
 	},
-	"tools-off": { tag: "tools-off", label: "Disable tools", group: "Tooling" },
+	"tools-off": {
+		tag: "tools-off",
+		label: "Disable tools",
+		group: "Tooling",
+	},
 	"no-autoupdate": {
 		tag: "no-autoupdate",
 		label: "Disable autoupdater",
@@ -120,13 +131,21 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "LSP workspaceSymbol query",
 		group: "Tooling",
 	},
-	limits: { tag: "limits", label: "Limits", group: "System" },
+	limits: {
+		tag: "limits",
+		label: "Limits",
+		group: "System",
+	},
 	"worktree-perms": {
 		tag: "worktree-perms",
 		label: "Worktree permissions",
 		group: "System",
 	},
-	signature: { tag: "signature", label: "Signature", group: "Metadata" },
+	signature: {
+		tag: "signature",
+		label: "Signature",
+		group: "Metadata",
+	},
 };
 
 export function getPatchMetadata(tag: string): PatchMetadata {

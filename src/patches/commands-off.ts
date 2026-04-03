@@ -4,182 +4,171 @@ import type { Patch } from "../types.js";
 import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
 /**
- * Disable built-in plugin commands that are superseded by our custom skills/agents:
- * - "pr-comments" -> superseded by pr-comments skill (with reply/resolve)
- * - "review" (pluginName "code-review") -> superseded by review-pr skill + code-reviewer agent
- * - "security-review" -> superseded by security-reviewer agent
+ * Ensure superseded built-in commands stay unavailable.
  *
- * Strategy: find the factory function that builds builtin command objects
- * (returns { type: "prompt", name, isEnabled: () => !0, isHidden: !1, source: "builtin", ... })
- * and inject a guard at the top that returns a disabled stub for commands we supersede.
+ * If the current bundle still assembles them in a central registry array, we
+ * remove them there instead of rewriting disabled stubs. If the bundle already
+ * omits them entirely, this patch becomes a no-op and verification should pass.
  */
 
 const COMMANDS_TO_DISABLE = new Set([
-	"pr-comments",
 	"review",
 	"security-review",
 ]);
 
-function createCommandsOffMutator(): traverse.Visitor {
-	let factoryPatched = false;
-	const inlinePatched = new Set<string>();
+function getCommandNameFromObject(obj: t.ObjectExpression): string | null {
+	for (const prop of obj.properties) {
+		if (
+			t.isObjectProperty(prop) &&
+			getObjectKeyName(prop.key) === "name" &&
+			t.isStringLiteral(prop.value)
+		) {
+			return prop.value.value;
+		}
+	}
+	return null;
+}
+
+function resolveAssignedCommandExpression(
+	binding: any,
+): t.ObjectExpression | t.CallExpression | null {
+	if (!binding) return null;
+
+	if (t.isVariableDeclarator(binding.path.node) && binding.path.node.init) {
+		if (
+			t.isObjectExpression(binding.path.node.init) ||
+			t.isCallExpression(binding.path.node.init)
+		) {
+			return binding.path.node.init;
+		}
+	}
+
+	for (const violation of binding.constantViolations) {
+		if (!violation.isAssignmentExpression()) continue;
+		if (
+			t.isObjectExpression(violation.node.right) ||
+			t.isCallExpression(violation.node.right)
+		) {
+			return violation.node.right;
+		}
+	}
+
+	return null;
+}
+
+function resolveCommandName(scope: any, name: string): string | null {
+	const binding = scope.getBinding(name);
+	const init = resolveAssignedCommandExpression(binding);
+	if (!init) return null;
+
+	if (t.isObjectExpression(init)) {
+		return getCommandNameFromObject(init);
+	}
+
+	const firstArg = init.arguments[0];
+	if (!t.isObjectExpression(firstArg)) return null;
+	return getCommandNameFromObject(firstArg);
+}
+
+function createCommandsRegistryMutator(): traverse.Visitor {
+	let foundRegistry = false;
+	let foundDisabledDefinition = false;
+
 	return {
-		// Patch inline command objects that bypass the factory (e.g. "review")
 		ObjectExpression(path) {
-			const props = path.node.properties;
-			const nameProp = props.find(
-				(p) =>
-					t.isObjectProperty(p) &&
-					getObjectKeyName(p.key) === "name" &&
-					t.isStringLiteral(p.value) &&
-					COMMANDS_TO_DISABLE.has(p.value.value),
-			);
-			if (!nameProp || !t.isObjectProperty(nameProp)) return;
-			const cmdName = (nameProp.value as t.StringLiteral).value;
-			if (inlinePatched.has(cmdName)) return;
-
-			const sourceProp = props.find(
-				(p) =>
-					t.isObjectProperty(p) &&
-					getObjectKeyName(p.key) === "source" &&
-					t.isStringLiteral(p.value, { value: "builtin" }),
-			);
-			if (!sourceProp) return;
-
-			const isEnabledProp = props.find(
-				(p) => t.isObjectProperty(p) && getObjectKeyName(p.key) === "isEnabled",
-			);
-			if (!isEnabledProp || !t.isObjectProperty(isEnabledProp)) return;
-
-			isEnabledProp.value = t.arrowFunctionExpression(
-				[],
-				t.booleanLiteral(false),
-			);
-
-			const isHiddenProp = props.find(
-				(p) => t.isObjectProperty(p) && getObjectKeyName(p.key) === "isHidden",
-			);
-			if (isHiddenProp && t.isObjectProperty(isHiddenProp)) {
-				isHiddenProp.value = t.booleanLiteral(true);
+			const name = getCommandNameFromObject(path.node);
+			if (name && COMMANDS_TO_DISABLE.has(name)) {
+				foundDisabledDefinition = true;
 			}
-
-			inlinePatched.add(cmdName);
-			console.log(`Disabled inline command: ${cmdName}`);
 		},
-		FunctionDeclaration(path) {
-			if (factoryPatched) return;
-
-			// Find the factory function by its structure:
-			// - Has destructured param with "name", "pluginName", "pluginCommand",
-			//   "getPromptWhileMarketplaceIsPrivate"
-			// - Returns object with source: "builtin", isEnabled, isHidden
-			const params = path.node.params;
-			if (params.length !== 1) return;
-			if (!t.isObjectPattern(params[0])) return;
-
-			const paramProps = params[0].properties;
-			const paramNames = new Set<string>();
-			for (const p of paramProps) {
-				if (t.isObjectProperty(p) && t.isIdentifier(p.key)) {
-					paramNames.add(p.key.name);
-				}
+		CallExpression(path) {
+			const firstArg = path.node.arguments[0];
+			if (!t.isObjectExpression(firstArg)) return;
+			const name = getCommandNameFromObject(firstArg);
+			if (name && COMMANDS_TO_DISABLE.has(name)) {
+				foundDisabledDefinition = true;
 			}
+		},
+		ArrayExpression(path) {
+			let sawCommandRef = false;
+			let removedCommand = false;
 
-			if (
-				!paramNames.has("name") ||
-				!paramNames.has("pluginName") ||
-				!paramNames.has("pluginCommand") ||
-				!paramNames.has("getPromptWhileMarketplaceIsPrivate")
-			) {
-				return;
+			path.node.elements = path.node.elements.filter((element) => {
+				if (!t.isIdentifier(element)) return true;
+
+				const commandName = resolveCommandName(path.scope, element.name);
+				if (!commandName) return true;
+
+				sawCommandRef = true;
+				if (!COMMANDS_TO_DISABLE.has(commandName)) return true;
+
+				removedCommand = true;
+				return false;
+			});
+
+			if (sawCommandRef) {
+				foundRegistry = true;
 			}
-
-			// Found the factory. Find which local var holds "name"
-			const nameProp = paramProps.find(
-				(p) =>
-					t.isObjectProperty(p) &&
-					t.isIdentifier(p.key) &&
-					p.key.name === "name",
-			);
-			if (!nameProp || !t.isObjectProperty(nameProp)) return;
-			if (!t.isIdentifier(nameProp.value)) return;
-			const nameVar = nameProp.value.name;
-
-			const body = path.node.body;
-			if (!t.isBlockStatement(body)) return;
-
-			// Idempotency: check if the guard is already injected
-			const firstStmt = body.body[0];
-			if (
-				t.isIfStatement(firstStmt) &&
-				t.isBinaryExpression(firstStmt.test) &&
-				t.isCallExpression(firstStmt.test.left) &&
-				t.isMemberExpression(firstStmt.test.left.callee) &&
-				t.isArrayExpression(firstStmt.test.left.callee.object)
-			) {
-				// Guard already present
-				factoryPatched = true;
-				return;
-			}
-
-			// Build the disable set as an array check:
-			// if (["pr-comments","review","security-review"].indexOf(H) !== -1) {
-			//   return { isEnabled: () => !1, isHidden: !0, name: H, type: "prompt", source: "builtin" };
-			// }
-			const disabledNames = [...COMMANDS_TO_DISABLE].map((n) =>
-				t.stringLiteral(n),
-			);
-
-			const guard = t.ifStatement(
-				t.binaryExpression(
-					"!==",
-					t.callExpression(
-						t.memberExpression(
-							t.arrayExpression(disabledNames),
-							t.identifier("indexOf"),
-						),
-						[t.identifier(nameVar)],
-					),
-					t.unaryExpression("-", t.numericLiteral(1)),
-				),
-				t.blockStatement([
-					t.returnStatement(
-						t.objectExpression([
-							t.objectProperty(
-								t.identifier("isEnabled"),
-								t.arrowFunctionExpression([], t.booleanLiteral(false)),
-							),
-							t.objectProperty(
-								t.identifier("isHidden"),
-								t.booleanLiteral(true),
-							),
-							t.objectProperty(t.identifier("name"), t.identifier(nameVar)),
-							t.objectProperty(t.identifier("type"), t.stringLiteral("prompt")),
-							t.objectProperty(
-								t.identifier("source"),
-								t.stringLiteral("builtin"),
-							),
-						]),
-					),
-				]),
-			);
-
-			body.body.unshift(guard);
-			factoryPatched = true;
-			console.log(
-				`Injected command disable guard for: ${[...COMMANDS_TO_DISABLE].join(", ")}`,
-			);
+			if (!removedCommand) return;
 		},
 		Program: {
 			exit() {
-				if (!factoryPatched) {
+				if (foundDisabledDefinition && !foundRegistry) {
 					console.warn(
-						"commands-off: Could not find builtin command factory to patch",
+						"commands-off: Could not find built-in command registry to filter",
 					);
 				}
 			},
 		},
 	};
+}
+
+function verifyCommandRegistry(ast: t.File): true | string {
+	let foundDefinitions = false;
+	let foundRegistry = false;
+	let leakedCommandName: string | null = null;
+
+	traverse.default(ast, {
+		ObjectExpression(path) {
+			const name = getCommandNameFromObject(path.node);
+			if (name && COMMANDS_TO_DISABLE.has(name)) {
+				foundDefinitions = true;
+			}
+		},
+		CallExpression(path) {
+			const firstArg = path.node.arguments[0];
+			if (!t.isObjectExpression(firstArg)) return;
+			const name = getCommandNameFromObject(firstArg);
+			if (name && COMMANDS_TO_DISABLE.has(name)) {
+				foundDefinitions = true;
+			}
+		},
+		ArrayExpression(path) {
+			for (const element of path.node.elements) {
+				if (!t.isIdentifier(element)) continue;
+				const commandName = resolveCommandName(path.scope, element.name);
+				if (!commandName) continue;
+
+				foundRegistry = true;
+				if (COMMANDS_TO_DISABLE.has(commandName)) {
+					leakedCommandName = commandName;
+					path.stop();
+					return;
+				}
+			}
+		},
+	});
+
+	if (!foundDefinitions) {
+		return true;
+	}
+	if (!foundRegistry) {
+		return "Built-in command registry not found";
+	}
+	if (leakedCommandName) {
+		return `Disabled command "${leakedCommandName}" still present in built-in command registry`;
+	}
+	return true;
 }
 
 export const commandsOff: Patch = {
@@ -188,161 +177,15 @@ export const commandsOff: Patch = {
 	astPasses: () => [
 		{
 			pass: "mutate",
-			visitor: createCommandsOffMutator(),
+			visitor: createCommandsRegistryMutator(),
 		},
 	],
 
 	verify: (code, ast) => {
 		const verifyAst = getVerifyAst(code, ast);
-		if (!verifyAst)
+		if (!verifyAst) {
 			return "Unable to parse AST during commands-off verification";
-
-		// Verify the factory function has our guard injected.
-		// Look for a function with the destructured pluginName/pluginCommand params
-		// that has an indexOf guard as its first statement.
-		let factoryFound = false;
-		let guardFound = false;
-		const guardedNames = new Set<string>();
-
-		traverse.default(verifyAst, {
-			FunctionDeclaration(path) {
-				const params = path.node.params;
-				if (params.length !== 1 || !t.isObjectPattern(params[0])) return;
-
-				const paramNames = new Set<string>();
-				for (const p of params[0].properties) {
-					if (t.isObjectProperty(p) && t.isIdentifier(p.key)) {
-						paramNames.add(p.key.name);
-					}
-				}
-				if (
-					!paramNames.has("name") ||
-					!paramNames.has("pluginName") ||
-					!paramNames.has("pluginCommand")
-				) {
-					return;
-				}
-
-				factoryFound = true;
-
-				const body = path.node.body;
-				if (!t.isBlockStatement(body)) return;
-				const firstStmt = body.body[0];
-				if (!t.isIfStatement(firstStmt)) return;
-				if (!t.isBinaryExpression(firstStmt.test)) return;
-				if (!t.isCallExpression(firstStmt.test.left)) return;
-
-				const callee = firstStmt.test.left.callee;
-				if (!t.isMemberExpression(callee)) return;
-				if (!t.isArrayExpression(callee.object)) return;
-				if (
-					!t.isIdentifier(callee.property) ||
-					callee.property.name !== "indexOf"
-				) {
-					return;
-				}
-
-				// Extract command names from the array
-				for (const el of callee.object.elements) {
-					if (t.isStringLiteral(el)) {
-						guardedNames.add(el.value);
-					}
-				}
-
-				// Check the guard returns a disabled stub
-				if (!t.isBlockStatement(firstStmt.consequent)) return;
-				const retStmt = firstStmt.consequent.body[0];
-				if (!t.isReturnStatement(retStmt)) return;
-				if (!t.isObjectExpression(retStmt.argument)) return;
-
-				const retProps = retStmt.argument.properties;
-				const hasIsEnabledFalse = retProps.some((p) => {
-					if (!t.isObjectProperty(p)) return false;
-					if (getObjectKeyName(p.key) !== "isEnabled") return false;
-					if (!t.isArrowFunctionExpression(p.value)) return false;
-					return (
-						t.isBooleanLiteral(p.value.body, { value: false }) ||
-						(t.isUnaryExpression(p.value.body, { operator: "!" }) &&
-							t.isNumericLiteral(p.value.body.argument, { value: 1 }))
-					);
-				});
-				const hasIsHiddenTrue = retProps.some((p) => {
-					if (!t.isObjectProperty(p)) return false;
-					if (getObjectKeyName(p.key) !== "isHidden") return false;
-					return (
-						t.isBooleanLiteral(p.value, { value: true }) ||
-						(t.isUnaryExpression(p.value, { operator: "!" }) &&
-							t.isNumericLiteral(p.value.argument, { value: 0 }))
-					);
-				});
-
-				if (hasIsEnabledFalse && hasIsHiddenTrue) {
-					guardFound = true;
-				}
-			},
-		});
-
-		if (!factoryFound) {
-			return "Built-in command factory function not found";
 		}
-		if (!guardFound) {
-			return "Command disable guard not found in factory (missing indexOf check with disabled stub)";
-		}
-
-		for (const name of COMMANDS_TO_DISABLE) {
-			if (!guardedNames.has(name)) {
-				return `Command "${name}" is not in the disable guard array`;
-			}
-		}
-
-		// Verify inline command objects (like "review") are also disabled
-		const inlineDisabled = new Set<string>();
-		traverse.default(verifyAst, {
-			ObjectExpression(path) {
-				const props = path.node.properties;
-				const nameProp = props.find(
-					(p) =>
-						t.isObjectProperty(p) &&
-						getObjectKeyName(p.key) === "name" &&
-						t.isStringLiteral(p.value) &&
-						COMMANDS_TO_DISABLE.has(p.value.value),
-				);
-				if (!nameProp || !t.isObjectProperty(nameProp)) return;
-				const cmdName = (nameProp.value as t.StringLiteral).value;
-
-				const sourceProp = props.find(
-					(p) =>
-						t.isObjectProperty(p) &&
-						getObjectKeyName(p.key) === "source" &&
-						t.isStringLiteral(p.value, { value: "builtin" }),
-				);
-				if (!sourceProp) return;
-
-				const isEnabledProp = props.find(
-					(p) =>
-						t.isObjectProperty(p) && getObjectKeyName(p.key) === "isEnabled",
-				);
-				if (!isEnabledProp || !t.isObjectProperty(isEnabledProp)) return;
-
-				// Check isEnabled returns false
-				if (t.isArrowFunctionExpression(isEnabledProp.value)) {
-					const body = isEnabledProp.value.body;
-					if (
-						t.isBooleanLiteral(body, { value: false }) ||
-						(t.isUnaryExpression(body, { operator: "!" }) &&
-							t.isNumericLiteral(body.argument, { value: 1 }))
-					) {
-						inlineDisabled.add(cmdName);
-					}
-				}
-			},
-		});
-
-		// "review" is an inline object that bypasses the factory
-		if (!inlineDisabled.has("review") && !guardedNames.has("review")) {
-			return 'Inline command "review" is not disabled';
-		}
-
-		return true;
+		return verifyCommandRegistry(verifyAst);
 	},
 };

@@ -36,7 +36,7 @@ test("claudemd-strong verify fails when weak disclaimer is absent but strong mar
 	);
 });
 
-test("claudemd-strong verify accepts equivalent upstream content when all strong markers are present", () => {
+test("claudemd-strong verify accepts equivalent strong content when all strong markers are present", () => {
 	const input = [
 		"The instructions above are mandatory whenever they apply to the current task.",
 		"Follow them exactly as written.",

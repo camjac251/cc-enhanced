@@ -268,9 +268,9 @@ test("cache-tail-policy patches all required features in full fixture", async ()
 });
 
 test("cache-tail-policy verify rejects unpatched cache control builder in combined fixture", async () => {
-	const ast = parse(FULL_VERIFY_FIXTURE);
-	await runCacheTailViaPasses(ast);
-	let output = print(ast);
+    const ast = parse(FULL_VERIFY_FIXTURE);
+    await runCacheTailViaPasses(ast);
+    let output = print(ast);
 
 	// Sanity: fully patched passes
 	assert.equal(
@@ -291,8 +291,28 @@ test("cache-tail-policy verify rejects unpatched cache control builder in combin
 	assert.equal(
 		String(result).includes("1h TTL"),
 		true,
-		`Expected TTL-related failure, got: ${result}`,
-	);
+        `Expected TTL-related failure, got: ${result}`,
+    );
+});
+
+test("cache-tail-policy verify rejects regressed cache_control block cap in combined fixture", async () => {
+    const ast = parse(FULL_VERIFY_FIXTURE);
+    await runCacheTailViaPasses(ast);
+    const output = print(ast);
+
+    const regressed = output.replace(
+        "let cacheControlExcess = -4;",
+        "let cacheControlExcess = -3;",
+    );
+    assert.notEqual(regressed, output);
+
+    const result = cacheTailPolicy.verify(regressed, parse(regressed));
+    assert.equal(typeof result, "string");
+    assert.equal(
+        String(result).includes("cacheControlExcess"),
+        true,
+        `Expected cache_control cap failure, got: ${result}`,
+    );
 });
 
 // ---------------------------------------------------------------------------

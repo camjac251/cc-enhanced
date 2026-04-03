@@ -34,7 +34,8 @@ import {
 // limits.ts. This patch replaces the prompt body, while limits modifies
 // variable declarations. Both can coexist safely.
 
-// Note: Code only supports png/jpg/jpeg/gif/webp - upstream prompt is wrong about BMP/TIFF/HEIC
+// Note: Runtime support is limited to png/jpg/jpeg/gif/webp. Prompt wording
+// about BMP/TIFF/HEIC should not be treated as authoritative.
 const READ_DESCRIPTION_TEXT = "Read a file from the local filesystem.";
 const READ_PROMPT_PATCH_HELPER = "_claudePatchReadPrompt";
 const READ_DESCRIPTION_PATCH_HELPER = "_claudePatchReadDescription";
@@ -933,14 +934,14 @@ function verifyReadSchemaAndPrompt(ctx: ReadVerifyContext): string | null {
 		return "Missing show_whitespace parameter in schema";
 	}
 	if (schemaHasLegacyOffsetOrLimit(schemaObject)) {
-		return "Old offset/limit parameter still in Read schema";
+		return "Offset/limit parameters still present in Read schema";
 	}
 	if (
 		promptText != null &&
 		(promptText.includes("offset and limit parameters") ||
 			promptText.includes("line offset and limit"))
 	) {
-		return "Old offset/limit guidance still present";
+		return "Offset/limit guidance still present in Read prompt";
 	}
 	if (promptText?.includes("cat -n format")) {
 		return "Read prompt still references cat -n formatting";
@@ -968,7 +969,7 @@ function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 		return "Bat success path is not configured to emit numbered lines";
 	}
 	if (code.includes("offsetLegacy") || code.includes("limitLegacy")) {
-		return "Legacy offset/limit compatibility markers still present";
+		return "Unexpected offsetLegacy/limitLegacy marker names still present";
 	}
 	if (
 		!code.includes("...await fallbackFn(") &&
@@ -1046,7 +1047,7 @@ function verifyReadCallSignature(ctx: ReadVerifyContext): string | null {
 		return "Call signature still destructures limit";
 	}
 	if (!hasCallCompatRangeBridge(ast, rangeBindingName)) {
-		return "Missing legacy offset/limit -> range compatibility bridge in call()";
+		return "Missing offset/limit -> range compatibility bridge in call()";
 	}
 	if (callKeys.has("diff")) {
 		return "Call signature still includes diff";
@@ -1095,7 +1096,7 @@ function verifyReadLineAccounting(ctx: ReadVerifyContext): string | null {
 
 function verifyReadExamplesAndValidate(ctx: ReadVerifyContext): string | null {
 	const { code, validateKeys } = ctx;
-	// input_examples removed upstream in 2.1.84+. Skip checks when absent.
+	// input_examples may be absent in newer bundles. Skip checks when absent.
 	if (code.includes("input_examples")) {
 		if (
 			!code.includes('/Users/username/project/design-doc.pdf", pages: "1-5"')
@@ -1113,7 +1114,7 @@ function verifyReadExamplesAndValidate(ctx: ReadVerifyContext): string | null {
 			'{ file_path: "/Users/username/project/README.md", limit: 100, offset: 50 }',
 		)
 	) {
-		return "Legacy Read input_examples still use offset/limit";
+		return "Read input_examples still use offset/limit";
 	}
 	if (validateKeys.has("offset")) {
 		return "validateInput still destructures offset (range bypass missing)";
@@ -1219,7 +1220,8 @@ function verifyReadRangeRegexAndFallbackMarkers(
 export const readWithBat: Patch = {
 	tag: "read-bat",
 
-	// Patch error messages outside Read tool scope to reference range instead of offset/limit.
+	// Patch error messages outside Read tool scope to reference range instead of
+	// offset/limit wording.
 	// These live in FileTooLargeError / MaxFileReadTokenExceededError classes and other prompt
 	// strings that the scoped readToolPath.traverse() in astPasses does not reach.
 	string: (code) =>
@@ -1282,7 +1284,8 @@ export const readWithBat: Patch = {
 
 						ensureReadPromptPatchHelpers(ast);
 
-						// 0. Replace remaining offset/limit guidance strings only within the Read tool surface.
+						// 0. Replace remaining offset/limit guidance strings only within the
+						// Read tool surface.
 						const readToolPath = findReadToolObjectPath(ast);
 						if (readToolPath) {
 							readToolPath.traverse({
@@ -1308,7 +1311,8 @@ export const readWithBat: Patch = {
 							});
 						}
 
-						// 0b. Patch Read tool schema (offset/limit -> range/show_whitespace)
+						// 0b. Patch the Read tool schema from offset/limit to
+						// range/show_whitespace.
 						traverse.default(ast, {
 							CallExpression(path) {
 								const callee = path.node.callee;
@@ -1398,8 +1402,8 @@ export const readWithBat: Patch = {
 						let originalReadFn: string | null = null;
 						// Track the file path variable
 						let _filePathVar: string | null = null;
-						// Track removed call() compatibility vars (offset/limit) so delegated helper
-						// calls can be rewritten to pass void 0 instead of dangling identifiers.
+						// Track removed call() vars (offset/limit) so delegated helper calls
+						// can be rewritten to pass void 0 instead of dangling identifiers.
 						const removedCallCompatVars = new Set<string>();
 
 						// Helpers shared between the inline probe and section 2 (D2I replacement).
@@ -1588,7 +1592,8 @@ export const readWithBat: Patch = {
 									}
 								}
 
-								// Keep Read examples aligned with range/pages semantics (avoid stale offset/limit examples).
+								// Keep Read examples aligned with range/pages semantics and avoid
+								// stale offset/limit examples.
 								const inputExamplesProp = path.node.properties.find(
 									(p): p is t.ObjectProperty =>
 										t.isObjectProperty(p) &&
@@ -1754,7 +1759,7 @@ export const readWithBat: Patch = {
 												}
 												continue;
 											}
-											// Preserve everything else (e.g. pages param, future upstream options)
+											// Preserve everything else (e.g. pages param, future options)
 											newProps.push(prop);
 										}
 
@@ -2056,7 +2061,7 @@ export const readWithBat: Patch = {
 										// Collect delegation call candidates (8+ args, lowered from 11
 										// for resilience). Verify the resolved helper contains the D2I
 										// destructuring before patching — avoids false positives if
-										// upstream changes argument counts.
+										// the bundle changes argument counts.
 										let helperName: string | null = null;
 										const delegationCalls: t.CallExpression[] = [];
 										traverse.default(
@@ -2143,20 +2148,20 @@ export const readWithBat: Patch = {
 									}
 								}
 
-								// Preserve internal compatibility for legacy callers that still pass
-								// offset/limit (for example at-mention attachment flows). When range
-								// is absent, synthesize an equivalent range from offset/limit.
+								// Preserve internal compatibility for callers that still pass
+								// offset/limit (for example at-mention attachment flows). When
+								// range is absent, synthesize an equivalent range.
 								if (callCompatRestVarName) {
 									const compatGuard = template.default.statement(
 										`if (RVAR === void 0 && COMPAT && (COMPAT.offset !== void 0 || COMPAT.limit !== void 0)) {
-  var __legacyReadOffset = Number(COMPAT.offset);
-  var __legacyReadLimit = Number(COMPAT.limit);
-  var __legacyReadStart = Number.isFinite(__legacyReadOffset) ? Math.max(1, Math.floor(__legacyReadOffset)) : 1;
-  if (Number.isFinite(__legacyReadLimit) && __legacyReadLimit > 0) {
-    var __legacyReadEnd = __legacyReadStart + Math.floor(__legacyReadLimit) - 1;
-    RVAR = String(__legacyReadStart) + ":" + String(__legacyReadEnd);
+  var __compatReadOffset = Number(COMPAT.offset);
+  var __compatReadLimit = Number(COMPAT.limit);
+  var __compatReadStart = Number.isFinite(__compatReadOffset) ? Math.max(1, Math.floor(__compatReadOffset)) : 1;
+  if (Number.isFinite(__compatReadLimit) && __compatReadLimit > 0) {
+    var __compatReadEnd = __compatReadStart + Math.floor(__compatReadLimit) - 1;
+    RVAR = String(__compatReadStart) + ":" + String(__compatReadEnd);
   } else {
-    RVAR = String(__legacyReadStart) + ":";
+    RVAR = String(__compatReadStart) + ":";
   }
 }`,
 									)({
@@ -2440,7 +2445,8 @@ export const readWithBat: Patch = {
 
 								// === 3. Fix readFileState.set call ===
 								// Change: Z.set(D, { content: K, timestamp: ..., offset: Q, limit: B })
-								// To: Z.set(D, { content: K, timestamp: ..., range: R, offset/limit compat markers })
+								// To: Z.set(D, { content: K, timestamp: ..., range: R,
+								// compatibility markers })
 								traverse.default(
 									targetBody,
 									{
@@ -2449,7 +2455,8 @@ export const readWithBat: Patch = {
 											if (!t.isMemberExpression(callee)) return;
 											if (!isMemberPropertyName(callee, "set")) return;
 
-											// Check second argument is object with offset/limit
+											// Check second argument is the state object with offset/limit
+											// fields.
 											const args = callPath.node.arguments;
 											if (args.length < 2) return;
 											const objArg = args[1];
@@ -2465,9 +2472,9 @@ export const readWithBat: Patch = {
 
 											if (!hasOffset || !hasLimit) return;
 
-											// Keep offset/limit as compatibility markers for the upstream
-											// changed-files attachment scanner. It skips diff-injection for
-											// partial reads when either offset/limit is defined.
+											// Keep offset/limit as compatibility markers for the
+											// changed-files attachment scanner. It skips diff-injection
+											// for partial reads when either field is defined.
 											const isRangedExpr = t.binaryExpression(
 												"!==",
 												t.identifier(rangeVarName || "R"),
@@ -2602,7 +2609,8 @@ export const readWithBat: Patch = {
 							},
 						});
 
-						// === 5. Modify renderToolUseMessage to show range instead of offset/limit ===
+						// === 5. Modify renderToolUseMessage to show range instead of
+						// offset/limit ===
 						// Find: function X({ file_path: A, offset: Q, limit: B }, { verbose: G }) { ... }
 						// Change to show range in the UI display
 						traverse.default(ast, {
@@ -2673,7 +2681,8 @@ export const readWithBat: Patch = {
 									if (bindingName) verboseVar = bindingName;
 								}
 
-								// Replace first param: remove offset/limit, add range/show_whitespace
+								// Replace first param: remove offset/limit fields and add
+								// range/show_whitespace.
 								const newFirstParam = t.objectPattern([
 									t.objectProperty(
 										t.identifier("file_path"),
@@ -2791,13 +2800,14 @@ export const readWithBat: Patch = {
 						});
 
 						// Section 6 (changed-file watcher range hardening) removed. Redundant:
-						// The readFileState.set() compat markers (offset: 1, limit: 1 for partial
-						// reads) already cause the upstream offset/limit guard to fire.
+						// The readFileState.set() compatibility markers (offset: 1, limit: 1
+						// for partial reads) already cause the offset/limit guard to fire.
 
 						// === 7. Harden read-state rebuild on resume/compaction: range reads are partial ===
-						// p8H reconstructs readFileState from transcript tool_use/tool_result pairs.
-						// Upstream only checks offset/limit; add range===void 0 so range reads are
-						// treated like partial reads and do not get rebuilt as full snapshots.
+						// p8H reconstructs readFileState from transcript tool_use/tool_result
+						// pairs. It only checks offset/limit, so add range===void 0 so range
+						// reads are treated like partial reads and do not get rebuilt as full
+						// snapshots.
 						let patchedHistoryReadGuard = false;
 						traverse.default(ast, {
 							IfStatement(path) {

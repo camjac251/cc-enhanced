@@ -179,7 +179,10 @@ test("built-in-agent-prompt rewrites Plan prompt and whenToUse", () => {
 		),
 		true,
 	);
-	assert.equal(output.includes("[Why it matters to the implementation]"), true);
+    assert.equal(
+        output.includes("Deliver a concrete implementation blueprint with:"),
+        true,
+    );
 	assert.equal(output.includes("security reviewer should validate it"), true);
 	assert.equal(
 		output.includes(

@@ -313,7 +313,7 @@ export const planDiffUi: Patch = {
 		});
 
 		if (candidateCount === 0) {
-			return "Plan diff anchors not found; upstream may have drifted";
+			return "Plan diff anchors not found; bundle layout may have drifted";
 		}
 		if (hasUpdatedPlanLabel) {
 			return 'Still renders "Updated plan" label for plan-backed Edit/Write';
