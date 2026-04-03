@@ -76,65 +76,85 @@ function parseLinuxBunBlob(binary: Buffer): {
 		throw new Error("Binary too small to contain Bun overlay");
 	}
 
-	// Find the Bun trailer by scanning backwards. Older binaries have the
-	// overlay at the very end of the file; newer builds (2.1.83+) append ELF
-	// section headers after the overlay so we cannot assume a fixed position.
-	const trailerStart = binary.lastIndexOf(BUN_TRAILER);
-	if (trailerStart < 0) {
-		throw new Error("Bun trailer not found in binary");
+	// Older binaries have the overlay at EOF; newer builds append ELF sections
+	// after it, and the embedded JS can also contain false-positive trailer
+	// strings. Scan backward and validate each candidate instead of trusting the
+	// first match blindly.
+	let searchFrom = binary.length - BUN_TRAILER.length;
+	let lastError: Error | null = null;
+
+	while (searchFrom >= 0) {
+		const trailerStart = binary.lastIndexOf(BUN_TRAILER, searchFrom);
+		if (trailerStart < 0) break;
+
+		try {
+			const trailerEnd = trailerStart + BUN_TRAILER.length;
+
+			// The 8-byte tail value sits immediately after the trailer.
+			const tailValue =
+				trailerEnd + 8 <= binary.length
+					? binary.readBigUInt64LE(trailerEnd)
+					: 0n;
+
+			const offsetsEnd = trailerStart;
+			const offsetsStart = offsetsEnd - SIZEOF_OFFSETS;
+			if (offsetsStart < 0) {
+				throw new Error("Invalid offsets position");
+			}
+
+			const offsetsBytes = binary.subarray(offsetsStart, offsetsEnd);
+			const bunOffsets = parseOffsets(offsetsBytes);
+
+			if (
+				bunOffsets.byteCount <= 0n ||
+				bunOffsets.byteCount > BigInt(binary.length)
+			) {
+				throw new Error(
+					`Invalid byteCount in Bun offsets: ${bunOffsets.byteCount}`,
+				);
+			}
+			const byteCountNumber = Number(bunOffsets.byteCount);
+			if (!Number.isSafeInteger(byteCountNumber)) {
+				throw new Error(
+					`byteCount is too large for JS indexing: ${bunOffsets.byteCount}`,
+				);
+			}
+
+			const dataStart = offsetsStart - byteCountNumber;
+			if (dataStart < 0) {
+				throw new Error("Computed Bun data start is before file start");
+			}
+
+			const bunBlob = binary.subarray(dataStart, trailerEnd); // [data][offsets][trailer]
+			const expectedLength =
+				byteCountNumber + SIZEOF_OFFSETS + BUN_TRAILER.length;
+			if (bunBlob.length !== expectedLength) {
+				throw new Error(
+					`Unexpected Bun blob length: got ${bunBlob.length}, expected ${expectedLength}`,
+				);
+			}
+
+			const moduleStructSize = detectModuleStructSize(
+				bunOffsets.modulesPtr.length,
+			);
+
+			return {
+				bunBlob,
+				bunOffsets,
+				bunBlobStart: dataStart,
+				moduleStructSize,
+				tailValue,
+			};
+		} catch (error) {
+			lastError = error instanceof Error ? error : new Error(String(error));
+			searchFrom = trailerStart - 1;
+		}
 	}
-	const trailerEnd = trailerStart + BUN_TRAILER.length;
 
-	// The 8-byte tail value sits immediately after the trailer.
-	const tailValue =
-		trailerEnd + 8 <= binary.length ? binary.readBigUInt64LE(trailerEnd) : 0n;
-
-	const offsetsEnd = trailerStart;
-	const offsetsStart = offsetsEnd - SIZEOF_OFFSETS;
-	if (offsetsStart < 0) {
-		throw new Error("Invalid offsets position");
+	if (lastError) {
+		throw lastError;
 	}
-
-	const offsetsBytes = binary.subarray(offsetsStart, offsetsEnd);
-	const bunOffsets = parseOffsets(offsetsBytes);
-
-	if (
-		bunOffsets.byteCount <= 0n ||
-		bunOffsets.byteCount > BigInt(binary.length)
-	) {
-		throw new Error(
-			`Invalid byteCount in Bun offsets: ${bunOffsets.byteCount}`,
-		);
-	}
-	const byteCountNumber = Number(bunOffsets.byteCount);
-	if (!Number.isSafeInteger(byteCountNumber)) {
-		throw new Error(
-			`byteCount is too large for JS indexing: ${bunOffsets.byteCount}`,
-		);
-	}
-
-	const dataStart = offsetsStart - byteCountNumber;
-	if (dataStart < 0) {
-		throw new Error("Computed Bun data start is before file start");
-	}
-
-	const bunBlob = binary.subarray(dataStart, trailerEnd); // [data][offsets][trailer]
-	const expectedLength = byteCountNumber + SIZEOF_OFFSETS + BUN_TRAILER.length;
-	if (bunBlob.length !== expectedLength) {
-		throw new Error(
-			`Unexpected Bun blob length: got ${bunBlob.length}, expected ${expectedLength}`,
-		);
-	}
-
-	const moduleStructSize = detectModuleStructSize(bunOffsets.modulesPtr.length);
-
-	return {
-		bunBlob,
-		bunOffsets,
-		bunBlobStart: dataStart,
-		moduleStructSize,
-		tailValue,
-	};
+	throw new Error("Bun trailer not found in binary");
 }
 
 /**
