@@ -22,23 +22,25 @@ async function runLimitsViaPasses(ast: any): Promise<void> {
 //
 // Key structural requirements the patch traversal expects:
 // - byteCeiling: function(file, limit = VAR) with inline statSync(file).size <= limit
-// - tokenBudget: function containing CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS env ref + return VAR
-// - resultSizeCap: Math.min(X.maxResultSizeChars, VAR) where VAR init is 50000
+// - tokenBudget: function containing CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS env ref + sibling default var after the function
+// - resultSizeCap: helper with third param defaulting to VAR and returning Math.min(secondParam, thirdParam)
 // - readMaxResultSize: object with name:"Read" and maxResultSizeChars:100000
 // - linesCap/lineChars: template literal with "Reads a file" trigger + interpolated vars
 const LIMITS_FIXTURE = `
-var rTI = 25000;
 var bYC = 262144;
 var ZPA = 50000;
 var lNC = 2000;
 var lCC = 500;
 
 function getMaxOutputTokens() {
-  if (process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS) {
-    return Number(process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS);
+  let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
+  if (env) {
+    let parsed = Number(env);
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
   }
-  return rTI;
+  return;
 }
+var rTI = 25000;
 
 function checkFileSize(filePath, maxSize = bYC) {
   if (require("fs").statSync(filePath).size <= maxSize) {
@@ -53,8 +55,9 @@ var readToolDef = {
   description: "Read files"
 };
 
-function getEffectiveResultSize(opts) {
-  return Math.min(opts.maxResultSizeChars, ZPA);
+function getPersistenceThreshold(toolName, maxResultSizeChars, persistenceThresholdCeiling = ZPA) {
+  if (!Number.isFinite(maxResultSizeChars)) return maxResultSizeChars;
+  return Math.min(maxResultSizeChars, persistenceThresholdCeiling);
 }
 
 var readPromptText = \`Reads a file from the local filesystem.
@@ -282,16 +285,18 @@ test("limits patch is idempotent (running twice produces same output)", async ()
 test("limits patch handles Read tool name via identifier binding", async () => {
 	// Variant: name property uses an identifier resolved via variable binding
 	const indirectFixture = `
-var rTI = 25000;
 var bYC = 262144;
 var ZPA = 50000;
 
 function getMaxOutputTokens() {
-  if (process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS) {
-    return Number(process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS);
+  let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
+  if (env) {
+    let parsed = Number(env);
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
   }
-  return rTI;
+  return;
 }
+var rTI = 25000;
 
 function checkFileSize(filePath, maxSize = bYC) {
   if (require("fs").statSync(filePath).size <= maxSize) {
@@ -307,8 +312,9 @@ var readToolDef = {
   description: "Read files"
 };
 
-function getEffectiveResultSize(opts) {
-  return Math.min(opts.maxResultSizeChars, ZPA);
+function getPersistenceThreshold(toolName, maxResultSizeChars, persistenceThresholdCeiling = ZPA) {
+  if (!Number.isFinite(maxResultSizeChars)) return maxResultSizeChars;
+  return Math.min(maxResultSizeChars, persistenceThresholdCeiling);
 }
 `;
 	const ast = parse(indirectFixture);

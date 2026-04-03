@@ -501,18 +501,14 @@ export const bashOutputTail: Patch = {
 
 	string: (code) => {
 		// Insert disk persistence / output_tail guidance into the Bash prompt.
-		// 2.1.86+ builds the prompt as an array of strings (one per bullet).
+		// The current prompt builder emits an array of strings (one per bullet).
 		// Inject new items before "When issuing multiple commands:".
-		// Pre-2.1.86 used a single string with "Write a clear..." anchor.
 		const arrayAnchor = '"When issuing multiple commands:"';
-		const legacyAnchor =
-			'"Write a clear, concise description of what your command does.';
 		if (
 			code.includes("Executes a given bash command") &&
-			code.includes(arrayAnchor) &&
-			!code.includes(legacyAnchor)
+			code.includes(arrayAnchor)
 		) {
-			// 2.1.86+ array-builder format: inject as separate array elements
+			// Current array-builder format: inject as separate array elements
 			const items = PROMPT_ADDITION.split("\n")
 				.map((line) => line.replace(/^\s+-\s*/, "").trim())
 				.filter((line) => line.length > 0);
@@ -523,16 +519,6 @@ export const bashOutputTail: Patch = {
 				})
 				.join(",\n      ");
 			return code.replace(arrayAnchor, `${escaped},\n      ${arrayAnchor}`);
-		}
-		if (
-			code.includes("Executes a given bash command") &&
-			code.includes(legacyAnchor)
-		) {
-			// Pre-2.1.86 single-string format
-			const jsStr = PROMPT_ADDITION.replace(/\\/g, "\\\\")
-				.replace(/"/g, '\\"')
-				.replace(/\n/g, "\\n");
-			return code.replace(legacyAnchor, `"${jsStr}",\n      ${legacyAnchor}`);
 		}
 		return code;
 	},

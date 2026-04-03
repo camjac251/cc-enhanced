@@ -31,63 +31,23 @@ const TARGET_TOOLS = new Set([
 	"NotebookEdit",
 ]);
 
-// Regex patterns for resilient matching (handles whitespace/minor changes)
+// Regex patterns for current prompt rewrites (handles whitespace/minor changes)
 const REGEX_REPLACEMENTS: Array<{ pattern: RegExp; replacement: string }> = [
 	{
-		// General Grep/Glob guidance (pre-2.1.71)
-		pattern:
-			/Use Grep or Glob when you need to search broadly\.?\s*Use Read when you know the specific file path\.?/gi,
-		replacement:
-			"Use available search tooling broadly, and use Read when you know the specific file path.",
-	},
-	{
-		// GrepTool recommendation (pre-2.1.71)
-		pattern: /or use the GrepTool to search for specific content\.?/gi,
-		replacement:
-			"or use available content-search tooling to search for specific content.",
-	},
-	{
-		// Fallback for Read/Glob/Grep (pre-2.1.71)
-		pattern:
-			/any task that can be accomplished with direct Glob, Grep, or Read tool calls\.?/gi,
-		replacement:
-			"any task that can be accomplished with direct Read and available search tool calls.",
-	},
-	{
-		// claude-code-guide: "using ${Read}, ${Glob}, and ${Grep}" -> "using Read" (pre-2.1.71)
-		pattern:
-			/Reference local project files \(CLAUDE\.md, \.claude\/ directory\) when relevant using \$\{[^}]+\}, \$\{[^}]+\}, and \$\{[^}]+\}/g,
-		replacement:
-			"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using Read",
-	},
-	{
-		// claude-code-guide: single-placeholder "using ${Read}" drift -> "using Read"
+		// claude-code-guide: single-placeholder "using ${Read}" -> "using Read"
 		pattern:
 			/Reference local project files \(CLAUDE\.md, \.claude\/ directory\) when relevant using \$\{[^}]+\}/g,
 		replacement:
 			"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using Read",
 	},
 	{
-		// Agent tool prompt: "use the ${X} or ${Y} tool instead of the ${Z} tool" (pre-2.1.71)
-		pattern:
-			/use the \$\{([^}]+)\} or \$\{[^}]+\} tool instead of the \$\{([^}]+)\} tool/g,
-		replacement: "use the ${$1} tool instead of the ${$2} tool",
-	},
-	{
-		// Agent tool prompt: "use the ${X} tool or ${Y} instead of the ${Z} tool" (2.1.71+)
+		// Current agent prompt: "use the ${X} tool or ${Y} instead of the ${Z} tool"
 		pattern:
 			/use the \$\{([^}]+)\} tool or \$\{[^}]+\} instead of the \$\{([^}]+)\} tool/g,
 		replacement: "use the ${$1} tool instead of the ${$2} tool",
 	},
 	{
-		// Agent tool prompt: Glob "class Foo" with "the ${X} tool instead" (pre-2.1.71)
-		pattern:
-			/- If you are searching for a specific class definition like (?:\\"|")class Foo(?:\\"|"), use the \$\{[^}]+\} tool instead, (?:to find the match more quickly|for faster access)/g,
-		replacement:
-			'- If you are searching for code patterns like "class Foo", use available code-search tooling for faster access',
-	},
-	{
-		// Agent tool prompt: Glob "class Foo" with "${X} instead" (2.1.71+)
+		// Current agent prompt: class Foo guidance with "${X} instead"
 		pattern:
 			/- If you are searching for a specific class definition like (?:\\"|")class Foo(?:\\"|"), use \$\{[^}]+\} instead, (?:to find the match more quickly|for faster access)/g,
 		replacement:
@@ -96,17 +56,14 @@ const REGEX_REPLACEMENTS: Array<{ pattern: RegExp; replacement: string }> = [
 ];
 
 const TRIGGER_PHRASES = [
-	"Use Grep or Glob",
-	"use the GrepTool to search for specific content",
-	"direct Glob, Grep, or Read",
 	"Reference local project files (CLAUDE.md",
 	'searching for a specific class definition like "class Foo"',
 ];
 
 const FORBIDDEN_PROMPT_FRAGMENTS = [
-	/Use Grep or Glob when you need to search broadly/i,
-	/use the GrepTool to search for specific content/i,
-	/direct Glob, Grep, or Read tool calls/i,
+	/Reference local project files \(CLAUDE\.md, \.claude\/ directory\) when relevant using \$\{[^}]+\}/,
+	/use the \$\{[^}]+\} tool or \$\{[^}]+\} instead of the \$\{[^}]+\} tool/,
+	/searching for a specific class definition like "class Foo"/,
 ];
 
 const CONDITIONAL_REWRITE_MARKERS: Array<{
@@ -115,20 +72,9 @@ const CONDITIONAL_REWRITE_MARKERS: Array<{
 }> = [
 	{
 		trigger:
-			"Use Grep or Glob when you need to search broadly. Use Read when you know the specific file path.",
+			"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using ${",
 		required:
-			"Use available search tooling broadly, and use Read when you know the specific file path.",
-	},
-	{
-		trigger: "or use the GrepTool to search for specific content.",
-		required:
-			"or use available content-search tooling to search for specific content.",
-	},
-	{
-		trigger:
-			"any task that can be accomplished with direct Glob, Grep, or Read tool calls.",
-		required:
-			"any task that can be accomplished with direct Read and available search tool calls.",
+			"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using Read",
 	},
 	{
 		trigger:
@@ -602,10 +548,10 @@ export const disableTools: Patch = {
 			}
 		}
 
-		// Verify prompt cleanup — negative checks (old strings must be gone)
+		// Verify prompt cleanup — current unpatched strings must be gone
 		for (const fragment of FORBIDDEN_PROMPT_FRAGMENTS) {
 			if (fragment.test(code)) {
-				return `Still contains disabled Grep/Glob guidance: ${fragment.source}`;
+				return `Still contains disabled-tool prompt guidance: ${fragment.source}`;
 			}
 		}
 

@@ -73,6 +73,53 @@ function resolveMaxResultSizeValue(node: t.Node): number | null {
 	return null;
 }
 
+function resolveResultSizeCapBinding(path: any): {
+	value: number;
+	binding: any;
+} | null {
+	if (!t.isBlockStatement(path.node.body)) return null;
+	if (path.node.params.length < 3) return null;
+
+	const [_, maxCharsParam, ceilingParam] = path.node.params;
+	if (!t.isIdentifier(maxCharsParam)) return null;
+	if (!t.isAssignmentPattern(ceilingParam)) return null;
+	if (
+		!t.isIdentifier(ceilingParam.left) ||
+		!t.isIdentifier(ceilingParam.right)
+	) {
+		return null;
+	}
+
+	const maxCharsBinding = path.scope.getBinding(maxCharsParam.name);
+	const ceilingBinding = path.scope.getBinding(ceilingParam.left.name);
+	let foundClamp = false;
+
+	path.traverse({
+		CallExpression(innerPath: any) {
+			const callee = innerPath.node.callee;
+			if (!t.isMemberExpression(callee)) return;
+			if (!isMathReference(callee.object)) return;
+			if (!isMemberPropertyName(callee, "min")) return;
+			if (innerPath.node.arguments.length !== 2) return;
+
+			const [leftArg, rightArg] = innerPath.node.arguments;
+			if (!isSameBinding(innerPath, leftArg, maxCharsBinding)) return;
+			if (!isSameBinding(innerPath, rightArg, ceilingBinding)) return;
+
+			foundClamp = true;
+			innerPath.stop();
+		},
+	});
+	if (!foundClamp) return null;
+
+	const binding = path.scope.getBinding(ceilingParam.right.name);
+	if (!binding || !t.isVariableDeclarator(binding.path.node)) return null;
+	const init = binding.path.node.init;
+	if (!t.isNumericLiteral(init)) return null;
+
+	return { value: init.value, binding };
+}
+
 function collectCurrentLimits(ast: t.File): {
 	linesCap?: number;
 	lineChars?: number;
@@ -195,38 +242,16 @@ function collectCurrentLimits(ast: t.File): {
 			});
 			if (!hasEnv) return;
 
-			// Pattern 1 (<=2.1.74): function returns a variable bound to the default
-			path.traverse({
-				ReturnStatement(innerPath: any) {
-					if (current.tokenBudget !== undefined) return;
-					const arg = innerPath.node.argument;
-					if (!t.isIdentifier(arg)) return;
-
-					const binding = innerPath.scope.getBinding(arg.name);
-					const init =
-						binding && t.isVariableDeclarator(binding.path.node)
-							? binding.path.node.init
-							: null;
-					if (!t.isNumericLiteral(init)) return;
-
-					current.tokenBudget = init.value;
-					innerPath.stop();
-				},
-			});
-
-			// Pattern 2 (2.1.75+): default is a sibling variable declared after the function
-			if (current.tokenBudget === undefined) {
-				const nextSibling = path.getNextSibling?.();
-				if (nextSibling?.node && t.isVariableDeclaration(nextSibling.node)) {
-					for (const decl of nextSibling.node.declarations) {
-						if (
-							t.isNumericLiteral(decl.init) &&
-							(decl.init.value === 25000 ||
-								decl.init.value === NEW_TOKEN_BUDGET)
-						) {
-							current.tokenBudget = decl.init.value;
-							break;
-						}
+			// The token budget default is stored as a sibling variable after the function.
+			const nextSibling = path.getNextSibling?.();
+			if (nextSibling?.node && t.isVariableDeclaration(nextSibling.node)) {
+				for (const decl of nextSibling.node.declarations) {
+					if (
+						t.isNumericLiteral(decl.init) &&
+						(decl.init.value === 25000 || decl.init.value === NEW_TOKEN_BUDGET)
+					) {
+						current.tokenBudget = decl.init.value;
+						break;
 					}
 				}
 			}
@@ -235,28 +260,14 @@ function collectCurrentLimits(ast: t.File): {
 		},
 	});
 
-	// Find result size cap via Math.min with a known persistence cap arg.
-	const knownResultSizeValues = new Set([50000, NEW_RESULT_SIZE_CAP]);
 	traverse.default(ast, {
-		CallExpression(path: any) {
+		Function(path: any) {
 			if (current.resultSizeCap !== undefined) return;
-			const callee = path.node.callee;
-			if (!t.isMemberExpression(callee)) return;
-			if (!isMathReference(callee.object)) return;
-			if (!isMemberPropertyName(callee, "min")) return;
-			if (path.node.arguments.length !== 2) return;
+			const resolved = resolveResultSizeCapBinding(path);
+			if (!resolved) return;
 
-			for (const arg of path.node.arguments) {
-				if (!t.isIdentifier(arg)) continue;
-				const binding = path.scope.getBinding(arg.name);
-				if (!binding || !t.isVariableDeclarator(binding.path.node)) continue;
-				const init = binding.path.node.init;
-				if (!t.isNumericLiteral(init)) continue;
-				if (!knownResultSizeValues.has(init.value)) continue;
-				current.resultSizeCap = init.value;
-				path.stop();
-				return;
-			}
+			current.resultSizeCap = resolved.value;
+			path.stop();
 		},
 	});
 
@@ -439,43 +450,7 @@ function runLimitsPatch(ast: t.File): void {
 				});
 				if (!hasEnv) return;
 
-				// Pattern 1 (<=2.1.74): function returns a variable bound to 25000
-				let tokenVarName: string | null = null;
-				path.traverse({
-					ReturnStatement(innerPath: any) {
-						if (tokenVarName) return;
-						const arg = innerPath.node.argument;
-						if (!t.isIdentifier(arg)) return;
-
-						const binding = innerPath.scope.getBinding(arg.name);
-						if (!binding || !t.isVariableDeclarator(binding.path.node)) return;
-
-						const init = binding.path.node.init;
-						if (!t.isNumericLiteral(init, { value: 25000 })) return;
-
-						tokenVarName = arg.name;
-						innerPath.stop();
-					},
-				});
-
-				if (tokenVarName) {
-					const binding = path.scope.getBinding(tokenVarName);
-					if (!binding || !t.isVariableDeclarator(binding.path.node)) return;
-
-					const init = binding.path.node.init;
-					if (!t.isNumericLiteral(init, { value: 25000 })) return;
-
-					binding.path.node.init = t.numericLiteral(NEW_TOKEN_BUDGET);
-					limitsChanged.tokenBudget = [
-						String(init.value),
-						String(NEW_TOKEN_BUDGET),
-					];
-					patched = true;
-					path.stop();
-					return;
-				}
-
-				// Pattern 2 (2.1.75+): default is a sibling variable after the function
+				// The token budget default is stored as a sibling variable after the function.
 				const nextSibling = path.getNextSibling?.();
 				if (!nextSibling?.node || !t.isVariableDeclaration(nextSibling.node))
 					return;
@@ -501,30 +476,20 @@ function runLimitsPatch(ast: t.File): void {
 		let patched = false;
 
 		traverse.default(ast, {
-			CallExpression(path: any) {
+			Function(path: any) {
 				if (patched) return;
-				const callee = path.node.callee;
-				if (!t.isMemberExpression(callee)) return;
-				if (!isMathReference(callee.object)) return;
-				if (!isMemberPropertyName(callee, "min")) return;
-				if (path.node.arguments.length !== 2) return;
+				const resolved = resolveResultSizeCapBinding(path);
+				if (!resolved) return;
+				const init = resolved.binding.path.node.init;
+				if (!t.isNumericLiteral(init, { value: 50000 })) return;
 
-				for (const arg of path.node.arguments) {
-					if (!t.isIdentifier(arg)) continue;
-					const binding = path.scope.getBinding(arg.name);
-					if (!binding || !t.isVariableDeclarator(binding.path.node)) continue;
-					const init = binding.path.node.init;
-					if (!t.isNumericLiteral(init, { value: 50000 })) continue;
-
-					binding.path.node.init = t.numericLiteral(NEW_RESULT_SIZE_CAP);
-					limitsChanged.resultSizeCap = [
-						String(init.value),
-						String(NEW_RESULT_SIZE_CAP),
-					];
-					patched = true;
-					path.stop();
-					return;
-				}
+				resolved.binding.path.node.init = t.numericLiteral(NEW_RESULT_SIZE_CAP);
+				limitsChanged.resultSizeCap = [
+					String(init.value),
+					String(NEW_RESULT_SIZE_CAP),
+				];
+				patched = true;
+				path.stop();
 			},
 		});
 	}

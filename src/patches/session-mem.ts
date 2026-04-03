@@ -20,7 +20,7 @@ import {
  * 3. Compact (using summary.md during compaction) - controlled by ENABLE_CLAUDE_CODE_SM_COMPACT env
  *
  * This patch adds:
- * - ENABLE_SESSION_MEMORY: extraction override (OR with upstream flag)
+ * - ENABLE_SESSION_MEMORY: extraction override (OR with the built-in flag)
  * - ENABLE_SESSION_MEMORY_PAST: past-session retrieval override
  * - CC_SM_PER_SECTION_TOKENS / CC_SM_TOTAL_FILE_LIMIT: section/total memory limits
  * - CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT / CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE /

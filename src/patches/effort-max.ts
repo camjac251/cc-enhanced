@@ -81,33 +81,53 @@ function isStringIncludesOnLowerCasedParam(
 	return isLowerCasedParam(node.callee.object, paramName);
 }
 
-function isLegacyMaxCapabilityGate(
+function isMaxCapabilityGate(
 	path: traverse.NodePath<t.Function>,
 ): boolean {
 	const param = getSingleIdentifierParam(path);
 	if (!param) return false;
-	const returned = getReturnedExpression(path);
-	if (isStringIncludesOnLowerCasedParam(returned, param.name, "opus-4-6")) {
-		return true;
-	}
-
 	const body = path.node.body;
 	if (!t.isBlockStatement(body)) return false;
-	// 2.1.84+ prepends a server flag check: let $ = Ms(H, "max_effort"); if ($ !== void 0) return $;
-	// Strip optional leading statements to find the 2-statement opus guard + fallback.
 	const stmts = body.body;
-	if (stmts.length < 2 || stmts.length > 4) return false;
-	const [guard, fallback] = stmts.slice(-2);
-	if (!t.isIfStatement(guard) || !t.isReturnStatement(fallback)) return false;
-	if (!isFalseLike(fallback.argument)) return false;
+	if (stmts.length !== 4) return false;
+	const [serverFlagInit, serverFlagGuard, opusGuard, fallback] = stmts;
+	if (!t.isVariableDeclaration(serverFlagInit)) return false;
+	if (serverFlagInit.declarations.length !== 1) return false;
+	const [serverFlagDecl] = serverFlagInit.declarations;
+	if (!t.isIdentifier(serverFlagDecl.id)) return false;
+	if (!t.isCallExpression(serverFlagDecl.init)) return false;
 	if (
-		!t.isReturnStatement(guard.consequent) ||
-		(guard.alternate !== null && !isFalseLike(guard.alternate)) ||
-		!isTrueLike(guard.consequent.argument)
+		serverFlagDecl.init.arguments.length !== 2 ||
+		!isSameParameterReference(serverFlagDecl.init.arguments[0], param.name) ||
+		!t.isStringLiteral(serverFlagDecl.init.arguments[1], {
+			value: "max_effort",
+		})
 	) {
 		return false;
 	}
-	return isStringIncludesOnLowerCasedParam(guard.test, param.name, "opus-4-6");
+	if (!t.isIfStatement(serverFlagGuard) || !t.isIfStatement(opusGuard)) return false;
+	if (!t.isReturnStatement(fallback)) return false;
+	if (!isFalseLike(fallback.argument)) return false;
+	if (
+		!t.isBinaryExpression(serverFlagGuard.test, { operator: "!==" }) ||
+		!isSameParameterReference(serverFlagGuard.test.left, serverFlagDecl.id.name) ||
+		!isVoidZero(serverFlagGuard.test.right) ||
+		!t.isReturnStatement(serverFlagGuard.consequent) ||
+		serverFlagGuard.alternate !== null
+	) {
+		return false;
+	}
+	if (!isSameParameterReference(serverFlagGuard.consequent.argument, serverFlagDecl.id.name)) {
+		return false;
+	}
+	if (
+		!t.isReturnStatement(opusGuard.consequent) ||
+		opusGuard.alternate !== null ||
+		!isTrueLike(opusGuard.consequent.argument)
+	) {
+		return false;
+	}
+	return isStringIncludesOnLowerCasedParam(opusGuard.test, param.name, "opus-4-6");
 }
 
 function isPatchedMaxCapabilityGate(
@@ -137,6 +157,21 @@ function isEffortPickerArray(
 		}
 	}
 	return values.has("low") && values.has("medium") && values.has("high");
+}
+
+function isSameParameterReference(
+	node: t.Node | null | undefined,
+	paramName: string,
+): boolean {
+	return !!node && t.isIdentifier(node, { name: paramName });
+}
+
+function isVoidZero(node: t.Node | null | undefined): boolean {
+	return (
+		!!node &&
+		t.isUnaryExpression(node, { operator: "void" }) &&
+		t.isNumericLiteral(node.argument, { value: 0 })
+	);
 }
 
 function makeMaxEffortOption(): t.ObjectExpression {
@@ -195,7 +230,7 @@ function createEffortMaxMutator(): traverse.Visitor {
 	let patchedNotification = 0;
 
 	function patchFunction(path: traverse.NodePath<t.Function>): void {
-		if (!isLegacyMaxCapabilityGate(path)) return;
+		if (!isMaxCapabilityGate(path)) return;
 
 		path
 			.get("body")
@@ -301,7 +336,7 @@ export const effortMax: Patch = {
 
 		traverse.default(verifyAst, {
 			Function(path) {
-				if (isLegacyMaxCapabilityGate(path)) {
+				if (isMaxCapabilityGate(path)) {
 					hasLegacyMaxCapabilityGate = true;
 				}
 				if (isPatchedMaxCapabilityGate(path)) {

@@ -108,9 +108,9 @@ const REQUIRED_REGEX_PATCHED: RegexRule[] = [
 		pattern: /\*\*Common tool matchers:\*\* [^\n]*\\?`Agent\\?`/,
 		reason: "Missing updated hook matcher tool list with Agent",
 	},
-	// changed-file-guard anchor removed: the readFileState.set() compat markers
-	// (offset: 1, limit: 1 for partial reads) already cause the upstream offset/limit
-	// guard to fire, making the explicit range check redundant.
+	// changed-file-guard anchor removed: the readFileState.set() compatibility
+	// markers (offset: 1, limit: 1 for partial reads) already cause the
+	// offset/limit guard to fire, making the explicit range check redundant.
 	{
 		id: "read-state-guard",
 		pattern:
