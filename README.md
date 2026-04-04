@@ -15,7 +15,8 @@
 cc-enhanced patches the Claude Code CLI binary to unlock capabilities, fix bugs, and improve the development experience. It uses Babel AST traversal to make surgical, verifiable changes to the embedded JavaScript, then repacks the native binary in place.
 
 > [!NOTE]
-> This tool patches your local copy of the Claude Code binary. It does not distribute any Anthropic source code. All modifications happen on your machine. You need a valid Claude Code subscription.
+> This tool patches your local copy of the Claude Code binary. It does not distribute any Anthropic source code.<br>
+> All modifications happen on your machine.
 
 ## How It Works
 
@@ -161,9 +162,9 @@ Each patch is a self-contained module with an `astPasses` function (Babel visito
 
 ```bash
 mise run native:update              # Fetch + patch + promote (standard workflow)
-mise run native:update 2.1.91       # Pin a specific version
+mise run native:update 2.1.92       # Pin a specific version
 mise run native:update --dry-run    # Preview without promoting
-mise run native:fetch-patch 2.1.91 --dry-run  # Fetch + patch preview for a pinned version
+mise run native:fetch-patch 2.1.92 --dry-run  # Fetch + patch preview for a pinned version
 mise run native:rollback            # Instant rollback to previous version
 mise run status                     # Show current/previous/cached versions
 mise run verify:patches             # Full health check (typecheck + lint + dry-run)
@@ -175,7 +176,7 @@ See `pnpm cli --help` for all options and `mise.toml` for all tasks.
 
 ## Compatibility
 
-Tested against **Claude Code 2.1.91**. Only the latest upstream version is targeted. Older versions are not maintained or tested.
+Tested against **Claude Code 2.1.92**. Only the latest upstream version is targeted. Older versions are not maintained or tested.
 
 ## Requirements
 
