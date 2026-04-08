@@ -964,6 +964,12 @@ interface EditVerifyContext {
 	callMethod: t.ObjectMethod | null;
 }
 
+function hasEscapedOrLiteralSnippet(code: string, snippet: string): boolean {
+	return (
+		code.includes(snippet) || code.includes(snippet.replaceAll("'", "\\'"))
+	);
+}
+
 function verifyEditPromptAndHook(ctx: EditVerifyContext): string | null {
 	const { code } = ctx;
 	if (!code.includes("EXTENDED_EDIT_PREVIEW_v1")) {
@@ -987,7 +993,10 @@ function verifyEditPromptAndHook(ctx: EditVerifyContext): string | null {
 	if (!code.includes("_previewResult")) {
 		return "Preview block does not use unified normalize+apply pipeline";
 	}
-	if (!code.includes("sd 'pattern' 'replacement'") || !code.includes("sg -p")) {
+	if (
+		!hasEscapedOrLiteralSnippet(code, "sd 'pattern' 'replacement'") ||
+		!code.includes("sg -p")
+	) {
 		return "Missing Bash alternative guidance for regex/structural transforms";
 	}
 	return null;

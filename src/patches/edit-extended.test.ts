@@ -230,6 +230,19 @@ test("edit-extended injects unified preview via normalize+apply pipeline", async
 	assert.equal(output.includes("sd 'pattern' 'replacement'"), true);
 });
 
+test("edit-extended verify accepts escaped Bash guidance in emitted prompt strings", async () => {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+	const escaped = output.replace(
+		"sd 'pattern' 'replacement'",
+		"sd \\'pattern\\' \\'replacement\\'",
+	);
+
+	assert.notEqual(escaped, output);
+	assert.equal(editTool.verify(escaped, parse(escaped)), true);
+});
+
 test("edit-extended keeps Edit identity while routing structured inputs through transport helpers", async () => {
 	const ast = parse(EDIT_FIXTURE);
 	await runEditToolViaPasses(ast);
