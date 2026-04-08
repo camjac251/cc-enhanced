@@ -121,6 +121,14 @@ function findReadToolObjectPath(
 			if (!nameProp || !t.isExpression(nameProp.value)) return;
 			const toolName = resolveStringValue(path, nameProp.value);
 			if (toolName !== "Read") return;
+			const hasReadToolShape = path.node.properties.some(
+				(prop) =>
+					(t.isObjectMethod(prop) || t.isObjectProperty(prop)) &&
+					["prompt", "validateInput", "call", "inputSchema", "input_schema"].includes(
+						getObjectKeyName(prop.key) ?? "",
+					),
+			);
+			if (!hasReadToolShape) return;
 			found = path;
 			path.stop();
 		},
@@ -314,8 +322,9 @@ function hasReadFilePathSchemaField(schemaObject: t.ObjectExpression): boolean {
 
 function getReadInputSchemaObject(
 	ast: t.File,
-	readToolObject: t.ObjectExpression,
+	readToolPath: NodePath<t.ObjectExpression>,
 ): t.ObjectExpression | null {
+	const readToolObject = readToolPath.node;
 	const schemaProp = getObjectPropertyByName(readToolObject, "input_schema");
 	if (schemaProp && t.isCallExpression(schemaProp.value)) {
 		if (
@@ -324,6 +333,78 @@ function getReadInputSchemaObject(
 		) {
 			const arg0 = schemaProp.value.arguments[0];
 			if (arg0 && t.isObjectExpression(arg0)) return arg0;
+		}
+	}
+	const inputSchemaMethod = findToolMethod(readToolObject, "inputSchema");
+	if (inputSchemaMethod) {
+		if (
+			t.isObjectProperty(inputSchemaMethod) &&
+			t.isExpression(inputSchemaMethod.value) &&
+			t.isCallExpression(inputSchemaMethod.value) &&
+			t.isMemberExpression(inputSchemaMethod.value.callee) &&
+			isMemberPropertyName(inputSchemaMethod.value.callee, "strictObject")
+		) {
+			const arg0 = inputSchemaMethod.value.arguments[0];
+			if (arg0 && t.isObjectExpression(arg0)) return arg0;
+		}
+		if (t.isObjectMethod(inputSchemaMethod)) {
+			for (const stmt of inputSchemaMethod.body.body) {
+				if (!t.isReturnStatement(stmt) || !stmt.argument) continue;
+				if (!t.isCallExpression(stmt.argument)) continue;
+				if (!t.isMemberExpression(stmt.argument.callee)) continue;
+				if (!isMemberPropertyName(stmt.argument.callee, "strictObject")) continue;
+				const arg0 = stmt.argument.arguments[0];
+				if (arg0 && t.isObjectExpression(arg0)) return arg0;
+			}
+		}
+	}
+
+	const schemaGetter = findToolMethod(readToolObject, "inputSchema");
+	if (schemaGetter && t.isObjectMethod(schemaGetter)) {
+		for (const stmt of schemaGetter.body.body) {
+			if (!t.isReturnStatement(stmt) || !stmt.argument) continue;
+			if (
+				!t.isCallExpression(stmt.argument) ||
+				!t.isIdentifier(stmt.argument.callee) ||
+				stmt.argument.arguments.length !== 0
+			) {
+				continue;
+			}
+
+			const binding = readToolPath.scope.getBinding(stmt.argument.callee.name);
+			const init = binding?.path.node;
+			if (
+				!init ||
+				!t.isVariableDeclarator(init) ||
+				!t.isCallExpression(init.init)
+			) {
+				continue;
+			}
+
+			for (const arg of init.init.arguments) {
+				const body = t.isArrowFunctionExpression(arg)
+					? arg.body
+					: t.isFunctionExpression(arg)
+						? arg.body
+						: null;
+				const returnedExpr =
+					body && t.isBlockStatement(body)
+						? body.body.find((innerStmt): innerStmt is t.ReturnStatement =>
+								t.isReturnStatement(innerStmt),
+							)?.argument
+						: body && t.isExpression(body)
+							? body
+							: null;
+				if (
+					returnedExpr &&
+					t.isCallExpression(returnedExpr) &&
+					t.isMemberExpression(returnedExpr.callee) &&
+					isMemberPropertyName(returnedExpr.callee, "strictObject")
+				) {
+					const arg0 = returnedExpr.arguments[0];
+					if (arg0 && t.isObjectExpression(arg0)) return arg0;
+				}
+			}
 		}
 	}
 
@@ -350,6 +431,29 @@ function expressionCode(expr: t.Expression): string {
 	return print(file);
 }
 
+function expressionHasMethodCall(
+	expr: t.Expression,
+	methodName: "string" | "boolean",
+): boolean {
+	let found = false;
+	const file = t.file(
+		t.program([t.expressionStatement(t.cloneNode(expr, true) as t.Expression)]),
+	);
+	traverse.default(file, {
+		CallExpression(path) {
+			if (found) {
+				path.stop();
+				return;
+			}
+			if (!t.isMemberExpression(path.node.callee)) return;
+			if (!isMemberPropertyName(path.node.callee, methodName)) return;
+			found = true;
+			path.stop();
+		},
+	});
+	return found;
+}
+
 function schemaFieldHasMethodCall(
 	schemaObject: t.ObjectExpression,
 	fieldName: string,
@@ -357,7 +461,7 @@ function schemaFieldHasMethodCall(
 ): boolean {
 	const fieldProp = getObjectPropertyByName(schemaObject, fieldName);
 	if (!fieldProp || !t.isExpression(fieldProp.value)) return false;
-	return expressionCode(fieldProp.value).includes(`.${methodName}(`);
+	return expressionHasMethodCall(fieldProp.value, methodName);
 }
 
 function getFirstObjectPatternParam(
@@ -3098,11 +3202,12 @@ export const readWithBat: Patch = {
 		if (!verifyAst) {
 			return "Unable to parse AST during read-bat verification";
 		}
-		const readToolObject = findReadToolObject(verifyAst);
-		if (!readToolObject) {
+		const readToolPath = findReadToolObjectPath(verifyAst);
+		if (!readToolPath) {
 			return "Unable to resolve Read tool object for verification";
 		}
-		const schemaObject = getReadInputSchemaObject(verifyAst, readToolObject);
+		const readToolObject = readToolPath.node;
+		const schemaObject = getReadInputSchemaObject(verifyAst, readToolPath);
 		if (!schemaObject) {
 			return "Unable to resolve Read input schema for verification";
 		}
