@@ -5,7 +5,6 @@ import {
 	getObjectKeyName,
 	getVerifyAst,
 	isFalseLike,
-	isTrueLike,
 } from "./ast-helpers.js";
 
 const MAX_NOTIFICATION_TEXT = "Effort set to max for this turn";
@@ -64,9 +63,9 @@ function isLowerCasedParam(
 	return node.arguments.length === 0;
 }
 
-function isStringIncludesOnLowerCasedParam(
+function isStringIncludesOnIdentifier(
 	node: t.Node | null | undefined,
-	paramName: string,
+	identifierName: string,
 	value: string,
 ): boolean {
 	if (!node || !t.isCallExpression(node)) return false;
@@ -78,7 +77,115 @@ function isStringIncludesOnLowerCasedParam(
 	) {
 		return false;
 	}
-	return isLowerCasedParam(node.callee.object, paramName);
+	return t.isIdentifier(node.callee.object, { name: identifierName });
+}
+
+function collectStringIncludesOnIdentifier(
+	node: t.Node | null | undefined,
+	identifierName: string,
+): string[] | null {
+	if (!node) return null;
+	if (t.isLogicalExpression(node, { operator: "||" })) {
+		const left = collectStringIncludesOnIdentifier(node.left, identifierName);
+		const right = collectStringIncludesOnIdentifier(node.right, identifierName);
+		if (!left || !right) return null;
+		return [...left, ...right];
+	}
+	if (!t.isCallExpression(node)) return null;
+	if (
+		!t.isMemberExpression(node.callee) ||
+		!t.isIdentifier(node.callee.property, { name: "includes" }) ||
+		!t.isIdentifier(node.callee.object, { name: identifierName }) ||
+		node.arguments.length !== 1 ||
+		!t.isStringLiteral(node.arguments[0])
+	) {
+		return null;
+	}
+	return [node.arguments[0].value];
+}
+
+function isModelFamilyGate(
+	node: t.Node | null | undefined,
+	identifierName: string,
+): boolean {
+	const includes = collectStringIncludesOnIdentifier(node, identifierName);
+	if (!includes || includes.length !== 3) return false;
+	const values = new Set(includes);
+	return (
+		values.size === 3 &&
+		values.has("haiku") &&
+		values.has("sonnet") &&
+		values.has("opus")
+	);
+}
+
+function isNamedMember(
+	node: t.Node | null | undefined,
+	objectName: string,
+	propertyName: string,
+): boolean {
+	return (
+		!!node &&
+		t.isMemberExpression(node) &&
+		t.isIdentifier(node.object, { name: objectName }) &&
+		t.isIdentifier(node.property, { name: propertyName })
+	);
+}
+
+function isStringMemberComparison(
+	node: t.Node | null | undefined,
+	objectName: string,
+	propertyName: string,
+	value: string,
+): boolean {
+	return (
+		!!node &&
+		t.isBinaryExpression(node, { operator: "===" }) &&
+		isNamedMember(node.left, objectName, propertyName) &&
+		t.isStringLiteral(node.right, { value })
+	);
+}
+
+function isNumericMemberComparison(
+	node: t.Node | null | undefined,
+	objectName: string,
+	propertyName: string,
+	operator: ">" | ">=" | "===",
+	value: number,
+): boolean {
+	return (
+		!!node &&
+		t.isBinaryExpression(node, { operator }) &&
+		isNamedMember(node.left, objectName, propertyName) &&
+		t.isNumericLiteral(node.right, { value })
+	);
+}
+
+function isParsedVersionGuard(
+	node: t.Node | null | undefined,
+	versionName: string,
+): boolean {
+	return (
+		!!node &&
+		t.isLogicalExpression(node, { operator: "||" }) &&
+		t.isUnaryExpression(node.left, { operator: "!" }) &&
+		t.isIdentifier(node.left.argument, { name: versionName }) &&
+		isStringMemberComparison(node.right, versionName, "family", "haiku")
+	);
+}
+
+function isSupportedVersionThreshold(
+	node: t.Node | null | undefined,
+	versionName: string,
+): boolean {
+	return (
+		!!node &&
+		t.isLogicalExpression(node, { operator: "||" }) &&
+		isNumericMemberComparison(node.left, versionName, "major", ">", 4) &&
+		t.isLogicalExpression(node.right, { operator: "&&" }) &&
+		isNumericMemberComparison(node.right.left, versionName, "major", "===", 4) &&
+		isNumericMemberComparison(node.right.right, versionName, "minor", ">=", 6)
+	);
 }
 
 function isMaxCapabilityGate(
@@ -89,45 +196,80 @@ function isMaxCapabilityGate(
 	const body = path.node.body;
 	if (!t.isBlockStatement(body)) return false;
 	const stmts = body.body;
-	if (stmts.length !== 4) return false;
-	const [serverFlagInit, serverFlagGuard, opusGuard, fallback] = stmts;
-	if (!t.isVariableDeclaration(serverFlagInit)) return false;
-	if (serverFlagInit.declarations.length !== 1) return false;
-	const [serverFlagDecl] = serverFlagInit.declarations;
-	if (!t.isIdentifier(serverFlagDecl.id)) return false;
-	if (!t.isCallExpression(serverFlagDecl.init)) return false;
+	if (stmts.length !== 5) return false;
+	const [overrideInit, overrideGuard, lowerCaseInit, familyGuard, fallback] = stmts;
+	if (!t.isVariableDeclaration(overrideInit)) return false;
+	if (overrideInit.declarations.length !== 1) return false;
+	const [overrideDecl] = overrideInit.declarations;
+	if (!t.isIdentifier(overrideDecl.id)) return false;
+	if (!t.isCallExpression(overrideDecl.init)) return false;
 	if (
-		serverFlagDecl.init.arguments.length !== 2 ||
-		!isSameParameterReference(serverFlagDecl.init.arguments[0], param.name) ||
-		!t.isStringLiteral(serverFlagDecl.init.arguments[1], {
+		overrideDecl.init.arguments.length !== 2 ||
+		!isSameParameterReference(overrideDecl.init.arguments[0], param.name) ||
+		!t.isStringLiteral(overrideDecl.init.arguments[1], {
 			value: "max_effort",
 		})
 	) {
 		return false;
 	}
-	if (!t.isIfStatement(serverFlagGuard) || !t.isIfStatement(opusGuard)) return false;
+	if (!t.isIfStatement(overrideGuard) || !t.isVariableDeclaration(lowerCaseInit)) {
+		return false;
+	}
+	if (lowerCaseInit.declarations.length !== 1) return false;
+	const [lowerCaseDecl] = lowerCaseInit.declarations;
+	if (!t.isIdentifier(lowerCaseDecl.id)) return false;
+	if (!isLowerCasedParam(lowerCaseDecl.init, param.name)) return false;
+	if (!t.isIfStatement(familyGuard)) return false;
 	if (!t.isReturnStatement(fallback)) return false;
-	if (!isFalseLike(fallback.argument)) return false;
 	if (
-		!t.isBinaryExpression(serverFlagGuard.test, { operator: "!==" }) ||
-		!isSameParameterReference(serverFlagGuard.test.left, serverFlagDecl.id.name) ||
-		!isVoidZero(serverFlagGuard.test.right) ||
-		!t.isReturnStatement(serverFlagGuard.consequent) ||
-		serverFlagGuard.alternate !== null
+		!t.isBinaryExpression(overrideGuard.test, { operator: "!==" }) ||
+		!isSameParameterReference(overrideGuard.test.left, overrideDecl.id.name) ||
+		!isVoidZero(overrideGuard.test.right) ||
+		!t.isReturnStatement(overrideGuard.consequent) ||
+		overrideGuard.alternate !== null
 	) {
 		return false;
 	}
-	if (!isSameParameterReference(serverFlagGuard.consequent.argument, serverFlagDecl.id.name)) {
+	if (!isSameParameterReference(overrideGuard.consequent.argument, overrideDecl.id.name)) {
 		return false;
 	}
 	if (
-		!t.isReturnStatement(opusGuard.consequent) ||
-		opusGuard.alternate !== null ||
-		!isTrueLike(opusGuard.consequent.argument)
+		!isModelFamilyGate(familyGuard.test, lowerCaseDecl.id.name) ||
+		familyGuard.alternate !== null ||
+		!t.isBlockStatement(familyGuard.consequent) ||
+		familyGuard.consequent.body.length !== 3
 	) {
 		return false;
 	}
-	return isStringIncludesOnLowerCasedParam(opusGuard.test, param.name, "opus-4-6");
+	const [parsedVersionInit, parsedVersionGuard, parsedVersionReturn] =
+		familyGuard.consequent.body;
+	if (!t.isVariableDeclaration(parsedVersionInit)) return false;
+	if (parsedVersionInit.declarations.length !== 1) return false;
+	const [parsedVersionDecl] = parsedVersionInit.declarations;
+	if (!t.isIdentifier(parsedVersionDecl.id)) return false;
+	if (
+		!t.isCallExpression(parsedVersionDecl.init) ||
+		parsedVersionDecl.init.arguments.length !== 1 ||
+		!isSameParameterReference(parsedVersionDecl.init.arguments[0], param.name)
+	) {
+		return false;
+	}
+	if (
+		!t.isIfStatement(parsedVersionGuard) ||
+		parsedVersionGuard.alternate !== null ||
+		!isParsedVersionGuard(parsedVersionGuard.test, parsedVersionDecl.id.name) ||
+		!t.isReturnStatement(parsedVersionGuard.consequent) ||
+		!isFalseLike(parsedVersionGuard.consequent.argument)
+	) {
+		return false;
+	}
+	return (
+		t.isReturnStatement(parsedVersionReturn) &&
+		isSupportedVersionThreshold(
+			parsedVersionReturn.argument,
+			parsedVersionDecl.id.name,
+		)
+	);
 }
 
 function isPatchedMaxCapabilityGate(
