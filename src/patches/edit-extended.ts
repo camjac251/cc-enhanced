@@ -18,7 +18,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const EXTENDED_EDIT_TRANSPORT_PREFIX = "__claude_edit_extended_v1__:";
-const EXTENDED_EDIT_TRANSPORT_ENCODE = "_claudeEncodeExtendedEditTransport";
 const EXTENDED_EDIT_TRANSPORT_DECODE = "_claudeDecodeExtendedEditTransport";
 
 function adaptHookCodeForRuntime(hookCode: string): string {
@@ -369,53 +368,18 @@ function patchIdeDiffConfigGuards(ast: t.File): void {
 }
 
 function injectExtendedEditTransportHelpers(ast: t.File): void {
-	const existing = ast.program.body.some(
-		(stmt) =>
-			t.isFunctionDeclaration(stmt) &&
-			(t.isIdentifier(stmt.id, {
-				name: EXTENDED_EDIT_TRANSPORT_ENCODE,
-			}) ||
-				t.isIdentifier(stmt.id, {
-					name: EXTENDED_EDIT_TRANSPORT_DECODE,
-				})),
-	);
-	if (existing) return;
+    const existing = ast.program.body.some(
+        (stmt) =>
+            t.isFunctionDeclaration(stmt) &&
+            t.isIdentifier(stmt.id, {
+                name: EXTENDED_EDIT_TRANSPORT_DECODE,
+            }),
+    );
+    if (existing) return;
 
-	const helperStatements = template.default.statements(
-		`
+    const helperStatements = template.default.statements(
+        `
         const _claudeExtendedEditTransportPrefix = ${JSON.stringify(EXTENDED_EDIT_TRANSPORT_PREFIX)};
-
-        function ${EXTENDED_EDIT_TRANSPORT_ENCODE}(INPUT) {
-            if (!INPUT || typeof INPUT !== "object") return INPUT;
-            if (
-                typeof INPUT.old_string === "string" &&
-                INPUT.old_string.startsWith(_claudeExtendedEditTransportPrefix)
-            ) {
-                return INPUT;
-            }
-            if (!_claudeEditHasExtendedFields(INPUT)) return INPUT;
-            try {
-                const payload = { ...INPUT };
-                if (payload.file_path === undefined) {
-                    payload.file_path =
-                        INPUT.file_path ?? INPUT.filePath ?? INPUT.filepath ?? INPUT.path;
-                }
-                if (Array.isArray(INPUT.edits)) {
-                    payload.edits = INPUT.edits.map((edit) =>
-                        edit && typeof edit === "object" ? { ...edit } : edit,
-                    );
-                }
-                return {
-                    file_path: payload.file_path,
-                    old_string:
-                        _claudeExtendedEditTransportPrefix + JSON.stringify(payload),
-                    new_string: "",
-                    replace_all: false,
-                };
-            } catch {
-                return INPUT;
-            }
-        }
 
         function ${EXTENDED_EDIT_TRANSPORT_DECODE}(INPUT) {
             if (!INPUT || typeof INPUT !== "object") return INPUT;
@@ -444,45 +408,7 @@ function injectExtendedEditTransportHelpers(ast: t.File): void {
 		{ placeholderPattern: false },
 	)();
 
-	ast.program.body.push(...helperStatements);
-}
-
-function patchExtendedEditSchemaParsing(
-	ast: t.File,
-	toolVarName: string,
-): void {
-	traverse.default(ast, {
-		CallExpression(path) {
-			if (!t.isMemberExpression(path.node.callee)) return;
-			if (!t.isIdentifier(path.node.callee.property, { name: "parse" })) return;
-			if (!t.isMemberExpression(path.node.callee.object)) return;
-
-			const schemaRef = path.node.callee.object;
-			if (
-				!t.isIdentifier(schemaRef.object, { name: toolVarName }) ||
-				!t.isIdentifier(schemaRef.property) ||
-				schemaRef.property.name !== "inputSchema"
-			) {
-				return;
-			}
-
-			const [inputArg] = path.node.arguments;
-			if (!inputArg) return;
-			if (
-				t.isCallExpression(inputArg) &&
-				t.isIdentifier(inputArg.callee, {
-					name: EXTENDED_EDIT_TRANSPORT_ENCODE,
-				})
-			) {
-				return;
-			}
-
-			path.node.arguments[0] = t.callExpression(
-				t.identifier(EXTENDED_EDIT_TRANSPORT_ENCODE),
-				[t.cloneNode(inputArg, true)],
-			);
-		},
-	});
+    ast.program.body.push(...helperStatements);
 }
 
 /**
@@ -490,10 +416,9 @@ function patchExtendedEditSchemaParsing(
  * 1. Add `edits` as an optional array field
  * 2. Make `old_string` and `new_string` optional (required enforcement moves to validateInput)
  *
- * Without this, the generic tool dispatch calls `safeParse()` before the transport
- * encoding can convert `edits` into `old_string`, causing "unexpected parameter" and
- * "required parameter missing" rejections. Making the fields optional lets `safeParse`
- * accept batch payloads, and the existing validateInput/call hooks handle enforcement.
+ * Without this, the generic tool dispatch rejects batch payloads during `safeParse()`
+ * with "unexpected parameter" and "required parameter missing" errors before the Edit
+ * tool's own validation and normalization logic can run.
  */
 function patchEditSchemaForBatchEdits(ast: t.File): void {
 	traverse.default(ast, {
@@ -613,7 +538,210 @@ function patchEditSchemaForBatchEdits(ast: t.File): void {
 
 			path.stop();
 		},
-	});
+    });
+}
+
+function getObjectPatternBindingName(
+    pattern: t.ObjectPattern,
+    propertyName: string,
+): string | null {
+    for (const prop of pattern.properties) {
+        if (!t.isObjectProperty(prop) || !hasObjectKeyName(prop, propertyName)) {
+            continue;
+        }
+        if (t.isIdentifier(prop.value)) return prop.value.name;
+    }
+    return null;
+}
+
+function buildHasExtendedFieldsCall(inputName: string): t.CallExpression {
+    return t.callExpression(t.identifier("_claudeEditHasExtendedFields"), [
+        t.identifier(inputName),
+    ]);
+}
+
+function getLegacyParsedEditArrayInputName(
+    node: t.Expression,
+): { inputName: string } | null {
+    if (!t.isArrayExpression(node) || node.elements.length !== 1) return null;
+    const [entry] = node.elements;
+    if (!entry || !t.isObjectExpression(entry)) return null;
+
+    let parsedInputName: string | null = null;
+    for (const propertyName of ["old_string", "new_string", "replace_all"]) {
+        const prop = entry.properties.find(
+            (candidate): candidate is t.ObjectProperty =>
+                t.isObjectProperty(candidate) && hasObjectKeyName(candidate, propertyName),
+        );
+        if (!prop || !t.isMemberExpression(prop.value)) return null;
+        if (!t.isIdentifier(prop.value.object)) return null;
+        if (!isMemberPropertyName(prop.value, propertyName)) return null;
+
+        if (!parsedInputName) {
+            parsedInputName = prop.value.object.name;
+            continue;
+        }
+        if (prop.value.object.name !== parsedInputName) {
+            return null;
+        }
+    }
+
+    if (!parsedInputName) return null;
+    return { inputName: parsedInputName };
+}
+
+function patchStructuredEditInputNormalization(
+    ast: t.File,
+    toolVarName: string,
+): void {
+    traverse.default(ast, {
+        CallExpression(path) {
+            if (path.node.arguments.length < 1) return;
+            const [inputArg] = path.node.arguments;
+            if (!t.isObjectExpression(inputArg)) return;
+
+            const switchCase = path.findParent((parentPath) =>
+                parentPath.isSwitchCase(),
+            );
+            if (!switchCase || !t.isSwitchCase(switchCase.node)) return;
+            if (!t.isMemberExpression(switchCase.node.test)) return;
+            if (
+                !t.isIdentifier(switchCase.node.test.object, { name: toolVarName }) ||
+                !isMemberPropertyName(switchCase.node.test, "name")
+            ) {
+                return;
+            }
+
+            const variableDeclarator = path.findParent((parentPath) =>
+                parentPath.isVariableDeclarator(),
+            );
+            if (
+                !variableDeclarator ||
+                !t.isVariableDeclarator(variableDeclarator.node) ||
+                variableDeclarator.node.init !== path.node ||
+                !t.isObjectPattern(variableDeclarator.node.id)
+            ) {
+                return;
+            }
+
+            const normalizedEditsBindingName = getObjectPatternBindingName(
+                variableDeclarator.node.id,
+                "edits",
+            );
+            if (!normalizedEditsBindingName) return;
+
+            const normalizedEditsProperty = inputArg.properties.find(
+                (prop): prop is t.ObjectProperty =>
+                    t.isObjectProperty(prop) &&
+                    hasObjectKeyName(prop, "edits") &&
+                    t.isExpression(prop.value) &&
+                    !!getLegacyParsedEditArrayInputName(prop.value),
+            );
+            if (!normalizedEditsProperty) return;
+
+            const legacyParsedEditArray = getLegacyParsedEditArrayInputName(
+                normalizedEditsProperty.value,
+            );
+            if (!legacyParsedEditArray) return;
+
+            const parsedInputName = legacyParsedEditArray.inputName;
+
+            let returnObject: t.ObjectExpression | null = null;
+            switchCase.traverse({
+                ReturnStatement(returnPath) {
+                    if (!t.isObjectExpression(returnPath.node.argument)) return;
+                    returnObject = returnPath.node.argument;
+                    returnPath.stop();
+                },
+            });
+            if (!returnObject) return;
+
+            if (
+                t.isConditionalExpression(normalizedEditsProperty.value) &&
+                t.isCallExpression(normalizedEditsProperty.value.test) &&
+                t.isIdentifier(normalizedEditsProperty.value.test.callee, {
+                    name: "_claudeEditHasExtendedFields",
+                })
+            ) {
+                return;
+            }
+
+            const hasExtendedFieldsCall = buildHasExtendedFieldsCall(parsedInputName);
+            const legacyEdits = t.cloneNode(
+                normalizedEditsProperty.value,
+                true,
+            ) as t.Expression;
+
+            normalizedEditsProperty.value = t.conditionalExpression(
+                hasExtendedFieldsCall,
+                t.memberExpression(
+                    t.identifier(parsedInputName),
+                    t.identifier("edits"),
+                ),
+                legacyEdits,
+            );
+
+            const alreadyReturnsEdits = returnObject.properties.some(
+                (prop) => t.isObjectProperty(prop) && hasObjectKeyName(prop, "edits"),
+            );
+            if (alreadyReturnsEdits) return;
+
+            returnObject.properties.push(
+                t.spreadElement(
+                    t.conditionalExpression(
+                        buildHasExtendedFieldsCall(parsedInputName),
+                        t.objectExpression([
+                            t.objectProperty(
+                                t.identifier("edits"),
+                                t.identifier(normalizedEditsBindingName),
+                            ),
+                        ]),
+                        t.objectExpression([]),
+                    ),
+                ),
+            );
+        },
+    });
+}
+
+function patchEditAutoClassifierInput(editToolObj: t.ObjectExpression): void {
+    const classifierMethod = editToolObj.properties.find(
+        (prop): prop is t.ObjectMethod =>
+            t.isObjectMethod(prop) &&
+            getObjectKeyName(prop.key) === "toAutoClassifierInput",
+    );
+    if (!classifierMethod || classifierMethod.params.length < 1) return;
+    if (!t.isIdentifier(classifierMethod.params[0])) return;
+
+    const inputName = classifierMethod.params[0].name;
+    if (
+        classifierMethod.body.body.some(
+            (stmt) =>
+                t.isIfStatement(stmt) &&
+                t.isCallExpression(stmt.test) &&
+                t.isIdentifier(stmt.test.callee, {
+                    name: "_claudeEditHasExtendedFields",
+                }),
+        )
+    ) {
+        return;
+    }
+
+    const classifierLogic = template.default.statements(
+        `
+            if (_claudeEditHasExtendedFields(INPUT)) {
+                const _normalized = _claudeEditNormalizeEdits(INPUT);
+                if (!_normalized.error) {
+                    return \`\${INPUT.file_path}: \${_normalized.edits.map((edit) => edit.newString).join("\\n")}\`;
+                }
+            }
+        `,
+        { placeholderPattern: /^INPUT$/ },
+    )({
+        INPUT: t.identifier(inputName),
+    });
+
+    classifierMethod.body.body.unshift(...classifierLogic);
 }
 
 const _appliedAsts = new WeakSet<t.File>();
@@ -813,10 +941,10 @@ function runEditToolPatch(ast: t.File): void {
 				callMethod.body.body.splice(2, 0, ...logicAst);
 			}
 
-			const eqMethod = editToolObj.properties.find(
-				(p: any) =>
-					t.isObjectMethod(p) && getObjectKeyName(p.key) === "inputsEquivalent",
-			);
+            const eqMethod = editToolObj.properties.find(
+                (p: any) =>
+                    t.isObjectMethod(p) && getObjectKeyName(p.key) === "inputsEquivalent",
+            );
 			if (
 				eqMethod &&
 				eqMethod.params.length >= 2 &&
@@ -834,19 +962,21 @@ function runEditToolPatch(ast: t.File): void {
                             return _claudeEditInputsEquivalent(_leftInput, _rightInput);
                         }
                     }`;
-				const logicAst = template.default.statements(eqLogic, {
-					placeholderPattern: false,
-				})();
-				eqMethod.body.body.unshift(...logicAst);
-			}
-		}
-	}
+                const logicAst = template.default.statements(eqLogic, {
+                    placeholderPattern: false,
+                })();
+                eqMethod.body.body.unshift(...logicAst);
+            }
 
-	if (toolVarName) {
-		injectExtendedEditTransportHelpers(ast);
-		patchExtendedEditSchemaParsing(ast, toolVarName);
-		patchEditSchemaForBatchEdits(ast);
-	}
+            patchEditAutoClassifierInput(editToolObj);
+        }
+    }
+
+    if (toolVarName) {
+        injectExtendedEditTransportHelpers(ast);
+        patchEditSchemaForBatchEdits(ast);
+        patchStructuredEditInputNormalization(ast, toolVarName);
+    }
 
 	const newPrompt = `Edit files using string replace or batch mode.
 
@@ -958,10 +1088,11 @@ Error recovery:
 }
 
 interface EditVerifyContext {
-	code: string;
-	ast: t.File;
-	validateMethod: t.ObjectMethod | null;
-	callMethod: t.ObjectMethod | null;
+    code: string;
+    ast: t.File;
+    editToolObject: t.ObjectExpression;
+    validateMethod: t.ObjectMethod | null;
+    callMethod: t.ObjectMethod | null;
 }
 
 function hasEscapedOrLiteralSnippet(code: string, snippet: string): boolean {
@@ -1121,30 +1252,111 @@ function hasIdeDiffConfigGuard(ast: t.File): boolean {
 	return found;
 }
 
-function verifyExtendedEditTransportWiring(
-	ctx: EditVerifyContext,
+function hasStructuredEditInputNormalization(ast: t.File): {
+    prefersParsedEdits: boolean;
+    returnsStructuredEdits: boolean;
+} {
+    let prefersParsedEdits = false;
+    let returnsStructuredEdits = false;
+
+    traverse.default(ast, {
+        ConditionalExpression(path) {
+            const test = path.node.test;
+            if (
+                !t.isCallExpression(test) ||
+                !t.isIdentifier(test.callee, {
+                    name: "_claudeEditHasExtendedFields",
+                })
+            ) {
+                return;
+            }
+
+            if (
+                t.isMemberExpression(path.node.consequent) &&
+                isMemberPropertyName(path.node.consequent, "edits")
+            ) {
+                prefersParsedEdits = true;
+            }
+        },
+        SpreadElement(path) {
+            const arg = path.node.argument;
+            if (!t.isConditionalExpression(arg)) return;
+            if (
+                !t.isCallExpression(arg.test) ||
+                !t.isIdentifier(arg.test.callee, {
+                    name: "_claudeEditHasExtendedFields",
+                })
+            ) {
+                return;
+            }
+            if (
+                t.isObjectExpression(arg.consequent) &&
+                arg.consequent.properties.some(
+                    (prop) =>
+                        t.isObjectProperty(prop) && hasObjectKeyName(prop, "edits"),
+                )
+            ) {
+                returnsStructuredEdits = true;
+            }
+        },
+    });
+
+    return { prefersParsedEdits, returnsStructuredEdits };
+}
+
+function methodCallsHelper(method: t.ObjectMethod | null, helperName: string): boolean {
+    if (!method) return false;
+    let found = false;
+    const wrapper = t.file(
+        t.program([t.functionDeclaration(null, [], method.body)]),
+    );
+    traverse.default(wrapper, {
+        CallExpression(path) {
+            if (t.isIdentifier(path.node.callee, { name: helperName })) {
+                found = true;
+                path.stop();
+            }
+        },
+    });
+    return found;
+}
+
+function verifyStructuredEditInputWiring(
+    ctx: EditVerifyContext,
 ): string | null {
-	if (!hasFunctionDeclaration(ctx.ast, EXTENDED_EDIT_TRANSPORT_ENCODE)) {
-		return "Missing extended Edit transport encode helper";
-	}
-	if (!hasFunctionDeclaration(ctx.ast, EXTENDED_EDIT_TRANSPORT_DECODE)) {
-		return "Missing extended Edit transport decode helper";
-	}
-	if (ctx.code.includes("_claudeGetExtendedEditToolSchema")) {
-		return "Extended Edit still injects schema replacement helpers instead of transport-only wiring";
-	}
-	if (ctx.code.includes("_claudeGetExtendedEditTool")) {
-		return "Extended Edit still injects replacement tool helpers instead of transport-only wiring";
-	}
-	if (
-		!ctx.code.includes(`inputSchema.parse(${EXTENDED_EDIT_TRANSPORT_ENCODE}(`)
-	) {
-		return "Extended Edit transport does not wrap Edit.inputSchema.parse inputs";
-	}
-	if (!ctx.code.includes(`${EXTENDED_EDIT_TRANSPORT_DECODE}(_input);`)) {
-		return "Extended Edit transport does not decode structured payloads before validate/call handling";
-	}
-	return null;
+    if (!hasFunctionDeclaration(ctx.ast, EXTENDED_EDIT_TRANSPORT_DECODE)) {
+        return "Missing extended Edit transport decode helper";
+    }
+    if (hasFunctionDeclaration(ctx.ast, "_claudeEncodeExtendedEditTransport")) {
+        return "Extended Edit still injects transport encode helper";
+    }
+    if (ctx.code.includes("_claudeGetExtendedEditToolSchema")) {
+        return "Extended Edit still injects schema replacement helpers instead of transport-only wiring";
+    }
+    if (ctx.code.includes("_claudeGetExtendedEditTool")) {
+        return "Extended Edit still injects replacement tool helpers instead of transport-only wiring";
+    }
+    if (ctx.code.includes("inputSchema.parse(_claudeEncodeExtendedEditTransport(")) {
+        return "Extended Edit still rewrites Edit.inputSchema.parse inputs through transport encoding";
+    }
+    if (!ctx.code.includes(`${EXTENDED_EDIT_TRANSPORT_DECODE}(_input);`)) {
+        return "Extended Edit transport does not decode structured payloads before validate/call handling";
+    }
+    const structuredInput = hasStructuredEditInputNormalization(ctx.ast);
+    if (!structuredInput.prefersParsedEdits) {
+        return "Extended Edit input normalization does not preserve parsed edits[] payloads";
+    }
+    if (!structuredInput.returnsStructuredEdits) {
+        return "Extended Edit normalized tool input does not retain edits[] for transcript cleanup";
+    }
+    const autoClassifierMethod = getToolObjectMethod(
+        ctx.editToolObject,
+        "toAutoClassifierInput",
+    );
+    if (!methodCallsHelper(autoClassifierMethod, "_claudeEditNormalizeEdits")) {
+        return "Edit.toAutoClassifierInput does not handle structured edits";
+    }
+    return null;
 }
 
 function verifyIdeDiffConfigGuard(ctx: EditVerifyContext): string | null {
@@ -1179,18 +1391,19 @@ export const editTool: Patch = {
 		if (!editToolPath) {
 			return "Unable to resolve Edit tool object for verification";
 		}
-		const context: EditVerifyContext = {
-			code,
-			ast: verifyAst,
-			validateMethod: getToolObjectMethod(editToolPath.node, "validateInput"),
-			callMethod: getToolObjectMethod(editToolPath.node, "call"),
-		};
-		const validators = [
-			verifyEditPromptAndHook,
-			verifyExtendedEditTransportWiring,
-			verifyEditValidateAndCallFlow,
-			verifyEditAliasNormalization,
-			verifyIdeDiffConfigGuard,
+        const context: EditVerifyContext = {
+            code,
+            ast: verifyAst,
+            editToolObject: editToolPath.node,
+            validateMethod: getToolObjectMethod(editToolPath.node, "validateInput"),
+            callMethod: getToolObjectMethod(editToolPath.node, "call"),
+        };
+        const validators = [
+            verifyEditPromptAndHook,
+            verifyStructuredEditInputWiring,
+            verifyEditValidateAndCallFlow,
+            verifyEditAliasNormalization,
+            verifyIdeDiffConfigGuard,
 		];
 		for (const validator of validators) {
 			const result = validator(context);
