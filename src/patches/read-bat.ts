@@ -2353,6 +2353,17 @@ export const readWithBat: Patch = {
   var normalizedRange = null;
   if (range !== void 0 && range !== null) {
     var rawRange = String(range).trim();
+    var stripBalancedQuotes = function(value) {
+      while (value.length >= 2) {
+        var firstChar = value[0];
+        var lastChar = value[value.length - 1];
+        var isDoubleQuoted = firstChar === '"' && lastChar === '"';
+        var isSingleQuoted = firstChar === "'" && lastChar === "'";
+        if (!isDoubleQuoted && !isSingleQuoted) break;
+        value = value.slice(1, -1).trim();
+      }
+      return value;
+    };
     while (rawRange.length >= 2) {
       var firstChar = rawRange[0];
       var lastChar = rawRange[rawRange.length - 1];
@@ -2365,7 +2376,44 @@ export const readWithBat: Patch = {
       var numericRange = /^(?:[1-9]\\d*)(?::(?:\\+[1-9]\\d*|[1-9]\\d*(?::[1-9]\\d*)?|)|::[1-9]\\d*)?$/;
       var fromStart = /^:[1-9]\\d*$/;
       var tailRange = /^-[1-9]\\d*:$/;
-      if (!numericRange.test(rawRange) && !fromStart.test(rawRange) && !tailRange.test(rawRange)) {
+      var isSupportedRange = function(value) {
+        return numericRange.test(value) || fromStart.test(value) || tailRange.test(value);
+      };
+      if (!isSupportedRange(rawRange)) {
+        var repairedRange = rawRange;
+        while (repairedRange.length > 0) {
+          var changed = false;
+          var leadingChar = repairedRange[0];
+          if (leadingChar === "(" || leadingChar === "[" || leadingChar === "{") {
+            repairedRange = repairedRange.slice(1).trim();
+            changed = true;
+          }
+          var trailingChar = repairedRange[repairedRange.length - 1];
+          if (
+            trailingChar === '"' ||
+            trailingChar === "'" ||
+            trailingChar === ")" ||
+            trailingChar === "]" ||
+            trailingChar === "}" ||
+            trailingChar === "," ||
+            trailingChar === ";"
+          ) {
+            repairedRange = repairedRange.slice(0, -1).trim();
+            changed = true;
+          }
+          var unwrappedRange = stripBalancedQuotes(repairedRange);
+          if (unwrappedRange !== repairedRange) {
+            repairedRange = unwrappedRange;
+            changed = true;
+          }
+          if (!changed) break;
+          if (isSupportedRange(repairedRange)) {
+            rawRange = repairedRange;
+            break;
+          }
+        }
+      }
+      if (!isSupportedRange(rawRange)) {
         throw new Error(
           "Invalid range format. Use supported bat-style forms like '30:40', ':40', '-30:', '50:+20', '100::10', or '30:40:2'."
         );
