@@ -85,7 +85,7 @@ The tables below summarize the user-facing effect of each patch.
 | Patch | What's changed |
 |-------|----------------|
 | `read-bat` | Read accepts `bat`-style `range` syntax (`30:40`, `-30:`, `100::10`), returns line-numbered output, tails `.output` files by default, previews oversized files with truncation notices, and keeps changed-file diff snippets bounded. |
-| `edit-extended` | Edit accepts multi-edit batches through `edits[]`, shows the correct diff preview for extended edits, and includes stronger guidance for fuzzy matching and recovery. |
+| `edit-extended` | Edit accepts multi-edit batches through `edits[]`, preserves structured edit payloads through normalization and transcript cleanup, shows the correct diff preview for extended edits, and includes stronger guidance for fuzzy matching and recovery. |
 | `bash-tail` | Bash accepts `output_tail` to preserve the end of truncated output and `max_output` to keep larger results inline up to 500K chars. |
 | `limits` | Read keeps larger files inline with a 1MB byte ceiling, a 50K token budget, a 120K-char persistence threshold, and higher formatted-read output limits. |
 | `tools-off` | Claude works through a Bash-centric file and search workflow without `Glob`, `Grep`, `WebSearch`, `WebFetch`, or `NotebookEdit`, and the prompt guidance points it toward the remaining shell-based toolchain. |
@@ -162,9 +162,9 @@ Each patch is a self-contained module with an `astPasses` function (Babel visito
 
 ```bash
 mise run native:update              # Fetch + patch + promote (standard workflow)
-mise run native:update 2.1.100      # Pin a specific version
+mise run native:update 2.1.101      # Pin a specific version
 mise run native:update --dry-run    # Preview without promoting
-mise run native:fetch-patch 2.1.100 --dry-run  # Fetch + patch preview for a pinned version
+mise run native:fetch-patch 2.1.101 --dry-run  # Fetch + patch preview for a pinned version
 mise run native:promote <build-path>          # Promote an already-patched cached build
 mise run native:rollback            # Instant rollback to previous version
 mise run status                     # Show current/previous/cached versions
@@ -177,7 +177,7 @@ See `pnpm cli --help` for all options and `mise.toml` for all tasks.
 
 ## Compatibility
 
-Tested against **Claude Code 2.1.100**. Only the latest upstream version is targeted. Older versions are not maintained or tested.
+Tested against **Claude Code 2.1.101**. Only the latest upstream version is targeted. Older versions are not maintained or tested.
 
 ## Requirements
 
