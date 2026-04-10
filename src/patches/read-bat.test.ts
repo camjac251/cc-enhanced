@@ -632,7 +632,67 @@ test("read-bat runtime preserves fallback range and size-limit semantics when ba
 		process.env.PATH = originalPath;
 		await cleanup();
         await fs.rm(tempDir, { recursive: true, force: true });
-    }
+	}
+});
+
+test("read-bat runtime tolerates stray wrapper characters around ranges", async () => {
+	const { mod, cleanup } = await loadPatchedReadRuntimeModule();
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "read-bat-range-repair-"),
+	);
+	const originalPath = process.env.PATH ?? "";
+	try {
+		const filePath = path.join(tempDir, "sample.txt");
+		const batPath = path.join(tempDir, "bat");
+		await fs.writeFile(filePath, "alpha\nbeta\ngamma\n", "utf8");
+		await fs.writeFile(batPath, "#!/usr/bin/env bash\nexit 1\n", {
+			encoding: "utf8",
+			mode: 0o755,
+		});
+		process.env.PATH = `${tempDir}:${originalPath}`;
+
+		const ctx = { readFileState: new Map() };
+		(globalThis as any).__fallbackCalls = [];
+		await mod.helperRead(
+			filePath,
+			1,
+			undefined,
+			4096,
+			{ tag: "signal" },
+			ctx,
+			{},
+			{},
+			'25:45")',
+			false,
+		);
+		assert.deepEqual((globalThis as any).__fallbackCalls[0], {
+			filePath,
+			offset: 24,
+			limit: 21,
+			maxBytes: undefined,
+			signal: { tag: "signal" },
+		});
+
+		await assert.rejects(
+			mod.helperRead(
+				filePath,
+				1,
+				undefined,
+				4096,
+				{ tag: "signal" },
+				ctx,
+				{},
+				{},
+				"25:45abc",
+				false,
+			),
+			/Invalid range format/,
+		);
+	} finally {
+		process.env.PATH = originalPath;
+		await cleanup();
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
 });
 
 test("read-bat runtime defaults .output reads to tail range and forwards show_whitespace to bat", async () => {
