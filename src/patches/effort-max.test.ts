@@ -30,6 +30,27 @@ function Hj(value) {
   return value;
 }
 
+function normalizeModel(H) {
+  let $ = H.toLowerCase(),
+    q = $.match(/claude-[a-z0-9-]+/),
+    K = q ? q[0] : $;
+  return ((K = K.replace(/-v\\d+(:\\d+)?$/, "")), (K = K.replace(/-\\d{8}$/, "")), K);
+}
+
+const BLOCKED_MODELS = new Set([
+  "claude-3-opus",
+  "claude-3-sonnet",
+  "claude-3-5-sonnet",
+  "claude-3-7-sonnet",
+  "claude-sonnet-4",
+  "claude-sonnet-4-0",
+  "claude-sonnet-4-5",
+  "claude-opus-4",
+  "claude-opus-4-0",
+  "claude-opus-4-1",
+  "claude-opus-4-5",
+]);
+
 const ZfH = ["low", "medium", "high", "max"];
 
 function picker() {
@@ -40,20 +61,11 @@ function picker() {
   ];
 }
 
-function xu4(H) {
-  return { family: "sonnet", major: 4, minor: 5 };
-}
-
 function znH(H) {
   let $ = A6H(H, "max_effort");
   if ($ !== void 0) return $;
-  let q = H.toLowerCase();
-  if (q.includes("haiku") || q.includes("sonnet") || q.includes("opus")) {
-    let K = xu4(H);
-    if (!K || K.family === "haiku") return false;
-    return K.major > 4 || (K.major === 4 && K.minor >= 6);
-  }
-  return Vu(Hj(H));
+  if (H.toLowerCase().includes("haiku")) return !1;
+  return !BLOCKED_MODELS.has(normalizeModel(H));
 }
 
 function describeModel(QH) {
@@ -105,30 +117,27 @@ test("effort-max patches the current gate, picker, and ultrathink affordances", 
 	assert.equal(effortMax.verify(output), true);
 });
 
-test("effort-max matches the current family-version gate structurally", async () => {
+test("effort-max matches the current denylist gate structurally", async () => {
 	const structuralFixture = `
 function lookup(modelId, key) {
   return undefined;
 }
-function fallback(modelId) {
-  return false;
-}
 function normalize(modelId) {
-  return modelId;
+  let lowered = modelId.toLowerCase(),
+    match = lowered.match(/claude-[a-z0-9-]+/),
+    normalized = match ? match[0] : lowered;
+  return (
+    (normalized = normalized.replace(/-v\\d+(:\\d+)?$/, "")),
+    (normalized = normalized.replace(/-\\d{8}$/, "")),
+    normalized
+  );
 }
-function parseModel(ModelId) {
-  return { family: "sonnet", major: 4, minor: 5 };
-}
+const blockedModels = new Set(["claude-opus-4-5"]);
 function OCH(ModelId) {
   let configured = lookup(ModelId, "max_effort");
   if (configured !== void 0) return configured;
-  let lowered = ModelId.toLowerCase();
-  if (lowered.includes("haiku") || lowered.includes("sonnet") || lowered.includes("opus")) {
-    let parsed = parseModel(ModelId);
-    if (!parsed || parsed.family === "haiku") return false;
-    return parsed.major > 4 || (parsed.major === 4 && parsed.minor >= 6);
-  }
-  return fallback(normalize(ModelId));
+  if (ModelId.toLowerCase().includes("haiku")) return !1;
+  return !blockedModels.has(normalize(ModelId));
 }
 const picker = () => [
   { label: "Medium", value: "medium" },
@@ -147,10 +156,10 @@ function notify(EL) {
 	const output = print(ast);
 
 	assert.equal(
-		output.includes('lowered.includes("sonnet")'),
+		output.includes('toLowerCase().includes("haiku")'),
 		false,
 	);
-	assert.equal(output.includes("parsed.major > 4"), false);
+	assert.equal(output.includes(".has(normalize(ModelId))"), false);
 	assert.equal(output.includes("return true;"), true);
 	assert.equal(output.includes('value: "max"'), true);
 	assert.equal(effortMax.verify(output, ast), true);
