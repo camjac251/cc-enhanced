@@ -48,143 +48,84 @@ function getReturnedExpression(
 	return t.isReturnStatement(statement) ? (statement.argument ?? null) : null;
 }
 
-function isLowerCasedParam(
+function isMaxEffortLookupInit(
 	node: t.Node | null | undefined,
 	paramName: string,
 ): boolean {
-	if (!node || !t.isCallExpression(node)) return false;
+	return (
+		!!node &&
+		t.isCallExpression(node) &&
+		node.arguments.length === 2 &&
+		isSameParameterReference(node.arguments[0], paramName) &&
+		t.isStringLiteral(node.arguments[1], { value: "max_effort" })
+	);
+}
+
+function isUndefinedOverrideReturn(
+	node: t.Node | null | undefined,
+	overrideName: string,
+): boolean {
+	return (
+		!!node &&
+		t.isIfStatement(node) &&
+		t.isBinaryExpression(node.test, { operator: "!==" }) &&
+		isSameParameterReference(node.test.left, overrideName) &&
+		isVoidZero(node.test.right) &&
+		t.isReturnStatement(node.consequent) &&
+		isSameParameterReference(node.consequent.argument, overrideName) &&
+		node.alternate === null
+	);
+}
+
+function isDirectHaikuReject(
+	node: t.Node | null | undefined,
+	paramName: string,
+): boolean {
+	if (!node || !t.isIfStatement(node) || node.alternate !== null) return false;
+	const test = node.test;
 	if (
-		!t.isMemberExpression(node.callee) ||
-		!t.isIdentifier(node.callee.object, { name: paramName }) ||
-		!t.isIdentifier(node.callee.property, { name: "toLowerCase" })
+		!t.isCallExpression(test) ||
+		!t.isMemberExpression(test.callee) ||
+		!t.isIdentifier(test.callee.property, { name: "includes" }) ||
+		test.arguments.length !== 1 ||
+		!t.isStringLiteral(test.arguments[0], { value: "haiku" })
 	) {
 		return false;
 	}
-	return node.arguments.length === 0;
-}
-
-function isStringIncludesOnIdentifier(
-	node: t.Node | null | undefined,
-	identifierName: string,
-	value: string,
-): boolean {
-	if (!node || !t.isCallExpression(node)) return false;
+	const includesObject = test.callee.object;
 	if (
-		!t.isMemberExpression(node.callee) ||
-		!t.isIdentifier(node.callee.property, { name: "includes" }) ||
-		node.arguments.length !== 1 ||
-		!t.isStringLiteral(node.arguments[0], { value })
+		!t.isCallExpression(includesObject) ||
+		!t.isMemberExpression(includesObject.callee) ||
+		!t.isIdentifier(includesObject.callee.object, { name: paramName }) ||
+		!t.isIdentifier(includesObject.callee.property, { name: "toLowerCase" }) ||
+		includesObject.arguments.length !== 0
 	) {
 		return false;
 	}
-	return t.isIdentifier(node.callee.object, { name: identifierName });
+	return t.isReturnStatement(node.consequent) && isFalseLike(node.consequent.argument);
 }
 
-function collectStringIncludesOnIdentifier(
+function isNormalizedDenylistReturn(
 	node: t.Node | null | undefined,
-	identifierName: string,
-): string[] | null {
-	if (!node) return null;
-	if (t.isLogicalExpression(node, { operator: "||" })) {
-		const left = collectStringIncludesOnIdentifier(node.left, identifierName);
-		const right = collectStringIncludesOnIdentifier(node.right, identifierName);
-		if (!left || !right) return null;
-		return [...left, ...right];
-	}
-	if (!t.isCallExpression(node)) return null;
+	paramName: string,
+): boolean {
+	if (!node || !t.isReturnStatement(node)) return false;
+	const argument = node.argument;
 	if (
-		!t.isMemberExpression(node.callee) ||
-		!t.isIdentifier(node.callee.property, { name: "includes" }) ||
-		!t.isIdentifier(node.callee.object, { name: identifierName }) ||
-		node.arguments.length !== 1 ||
-		!t.isStringLiteral(node.arguments[0])
+		!argument ||
+		!t.isUnaryExpression(argument, { operator: "!" }) ||
+		!t.isCallExpression(argument.argument) ||
+		!t.isMemberExpression(argument.argument.callee) ||
+		!t.isIdentifier(argument.argument.callee.property, { name: "has" }) ||
+		argument.argument.arguments.length !== 1
 	) {
-		return null;
+		return false;
 	}
-	return [node.arguments[0].value];
-}
-
-function isModelFamilyGate(
-	node: t.Node | null | undefined,
-	identifierName: string,
-): boolean {
-	const includes = collectStringIncludesOnIdentifier(node, identifierName);
-	if (!includes || includes.length !== 3) return false;
-	const values = new Set(includes);
+	const [normalizedModel] = argument.argument.arguments;
 	return (
-		values.size === 3 &&
-		values.has("haiku") &&
-		values.has("sonnet") &&
-		values.has("opus")
-	);
-}
-
-function isNamedMember(
-	node: t.Node | null | undefined,
-	objectName: string,
-	propertyName: string,
-): boolean {
-	return (
-		!!node &&
-		t.isMemberExpression(node) &&
-		t.isIdentifier(node.object, { name: objectName }) &&
-		t.isIdentifier(node.property, { name: propertyName })
-	);
-}
-
-function isStringMemberComparison(
-	node: t.Node | null | undefined,
-	objectName: string,
-	propertyName: string,
-	value: string,
-): boolean {
-	return (
-		!!node &&
-		t.isBinaryExpression(node, { operator: "===" }) &&
-		isNamedMember(node.left, objectName, propertyName) &&
-		t.isStringLiteral(node.right, { value })
-	);
-}
-
-function isNumericMemberComparison(
-	node: t.Node | null | undefined,
-	objectName: string,
-	propertyName: string,
-	operator: ">" | ">=" | "===",
-	value: number,
-): boolean {
-	return (
-		!!node &&
-		t.isBinaryExpression(node, { operator }) &&
-		isNamedMember(node.left, objectName, propertyName) &&
-		t.isNumericLiteral(node.right, { value })
-	);
-}
-
-function isParsedVersionGuard(
-	node: t.Node | null | undefined,
-	versionName: string,
-): boolean {
-	return (
-		!!node &&
-		t.isLogicalExpression(node, { operator: "||" }) &&
-		t.isUnaryExpression(node.left, { operator: "!" }) &&
-		t.isIdentifier(node.left.argument, { name: versionName }) &&
-		isStringMemberComparison(node.right, versionName, "family", "haiku")
-	);
-}
-
-function isSupportedVersionThreshold(
-	node: t.Node | null | undefined,
-	versionName: string,
-): boolean {
-	return (
-		!!node &&
-		t.isLogicalExpression(node, { operator: "||" }) &&
-		isNumericMemberComparison(node.left, versionName, "major", ">", 4) &&
-		t.isLogicalExpression(node.right, { operator: "&&" }) &&
-		isNumericMemberComparison(node.right.left, versionName, "major", "===", 4) &&
-		isNumericMemberComparison(node.right.right, versionName, "minor", ">=", 6)
+		t.isCallExpression(normalizedModel) &&
+		normalizedModel.arguments.length === 1 &&
+		isSameParameterReference(normalizedModel.arguments[0], paramName)
 	);
 }
 
@@ -196,79 +137,17 @@ function isMaxCapabilityGate(
 	const body = path.node.body;
 	if (!t.isBlockStatement(body)) return false;
 	const stmts = body.body;
-	if (stmts.length !== 5) return false;
-	const [overrideInit, overrideGuard, lowerCaseInit, familyGuard, fallback] = stmts;
+	if (stmts.length !== 4) return false;
+	const [overrideInit, overrideGuard, haikuGuard, fallback] = stmts;
 	if (!t.isVariableDeclaration(overrideInit)) return false;
 	if (overrideInit.declarations.length !== 1) return false;
 	const [overrideDecl] = overrideInit.declarations;
 	if (!t.isIdentifier(overrideDecl.id)) return false;
-	if (!t.isCallExpression(overrideDecl.init)) return false;
-	if (
-		overrideDecl.init.arguments.length !== 2 ||
-		!isSameParameterReference(overrideDecl.init.arguments[0], param.name) ||
-		!t.isStringLiteral(overrideDecl.init.arguments[1], {
-			value: "max_effort",
-		})
-	) {
-		return false;
-	}
-	if (!t.isIfStatement(overrideGuard) || !t.isVariableDeclaration(lowerCaseInit)) {
-		return false;
-	}
-	if (lowerCaseInit.declarations.length !== 1) return false;
-	const [lowerCaseDecl] = lowerCaseInit.declarations;
-	if (!t.isIdentifier(lowerCaseDecl.id)) return false;
-	if (!isLowerCasedParam(lowerCaseDecl.init, param.name)) return false;
-	if (!t.isIfStatement(familyGuard)) return false;
-	if (!t.isReturnStatement(fallback)) return false;
-	if (
-		!t.isBinaryExpression(overrideGuard.test, { operator: "!==" }) ||
-		!isSameParameterReference(overrideGuard.test.left, overrideDecl.id.name) ||
-		!isVoidZero(overrideGuard.test.right) ||
-		!t.isReturnStatement(overrideGuard.consequent) ||
-		overrideGuard.alternate !== null
-	) {
-		return false;
-	}
-	if (!isSameParameterReference(overrideGuard.consequent.argument, overrideDecl.id.name)) {
-		return false;
-	}
-	if (
-		!isModelFamilyGate(familyGuard.test, lowerCaseDecl.id.name) ||
-		familyGuard.alternate !== null ||
-		!t.isBlockStatement(familyGuard.consequent) ||
-		familyGuard.consequent.body.length !== 3
-	) {
-		return false;
-	}
-	const [parsedVersionInit, parsedVersionGuard, parsedVersionReturn] =
-		familyGuard.consequent.body;
-	if (!t.isVariableDeclaration(parsedVersionInit)) return false;
-	if (parsedVersionInit.declarations.length !== 1) return false;
-	const [parsedVersionDecl] = parsedVersionInit.declarations;
-	if (!t.isIdentifier(parsedVersionDecl.id)) return false;
-	if (
-		!t.isCallExpression(parsedVersionDecl.init) ||
-		parsedVersionDecl.init.arguments.length !== 1 ||
-		!isSameParameterReference(parsedVersionDecl.init.arguments[0], param.name)
-	) {
-		return false;
-	}
-	if (
-		!t.isIfStatement(parsedVersionGuard) ||
-		parsedVersionGuard.alternate !== null ||
-		!isParsedVersionGuard(parsedVersionGuard.test, parsedVersionDecl.id.name) ||
-		!t.isReturnStatement(parsedVersionGuard.consequent) ||
-		!isFalseLike(parsedVersionGuard.consequent.argument)
-	) {
-		return false;
-	}
 	return (
-		t.isReturnStatement(parsedVersionReturn) &&
-		isSupportedVersionThreshold(
-			parsedVersionReturn.argument,
-			parsedVersionDecl.id.name,
-		)
+		isMaxEffortLookupInit(overrideDecl.init, param.name) &&
+		isUndefinedOverrideReturn(overrideGuard, overrideDecl.id.name) &&
+		isDirectHaikuReject(haikuGuard, param.name) &&
+		isNormalizedDenylistReturn(fallback, param.name)
 	);
 }
 
@@ -513,7 +392,7 @@ export const effortMax: Patch = {
 		});
 
 		if (hasLegacyMaxCapabilityGate) {
-			return 'Model max-capability gate still restricts "max" to Opus 4.6';
+			return 'Model max-capability gate still restricts "max"';
 		}
 		if (!hasPatchedMaxCapabilityGate) {
 			return "Did not find patched max-capability gate";
