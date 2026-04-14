@@ -105,10 +105,16 @@ function rebuildReadState(A) {
   return null;
 }
 
+function Gc(OLD, NEXT) {
+  return OLD === NEXT;
+}
+
 function changedSnippet(ATT, OLD, NEXT) {
   if (ATT.type === "text") {
-    if (GwA(OLD, NEXT) === "") return null;
-    return { snippet: GwA(OLD, NEXT) };
+    if (Gc(OLD, NEXT)) return null;
+    let w = GwA(OLD, NEXT);
+    if (w === "") return null;
+    return { snippet: w };
   }
   return null;
 }
