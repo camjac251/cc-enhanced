@@ -17,8 +17,6 @@ import {
  * Key behaviors:
  * 1. Extraction (creating/updating summary.md) - controlled by tengu_session_memory
  * 2. Past-session retrieval prompt - controlled by tengu_coral_fern
- * 3. Compact (using summary.md during compaction) - controlled by ENABLE_CLAUDE_CODE_SM_COMPACT env
- *
  * This patch adds:
  * - ENABLE_SESSION_MEMORY: extraction override (OR with the built-in flag)
  * - ENABLE_SESSION_MEMORY_PAST: past-session retrieval override
@@ -215,8 +213,7 @@ function createSessionMemoryMutator(truthyFn: string): traverse.Visitor {
 	let patchedPastSessions = false;
 	let patchedSectionLimits = false;
 	let patchedThresholds = false;
-	let patchedCompactConfig = false;
-	return {
+    return {
 		Function(path: any) {
 			if (patchedExtraction) return;
 			if (!t.isBlockStatement(path.node.body)) return;
@@ -337,38 +334,9 @@ function createSessionMemoryMutator(truthyFn: string): traverse.Visitor {
 						getObjectKeyName(p.key) === name && t.isNumericLiteral(p.value),
 				);
 
-			const compactMinTokens = getProp("minTokens");
-			const compactMinTextBlocks = getProp("minTextBlockMessages");
-			const compactMaxTokens = getProp("maxTokens");
-			if (
-				compactMinTokens &&
-				compactMinTextBlocks &&
-				compactMaxTokens &&
-				t.isNumericLiteral(compactMinTokens.value) &&
-				compactMinTokens.value.value === 10000 &&
-				t.isNumericLiteral(compactMinTextBlocks.value) &&
-				compactMinTextBlocks.value.value === 5 &&
-				t.isNumericLiteral(compactMaxTokens.value) &&
-				compactMaxTokens.value.value === 40000
-			) {
-				compactMinTokens.value = numberFromEnv(
-					"CC_SM_COMPACT_MIN_TOKENS",
-					10000,
-				);
-				compactMinTextBlocks.value = numberFromEnv(
-					"CC_SM_COMPACT_MIN_TEXT_BLOCK_MESSAGES",
-					5,
-				);
-				compactMaxTokens.value = numberFromEnv(
-					"CC_SM_COMPACT_MAX_TOKENS",
-					40000,
-				);
-				patchedCompactConfig = true;
-			}
-
-			const minInit = getProp("minimumMessageTokensToInit");
-			const minBetween = getProp("minimumTokensBetweenUpdate");
-			const toolCalls = getProp("toolCallsBetweenUpdates");
+            const minInit = getProp("minimumMessageTokensToInit");
+            const minBetween = getProp("minimumTokensBetweenUpdate");
+            const toolCalls = getProp("toolCallsBetweenUpdates");
 			if (!minInit || !minBetween || !toolCalls) return;
 
 			if (
@@ -415,14 +383,9 @@ function createSessionMemoryMutator(truthyFn: string): traverse.Visitor {
 						"Session memory: Could not find session update threshold defaults",
 					);
 				}
-				if (!patchedCompactConfig) {
-					console.warn(
-						"Session memory: Could not find session compact config defaults",
-					);
-				}
-			},
-		},
-	};
+            },
+        },
+    };
 }
 
 export const sessionMemory: Patch = {
@@ -454,16 +417,13 @@ export const sessionMemory: Patch = {
 		let hasPastSessionsEnv = false;
 
 		// Env vars that must appear as arguments to call expressions
-		const callScopedEnvVars = new Set([
-			"CC_SM_PER_SECTION_TOKENS",
-			"CC_SM_TOTAL_FILE_LIMIT",
-			"CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT",
-			"CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE",
-			"CC_SM_TOOL_CALLS_BETWEEN_UPDATES",
-			"CC_SM_COMPACT_MIN_TOKENS",
-			"CC_SM_COMPACT_MIN_TEXT_BLOCK_MESSAGES",
-			"CC_SM_COMPACT_MAX_TOKENS",
-		]);
+        const callScopedEnvVars = new Set([
+            "CC_SM_PER_SECTION_TOKENS",
+            "CC_SM_TOTAL_FILE_LIMIT",
+            "CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT",
+            "CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE",
+            "CC_SM_TOOL_CALLS_BETWEEN_UPDATES",
+        ]);
 		const seenCallScopedEnv = new Set<string>();
 
 		traverse.default(verifyAst, {
