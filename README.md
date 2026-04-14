@@ -104,7 +104,7 @@ Patches that modify runtime behavior, caching, and configuration.
 | `cache-tail-policy` | Prompt caching uses a two-turn tail window, user-message breakpoints, global system-prompt scope, a one-hour TTL, and a four-block cap. |
 | `effort-max` | The interactive effort picker offers the full `max` tier across supported models. |
 | `no-autoupdate` | The promoted patched build stays in place while marketplace plugins continue to update normally. |
-| `session-mem` | Session memory behavior is controlled locally through environment variables, including enablement, past-session lookup, token caps, and update thresholds. |
+| `session-mem` | Session memory behavior is controlled locally through environment variables, including enablement, past-session lookup, per-section and total token caps, and update-threshold tuning. |
 | `sys-prompt-file` | Every conversation automatically appends a system prompt file from `/etc/claude-code/system-prompt.md` or a configured path. |
 | `worktree-perms` | Agent worktrees automatically include their working directories in the allowed edit surface, so normal read and edit flows do not fall back to repeated permission prompts. |
 
@@ -162,9 +162,9 @@ Each patch is a self-contained module with an `astPasses` function (Babel visito
 
 ```bash
 mise run native:update              # Fetch + patch + promote (standard workflow)
-mise run native:update 2.1.101      # Pin a specific version
+mise run native:update 2.1.107      # Pin a specific version
 mise run native:update --dry-run    # Preview without promoting
-mise run native:fetch-patch 2.1.101 --dry-run  # Fetch + patch preview for a pinned version
+mise run native:fetch-patch 2.1.107 --dry-run  # Fetch + patch preview for a pinned version
 mise run native:promote <build-path>          # Promote an already-patched cached build
 mise run native:rollback            # Instant rollback to previous version
 mise run status                     # Show current/previous/cached versions
@@ -177,7 +177,7 @@ See `pnpm cli --help` for all options and `mise.toml` for all tasks.
 
 ## Compatibility
 
-Tested against **Claude Code 2.1.101**. Only the latest upstream version is targeted. Older versions are not maintained or tested.
+Tested against **Claude Code 2.1.107**. The latest dry run passed on April 14, 2026. Only the latest upstream version is targeted. Older versions are not maintained or tested.
 
 ## Requirements
 
