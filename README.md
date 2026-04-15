@@ -7,7 +7,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Node_24-339933.svg" alt="Node 24">
-  <img src="https://img.shields.io/badge/Patches-26-orange.svg" alt="26 Patches">
+  <img src="https://img.shields.io/badge/Patches-27-orange.svg" alt="27 Patches">
 </p>
 
 ---
@@ -24,14 +24,14 @@ cc-enhanced patches the Claude Code CLI binary to unlock capabilities, fix bugs,
 graph LR
     A[Native Binary] -->|unpack| B[cli.js]
     B -->|prettier| C[Formatted JS]
-    C -->|26 AST patches| D[Patched JS]
+    C -->|27 patches| D[Patched JS]
     D -->|verify each| E{All OK?}
     E -->|yes| F[Repack Binary]
     E -->|no| G[Abort + Report]
     F -->|atomic symlink| H[Active]
 ```
 
-The patcher extracts the embedded JavaScript from the Claude Code binary, applies 26 AST patches in a single optimized pass (`discover` -> `mutate` -> `finalize`), verifies each patch independently, and repacks the result. The binary stays exactly the same size through in-place bytecode replacement. Native fetches use the official release manifest and can fall back to `curl`/`wget` for large binary downloads when Node `fetch()` is unreliable.
+The patcher extracts the embedded JavaScript from the Claude Code binary, applies 27 patches with AST-based mutations running in a single optimized pass (`discover` -> `mutate` -> `finalize`), verifies each patch independently, and repacks the result. The binary stays exactly the same size through in-place bytecode replacement. Native fetches use the official release manifest and can fall back to `curl`/`wget` for large binary downloads when Node `fetch()` is unreliable.
 
 ```mermaid
 stateDiagram-v2
@@ -136,6 +136,7 @@ Patches that improve the terminal interface.
 |-------|----------------|
 | `plan-diff-ui` | Plan mode shows the actual tool label and full diff content for read and write actions. |
 | `no-collapse` | Read, Search, and Grep results stay expanded, and memory-file writes show their full path and diff. |
+| `skill-listing-ui` | Newly available skills show the activated skill names inline instead of only a generic count badge. |
 | `subagent-model-tag` | Task rows omit redundant model labels when the subagent model is already pinned globally, reducing repeated visual noise in busy sessions. |
 
 ### Metadata
@@ -148,10 +149,10 @@ Patches that improve the terminal interface.
 
 ```mermaid
 pie showData title Patches by Category
-    "Tooling" : 10
+    "Tooling" : 9
     "System" : 7
     "Prompt" : 4
-    "UX" : 3
+    "UX" : 4
     "Agent" : 2
     "Metadata" : 1
 ```
@@ -162,9 +163,9 @@ Each patch is a self-contained module with an `astPasses` function (Babel visito
 
 ```bash
 mise run native:update              # Fetch + patch + promote (standard workflow)
-mise run native:update 2.1.108      # Pin a specific version
+mise run native:update 2.1.109      # Pin a specific version
 mise run native:update --dry-run    # Preview without promoting
-mise run native:fetch-patch 2.1.108 --dry-run  # Fetch + patch preview for a pinned version
+mise run native:fetch-patch 2.1.109 --dry-run  # Fetch + patch preview for a pinned version
 mise run native:promote <build-path>          # Promote an already-patched cached build
 mise run native:rollback            # Instant rollback to previous version
 mise run status                     # Show current/previous/cached versions
@@ -177,7 +178,7 @@ See `pnpm cli --help` for all options and `mise.toml` for all tasks.
 
 ## Compatibility
 
-Tested against **Claude Code 2.1.108**. The latest verified update passed on April 14, 2026. Only the latest upstream version is targeted. Older versions are not maintained or tested.
+Tested against **Claude Code 2.1.109**. The latest verified update passed on April 15, 2026. Only the latest upstream version is targeted. Older versions are not maintained or tested.
 
 ## Requirements
 

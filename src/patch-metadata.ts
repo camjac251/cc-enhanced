@@ -96,11 +96,16 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Disable collapse",
 		group: "UX",
 	},
-	"subagent-model-tag": {
-		tag: "subagent-model-tag",
-		label: "Subagent model tag",
-		group: "UX",
-	},
+    "subagent-model-tag": {
+        tag: "subagent-model-tag",
+        label: "Subagent model tag",
+        group: "UX",
+    },
+    "skill-listing-ui": {
+        tag: "skill-listing-ui",
+        label: "Skill listing UI",
+        group: "UX",
+    },
 	"session-mem": {
 		tag: "session-mem",
 		label: "Session memory",

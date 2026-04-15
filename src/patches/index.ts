@@ -19,6 +19,7 @@ export { planDiffUi } from "./plan-diff-ui.js";
 export { readWithBat } from "./read-bat.js";
 export { sessionMemory } from "./session-mem.js";
 export { shellQuoteFix } from "./shell-quote-fix.js";
+export { skillListingUi } from "./skill-listing-ui.js";
 export { signature } from "./signature.js";
 export { subagentModelTag } from "./subagent-model-tag.js";
 export { systemPromptFile } from "./sys-prompt-file.js";
@@ -48,6 +49,7 @@ import { planDiffUi } from "./plan-diff-ui.js";
 import { readWithBat } from "./read-bat.js";
 import { sessionMemory } from "./session-mem.js";
 import { shellQuoteFix } from "./shell-quote-fix.js";
+import { skillListingUi } from "./skill-listing-ui.js";
 import { signature } from "./signature.js";
 import { subagentModelTag } from "./subagent-model-tag.js";
 import { systemPromptFile } from "./sys-prompt-file.js";
@@ -87,9 +89,10 @@ const basePatches: Patch[] = [
 	agentTools,
 	commandsOff,
 	lspMultiServer,
-	lspWorkspaceSymbol,
-	noCollapse,
-	subagentModelTag,
+    lspWorkspaceSymbol,
+    noCollapse,
+    skillListingUi,
+    subagentModelTag,
 	sessionMemory,
 	systemPromptFile,
 	worktreePerms,
