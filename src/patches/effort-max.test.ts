@@ -53,13 +53,13 @@ const BLOCKED_MODELS = new Set([
 
 const ZfH = ["low", "medium", "high", "max"];
 
-function picker() {
-  return [
-    { label: createElement(QoA, { level: "medium", text: "Medium (recommended)" }), value: "medium" },
-    { label: createElement(QoA, { level: "high", text: "High" }), value: "high" },
-    { label: createElement(QoA, { level: "low", text: "Low" }), value: "low" },
-  ];
-}
+const picker = [
+  { value: "low", color: "warning" },
+  { value: "medium", color: "success" },
+  { value: "high", color: "permission" },
+  { value: "xhigh", color: "autoAccept-shimmer" },
+  { value: "max", color: "rainbow-animated" },
+];
 
 function znH(H) {
   let $ = A6H(H, "max_effort");
@@ -139,10 +139,12 @@ function OCH(ModelId) {
   if (ModelId.toLowerCase().includes("haiku")) return !1;
   return !blockedModels.has(normalize(ModelId));
 }
-const picker = () => [
-  { label: "Medium", value: "medium" },
-  { label: "High", value: "high" },
-  { label: "Low", value: "low" },
+const picker = [
+  { value: "low", color: "warning" },
+  { value: "medium", color: "success" },
+  { value: "high", color: "permission" },
+  { value: "xhigh", color: "autoAccept-shimmer" },
+  { value: "max", color: "rainbow-animated" },
 ];
 function Ex1() {
   return [{ type: "ultrathink_effort", level: "high" }];

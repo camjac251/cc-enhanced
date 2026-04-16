@@ -195,13 +195,6 @@ function isVoidZero(node: t.Node | null | undefined): boolean {
 	);
 }
 
-function makeMaxEffortOption(): t.ObjectExpression {
-	return t.objectExpression([
-		t.objectProperty(t.identifier("label"), t.stringLiteral("Max")),
-		t.objectProperty(t.identifier("value"), t.stringLiteral("max")),
-	]);
-}
-
 function isUltrathinkLevelObject(node: t.ObjectExpression): boolean {
 	let hasType = false;
 	let hasLevel = false;
@@ -246,7 +239,6 @@ function isPatchedUltrathinkLevelObject(node: t.ObjectExpression): boolean {
 
 function createEffortMaxMutator(): traverse.Visitor {
 	let patchedMaxCapabilityGate = 0;
-	let patchedPicker = 0;
 	let patchedUltrathinkLevel = 0;
 	let patchedNotification = 0;
 
@@ -272,19 +264,6 @@ function createEffortMaxMutator(): traverse.Visitor {
 
 		ArrowFunctionExpression(path) {
 			patchFunction(path);
-		},
-
-		ArrayExpression(path) {
-			if (!isEffortPickerArray(path)) return;
-			if (
-				path.node.elements.some((element) =>
-					hasEffortOptionValue(element, "max"),
-				)
-			) {
-				return;
-			}
-			path.node.elements.splice(1, 0, makeMaxEffortOption());
-			patchedPicker += 1;
 		},
 
 		ObjectExpression(path) {
@@ -314,9 +293,6 @@ function createEffortMaxMutator(): traverse.Visitor {
 			exit() {
 				if (patchedMaxCapabilityGate === 0) {
 					console.warn("effort-max: Could not find max-capability gate");
-				}
-				if (patchedPicker === 0) {
-					console.warn("effort-max: Could not find effort picker array");
 				}
 				if (patchedUltrathinkLevel === 0) {
 					console.warn(
