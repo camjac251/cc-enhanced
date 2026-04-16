@@ -639,6 +639,7 @@ function patchStructuredEditInputNormalization(
             );
             if (!normalizedEditsProperty) return;
 
+            if (!t.isExpression(normalizedEditsProperty.value)) return;
             const legacyParsedEditArray = getLegacyParsedEditArrayInputName(
                 normalizedEditsProperty.value,
             );
@@ -646,15 +647,16 @@ function patchStructuredEditInputNormalization(
 
             const parsedInputName = legacyParsedEditArray.inputName;
 
-            let returnObject: t.ObjectExpression | null = null;
+            let foundReturnObject: t.ObjectExpression | null = null;
             switchCase.traverse({
                 ReturnStatement(returnPath) {
                     if (!t.isObjectExpression(returnPath.node.argument)) return;
-                    returnObject = returnPath.node.argument;
+                    foundReturnObject = returnPath.node.argument;
                     returnPath.stop();
                 },
             });
-            if (!returnObject) return;
+            if (!foundReturnObject) return;
+            const returnObject: t.ObjectExpression = foundReturnObject;
 
             if (
                 t.isConditionalExpression(normalizedEditsProperty.value) &&
