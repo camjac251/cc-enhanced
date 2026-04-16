@@ -64,12 +64,19 @@ test("skill-listing-ui adds skillNames metadata and a visible summary", async ()
         true,
     );
     assert.equal(
-        output.includes("skillNames: z.map((w) => Qq$(w.name))"),
+        output.includes(
+            "skillNames: z.map((_claudePatchSkillItem) => _claudePatchSkillItem.name)",
+        ),
         true,
     );
     assert.equal(
         output.includes('_claudePatchFormatSkillListingSummary(H)'),
         true,
+    );
+    assert.equal(
+        /skillNames:[^,}]*Qq\$/.test(output),
+        false,
+        "skillNames must not reuse the content-call scoring formatter",
     );
     assert.equal(skillListingUi.verify(output, ast), true);
 });
@@ -79,7 +86,7 @@ test("skill-listing-ui verify fails when skillNames metadata is removed", async 
     await runSkillListingUiViaPasses(ast);
     const output = print(ast);
     const mutated = output.replace(
-        ", skillNames: z.map((w) => Qq$(w.name))",
+        ", skillNames: z.map((_claudePatchSkillItem) => _claudePatchSkillItem.name)",
         "",
     );
     assert.notEqual(mutated, output);
