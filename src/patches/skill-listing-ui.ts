@@ -151,9 +151,8 @@ function patchSkillListingAttachment(path: NodePath<t.ObjectExpression>): boolea
     const contentProp = getObjectPropertyByName(path.node, "content");
     if (!contentProp || !t.isCallExpression(contentProp.value)) return false;
 
-    const [skillItems, , formatter] = contentProp.value.arguments;
-    if (!skillItems || !formatter) return false;
-    if (!t.isExpression(skillItems) || !t.isExpression(formatter)) return false;
+    const [skillItems] = contentProp.value.arguments;
+    if (!skillItems || !t.isExpression(skillItems)) return false;
 
     const skillNamesProp = t.objectProperty(
         t.identifier("skillNames"),
@@ -162,7 +161,15 @@ function patchSkillListingAttachment(path: NodePath<t.ObjectExpression>): boolea
                 t.cloneNode(skillItems, true),
                 t.identifier("map"),
             ),
-            [t.cloneNode(formatter, true)],
+            [
+                t.arrowFunctionExpression(
+                    [t.identifier("_claudePatchSkillItem")],
+                    t.memberExpression(
+                        t.identifier("_claudePatchSkillItem"),
+                        t.identifier("name"),
+                    ),
+                ),
+            ],
         ),
     );
 
