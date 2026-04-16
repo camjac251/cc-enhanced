@@ -210,5 +210,38 @@ function nl1() {
 		),
 		true,
 	);
-	assert.equal(output.includes("appropriate dedicated tool"), false);
+    assert.equal(output.includes("appropriate dedicated tool"), false);
+});
+
+test("bash-prompt patches latest tool-guidance gate routed through an intermediate array", async () => {
+    const fixture = `
+function ES1(H) {
+  let $ = [Vv, RE].find((A) => H.has(A));
+  if (xD()) {
+    let A = [
+      $
+        ? \`Break down and manage your work with the \${$} tool.\`
+        : null,
+    ].filter((f) => f !== null);
+    if (A.length === 0) return "";
+    return ["# Using your tools", ...aF(A)].join("\\n");
+  }
+  let q = kM(),
+    K = [mq, DK, m7, ...(q ? [] : [N9, s_])].join(", "),
+    _ = [
+      \`Prefer dedicated tools over \${u6} when one fits (\${K}) — reserve \${u6} for shell-only operations.\`,
+      $
+        ? \`Use \${$} to plan and track work.\`
+        : null,
+    ].filter((A) => A !== null);
+  return ["# Using your tools", ...aF(_)].join("\\n");
+}
+`;
+
+    const ast = parse(fixture);
+    await runBashPromptViaPasses(ast);
+    const output = print(ast);
+
+    assert.equal(output.includes("let q = !0"), true);
+    assert.equal(output.includes("Prefer dedicated tools over"), true);
 });

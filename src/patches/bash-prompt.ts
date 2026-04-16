@@ -154,7 +154,33 @@ function nodeContainsSearchGuidance(node: t.Node | null | undefined): boolean {
 		}
 	};
 	visit(node);
-	return found;
+    return found;
+}
+
+function isEmptyLikeBranch(node: t.Node | null | undefined): boolean {
+    if (!node) return true;
+    if (t.isArrayExpression(node)) return node.elements.length === 0;
+    if (t.isStringLiteral(node)) return node.value.length === 0;
+    if (t.isTemplateLiteral(node)) {
+        return (
+            node.expressions.length === 0 &&
+            node.quasis.length === 1 &&
+            (node.quasis[0]?.value.cooked ?? node.quasis[0]?.value.raw ?? "").length === 0
+        );
+    }
+    return (
+        t.isNullLiteral(node) ||
+        t.isIdentifier(node, { name: "undefined" }) ||
+        (t.isBooleanLiteral(node) && node.value === false)
+    );
+}
+
+function isAsymmetricPresenceConditional(
+    node: t.ConditionalExpression,
+): boolean {
+    const consequentEmpty = isEmptyLikeBranch(node.consequent);
+    const alternateEmpty = isEmptyLikeBranch(node.alternate);
+    return consequentEmpty !== alternateEmpty;
 }
 
 function isZeroArgIdentifierCall(
@@ -182,17 +208,18 @@ function findEmbeddedSearchGateDeclarator(
 
 			const init = declPath.node.init;
 			if (isZeroArgIdentifierCall(init) || isForcedTrue(init)) {
-				const controlsGuidance = binding.referencePaths.some((refPath) => {
-					const conditional = refPath.findParent((parentPath) =>
-						parentPath.isConditionalExpression(),
-					);
-					if (!conditional?.isConditionalExpression()) return false;
-					if (conditional.node.test !== refPath.node) return false;
-					return (
-						nodeContainsSearchGuidance(conditional.node.consequent) ||
-						nodeContainsSearchGuidance(conditional.node.alternate)
-					);
-				});
+                const controlsGuidance = binding.referencePaths.some((refPath) => {
+                    const conditional = refPath.findParent((parentPath) =>
+                        parentPath.isConditionalExpression(),
+                    );
+                    if (!conditional?.isConditionalExpression()) return false;
+                    if (conditional.node.test !== refPath.node) return false;
+                    return (
+                        nodeContainsSearchGuidance(conditional.node.consequent) ||
+                        nodeContainsSearchGuidance(conditional.node.alternate) ||
+                        isAsymmetricPresenceConditional(conditional.node)
+                    );
+                });
 				if (controlsGuidance) candidates.push(declPath);
 				return;
 			}
