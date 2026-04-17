@@ -195,51 +195,8 @@ function isVoidZero(node: t.Node | null | undefined): boolean {
 	);
 }
 
-function isUltrathinkLevelObject(node: t.ObjectExpression): boolean {
-	let hasType = false;
-	let hasLevel = false;
-	for (const prop of node.properties) {
-		if (!t.isObjectProperty(prop)) continue;
-		if (
-			getObjectKeyName(prop.key) === "type" &&
-			t.isStringLiteral(prop.value, { value: "ultrathink_effort" })
-		) {
-			hasType = true;
-		}
-		if (
-			getObjectKeyName(prop.key) === "level" &&
-			t.isStringLiteral(prop.value, { value: "high" })
-		) {
-			hasLevel = true;
-		}
-	}
-	return hasType && hasLevel;
-}
-
-function isPatchedUltrathinkLevelObject(node: t.ObjectExpression): boolean {
-	let hasType = false;
-	let hasLevel = false;
-	for (const prop of node.properties) {
-		if (!t.isObjectProperty(prop)) continue;
-		if (
-			getObjectKeyName(prop.key) === "type" &&
-			t.isStringLiteral(prop.value, { value: "ultrathink_effort" })
-		) {
-			hasType = true;
-		}
-		if (
-			getObjectKeyName(prop.key) === "level" &&
-			t.isStringLiteral(prop.value, { value: "max" })
-		) {
-			hasLevel = true;
-		}
-	}
-	return hasType && hasLevel;
-}
-
 function createEffortMaxMutator(): traverse.Visitor {
 	let patchedMaxCapabilityGate = 0;
-	let patchedUltrathinkLevel = 0;
 	let patchedNotification = 0;
 
 	function patchFunction(path: traverse.NodePath<t.Function>): void {
@@ -267,15 +224,6 @@ function createEffortMaxMutator(): traverse.Visitor {
 		},
 
 		ObjectExpression(path) {
-			if (isUltrathinkLevelObject(path.node)) {
-				const levelProp = getObjectProp(path.node, "level");
-				if (levelProp) {
-					levelProp.value = t.stringLiteral("max");
-					patchedUltrathinkLevel += 1;
-				}
-				return;
-			}
-
 			const keyProp = getObjectProp(path.node, "key");
 			const textProp = getObjectProp(path.node, "text");
 			if (
@@ -293,11 +241,6 @@ function createEffortMaxMutator(): traverse.Visitor {
 			exit() {
 				if (patchedMaxCapabilityGate === 0) {
 					console.warn("effort-max: Could not find max-capability gate");
-				}
-				if (patchedUltrathinkLevel === 0) {
-					console.warn(
-						"effort-max: Could not find ultrathink effort level object",
-					);
 				}
 				if (patchedNotification === 0) {
 					console.warn(
@@ -326,8 +269,6 @@ export const effortMax: Patch = {
 		let hasLegacyMaxCapabilityGate = false;
 		let hasPatchedMaxCapabilityGate = false;
 		let hasPatchedPicker = false;
-		let hasUnpatchedUltrathinkLevel = false;
-		let hasPatchedUltrathinkLevel = false;
 		let hasHighUltrathinkNotification = false;
 		let hasMaxUltrathinkNotification = false;
 
@@ -348,15 +289,6 @@ export const effortMax: Patch = {
 				);
 			},
 
-			ObjectExpression(path) {
-				if (isUltrathinkLevelObject(path.node)) {
-					hasUnpatchedUltrathinkLevel = true;
-				}
-				if (isPatchedUltrathinkLevelObject(path.node)) {
-					hasPatchedUltrathinkLevel = true;
-				}
-			},
-
 			StringLiteral(path) {
 				if (path.node.value === HIGH_NOTIFICATION_TEXT) {
 					hasHighUltrathinkNotification = true;
@@ -375,12 +307,6 @@ export const effortMax: Patch = {
 		}
 		if (!hasPatchedPicker) {
 			return 'Effort picker does not expose "max"';
-		}
-		if (hasUnpatchedUltrathinkLevel) {
-			return 'Ultrathink still sets effort level to "high"';
-		}
-		if (!hasPatchedUltrathinkLevel) {
-			return 'Did not find patched ultrathink effort level "max"';
 		}
 		if (hasHighUltrathinkNotification) {
 			return 'Ultrathink notification still says "high"';

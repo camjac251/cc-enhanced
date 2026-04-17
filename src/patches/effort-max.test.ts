@@ -79,7 +79,7 @@ function cliHelp() {
 }
 
 function Ex1() {
-  return [{ type: "ultrathink_effort", level: "high" }];
+  return [{ type: "ultrathink_effort" }];
 }
 
 function notify(EL) {
@@ -107,7 +107,6 @@ test("effort-max patches the current gate, picker, and ultrathink affordances", 
 
 	assert.equal(output.includes("return true;"), true);
 	assert.equal(output.includes('value: "max"'), true);
-	assert.equal(output.includes('level: "max"'), true);
 	assert.equal(
 		output.includes('text: "Effort set to max for this turn"'),
 		true,
@@ -147,7 +146,7 @@ const picker = [
   { value: "max", color: "rainbow-animated" },
 ];
 function Ex1() {
-  return [{ type: "ultrathink_effort", level: "high" }];
+  return [{ type: "ultrathink_effort" }];
 }
 function notify(EL) {
   EL({ key: "ultrathink-active", text: "Effort set to high for this turn" });
