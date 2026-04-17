@@ -163,9 +163,9 @@ Each patch is a self-contained module with an `astPasses` function (Babel visito
 
 ```bash
 mise run native:update              # Fetch + patch + promote (standard workflow)
-mise run native:update 2.1.112      # Pin a specific version
+mise run native:update 2.1.113      # Pin a specific version
 mise run native:update --dry-run    # Preview without promoting
-mise run native:fetch-patch 2.1.112 --dry-run  # Fetch + patch preview for a pinned version
+mise run native:fetch-patch 2.1.113 --dry-run  # Fetch + patch preview for a pinned version
 mise run native:promote <build-path>          # Promote an already-patched cached build
 mise run native:rollback            # Instant rollback to previous version
 mise run status                     # Show current/previous/cached versions
@@ -178,7 +178,7 @@ See `pnpm cli --help` for all options and `mise.toml` for all tasks.
 
 ## Compatibility
 
-Tested against **Claude Code 2.1.112**. The latest verified update passed on April 16, 2026. Only the latest upstream version is targeted. Older versions are not maintained or tested.
+Tested against **Claude Code 2.1.113**. The latest verified update passed on April 17, 2026. Only the latest upstream version is targeted. Older versions are not maintained or tested.
 
 ## Requirements
 
