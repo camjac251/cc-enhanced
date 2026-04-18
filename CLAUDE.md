@@ -1,5 +1,8 @@
 # cc-enhanced
 
+> [!IMPORTANT]
+> Read this file in full before proposing or making changes. Every section encodes a constraint the patcher depends on (no backward-compat fallbacks, no hardcoded minified names, AST-first over string patches, co-located verifiers, behavior-based verification, future-forward policy, abstraction over upstream internals). Skimming will miss rules that invalidate otherwise-reasonable suggestions.
+
 **NEVER add backward-compatibility fallbacks for older upstream versions.** Target only the latest upstream. When a patch breaks on a new version, update it for the new form and drop the old one. Do not handle both.
 
 AST-based patcher for customizing the Claude Code CLI. Patches a ~16MB minified cli.js embedded in a native Bun binary.

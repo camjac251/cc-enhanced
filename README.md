@@ -8,184 +8,248 @@
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Node_24-339933.svg" alt="Node 24">
   <img src="https://img.shields.io/badge/Patches-27-orange.svg" alt="27 Patches">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.114-8A2BE2.svg" alt="Tested against Claude Code 2.1.114">
 </p>
 
 ---
 
-cc-enhanced patches the Claude Code CLI binary to unlock capabilities, fix bugs, and improve the development experience. It uses Babel AST traversal to make surgical, verifiable changes to the embedded JavaScript, then repacks the native binary in place.
+cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 27 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+
+Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting, LSP fan-out, worktree permissions), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read, batched `edits[]` on Edit, output tails on Bash), and replace prompt fragments that steer the model toward better shell tooling.
 
 > [!NOTE]
-> This tool patches your local copy of the Claude Code binary. It does not distribute any Anthropic source code.<br>
-> All modifications happen on your machine.
+> This tool patches your local copy of the Claude Code binary. It does not distribute Anthropic source code. All modifications happen on your machine.
 
 ## How It Works
 
 ```mermaid
-graph LR
-    A[Native Binary] -->|unpack| B[cli.js]
-    B -->|prettier| C[Formatted JS]
-    C -->|27 patches| D[Patched JS]
-    D -->|verify each| E{All OK?}
-    E -->|yes| F[Repack Binary]
-    E -->|no| G[Abort + Report]
-    F -->|atomic symlink| H[Active]
+flowchart LR
+    Bin([native binary]) -->|unpack ELF| Js[cli.js]
+
+    Js --> Str[string patches<br/>prompt text only]
+    Str --> Ast
+
+    subgraph Ast[combined AST pass]
+        direction LR
+        D[discover] --> M[mutate] --> F[finalize]
+    end
+
+    Ast --> Ver{{each patch<br/>verifier}}
+    Ver -- all pass --> Sig[signature suffix]
+    Ver -- any fail --> Abort([abort + report])
+    Sig --> Repack[repack into ELF<br/>same byte length]
+    Repack --> Swap[atomic symlink swap]
+    Swap --> Active([active binary])
+    Active -. mise run native:rollback .-> Swap
+
+    classDef terminal fill:#1f2937,stroke:#111,color:#fff
+    classDef fail fill:#7f1d1d,stroke:#450a0a,color:#fff
+    class Bin,Active terminal
+    class Abort fail
 ```
 
-The patcher extracts the embedded JavaScript from the Claude Code binary, applies 27 patches with AST-based mutations running in a single optimized pass (`discover` -> `mutate` -> `finalize`), verifies each patch independently, and repacks the result. The binary stays exactly the same size through in-place bytecode replacement. Native fetches use the official release manifest and can fall back to `curl`/`wget` for large binary downloads when Node `fetch()` is unreliable.
-
-```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> Fetch: mise run native:update
-    Fetch --> Patch: extract cli.js
-    Patch --> Verify: AST pass engine
-    Verify --> Promote: all patches OK
-    Verify --> Abort: failures detected
-    Promote --> Active: atomic symlink swap
-    Active --> Rollback: mise run native:rollback
-    Rollback --> Previous: swap current/previous
-```
-
-**Rollback is instant.** Promotion uses atomic symlinks, and the previous version is always preserved.
+Prompt-only edits run first as string transforms. Everything structural shares a single Babel traversal (`discover` -> `mutate` -> `finalize`) over the 16 MB bundle, so every AST patch sees the same parse. Each patch ships its own verifier; one failure is reported and the rest still apply. The repacked JavaScript goes back into the ELF container at the exact original byte length, so nothing downstream of the bundle is disturbed.
 
 ## Quick Start
 
 ```bash
-# Install dependencies
 pnpm install
 
-# Fetch latest Claude Code, patch it, and promote to active
+# Fetch latest upstream, patch it, and promote the result to active.
 mise run native:update
 
-# Verify everything is working
-claude --version    # Shows "patched: tag1, tag2, ..." suffix
-mise run status     # Shows current/previous versions
+claude --version
+# 2.1.114 (Claude Code; patched: shell-quote-fix, bash-prompt, ..., signature)
+
+mise run status
+# Shows current, previous, and cached versions.
+```
+
+Rollback is a symlink swap, not a reinstall. `mise run native:rollback` exchanges the `current` and `previous` pointers atomically; the prior build stays on disk until it rotates out of the cache.
+
+```mermaid
+flowchart LR
+    Launcher["~/.local/bin/claude"] --> Current["versions/current"]
+    Previous["versions/previous"]
+    Current --> NewBuild[["build N<br/>patched 2.1.114"]]
+    Previous --> OldBuild[["build N-1<br/>patched 2.1.113"]]
+    NewBuild <-. swap .-> OldBuild
+
+    classDef sym fill:#0b2545,stroke:#0b2545,color:#fff
+    classDef build fill:#1e293b,stroke:#0f172a,color:#e2e8f0
+    class Launcher,Current,Previous sym
+    class NewBuild,OldBuild build
 ```
 
 ## Patches
 
-Every patch is independently verifiable and can be included or excluded:
+Each patch has a short tag. Include or exclude any subset via environment variables:
 
 ```bash
-# Include only specific patches
 CLAUDE_PATCHER_INCLUDE_TAGS=read-bat,limits,edit-extended mise run native:update
-
-# Exclude specific patches
-CLAUDE_PATCHER_EXCLUDE_TAGS=tools-off,agents-off mise run native:update
+CLAUDE_PATCHER_EXCLUDE_TAGS=tools-off,agents-off           mise run native:update
 ```
-
----
 
 ### Tooling
 
-Patches that enhance, fix, or extend Claude's built-in tools.
+Changes to built-in tools (Read, Edit, Bash, LSP, Task, MCP).
 
-The tables below summarize the user-facing effect of each patch.
-
-| Patch | What's changed |
-|-------|----------------|
-| `read-bat` | Read accepts `bat`-style `range` syntax (`30:40`, `-30:`, `100::10`), returns line-numbered output, tails `.output` files by default, previews oversized files with truncation notices, and keeps changed-file diff snippets bounded. |
-| `edit-extended` | Edit accepts multi-edit batches through `edits[]`, preserves structured edit payloads through normalization and transcript cleanup, shows the correct diff preview for extended edits, and includes stronger guidance for fuzzy matching and recovery. |
-| `bash-tail` | Bash accepts `output_tail` to preserve the end of truncated output and `max_output` to keep larger results inline up to 500K chars. |
-| `limits` | Read keeps larger files inline with a 1MB byte ceiling, a 50K token budget, a 120K-char persistence threshold, and higher formatted-read output limits. |
-| `tools-off` | Claude works through a Bash-centric file and search workflow without `Glob`, `Grep`, `WebSearch`, `WebFetch`, or `NotebookEdit`, and the prompt guidance points it toward the remaining shell-based toolchain. |
-| `shell-quote-fix` | Bash command generation preserves literal `!` usage for negation, comparisons, and shell tests. |
-| `mcp-server-name` | Settings accept MCP server names containing colons and dots, including multi-part plugin-style names. |
-| `taskout-ext` | Task output metadata includes structured `output_file` and `output_filename` fields so follow-up reads can locate full background logs reliably. |
-| `lsp-multi-server` | File lifecycle events fan out to every matching language server, so stacked setups like TypeScript + ESLint + Tailwind stay in sync. |
-| `lsp-workspace-symbol` | `workspaceSymbol` requests carry the actual search query through the tool pipeline. |
+| Patch | Effect |
+|-------|--------|
+| [`read-bat`](src/patches/read-bat.ts) | Read replaces `offset`/`limit` with a single `range` string (`30:40`, `-30:`, `50:+20`, `100::10`, `30:40:2`), renders text through `bat` with line numbers, adds `show_whitespace: true` to reveal tabs/spaces/newlines, auto-tails `*.output` files to `-500:` when `range` is omitted, previews the first 200 lines of oversized files, and caps changed-file reminder snippets at a bounded head-plus-tail summary. |
+| [`edit-extended`](src/patches/edit-extended.ts) | Edit accepts batched changes via `edits[]` and keeps them intact through validation, call dispatch, diff rendering, and transcript cleanup. Prompt guidance covers when to prefer Edit over `sd`/`sg`/Write, fuzzy-match recovery, and multi-site refactors. |
+| [`bash-tail`](src/patches/bash-tail.ts) | Bash gains `output_tail: boolean` (keep the last N characters on truncation, for build/test output where failures land at the end) and `max_output: number` (raise the inline threshold up to 500K chars). Prompt text calls out when to use each. |
+| [`tools-off`](src/patches/tools-off.ts) | Disables `Glob`, `Grep`, `WebSearch`, `WebFetch`, and `NotebookEdit`, and strips their references from prompts, tool tables, and agent frontmatter. The model is steered toward `rg`/`fd`/`bat`/`sg` for the same work. |
+| [`shell-quote-fix`](src/patches/shell-quote-fix.ts) | Bash no longer mangles `!` in negation (`!x`, `!==`), shell tests (`[ ! -f ]`), or literal banged strings. Fixes real-world breakage on `-c` invocations. |
+| [`mcp-server-name`](src/patches/mcp-server-name.ts) | MCP server-name validation accepts the plugin-style form (`plugin:<plugin>:<key>`) alongside the legacy alphanumeric form, so settings entries stop silently dropping at schema parse time. |
+| [`taskout-ext`](src/patches/taskout-ext.ts) | TaskOutput response exposes structured `<output_file>` and `<output_filename>` fields, and the prompt instructs the model to tail the file first (`range "-500:"`) and chunk forward rather than re-reading the whole transcript. |
+| [`lsp-multi-server`](src/patches/lsp-multi-server.ts) | File lifecycle notifications (`didOpen`/`didChange`/`didSave`/`didClose`) fan out to every language server registered for a file extension. Stacked setups (TypeScript + ESLint + Tailwind) stay in sync. |
+| [`lsp-workspace-symbol`](src/patches/lsp-workspace-symbol.ts) | `workspaceSymbol` requests forward the actual query string to the server instead of sending an empty query that always returned no results. |
 
 ### System
 
-Patches that modify runtime behavior, caching, and configuration.
+Runtime behavior, caching, memory, and configuration.
 
-| Patch | What's changed |
-|-------|----------------|
-| `cache-tail-policy` | Prompt caching uses a two-turn tail window, user-message breakpoints, global system-prompt scope, a one-hour TTL, and a four-block cap. |
-| `effort-max` | The interactive effort picker offers the full `max` tier across supported models. |
-| `no-autoupdate` | The promoted patched build stays in place while marketplace plugins continue to update normally. |
-| `session-mem` | Session memory behavior is controlled locally through environment variables, including enablement, past-session lookup, per-section and total token caps, and update-threshold tuning. |
-| `sys-prompt-file` | Every conversation automatically appends a system prompt file from `/etc/claude-code/system-prompt.md` or a configured path. |
-| `worktree-perms` | Agent worktrees automatically include their working directories in the allowed edit surface, so normal read and edit flows do not fall back to repeated permission prompts. |
+| Patch | Effect |
+|-------|--------|
+| [`cache-tail-policy`](src/patches/cache-tail-policy.ts) | Widens the prompt-cache tail window, switches the system-prompt scope to global, raises the cache TTL to one hour, and clamps the live cache-control block count so eviction behaves predictably on long sessions. |
+| [`effort-max`](src/patches/effort-max.ts) | The interactive `/effort` picker offers the full `max` tier across supported models, and the ultrathink notification reports the selected tier accurately. |
+| [`no-autoupdate`](src/patches/no-autoupdate.ts) | Forces the autoupdater guard to a safe stub so the patched binary is not replaced in the background. Marketplace plugin autoupdates continue to work through the same guard path. |
+| [`limits`](src/patches/limits.ts) | Read keeps larger files inline. Byte ceiling 256K -> 1M, token budget 25K -> 50K (still overridable via `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`), persistence threshold 50K -> 120K chars, per-tool result cap 100K -> 250K chars. |
+| [`session-mem`](src/patches/session-mem.ts) | Session memory is controllable via `ENABLE_SESSION_MEMORY`, `ENABLE_SESSION_MEMORY_PAST`, `CC_SM_PER_SECTION_TOKENS` (default 2000), `CC_SM_TOTAL_FILE_LIMIT` (default 12000), `CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT`, `CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE`, and `CC_SM_TOOL_CALLS_BETWEEN_UPDATES`. |
+| [`sys-prompt-file`](src/patches/sys-prompt-file.ts) | Every conversation auto-appends a system prompt file when `appendSystemPrompt` is not explicitly set. Source is `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE`, falling back to `/etc/claude-code/system-prompt.md`. |
+| [`worktree-perms`](src/patches/worktree-perms.ts) | Agent worktrees are added to the session's allowed edit surface on spawn and on resume, so Edit and Write inside a worktree do not fall back to per-file permission prompts. |
 
 ### Prompt
 
-Patches that improve or replace prompt text sent to the model.
+Prompt text sent to the model.
 
-| Patch | What's changed |
-|-------|----------------|
-| `bash-prompt` | Bash guidance steers the model toward modern CLI tools such as `fd`, `rg`, `bat`, `sd`, `sg`, and `eza`. |
-| `built-in-agent-prompt` | Explore is framed as deep codebase research with execution-path tracing, and Plan is framed as blueprint-driven architecture work with concrete trade-offs, sequencing, and implementation guidance. |
-| `claudemd-strong` | CLAUDE.md instructions are treated as binding guidance whenever they apply. |
-| `todo-use` | Todo guidance stays short and high-signal with two compact usage bullets. |
+| Patch | Effect |
+|-------|--------|
+| [`bash-prompt`](src/patches/bash-prompt.ts) | Bash tool guidance points at modern CLI (`fd`, `eza`, `rg`, `sg`, `bat`, `sd`) and enables the code path that hides legacy `find`/`grep` from the tool list. |
+| [`built-in-agent-prompt`](src/patches/built-in-agent-prompt.ts) | Explore is reframed as a deep codebase research agent (execution-path tracing, `file:line` citations, reuse candidates). Plan is reframed as a blueprint-producing architect with concrete sequencing and trade-offs. |
+| [`claudemd-strong`](src/patches/claudemd-strong.ts) | CLAUDE.md wrapper text treats project instructions as mandatory when they apply, instead of advisory context, and pins a small always-applied baseline. |
+| [`todo-use`](src/patches/todo-use.ts) | Todo guidance is compressed to a short, high-signal set of bullets. |
 
 ### Agent
 
-Patches that control which agents and commands are available.
+Which built-in agents and commands are exposed.
 
-| Patch | What's changed |
-|-------|----------------|
-| `agents-off` | The built-in agent roster omits `statusline-setup` and `claude-code-guide`, keeping setup and guidance flows in user-controlled skills and prompts. |
-| `commands-off` | The slash-command surface omits `/security-review`, keeping `/review` as the single review entry point and leaving room for local skill shadowing. |
+| Patch | Effect |
+|-------|--------|
+| [`agents-off`](src/patches/agents-off.ts) | Removes `statusline-setup` and `claude-code-guide` from the built-in agent registry. Those flows move to user skills. |
+| [`commands-off`](src/patches/commands-off.ts) | Removes the `/security-review` built-in slash command, leaving `/review` as the single review entry point and freeing the name for local skills to shadow. |
 
 ### UX
 
-Patches that improve the terminal interface.
+Terminal interface polish.
 
-| Patch | What's changed |
-|-------|----------------|
-| `plan-diff-ui` | Plan mode shows the actual tool label and full diff content for read and write actions. |
-| `no-collapse` | Read, Search, and Grep results stay expanded, and memory-file writes show their full path and diff. |
-| `skill-listing-ui` | Newly available skills show the activated skill names inline instead of only a generic count badge. |
-| `subagent-model-tag` | Task rows omit redundant model labels when the subagent model is already pinned globally, reducing repeated visual noise in busy sessions. |
+| Patch | Effect |
+|-------|--------|
+| [`plan-diff-ui`](src/patches/plan-diff-ui.ts) | Plan mode shows the real diff for plan-backed Edit and Write instead of "Updated plan" / "Reading Plan" placeholders, and stops hiding the preview hint or the tool-use row for plan-backed file writes. |
+| [`no-collapse`](src/patches/no-collapse.ts) | Read, Search, and Grep results stay expanded in the transcript. Memory-file writes render with full path and diff instead of a generic collapsed summary. |
+| [`skill-listing-ui`](src/patches/skill-listing-ui.ts) | The "Saved N skills" notification previews the first few activated skill names inline instead of showing only a count badge. |
+| [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | When `CLAUDE_CODE_SUBAGENT_MODEL` is set globally, Task rows omit the redundant dimmed `model: ...` label that would otherwise appear on every subagent. |
 
 ### Metadata
 
-| Patch | What's changed |
-|-------|----------------|
-| `signature` | `claude --version` and the UI title bar show that the binary is patched and expose the active patch set for quick verification. |
+| Patch | Effect |
+|-------|--------|
+| [`signature`](src/patches/signature.ts) | `claude --version` appends `patched: <tag1>, <tag2>, ...` and the UI title bar gains a ` • patched` suffix, so the active patch set is visible at a glance. Runs after all other patches verify. |
 
-## Patch Distribution
+## Configuration
 
-```mermaid
-pie showData title Patches by Category
-    "Tooling" : 9
-    "System" : 7
-    "Prompt" : 4
-    "UX" : 4
-    "Agent" : 2
-    "Metadata" : 1
-```
+### Patcher (build time)
 
-Each patch is a self-contained module with an `astPasses` function (Babel visitors for the combined-pass engine), a `verify` function (returns `true` or a failure reason), and an optional `string` transform for prompt-only patches. Patches are isolated: if one fails verification, the others still apply and the failure is reported with the specific reason.
+| Variable | Purpose |
+|----------|---------|
+| `CLAUDE_PATCHER_INCLUDE_TAGS` | Comma-separated allowlist. Only listed patches run. |
+| `CLAUDE_PATCHER_EXCLUDE_TAGS` | Comma-separated blocklist. Listed patches are skipped. |
+| `CLAUDE_PATCHER_REVISION` | Override the revision string embedded in the signature. |
+| `CLAUDE_PATCHER_CACHE_KEEP` | Retain extra cached builds beyond the default rotation. |
+
+### Runtime (installed binary)
+
+| Variable | Consumed by | Default |
+|----------|-------------|---------|
+| `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE` | [`sys-prompt-file`](src/patches/sys-prompt-file.ts) | `/etc/claude-code/system-prompt.md` |
+| `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS` | [`limits`](src/patches/limits.ts) | 50000 |
+| `CLAUDE_CODE_SUBAGENT_MODEL` | [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | unset |
+| `ENABLE_SESSION_MEMORY` | [`session-mem`](src/patches/session-mem.ts) | upstream default |
+| `ENABLE_SESSION_MEMORY_PAST` | [`session-mem`](src/patches/session-mem.ts) | upstream default |
+| `CC_SM_PER_SECTION_TOKENS` | [`session-mem`](src/patches/session-mem.ts) | 2000 |
+| `CC_SM_TOTAL_FILE_LIMIT` | [`session-mem`](src/patches/session-mem.ts) | 12000 |
+| `CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT` | [`session-mem`](src/patches/session-mem.ts) | upstream default |
+| `CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE` | [`session-mem`](src/patches/session-mem.ts) | upstream default |
+| `CC_SM_TOOL_CALLS_BETWEEN_UPDATES` | [`session-mem`](src/patches/session-mem.ts) | 3 |
+
+Do not set `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. They disable every server-side flag, including features this patcher relies on. Use the individual `DISABLE_ERROR_REPORTING`, `DISABLE_AUTOUPDATER`, and `DISABLE_BUG_COMMAND` switches instead.
 
 ## CLI Reference
 
 ```bash
-mise run native:update              # Fetch + patch + promote (standard workflow)
-mise run native:update 2.1.114      # Pin a specific version
-mise run native:update --dry-run    # Preview without promoting
-mise run native:fetch-patch 2.1.114 --dry-run  # Fetch + patch preview for a pinned version
-mise run native:promote <build-path>          # Promote an already-patched cached build
-mise run native:rollback            # Instant rollback to previous version
-mise run status                     # Show current/previous/cached versions
-mise run verify:patches             # Full health check (typecheck + lint + dry-run)
-pnpm cli --list                     # List all available patches
-pnpm test                           # Run test suite
+mise run native:update                            # Fetch + patch + promote (standard workflow)
+mise run native:update 2.1.114                    # Pin a specific version
+mise run native:update --dry-run                  # Preview without promoting
+mise run native:fetch-patch 2.1.114 --dry-run     # Fetch + patch preview for a pinned version
+mise run native:promote <build-path>              # Promote an already-patched cached build
+mise run native:rollback                          # Swap current and previous symlinks
+mise run status                                   # Show current, previous, cached
+mise run verify:patches                           # Typecheck + lint + dry-run on native target
+mise run verify:anchors                           # Diff clean vs patched anchors
+pnpm cli --list                                   # List available patches
+pnpm test                                         # Run the test suite
 ```
 
-See `pnpm cli --help` for all options and `mise.toml` for all tasks.
+`mise run patch` is intentionally disabled; it exists only to redirect to `native:update`. See `mise.toml` for the full task list and `pnpm cli --help` for CLI flags.
+
+## Extending
+
+Each patch lives in `src/patches/<tag>.ts` beside a co-located `<tag>.test.ts`. New patches register in two places: the export barrel (`src/patches/index.ts`) and the metadata record (`src/patch-metadata.ts`). The `/new-patch` skill scaffolds the full set.
+
+```mermaid
+classDiagram
+    class Patch {
+        +string tag
+        +string(code) code
+        +astPasses(ast) PatchAstPass[]
+        +postApply(ast, tags)
+        +verify(code, ast) true|string
+    }
+    class PatchAstPass {
+        +AstPassName pass
+        +Visitor visitor
+    }
+    class AstPassName {
+        <<enum>>
+        discover
+        mutate
+        finalize
+    }
+    Patch "1" --> "*" PatchAstPass : produces
+    PatchAstPass --> AstPassName
+    note for Patch "string runs pre-parse.<br/>astPasses run in the combined traversal.<br/>verify gates promotion.<br/>postApply is for signature only."
+```
+
+Principles baked into the codebase:
+
+- Find code by structure (string literals, property names), never by minified identifier names. They change every release.
+- AST passes own all structural and behavioral change. String patches are reserved for prompt text.
+- Verifiers target behavior and invariants, not expression shape.
+- Target only the latest upstream. No backward-compatibility fallbacks.
 
 ## Compatibility
 
-Tested against **Claude Code 2.1.114**. The latest verified update passed on April 17, 2026. Only the latest upstream version is targeted. Older versions are not maintained or tested.
+Current target: **Claude Code 2.1.114**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
 
 ## Requirements
 
 - **Node.js 24+** (managed via `mise`)
 - **pnpm 10+** (via corepack)
-- **Linux x86_64** (native ELF support built-in; macOS/Windows via optional `node-lief`)
+- **Linux x86_64** (native ELF support is built in; other platforms require `node-lief`)
 - A working **Claude Code** installation
+
+Babel AST + generator over the 16 MB bundle needs roughly 10 GB of heap. `mise.toml` sets `NODE_OPTIONS=--max-old-space-size=12288` automatically, so run through `mise` or `pnpm` scripts. Raw `node`/`tsx` invocations will OOM.
 
 ## Disclaimer
 
