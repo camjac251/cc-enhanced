@@ -53,7 +53,7 @@ importers:
         version: 7.4.4
       '@types/node':
         specifier: ^24.10.1
-        version: 24.10.1
+        version: 24.12.2
       '@types/yargs':
         specifier: ^17.0.35
         version: 17.0.35
@@ -347,8 +347,8 @@ packages:
   '@types/babel__traverse@7.28.0':
     resolution: {integrity: sha512-8PvcXf70gTDZBgt9ptxJ8elBeBjcLOAcOtoO/mPJjtji1+CdGbHgm77om1GrsPxsiE+uXIpNSK64UYaIwQXd4Q==}
 
-  '@types/node@24.10.1':
-    resolution: {integrity: sha512-GNWcUTRBgIRJD5zj+Tq0fKOJ5XZajIiBroOF0yvj2bSU1WvNdYS/dn9UxwsujGW4JX06dnHyjV2y9rRaybH0iQ==}
+  '@types/node@24.12.2':
+    resolution: {integrity: sha512-A1sre26ke7HDIuY/M23nd9gfB+nrmhtYyMINbjI1zHJxYteKR6qSMX56FsmjMcDb3SMcjJg5BiRRgOCC/yBD0g==}
 
   '@types/yargs-parser@21.0.3':
     resolution: {integrity: sha512-I4q9QU9MQv4oEOz4tAHJtNz1cwuLxn2F3xcc2iV5WdqLPpUnj30aUuxt1mAxYTG+oe8CZMV/+6rU4S4gRDzqtQ==}
@@ -728,7 +728,7 @@ snapshots:
     dependencies:
       '@babel/types': 7.28.5
 
-  '@types/node@24.10.1':
+  '@types/node@24.12.2':
     dependencies:
       undici-types: 7.16.0
 
