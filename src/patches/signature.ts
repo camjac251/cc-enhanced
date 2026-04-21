@@ -22,15 +22,18 @@ function getTemplateText(quasi: t.TemplateElement): string {
 	return quasi.value.raw;
 }
 
+function getVersionQuasiIndex(node: t.TemplateLiteral): number {
+	return node.quasis.findIndex((q) =>
+		isVersionStringTarget(getTemplateText(q)),
+	);
+}
+
 function isVersionTemplateTarget(node: t.TemplateLiteral): boolean {
-	const lastQuasi = node.quasis[node.quasis.length - 1];
-	if (!lastQuasi) return false;
-	return isVersionStringTarget(getTemplateText(lastQuasi));
+	return getVersionQuasiIndex(node) >= 0;
 }
 
 function hasPatchedVersionTemplate(node: t.TemplateLiteral): boolean {
-	const lastQuasi = node.quasis[node.quasis.length - 1];
-	return !!lastQuasi && hasPatchedVersionString(getTemplateText(lastQuasi));
+	return node.quasis.some((q) => hasPatchedVersionString(getTemplateText(q)));
 }
 
 function isUiTitleTemplate(node: t.TemplateLiteral): boolean {
@@ -70,14 +73,15 @@ export const signature: Patch = {
 				}
 			},
 			TemplateLiteral(path: any) {
-				if (isVersionTemplateTarget(path.node)) {
-					const lastQuasi = path.node.quasis[path.node.quasis.length - 1];
+				const versionIdx = getVersionQuasiIndex(path.node);
+				if (versionIdx >= 0) {
+					const quasi = path.node.quasis[versionIdx];
 					const replaced = replaceVersionSuffix(
-						getTemplateText(lastQuasi),
+						getTemplateText(quasi),
 						sigFull,
 					);
-					lastQuasi.value.raw = replaced;
-					lastQuasi.value.cooked = replaced;
+					quasi.value.raw = replaced;
+					quasi.value.cooked = replaced;
 				}
 
 				if (isUiTitleTemplate(path.node) && !hasPatchedUiTitle(path.node)) {

@@ -99,7 +99,7 @@ function changedFileGuard(S) {
 }
 
 function rebuildReadState(A) {
-  if (A?.file_path && A?.offset === void 0 && A?.limit === void 0) {
+  if (typeof A?.file_path === "string" && A.offset === void 0 && A.limit === void 0) {
     return A;
   }
   return null;
@@ -575,9 +575,9 @@ test("read-bat runtime uses numbered bat output when bat succeeds", async () => 
 });
 
 test("read-bat runtime preserves fallback range and size-limit semantics when bat fails", async () => {
-    const { mod, cleanup } = await loadPatchedReadRuntimeModule();
-    const tempDir = await fs.mkdtemp(
-        path.join(os.tmpdir(), "read-bat-fallback-"),
+	const { mod, cleanup } = await loadPatchedReadRuntimeModule();
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "read-bat-fallback-"),
 	);
 	const originalPath = process.env.PATH ?? "";
 	try {
@@ -637,7 +637,7 @@ test("read-bat runtime preserves fallback range and size-limit semantics when ba
 	} finally {
 		process.env.PATH = originalPath;
 		await cleanup();
-        await fs.rm(tempDir, { recursive: true, force: true });
+		await fs.rm(tempDir, { recursive: true, force: true });
 	}
 });
 
@@ -702,45 +702,45 @@ test("read-bat runtime tolerates stray wrapper characters around ranges", async 
 });
 
 test("read-bat runtime defaults .output reads to tail range and forwards show_whitespace to bat", async () => {
-    const { mod, cleanup } = await loadPatchedReadRuntimeModule();
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "read-bat-tail-"));
-    const originalPath = process.env.PATH ?? "";
-    try {
-        const filePath = path.join(tempDir, "build.output");
-        const batPath = path.join(tempDir, "bat");
-        const argsPath = path.join(tempDir, "bat-args.txt");
-        await fs.writeFile(filePath, "alpha\nbeta\n", "utf8");
-        await fs.writeFile(
-            batPath,
-            `#!/usr/bin/env bash
+	const { mod, cleanup } = await loadPatchedReadRuntimeModule();
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "read-bat-tail-"));
+	const originalPath = process.env.PATH ?? "";
+	try {
+		const filePath = path.join(tempDir, "build.output");
+		const batPath = path.join(tempDir, "bat");
+		const argsPath = path.join(tempDir, "bat-args.txt");
+		await fs.writeFile(filePath, "alpha\nbeta\n", "utf8");
+		await fs.writeFile(
+			batPath,
+			`#!/usr/bin/env bash
 printf '%s\n' "$@" > ${JSON.stringify(argsPath)}
 printf '1 alpha\\n2 beta\\n'
 `,
-            { encoding: "utf8", mode: 0o755 },
-        );
-        process.env.PATH = `${tempDir}:${originalPath}`;
+			{ encoding: "utf8", mode: 0o755 },
+		);
+		process.env.PATH = `${tempDir}:${originalPath}`;
 
-        const ctx = { readFileState: new Map() };
-        await mod.helperRead(
-            filePath,
-            1,
-            undefined,
-            4096,
-            { tag: "signal" },
-            ctx,
-            {},
-            {},
-            undefined,
-            true,
-        );
+		const ctx = { readFileState: new Map() };
+		await mod.helperRead(
+			filePath,
+			1,
+			undefined,
+			4096,
+			{ tag: "signal" },
+			ctx,
+			{},
+			{},
+			undefined,
+			true,
+		);
 
-        const batArgs = await fs.readFile(argsPath, "utf8");
-        assert.equal(batArgs.includes("-A"), true);
-        assert.equal(batArgs.includes("-r"), true);
-        assert.equal(batArgs.includes("-500:"), true);
-    } finally {
-        process.env.PATH = originalPath;
-        await cleanup();
-        await fs.rm(tempDir, { recursive: true, force: true });
-    }
+		const batArgs = await fs.readFile(argsPath, "utf8");
+		assert.equal(batArgs.includes("-A"), true);
+		assert.equal(batArgs.includes("-r"), true);
+		assert.equal(batArgs.includes("-500:"), true);
+	} finally {
+		process.env.PATH = originalPath;
+		await cleanup();
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
 });
