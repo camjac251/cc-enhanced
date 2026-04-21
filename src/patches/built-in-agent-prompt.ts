@@ -2,6 +2,7 @@ import type { Patch } from "../types.js";
 import {
 	buildModernReadonlyReplacement,
 	MODERN_READONLY_OPS,
+	MODERN_STDOUT_CAP,
 	MODERN_TOOL_PREFERENCE,
 } from "./modern-cli.js";
 
@@ -209,6 +210,17 @@ End your response with:`,
 	],
 ];
 
+const CORPUS_EXAMPLE_REPLACEMENTS: Array<[string, string]> = [
+	[
+		'grep -rn "<narrow term>" ${$}/ --include="*.jsonl" | tail -50',
+		"rg -m 50 \"<narrow term>\" ${$}/ -g '*.jsonl'",
+	],
+	[
+		"curl -si localhost:3000/api/thing | head -20",
+		"curl -sI localhost:3000/api/thing",
+	],
+];
+
 const EXPLORE_SOURCE_SIGNALS = [EXPLORE_PROMPT_SOURCE];
 
 const EXPLORE_PATCHED_SIGNALS = [
@@ -356,6 +368,9 @@ export const builtInAgentPrompt: Patch = {
 		for (const [source, replacement] of PLAN_SECTION_REPLACEMENTS) {
 			result = result.replaceAll(source, replacement);
 		}
+		for (const [source, replacement] of CORPUS_EXAMPLE_REPLACEMENTS) {
+			result = result.replaceAll(source, replacement);
+		}
 
 		return result;
 	},
@@ -457,6 +472,17 @@ export const builtInAgentPrompt: Patch = {
 			"Plan agent prompt required-output section",
 		);
 		if (planOptionalResult !== true) return planOptionalResult;
+		for (const [source, replacement] of CORPUS_EXAMPLE_REPLACEMENTS) {
+			const hasSource = code.includes(source);
+			const hasReplacement = code.includes(replacement);
+			if (!hasSource && !hasReplacement) continue;
+			if (hasSource) {
+				return `Unpatched corpus example remains: ${source}`;
+			}
+			if (!hasReplacement) {
+				return `Missing rewritten corpus example: ${replacement}`;
+			}
+		}
 		const scopedPrompts = [exploreScope, planScope].filter(
 			(scope): scope is string => scope != null,
 		);
@@ -471,6 +497,9 @@ export const builtInAgentPrompt: Patch = {
 			!scopedPrompts.some((scope) => scope.includes(MODERN_TOOL_PREFERENCE))
 		) {
 			return "Missing sg/fd/bat guidance in built-in agent prompts";
+		}
+		if (!scopedPrompts.some((scope) => scope.includes(MODERN_STDOUT_CAP))) {
+			return "Missing stdout-cap (max_output/output_tail) guidance in built-in agent prompts";
 		}
 		if (
 			scopedPrompts.some(

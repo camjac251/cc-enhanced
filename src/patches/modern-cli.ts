@@ -16,6 +16,10 @@ export const MODERN_READONLY_OPS =
 export const MODERN_TOOL_PREFERENCE =
 	"Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail";
 
+/** Stdout caps line: forbid pipe-to-head/tail in favor of tool-level limits. */
+export const MODERN_STDOUT_CAP =
+	"Cap stdout with max_output, output_tail: true, rg -m N, or fd --max-results; NEVER pipe to | head -N or | tail -N (streaming tail -f/-F through Monitor is fine)";
+
 /** Prohibited operations line shared across prompts. */
 export const PROHIBITED_BASH_OPS =
 	"NEVER use %TOOL% for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification";
@@ -38,6 +42,7 @@ export function buildModernReadonlyReplacement(
 		"- Use broad text search primarily for logs, config, comments, or other non-code text",
 		`- Use ${toolExpr} ${MODERN_READONLY_OPS}`,
 		`- ${MODERN_TOOL_PREFERENCE}`,
+		`- ${MODERN_STDOUT_CAP}`,
 		`- ${PROHIBITED_BASH_OPS.replace("%TOOL%", toolExpr)}`,
 	]
 		.map((line) => `${indent}${line}`)

@@ -30,7 +30,8 @@ const PROMPT_ADDITION = `\
   - **Disk persistence**: Outputs over 30KB are saved to disk and you'll receive a file path instead. You'll need to read that file separately (e.g., \`bat /path/to/output.txt\`). To avoid this extra step, use \`max_output\` proactively.
   - Use \`max_output: N\` to keep outputs inline up to N characters, preventing disk saves. Set 100000-500000 for commands you expect to have large output (bat, git diff, git log, build output you want to analyze). This avoids the round-trip of reading a saved file.
   - Use \`output_tail: true\` for commands where errors/results appear at the end: build commands (npm/pnpm/yarn build, cargo build, make, go build), test runners (pytest, jest, vitest, cargo test, go test), Docker builds, and log viewing. When truncation occurs, keeps the LAST N characters instead of first.
-  - For long builds/tests, combine \`run_in_background: true\` with \`output_tail: true\` to get the final errors when checking results later.`;
+  - For long builds/tests, combine \`run_in_background: true\` with \`output_tail: true\` to get the final errors when checking results later.
+  - **NEVER** pipe to \`| head -N\` or \`| tail -N\` to cap output. Use \`max_output: N\`, \`output_tail: true\`, \`rg -m N\`, \`fd --max-results N\`, or \`bat -r START:END\` instead. Streaming \`tail -f\` / \`tail -F\` through the Monitor tool is fine.`;
 
 // --- Helpers ---
 
@@ -678,6 +679,8 @@ export const bashOutputTail: Patch = {
 			return "Missing output_tail guidance in prompt";
 		if (!code.includes("preventing disk saves"))
 			return "Missing max_output guidance in prompt";
+		if (!code.includes("NEVER** pipe to `| head -N`"))
+			return "Missing pipe-head/tail prohibition in prompt";
 
 		return true;
 	},
