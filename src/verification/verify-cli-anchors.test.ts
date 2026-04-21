@@ -109,7 +109,7 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 		"ENABLE_SESSION_MEMORY",
 		'return "patched";',
 		"if (A.offset !== void 0 || A.limit !== void 0 || A.range !== void 0) return null;",
-		'if (A?.file_path && A?.offset === void 0 && A?.limit === void 0 && A?.range === void 0) return String((A?.file_path ?? "")).endsWith(".output");',
+		'if (typeof A?.file_path === "string" && A.offset === void 0 && A.limit === void 0 && A?.range === void 0) return String((A?.file_path ?? "")).endsWith(".output");',
 		signature,
 	].join("\n");
 
