@@ -223,8 +223,8 @@ test("cache-tail-policy verify rejects unpatched sysprompt scope in combined fix
 // ---------------------------------------------------------------------------
 
 const CACHE_CONTROL_BUILDER_FIXTURE = `
-function buildCacheControl({ scope: H, querySource: $ } = {}) {
-  return { type: "ephemeral", ...(checkAllowlist($) && { ttl: "1h" }), ...(H === "global" && { scope: H }) };
+function buildCacheControl({ scope: H, ttl: $ } = {}) {
+  return { type: "ephemeral", ...($ && { ttl: $ }), ...(H === "global" && { scope: H }) };
 }
 `;
 
@@ -233,8 +233,9 @@ test("cache-tail-policy patches cache control builder for 1h TTL on scoped block
 	await runCacheTailViaPasses(ast);
 	const output = print(ast);
 
-	// The TTL conditional should now include the scope parameter: (H || checkAllowlist($))
-	assert.equal(output.includes("H || checkAllowlist"), true);
+	// Post-patch: `(H || $) && { ttl: H ? "1h" : $ }`.
+	assert.equal(output.includes("H || $"), true);
+	assert.equal(output.includes('H ? "1h" : $'), true);
 });
 
 test("cache-tail-policy patches all required features in full fixture", async () => {
@@ -253,9 +254,14 @@ test("cache-tail-policy patches all required features in full fixture", async ()
 		"global scope on identity",
 	);
 	assert.equal(
-		output.includes("H || checkAllowlist"),
+		output.includes("H || $"),
 		true,
-		"scope-gated 1h TTL",
+		"scope-gated 1h TTL left operand",
+	);
+	assert.equal(
+		output.includes('H ? "1h" : $'),
+		true,
+		"scope-gated 1h TTL ternary value",
 	);
 	assert.equal(
 		output.includes("let cacheControlExcess = -4;"),
@@ -268,9 +274,9 @@ test("cache-tail-policy patches all required features in full fixture", async ()
 });
 
 test("cache-tail-policy verify rejects unpatched cache control builder in combined fixture", async () => {
-    const ast = parse(FULL_VERIFY_FIXTURE);
-    await runCacheTailViaPasses(ast);
-    let output = print(ast);
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	let output = print(ast);
 
 	// Sanity: fully patched passes
 	assert.equal(
@@ -284,35 +290,35 @@ test("cache-tail-policy verify rejects unpatched cache control builder in combin
 		"fully patched passes",
 	);
 
-	// Revert the TTL patch: (H || checkAllowlist($)) -> checkAllowlist($)
-	output = output.replace("H || checkAllowlist", "checkAllowlist");
+	// Revert the TTL patch: `(H || $) && { ttl: H ? "1h" : $ }` -> `$ && { ttl: $ }`
+	output = output.replace("H || $", "$").replace('H ? "1h" : $', "$");
 	const result = cacheTailPolicy.verify(output, parse(output));
 	assert.equal(typeof result, "string");
 	assert.equal(
 		String(result).includes("1h TTL"),
 		true,
-        `Expected TTL-related failure, got: ${result}`,
-    );
+		`Expected TTL-related failure, got: ${result}`,
+	);
 });
 
 test("cache-tail-policy verify rejects regressed cache_control block cap in combined fixture", async () => {
-    const ast = parse(FULL_VERIFY_FIXTURE);
-    await runCacheTailViaPasses(ast);
-    const output = print(ast);
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
 
-    const regressed = output.replace(
-        "let cacheControlExcess = -4;",
-        "let cacheControlExcess = -3;",
-    );
-    assert.notEqual(regressed, output);
+	const regressed = output.replace(
+		"let cacheControlExcess = -4;",
+		"let cacheControlExcess = -3;",
+	);
+	assert.notEqual(regressed, output);
 
-    const result = cacheTailPolicy.verify(regressed, parse(regressed));
-    assert.equal(typeof result, "string");
-    assert.equal(
-        String(result).includes("cacheControlExcess"),
-        true,
-        `Expected cache_control cap failure, got: ${result}`,
-    );
+	const result = cacheTailPolicy.verify(regressed, parse(regressed));
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("cacheControlExcess"),
+		true,
+		`Expected cache_control cap failure, got: ${result}`,
+	);
 });
 
 // ---------------------------------------------------------------------------

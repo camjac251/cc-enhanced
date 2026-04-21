@@ -1,11 +1,7 @@
 import traverse from "@babel/traverse";
 import * as t from "@babel/types";
 import type { Patch } from "../types.js";
-import {
-	getObjectKeyName,
-	getVerifyAst,
-	isFalseLike,
-} from "./ast-helpers.js";
+import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
 const MAX_NOTIFICATION_TEXT = "Effort set to max for this turn";
 const HIGH_NOTIFICATION_TEXT = "Effort set to high for this turn";
@@ -77,77 +73,21 @@ function isUndefinedOverrideReturn(
 	);
 }
 
-function isDirectHaikuReject(
-	node: t.Node | null | undefined,
-	paramName: string,
-): boolean {
-	if (!node || !t.isIfStatement(node) || node.alternate !== null) return false;
-	const test = node.test;
-	if (
-		!t.isCallExpression(test) ||
-		!t.isMemberExpression(test.callee) ||
-		!t.isIdentifier(test.callee.property, { name: "includes" }) ||
-		test.arguments.length !== 1 ||
-		!t.isStringLiteral(test.arguments[0], { value: "haiku" })
-	) {
-		return false;
-	}
-	const includesObject = test.callee.object;
-	if (
-		!t.isCallExpression(includesObject) ||
-		!t.isMemberExpression(includesObject.callee) ||
-		!t.isIdentifier(includesObject.callee.object, { name: paramName }) ||
-		!t.isIdentifier(includesObject.callee.property, { name: "toLowerCase" }) ||
-		includesObject.arguments.length !== 0
-	) {
-		return false;
-	}
-	return t.isReturnStatement(node.consequent) && isFalseLike(node.consequent.argument);
-}
-
-function isNormalizedDenylistReturn(
-	node: t.Node | null | undefined,
-	paramName: string,
-): boolean {
-	if (!node || !t.isReturnStatement(node)) return false;
-	const argument = node.argument;
-	if (
-		!argument ||
-		!t.isUnaryExpression(argument, { operator: "!" }) ||
-		!t.isCallExpression(argument.argument) ||
-		!t.isMemberExpression(argument.argument.callee) ||
-		!t.isIdentifier(argument.argument.callee.property, { name: "has" }) ||
-		argument.argument.arguments.length !== 1
-	) {
-		return false;
-	}
-	const [normalizedModel] = argument.argument.arguments;
-	return (
-		t.isCallExpression(normalizedModel) &&
-		normalizedModel.arguments.length === 1 &&
-		isSameParameterReference(normalizedModel.arguments[0], paramName)
-	);
-}
-
-function isMaxCapabilityGate(
-	path: traverse.NodePath<t.Function>,
-): boolean {
+function isMaxCapabilityGate(path: traverse.NodePath<t.Function>): boolean {
 	const param = getSingleIdentifierParam(path);
 	if (!param) return false;
 	const body = path.node.body;
 	if (!t.isBlockStatement(body)) return false;
 	const stmts = body.body;
-	if (stmts.length !== 4) return false;
-	const [overrideInit, overrideGuard, haikuGuard, fallback] = stmts;
+	if (stmts.length < 2) return false;
+	const [overrideInit, overrideGuard] = stmts;
 	if (!t.isVariableDeclaration(overrideInit)) return false;
 	if (overrideInit.declarations.length !== 1) return false;
 	const [overrideDecl] = overrideInit.declarations;
 	if (!t.isIdentifier(overrideDecl.id)) return false;
 	return (
 		isMaxEffortLookupInit(overrideDecl.init, param.name) &&
-		isUndefinedOverrideReturn(overrideGuard, overrideDecl.id.name) &&
-		isDirectHaikuReject(haikuGuard, param.name) &&
-		isNormalizedDenylistReturn(fallback, param.name)
+		isUndefinedOverrideReturn(overrideGuard, overrideDecl.id.name)
 	);
 }
 

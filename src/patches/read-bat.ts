@@ -124,9 +124,13 @@ function findReadToolObjectPath(
 			const hasReadToolShape = path.node.properties.some(
 				(prop) =>
 					(t.isObjectMethod(prop) || t.isObjectProperty(prop)) &&
-					["prompt", "validateInput", "call", "inputSchema", "input_schema"].includes(
-						getObjectKeyName(prop.key) ?? "",
-					),
+					[
+						"prompt",
+						"validateInput",
+						"call",
+						"inputSchema",
+						"input_schema",
+					].includes(getObjectKeyName(prop.key) ?? ""),
 			);
 			if (!hasReadToolShape) return;
 			found = path;
@@ -352,7 +356,8 @@ function getReadInputSchemaObject(
 				if (!t.isReturnStatement(stmt) || !stmt.argument) continue;
 				if (!t.isCallExpression(stmt.argument)) continue;
 				if (!t.isMemberExpression(stmt.argument.callee)) continue;
-				if (!isMemberPropertyName(stmt.argument.callee, "strictObject")) continue;
+				if (!isMemberPropertyName(stmt.argument.callee, "strictObject"))
+					continue;
 				const arg0 = stmt.argument.arguments[0];
 				if (arg0 && t.isObjectExpression(arg0)) return arg0;
 			}
@@ -860,11 +865,22 @@ function hasReadStateRebuildRangeGuard(ast: t.File): boolean {
 			if (!t.isExpression(path.node.test)) return;
 			const terms = flattenLogicalAndTerms(path.node.test);
 			const hasFilePathTruthy = terms.some((term) => {
-				if (t.isOptionalMemberExpression(term)) {
-					return !term.computed && isMemberPropertyName(term, "file_path");
+				// Upstream shape: `typeof <obj>?.file_path === "string"`.
+				if (
+					!t.isBinaryExpression(term, { operator: "===" }) ||
+					!t.isStringLiteral(term.right, { value: "string" }) ||
+					!t.isUnaryExpression(term.left, { operator: "typeof" })
+				) {
+					return false;
 				}
-				if (t.isMemberExpression(term)) {
-					return !term.computed && isMemberPropertyName(term, "file_path");
+				const member = term.left.argument;
+				if (
+					(t.isOptionalMemberExpression(member) ||
+						t.isMemberExpression(member)) &&
+					!member.computed &&
+					isMemberPropertyName(member, "file_path")
+				) {
+					return true;
 				}
 				return false;
 			});
@@ -1523,21 +1539,23 @@ export const readWithBat: Patch = {
 							expr: t.Expression,
 							propName: string,
 						): string | null => {
+							// Upstream shape: `typeof <obj>?.<prop> === "string"`.
 							if (
-								t.isOptionalMemberExpression(expr) &&
-								!expr.computed &&
-								isMemberPropertyName(expr, propName) &&
-								t.isIdentifier(expr.object)
+								!t.isBinaryExpression(expr, { operator: "===" }) ||
+								!t.isStringLiteral(expr.right, { value: "string" }) ||
+								!t.isUnaryExpression(expr.left, { operator: "typeof" })
 							) {
-								return expr.object.name;
+								return null;
 							}
+							const member = expr.left.argument;
 							if (
-								t.isMemberExpression(expr) &&
-								!expr.computed &&
-								isMemberPropertyName(expr, propName) &&
-								t.isIdentifier(expr.object)
+								(t.isOptionalMemberExpression(member) ||
+									t.isMemberExpression(member)) &&
+								!member.computed &&
+								isMemberPropertyName(member, propName) &&
+								t.isIdentifier(member.object)
 							) {
-								return expr.object.name;
+								return member.object.name;
 							}
 							return null;
 						};
@@ -3060,82 +3078,82 @@ export const readWithBat: Patch = {
 								if (!t.isBlockStatement(consequent)) return;
 								if (consequent.body.length < 2) return;
 
-                                const statements = consequent.body;
-                                let gwACall: t.CallExpression | null = null;
-                                let rawBindingName: string | null = null;
-                                let emptyCheckIndex = -1;
-                                let returnIndex = -1;
+								const statements = consequent.body;
+								let gwACall: t.CallExpression | null = null;
+								let rawBindingName: string | null = null;
+								let emptyCheckIndex = -1;
+								let returnIndex = -1;
 
-                                for (let i = 0; i < statements.length - 1; i++) {
-                                    const stmt = statements[i];
-                                    const nextStmt = statements[i + 1];
+								for (let i = 0; i < statements.length - 1; i++) {
+									const stmt = statements[i];
+									const nextStmt = statements[i + 1];
 
-                                    if (t.isVariableDeclaration(stmt)) {
-                                        const [decl] = stmt.declarations;
-                                        if (
-                                            !decl ||
-                                            !t.isIdentifier(decl.id) ||
-                                            !t.isCallExpression(decl.init)
-                                        ) {
-                                            continue;
-                                        }
-                                        if (!t.isIfStatement(nextStmt)) continue;
-                                        if (
-                                            !t.isBinaryExpression(nextStmt.test, {
-                                                operator: "===",
-                                            })
-                                        ) {
-                                            continue;
-                                        }
-                                        if (
-                                            !t.isStringLiteral(nextStmt.test.right, {
-                                                value: "",
-                                            })
-                                        ) {
-                                            continue;
-                                        }
-                                        if (
-                                            !t.isIdentifier(nextStmt.test.left, {
-                                                name: decl.id.name,
-                                            })
-                                        ) {
-                                            continue;
-                                        }
-                                        gwACall = decl.init;
-                                        rawBindingName = decl.id.name;
-                                        emptyCheckIndex = i + 1;
-                                        returnIndex = i + 2;
-                                        break;
-                                    }
+									if (t.isVariableDeclaration(stmt)) {
+										const [decl] = stmt.declarations;
+										if (
+											!decl ||
+											!t.isIdentifier(decl.id) ||
+											!t.isCallExpression(decl.init)
+										) {
+											continue;
+										}
+										if (!t.isIfStatement(nextStmt)) continue;
+										if (
+											!t.isBinaryExpression(nextStmt.test, {
+												operator: "===",
+											})
+										) {
+											continue;
+										}
+										if (
+											!t.isStringLiteral(nextStmt.test.right, {
+												value: "",
+											})
+										) {
+											continue;
+										}
+										if (
+											!t.isIdentifier(nextStmt.test.left, {
+												name: decl.id.name,
+											})
+										) {
+											continue;
+										}
+										gwACall = decl.init;
+										rawBindingName = decl.id.name;
+										emptyCheckIndex = i + 1;
+										returnIndex = i + 2;
+										break;
+									}
 
-                                    if (!t.isIfStatement(stmt)) continue;
-                                    if (!t.isBinaryExpression(stmt.test, { operator: "===" })) {
-                                        continue;
-                                    }
-                                    if (
-                                        !t.isStringLiteral(stmt.test.right, {
-                                            value: "",
-                                        })
-                                    ) {
-                                        continue;
-                                    }
-                                    if (!t.isCallExpression(stmt.test.left)) continue;
-                                    gwACall = stmt.test.left;
-                                    emptyCheckIndex = i;
-                                    returnIndex = i + 1;
-                                    break;
-                                }
+									if (!t.isIfStatement(stmt)) continue;
+									if (!t.isBinaryExpression(stmt.test, { operator: "===" })) {
+										continue;
+									}
+									if (
+										!t.isStringLiteral(stmt.test.right, {
+											value: "",
+										})
+									) {
+										continue;
+									}
+									if (!t.isCallExpression(stmt.test.left)) continue;
+									gwACall = stmt.test.left;
+									emptyCheckIndex = i;
+									returnIndex = i + 1;
+									break;
+								}
 
-                                if (emptyCheckIndex === -1 || returnIndex === -1 || !gwACall) {
-                                    return;
-                                }
-                                const firstStmt = statements[emptyCheckIndex];
-                                const secondStmt = statements[returnIndex];
-                                if (!t.isIfStatement(firstStmt) || !secondStmt) return;
+								if (emptyCheckIndex === -1 || returnIndex === -1 || !gwACall) {
+									return;
+								}
+								const firstStmt = statements[emptyCheckIndex];
+								const secondStmt = statements[returnIndex];
+								if (!t.isIfStatement(firstStmt) || !secondStmt) return;
 
-                                const emptyReturn = firstStmt.consequent;
-                                if (t.isReturnStatement(emptyReturn)) {
-                                    if (!t.isNullLiteral(emptyReturn.argument)) return;
+								const emptyReturn = firstStmt.consequent;
+								if (t.isReturnStatement(emptyReturn)) {
+									if (!t.isNullLiteral(emptyReturn.argument)) return;
 								} else if (t.isBlockStatement(emptyReturn)) {
 									if (emptyReturn.body.length !== 1) return;
 									const only = emptyReturn.body[0];
@@ -3174,25 +3192,25 @@ export const readWithBat: Patch = {
 								if (!hasSnippetProp) return;
 
 								const rawName = t.identifier("changedSnippetRaw");
-                                const capName = t.identifier("maxChangedSnippetChars");
-                                const snippetName = t.identifier("changedSnippet");
-                                const truncMarkerName = t.identifier(
-                                    "changedSnippetTruncMarker",
-                                );
+								const capName = t.identifier("maxChangedSnippetChars");
+								const snippetName = t.identifier("changedSnippet");
+								const truncMarkerName = t.identifier(
+									"changedSnippetTruncMarker",
+								);
 								const budgetName = t.identifier("changedSnippetBudget");
 								const headBudgetName = t.identifier("changedHeadBudget");
 								const tailBudgetName = t.identifier("changedTailBudget");
 
-                                const preservedPrefixStatements = statements
-                                    .slice(0, emptyCheckIndex - (rawBindingName ? 1 : 0))
-                                    .map((stmt) => t.cloneNode(stmt, true) as t.Statement);
+								const preservedPrefixStatements = statements
+									.slice(0, emptyCheckIndex - (rawBindingName ? 1 : 0))
+									.map((stmt) => t.cloneNode(stmt, true) as t.Statement);
 
-                                consequent.body = [
-                                    ...preservedPrefixStatements,
-                                    t.variableDeclaration("var", [
-                                        t.variableDeclarator(
-                                            rawName,
-                                            t.cloneNode(gwACall, true) as t.Expression,
+								consequent.body = [
+									...preservedPrefixStatements,
+									t.variableDeclaration("var", [
+										t.variableDeclarator(
+											rawName,
+											t.cloneNode(gwACall, true) as t.Expression,
 										),
 									]),
 									t.ifStatement(

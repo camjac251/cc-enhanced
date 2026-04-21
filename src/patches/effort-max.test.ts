@@ -22,14 +22,6 @@ function A6H(H, key) {
   return undefined;
 }
 
-function Vu(value) {
-  return false;
-}
-
-function Hj(value) {
-  return value;
-}
-
 function normalizeModel(H) {
   let $ = H.toLowerCase(),
     q = $.match(/claude-[a-z0-9-]+/),
@@ -37,19 +29,9 @@ function normalizeModel(H) {
   return ((K = K.replace(/-v\\d+(:\\d+)?$/, "")), (K = K.replace(/-\\d{8}$/, "")), K);
 }
 
-const BLOCKED_MODELS = new Set([
-  "claude-3-opus",
-  "claude-3-sonnet",
-  "claude-3-5-sonnet",
-  "claude-3-7-sonnet",
-  "claude-sonnet-4",
-  "claude-sonnet-4-0",
-  "claude-sonnet-4-5",
-  "claude-opus-4",
-  "claude-opus-4-0",
-  "claude-opus-4-1",
-  "claude-opus-4-5",
-]);
+function delegateGate(H) {
+  return false;
+}
 
 const ZfH = ["low", "medium", "high", "max"];
 
@@ -64,8 +46,19 @@ const picker = [
 function znH(H) {
   let $ = A6H(H, "max_effort");
   if ($ !== void 0) return $;
-  if (H.toLowerCase().includes("haiku")) return !1;
-  return !BLOCKED_MODELS.has(normalizeModel(H));
+  let q = normalizeModel(H);
+  if (
+    q.includes("claude-3-") ||
+    q === "claude-opus-4-0" ||
+    q === "claude-opus-4-1" ||
+    q === "claude-opus-4-5" ||
+    q === "claude-sonnet-4-0" ||
+    q === "claude-sonnet-4-5" ||
+    q === "claude-haiku-4-5"
+  )
+    return !1;
+  if (q === "claude-opus-4-7" || q === "claude-opus-4-6" || q === "claude-sonnet-4-6") return !0;
+  return delegateGate(normalizeModel(H));
 }
 
 function describeModel(QH) {
@@ -116,7 +109,7 @@ test("effort-max patches the current gate, picker, and ultrathink affordances", 
 	assert.equal(effortMax.verify(output), true);
 });
 
-test("effort-max matches the current denylist gate structurally", async () => {
+test("effort-max matches the 2.1.116 gate structurally", async () => {
 	const structuralFixture = `
 function lookup(modelId, key) {
   return undefined;
@@ -131,12 +124,21 @@ function normalize(modelId) {
     normalized
   );
 }
-const blockedModels = new Set(["claude-opus-4-5"]);
+function delegate(ModelId) {
+  return false;
+}
 function OCH(ModelId) {
   let configured = lookup(ModelId, "max_effort");
   if (configured !== void 0) return configured;
-  if (ModelId.toLowerCase().includes("haiku")) return !1;
-  return !blockedModels.has(normalize(ModelId));
+  let q = normalize(ModelId);
+  if (
+    q.includes("claude-3-") ||
+    q === "claude-opus-4-5" ||
+    q === "claude-haiku-4-5"
+  )
+    return !1;
+  if (q === "claude-opus-4-7") return !0;
+  return delegate(normalize(ModelId));
 }
 const picker = [
   { value: "low", color: "warning" },
@@ -156,11 +158,7 @@ function notify(EL) {
 	await runEffortMaxViaPasses(ast);
 	const output = print(ast);
 
-	assert.equal(
-		output.includes('toLowerCase().includes("haiku")'),
-		false,
-	);
-	assert.equal(output.includes(".has(normalize(ModelId))"), false);
+	assert.equal(output.includes('q.includes("claude-3-")'), false);
 	assert.equal(output.includes("return true;"), true);
 	assert.equal(output.includes('value: "max"'), true);
 	assert.equal(effortMax.verify(output, ast), true);
