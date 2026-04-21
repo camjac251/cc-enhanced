@@ -114,7 +114,7 @@ const REQUIRED_REGEX_PATCHED: RegexRule[] = [
 	{
 		id: "read-state-guard",
 		pattern:
-			/if\s*\(\s*[A-Za-z_$][A-Za-z0-9_$]*(\?\.)?file_path\s*&&\s*[A-Za-z_$][A-Za-z0-9_$]*(\?\.)?offset\s*===\s*void 0\s*&&\s*[A-Za-z_$][A-Za-z0-9_$]*(\?\.)?limit\s*===\s*void 0\s*&&\s*[A-Za-z_$][A-Za-z0-9_$]*(\?\.)?range\s*===\s*void 0[\s\S]{0,260}\)/,
+			/if\s*\(\s*typeof\s+[A-Za-z_$][A-Za-z0-9_$]*\??\.file_path\s*===\s*"string"\s*&&\s*[A-Za-z_$][A-Za-z0-9_$]*\??\.offset\s*===\s*void 0\s*&&\s*[A-Za-z_$][A-Za-z0-9_$]*\??\.limit\s*===\s*void 0\s*&&\s*[A-Za-z_$][A-Za-z0-9_$]*\??\.range\s*===\s*void 0[\s\S]{0,260}\)/,
 		reason: "Missing range-aware transcript read-state guard",
 	},
 ];
