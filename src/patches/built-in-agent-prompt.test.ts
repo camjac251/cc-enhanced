@@ -140,6 +140,12 @@ test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
 		),
 		true,
 	);
+	assert.equal(
+		output.includes(
+			"Cap stdout with max_output, output_tail: true, rg -m N, or fd --max-results; NEVER pipe to | head -N or | tail -N",
+		),
+		true,
+	);
 	assert.equal(output.includes("Complete the user's research request"), true);
 	assert.equal(builtInAgentPrompt.verify(output), true);
 });
@@ -176,6 +182,12 @@ test("built-in-agent-prompt rewrites Plan prompt and whenToUse", () => {
 	assert.equal(
 		output.includes(
 			"modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"Cap stdout with max_output, output_tail: true, rg -m N, or fd --max-results; NEVER pipe to | head -N or | tail -N",
 		),
 		true,
 	);
@@ -277,4 +289,40 @@ test("built-in-agent-prompt verify ignores unrelated legacy guidance elsewhere i
 
 test("built-in-agent-prompt verify tolerates missing agent prompt section", () => {
 	assert.equal(builtInAgentPrompt.verify("const noop = true;"), true);
+});
+
+const CORPUS_EXAMPLE_FIXTURE = `
+return \`3. **Transcript search** - grep the JSONL transcripts for narrow terms:
+   \\\`grep -rn "<narrow term>" \${$}/ --include="*.jsonl" | tail -50\\\`
+
+## Verifying a server change
+
+\\\`\\\`\\\`bash
+curl -si localhost:3000/api/thing | head -20
+\\\`\\\`\\\`
+\`;
+`;
+
+test("built-in-agent-prompt rewrites upstream corpus head/tail examples", () => {
+	const output =
+		builtInAgentPrompt.string?.(CORPUS_EXAMPLE_FIXTURE) ??
+		CORPUS_EXAMPLE_FIXTURE;
+	assert.equal(output.includes("| tail -50"), false);
+	assert.equal(output.includes("| head -20"), false);
+	assert.equal(
+		output.includes(`rg -m 50 "<narrow term>" \${$}/ -g '*.jsonl'`),
+		true,
+	);
+	assert.equal(output.includes("curl -sI localhost:3000/api/thing"), true);
+});
+
+test("built-in-agent-prompt verify flags partial corpus rewrite", () => {
+	const halfBaked = `\`curl -si localhost:3000/api/thing | head -20\``;
+	const result = builtInAgentPrompt.verify(halfBaked);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("Unpatched corpus example") ||
+			String(result).includes("Missing rewritten corpus example"),
+		true,
+	);
 });

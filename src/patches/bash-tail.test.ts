@@ -144,6 +144,7 @@ test("bash-tail patches schema, prompt, persistence, and preview surfaces", asyn
     assert.equal(output.includes("Disk persistence"), true);
     assert.equal(output.includes("build commands"), true);
     assert.equal(output.includes("maxOutput > 0"), true);
+    assert.equal(output.includes("**NEVER** pipe to `| head -N`"), true);
 });
 
 test("bash-tail runtime keeps tail content, fixes preview, and honors max_output persistence override", async () => {
