@@ -78,7 +78,7 @@ function Ex1() {
 function notify(EL) {
   EL({
     key: "ultrathink-active",
-    text: "Effort set to high for this turn",
+    text: "Deeper reasoning requested for this turn",
     priority: "immediate",
     timeoutMs: 5000,
   });
@@ -109,7 +109,7 @@ test("effort-max patches the current gate, picker, and ultrathink affordances", 
 	assert.equal(effortMax.verify(output), true);
 });
 
-test("effort-max matches the 2.1.116 gate structurally", async () => {
+test("effort-max matches a minimal gate/picker/notification shape", async () => {
 	const structuralFixture = `
 function lookup(modelId, key) {
   return undefined;
@@ -151,7 +151,7 @@ function Ex1() {
   return [{ type: "ultrathink_effort" }];
 }
 function notify(EL) {
-  EL({ key: "ultrathink-active", text: "Effort set to high for this turn" });
+  EL({ key: "ultrathink-active", text: "Deeper reasoning requested for this turn" });
 }
 `;
 	const ast = parse(structuralFixture);
