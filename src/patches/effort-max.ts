@@ -4,7 +4,6 @@ import type { Patch } from "../types.js";
 import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
 const MAX_NOTIFICATION_TEXT = "Effort set to max for this turn";
-const HIGH_NOTIFICATION_TEXT = "Effort set to high for this turn";
 
 function objectValueValue(
 	prop: t.ObjectProperty | t.ObjectMethod | t.SpreadElement,
@@ -167,14 +166,16 @@ function createEffortMaxMutator(): traverse.Visitor {
 			const keyProp = getObjectProp(path.node, "key");
 			const textProp = getObjectProp(path.node, "text");
 			if (
-				keyProp &&
-				textProp &&
-				t.isStringLiteral(keyProp.value, { value: "ultrathink-active" }) &&
-				t.isStringLiteral(textProp.value, { value: HIGH_NOTIFICATION_TEXT })
+				!keyProp ||
+				!textProp ||
+				!t.isStringLiteral(keyProp.value, { value: "ultrathink-active" }) ||
+				!t.isStringLiteral(textProp.value)
 			) {
-				textProp.value = t.stringLiteral(MAX_NOTIFICATION_TEXT);
-				patchedNotification += 1;
+				return;
 			}
+			if (textProp.value.value === MAX_NOTIFICATION_TEXT) return;
+			textProp.value = t.stringLiteral(MAX_NOTIFICATION_TEXT);
+			patchedNotification += 1;
 		},
 
 		Program: {
@@ -209,7 +210,6 @@ export const effortMax: Patch = {
 		let hasLegacyMaxCapabilityGate = false;
 		let hasPatchedMaxCapabilityGate = false;
 		let hasPatchedPicker = false;
-		let hasHighUltrathinkNotification = false;
 		let hasMaxUltrathinkNotification = false;
 
 		traverse.default(verifyAst, {
@@ -229,11 +229,15 @@ export const effortMax: Patch = {
 				);
 			},
 
-			StringLiteral(path) {
-				if (path.node.value === HIGH_NOTIFICATION_TEXT) {
-					hasHighUltrathinkNotification = true;
-				}
-				if (path.node.value === MAX_NOTIFICATION_TEXT) {
+			ObjectExpression(path) {
+				const keyProp = getObjectProp(path.node, "key");
+				const textProp = getObjectProp(path.node, "text");
+				if (
+					keyProp &&
+					textProp &&
+					t.isStringLiteral(keyProp.value, { value: "ultrathink-active" }) &&
+					t.isStringLiteral(textProp.value, { value: MAX_NOTIFICATION_TEXT })
+				) {
 					hasMaxUltrathinkNotification = true;
 				}
 			},
@@ -247,9 +251,6 @@ export const effortMax: Patch = {
 		}
 		if (!hasPatchedPicker) {
 			return 'Effort picker does not expose "max"';
-		}
-		if (hasHighUltrathinkNotification) {
-			return 'Ultrathink notification still says "high"';
 		}
 		if (!hasMaxUltrathinkNotification) {
 			return 'Did not find "Effort set to max for this turn" notification';
