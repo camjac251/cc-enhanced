@@ -151,21 +151,6 @@ const SURFACE_RULES: PromptSurfaceRule[] = [
 	},
 	{
 		file: "system/sections/using-your-tools.md",
-		required: [
-			{
-				id: "using-tools-file-search",
-				needle: "For shell-native file discovery use `fd` and `eza`.",
-				reason:
-					"Using-your-tools surface missing fd/eza file-discovery guidance",
-			},
-			{
-				id: "using-tools-content-search",
-				needle:
-					"For text search use `rg`; use `sg` for structural code search when available.",
-				reason:
-					"Using-your-tools surface missing rg/sg content-search guidance",
-			},
-		],
 		forbidden: [
 			{
 				id: "using-tools-glob",

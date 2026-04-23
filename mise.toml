@@ -364,17 +364,6 @@ else
   echo "Skipping cli.js dry-run (set CLI_TARGET to enable)"
 fi
 
-# Prefer the tested cached native binary before falling back to the promoted current build.
-if [[ -z "$NATIVE_TARGET" ]]; then
-  VERIFY_NATIVE_VERSION="${VERIFY_NATIVE_VERSION:-2.1.88}"
-  VERIFY_NATIVE_PLATFORM="${VERIFY_NATIVE_PLATFORM:-linux-x64}"
-  CACHED_NATIVE_TARGET="$HOME/.claude-patcher/native-cache/$VERIFY_NATIVE_VERSION/$VERIFY_NATIVE_PLATFORM/claude"
-  if [[ -f "$CACHED_NATIVE_TARGET" ]]; then
-    NATIVE_TARGET="$CACHED_NATIVE_TARGET"
-    echo "Using cached native target: $NATIVE_TARGET"
-  fi
-fi
-
 # Auto-detect native target from promoted binary if not set
 if [[ -z "$NATIVE_TARGET" ]]; then
   CURRENT_LINK="$HOME/.local/share/claude/versions/current"

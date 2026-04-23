@@ -154,33 +154,34 @@ function nodeContainsSearchGuidance(node: t.Node | null | undefined): boolean {
 		}
 	};
 	visit(node);
-    return found;
+	return found;
 }
 
 function isEmptyLikeBranch(node: t.Node | null | undefined): boolean {
-    if (!node) return true;
-    if (t.isArrayExpression(node)) return node.elements.length === 0;
-    if (t.isStringLiteral(node)) return node.value.length === 0;
-    if (t.isTemplateLiteral(node)) {
-        return (
-            node.expressions.length === 0 &&
-            node.quasis.length === 1 &&
-            (node.quasis[0]?.value.cooked ?? node.quasis[0]?.value.raw ?? "").length === 0
-        );
-    }
-    return (
-        t.isNullLiteral(node) ||
-        t.isIdentifier(node, { name: "undefined" }) ||
-        (t.isBooleanLiteral(node) && node.value === false)
-    );
+	if (!node) return true;
+	if (t.isArrayExpression(node)) return node.elements.length === 0;
+	if (t.isStringLiteral(node)) return node.value.length === 0;
+	if (t.isTemplateLiteral(node)) {
+		return (
+			node.expressions.length === 0 &&
+			node.quasis.length === 1 &&
+			(node.quasis[0]?.value.cooked ?? node.quasis[0]?.value.raw ?? "")
+				.length === 0
+		);
+	}
+	return (
+		t.isNullLiteral(node) ||
+		t.isIdentifier(node, { name: "undefined" }) ||
+		(t.isBooleanLiteral(node) && node.value === false)
+	);
 }
 
 function isAsymmetricPresenceConditional(
-    node: t.ConditionalExpression,
+	node: t.ConditionalExpression,
 ): boolean {
-    const consequentEmpty = isEmptyLikeBranch(node.consequent);
-    const alternateEmpty = isEmptyLikeBranch(node.alternate);
-    return consequentEmpty !== alternateEmpty;
+	const consequentEmpty = isEmptyLikeBranch(node.consequent);
+	const alternateEmpty = isEmptyLikeBranch(node.alternate);
+	return consequentEmpty !== alternateEmpty;
 }
 
 function isZeroArgIdentifierCall(
@@ -194,10 +195,72 @@ function isZeroArgIdentifierCall(
 	);
 }
 
+/**
+ * Matches a logical combination (&&/||) whose operands are zero-arg identifier
+ * calls. Upstream sometimes composes the search-tool gate from two helpers.
+ */
+function isZeroArgLogicalCall(
+	node: t.Node | null | undefined,
+): node is t.LogicalExpression {
+	return (
+		!!node &&
+		t.isLogicalExpression(node) &&
+		(node.operator === "&&" || node.operator === "||") &&
+		isZeroArgIdentifierCall(node.left) &&
+		isZeroArgIdentifierCall(node.right)
+	);
+}
+
+/**
+ * The init-level gate shape: bare zero-arg call, logical combination of two
+ * zero-arg calls, or the forced-true sentinel the patcher itself injects.
+ */
+function isGateInitExpression(node: t.Node | null | undefined): boolean {
+	return (
+		isZeroArgIdentifierCall(node) ||
+		isZeroArgLogicalCall(node) ||
+		isForcedTrue(node as t.Expression)
+	);
+}
+
+/**
+ * Walk up through any LogicalExpression wrappers to find the innermost enclosing
+ * ConditionalExpression for which this path sits in the `test` slot. Returns the
+ * conditional only when the reference is part of its test — not a branch value.
+ */
+function findEnclosingConditionalTest(
+	refPath: traverse.NodePath<t.Node>,
+): traverse.NodePath<t.ConditionalExpression> | null {
+	let current: traverse.NodePath<t.Node> | null = refPath;
+	while (current) {
+		const parent: traverse.NodePath<t.Node> | null = current.parentPath;
+		if (!parent) return null;
+		if (parent.isConditionalExpression() && parent.node.test === current.node) {
+			return parent;
+		}
+		if (parent.isLogicalExpression()) {
+			current = parent;
+			continue;
+		}
+		return null;
+	}
+	return null;
+}
+
+interface GateCandidate {
+	declPath: traverse.NodePath<t.VariableDeclarator>;
+	/**
+	 * When set, mutation targets the test of this conditional rather than the
+	 * declarator init. Used when the variable is referenced through a logical
+	 * combination that forms a guidance conditional's test.
+	 */
+	conditionalToForce?: traverse.NodePath<t.ConditionalExpression>;
+}
+
 function findEmbeddedSearchGateDeclarator(
 	path: traverse.NodePath<t.Function>,
-): traverse.NodePath<t.VariableDeclarator> | null {
-	const candidates: traverse.NodePath<t.VariableDeclarator>[] = [];
+): GateCandidate | null {
+	const candidates: GateCandidate[] = [];
 
 	path.traverse({
 		VariableDeclarator(declPath) {
@@ -207,36 +270,49 @@ function findEmbeddedSearchGateDeclarator(
 			if (!binding || binding.path.node !== declPath.node) return;
 
 			const init = declPath.node.init;
-			if (isZeroArgIdentifierCall(init) || isForcedTrue(init)) {
-                const controlsGuidance = binding.referencePaths.some((refPath) => {
-                    const conditional = refPath.findParent((parentPath) =>
-                        parentPath.isConditionalExpression(),
-                    );
-                    if (!conditional?.isConditionalExpression()) return false;
-                    if (conditional.node.test !== refPath.node) return false;
-                    return (
-                        nodeContainsSearchGuidance(conditional.node.consequent) ||
-                        nodeContainsSearchGuidance(conditional.node.alternate) ||
-                        isAsymmetricPresenceConditional(conditional.node)
-                    );
-                });
-				if (controlsGuidance) candidates.push(declPath);
+			if (isGateInitExpression(init)) {
+				let conditionalToForce:
+					| traverse.NodePath<t.ConditionalExpression>
+					| undefined;
+				const controlsGuidance = binding.referencePaths.some((refPath) => {
+					const conditional = findEnclosingConditionalTest(refPath);
+					if (!conditional) return false;
+					const guards =
+						nodeContainsSearchGuidance(conditional.node.consequent) ||
+						nodeContainsSearchGuidance(conditional.node.alternate) ||
+						isAsymmetricPresenceConditional(conditional.node);
+					if (!guards) return false;
+					// If the reference is nested inside a logical wrapper that forms
+					// the conditional test, rewrite the conditional test directly —
+					// the declarator alone is not enough to suppress guidance.
+					if (conditional.node.test !== refPath.node) {
+						conditionalToForce = conditional;
+					}
+					return true;
+				});
+				if (controlsGuidance) {
+					candidates.push({ declPath, conditionalToForce });
+				}
 				return;
 			}
 
+			if (!init || !t.isConditionalExpression(init)) return;
+			const condInit = init;
+			const test = condInit.test;
 			if (
-				!t.isConditionalExpression(init) ||
-				(!isZeroArgIdentifierCall(init.test) && !isForcedTrue(init.test))
+				!isZeroArgIdentifierCall(test) &&
+				!isZeroArgLogicalCall(test) &&
+				!isForcedTrue(test)
 			) {
 				return;
 			}
 			if (
-				!nodeContainsSearchGuidance(init.consequent) &&
-				!nodeContainsSearchGuidance(init.alternate)
+				!nodeContainsSearchGuidance(condInit.consequent) &&
+				!nodeContainsSearchGuidance(condInit.alternate)
 			) {
 				return;
 			}
-			candidates.push(declPath);
+			candidates.push({ declPath });
 		},
 	});
 
@@ -244,14 +320,25 @@ function findEmbeddedSearchGateDeclarator(
 }
 
 function patchGateInFunction(path: traverse.NodePath<t.Function>): boolean {
-	const declPath = findEmbeddedSearchGateDeclarator(path);
-	if (!declPath) return false;
+	const candidate = findEmbeddedSearchGateDeclarator(path);
+	if (!candidate) return false;
+	const { declPath, conditionalToForce } = candidate;
 	const init = declPath.node.init;
-	if (isZeroArgIdentifierCall(init)) {
+	// When the reference is threaded through a logical wrapper that forms a
+	// conditional test, force that test — rewriting the declarator alone would
+	// leave the remaining logical operands to gate the guidance at runtime.
+	if (conditionalToForce) {
+		conditionalToForce.node.test = t.unaryExpression("!", t.numericLiteral(0));
+		return true;
+	}
+	if (isZeroArgIdentifierCall(init) || isZeroArgLogicalCall(init)) {
 		declPath.node.init = t.unaryExpression("!", t.numericLiteral(0));
 		return true;
 	}
-	if (t.isConditionalExpression(init) && isZeroArgIdentifierCall(init.test)) {
+	if (
+		t.isConditionalExpression(init) &&
+		(isZeroArgIdentifierCall(init.test) || isZeroArgLogicalCall(init.test))
+	) {
 		init.test = t.unaryExpression("!", t.numericLiteral(0));
 		return true;
 	}
@@ -336,13 +423,15 @@ function patchPromptTextInFunction(path: traverse.NodePath<t.Function>): void {
 					return;
 				case "File search: Use ${} (NOT find or ls)":
 					templatePath.replaceWith(
-						t.stringLiteral("File discovery: Use `fd` and `eza`"),
+						t.stringLiteral(
+							"For shell-native file discovery use `fd` and `eza`.",
+						),
 					);
 					return;
 				case "Content search: Use ${} (NOT grep or rg)":
 					templatePath.replaceWith(
 						t.stringLiteral(
-							"Content search: Use `rg` for text and `sg` for structural code search",
+							"For text search use `rg`; use `sg` for structural code search when available.",
 						),
 					);
 					return;
@@ -359,6 +448,28 @@ function patchPromptTextInFunction(path: traverse.NodePath<t.Function>): void {
 		StringLiteral(stringPath) {
 			const next = rewriteLegacyText(stringPath.node.value);
 			if (next !== stringPath.node.value) stringPath.node.value = next;
+		},
+	});
+
+	// Upstream wraps the modern-tools guidance behind a gate that is true when
+	// bundled search tools are available: `...(gate ? [] : [modernGuidance])`.
+	// tools-off disables those search tools, so the fallback guidance is what
+	// the model should see. Unwrap the conditional so the guidance renders.
+	path.traverse({
+		ConditionalExpression(conditionalPath) {
+			const { consequent, alternate } = conditionalPath.node;
+			if (!t.isArrayExpression(consequent) || consequent.elements.length !== 0)
+				return;
+			if (!t.isArrayExpression(alternate)) return;
+			const firstEl = alternate.elements[0];
+			if (!firstEl || !t.isStringLiteral(firstEl)) return;
+			if (
+				!firstEl.value.startsWith("For shell-native") &&
+				!firstEl.value.startsWith("For text search")
+			)
+				return;
+			if (!t.isSpreadElement(conditionalPath.parent)) return;
+			conditionalPath.replaceWith(alternate);
 		},
 	});
 }
@@ -439,32 +550,82 @@ export const bashPrompt: Patch = {
 
 		if (
 			!code.includes(MODERN_BASH_IMPORTANT_LINE) ||
-			!code.includes("fd") ||
-			!code.includes("eza") ||
-			!code.includes("rg") ||
-			!code.includes("sg") ||
-			!code.includes("bat") ||
-			!code.includes("sd")
+			!code.includes("For shell-native file discovery use `fd` and `eza`.") ||
+			!code.includes(
+				"For text search use `rg`; use `sg` for structural code search when available.",
+			)
 		) {
 			return "Expected modern CLI Bash guidance missing";
 		}
 
-		// AST check: verify both functions have the specific embedded-search
-		// gate forced to !0, not just any zero-arg helper call.
+		// AST check: verify the embedded-search gate in each anchored function
+		// has been forced. Mutation may have forced any of these locations:
+		//   - declarator init itself (`H = !0`)
+		//   - conditional-init test (`H = !0 ? ... : ...`)
+		//   - a guidance conditional's test directly (`!0 ? [] : [...]`)
+		// After mutation the pre-patch reference shape is gone, so scan the
+		// function for evidence of forcing rather than re-detecting the gate.
 		const forcedAnchors = new Set<string>();
 		traverse.default(verifyAst, {
 			Function(path) {
 				const anchor = findAnchor(path);
 				if (!anchor) return;
-				const gateDecl = findEmbeddedSearchGateDeclarator(path);
-				if (!gateDecl) return;
-				const init = gateDecl.node.init;
-				if (isForcedTrue(init)) {
-					forcedAnchors.add(anchor);
-				} else if (t.isConditionalExpression(init) && isForcedTrue(init.test)) {
-					forcedAnchors.add(anchor);
-				}
 
+				let forced = false;
+				path.traverse({
+					VariableDeclarator(decl) {
+						if (forced) {
+							decl.stop();
+							return;
+						}
+						if (!t.isIdentifier(decl.node.id)) return;
+						const init = decl.node.init;
+						if (isForcedTrue(init)) {
+							// Declarator forced to !0 — confirm it participates in a
+							// guidance conditional via a direct reference test.
+							const binding = decl.scope.getBinding(decl.node.id.name);
+							if (!binding) return;
+							const guardsGuidance = binding.referencePaths.some((refPath) => {
+								const conditional = refPath.findParent((parent) =>
+									parent.isConditionalExpression(),
+								);
+								if (!conditional?.isConditionalExpression()) return false;
+								if (conditional.node.test !== refPath.node) return false;
+								return (
+									nodeContainsSearchGuidance(conditional.node.consequent) ||
+									nodeContainsSearchGuidance(conditional.node.alternate) ||
+									isAsymmetricPresenceConditional(conditional.node)
+								);
+							});
+							if (guardsGuidance) forced = true;
+							return;
+						}
+						if (
+							t.isConditionalExpression(init) &&
+							isForcedTrue(init.test) &&
+							(nodeContainsSearchGuidance(init.consequent) ||
+								nodeContainsSearchGuidance(init.alternate))
+						) {
+							forced = true;
+						}
+					},
+					ConditionalExpression(cond) {
+						if (forced) {
+							cond.stop();
+							return;
+						}
+						if (!isForcedTrue(cond.node.test)) return;
+						if (
+							nodeContainsSearchGuidance(cond.node.consequent) ||
+							nodeContainsSearchGuidance(cond.node.alternate) ||
+							isAsymmetricPresenceConditional(cond.node)
+						) {
+							forced = true;
+						}
+					},
+				});
+
+				if (forced) forcedAnchors.add(anchor);
 				path.skip();
 			},
 		});
