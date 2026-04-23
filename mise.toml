@@ -277,6 +277,36 @@ ARGS=()
 pnpm verify:cache "${ARGS[@]}"
 """
 
+[tasks."verify:cache:agent"]
+description = "Smoke-test that 1h caching engages on a subagent-shaped workload (covers the agent:* allowlist path). Uses permissive default thresholds because the tail policy's economics on short synthetic assistant responses do not match real subagent workloads; explicit flags override."
+usage = '''
+arg "[model]" help="Model ID (default: ANTHROPIC_MODEL env)"
+flag "--output-json <file>" help="Write benchmark JSON report"
+flag "--output-csv <file>" help="Write benchmark CSV report"
+flag "--max-cost-regression-pct <pct>" help="Allowed patched cost regression percent (default 10)"
+flag "--min-cache-read-delta <tokens>" help="Required patched cache_read delta tokens (default -1000000, effectively disabled)"
+flag "--dry-run" help="Render benchmark plan without calling the API"
+'''
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+  echo "Skipping verify:cache:agent (ANTHROPIC_API_KEY is not set)"
+  exit 0
+fi
+
+ARGS=(--transcript src/verification/fixtures/cache-transcript-subagent.json --ttl 1h)
+ARGS+=(--max-cost-regression-pct "${usage_max_cost_regression_pct:-10}")
+ARGS+=(--min-cache-read-delta "${usage_min_cache_read_delta:--1000000}")
+[[ -n "${usage_model:-}" ]] && ARGS+=(--model "${usage_model}")
+[[ -n "${usage_output_json:-}" ]] && ARGS+=(--output-json "${usage_output_json}")
+[[ -n "${usage_output_csv:-}" ]] && ARGS+=(--output-csv "${usage_output_csv}")
+[[ "${usage_dry_run:-}" == "true" ]] && ARGS+=(--dry-run)
+
+pnpm verify:cache "${ARGS[@]}"
+"""
+
 [tasks."prompts:export"]
 description = "Extract prompt artifacts from promoted binary or clean version"
 usage = 'arg "[source]" help="Version or current (default: current)"'
