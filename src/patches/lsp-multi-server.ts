@@ -72,6 +72,21 @@ function discoverRefs(ast: t.File): LspRefs | null {
 				"getAllServers",
 			];
 			if (!required.every((k) => propMap.has(k))) return;
+			const openFile = propMap.get("openFile");
+			const changeFile = propMap.get("changeFile");
+			const saveFile = propMap.get("saveFile");
+			const closeFile = propMap.get("closeFile");
+			const shutdown = propMap.get("shutdown");
+			const getServerForFile = propMap.get("getServerForFile");
+			if (
+				!openFile ||
+				!changeFile ||
+				!saveFile ||
+				!closeFile ||
+				!shutdown ||
+				!getServerForFile
+			)
+				return;
 
 			// Walk up to enclosing FunctionDeclaration
 			let fp: NodePath | null = path.parentPath;
@@ -152,12 +167,12 @@ function discoverRefs(ast: t.File): LspRefs | null {
 
 			result = {
 				factoryName: factoryFn.id.name,
-				openFile: propMap.get("openFile")!,
-				changeFile: propMap.get("changeFile")!,
-				saveFile: propMap.get("saveFile")!,
-				closeFile: propMap.get("closeFile")!,
-				shutdown: propMap.get("shutdown")!,
-				getServerForFile: propMap.get("getServerForFile")!,
+				openFile,
+				changeFile,
+				saveFile,
+				closeFile,
+				shutdown,
+				getServerForFile,
 				serverMap,
 				extMap,
 				trackMap,

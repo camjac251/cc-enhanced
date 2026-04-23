@@ -11,7 +11,7 @@ import {
 /**
  * Enhance TaskOutput tool response with structured file metadata.
  *
- * Stock behavior (2.1.77): task output is truncated (tail, 32K default)
+ * Stock behavior: task output is truncated (tail, 32K default)
  * with the file path buried in prose. No structured output_file tag.
  * The model often misses the file path and can't read the full output.
  *
@@ -313,7 +313,7 @@ export const taskOutputExt: Patch = {
 
 	string: (code) => {
 		// Replace the stock TaskOutput prompt body with enhanced version.
-		// In 2.1.83+ the body is preceded by a DEPRECATED notice which is preserved.
+		// Preserve the deprecation notice that can precede the prompt body.
 		return code.replace(OLD_PROMPT, NEW_PROMPT);
 	},
 

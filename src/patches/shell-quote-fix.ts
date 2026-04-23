@@ -1,4 +1,7 @@
+import traverse from "@babel/traverse";
+import type * as t from "@babel/types";
 import type { Patch } from "../types.js";
+import { getVerifyAst } from "./ast-helpers.js";
 
 /**
  * Fixes the bundled shell-quote library's unconditional `!` escaping.
@@ -9,59 +12,62 @@ import type { Patch } from "../types.js";
  * The escaping corrupts any command containing `!`: JS negation (`!x`, `!!x`, `!==`),
  * shell tests (`[ ! -f ]`), and literal `!` in arguments.
  *
- * Upstream issues: #29210, #10153, #2941 (unfixed as of 2.1.75).
+ * Upstream issues: #29210, #10153, #2941.
  *
  * Fix: remove `!` from the two escape regexes in shell-quote's quote() function.
  * - Double-quote path: /(["\\$`!])/g  ->  /(["\\$`])/g
  * - Bare-word path:    ([#!"$&'()*,:;<=>?@[\\\]^`{|}])  ->  ([#"$&'()*,:;<=>?@[\\\]^`{|}])
  */
 
-// Double-quote escaping path: remove ! from the character class
-// Original: .replace(/(["\\$`!])/g, "\\$1")
-// Fixed:    .replace(/(["\\$`])/g, "\\$1")
-// biome-ignore lint/style/useTemplate: backtick in string literal can't be in template
-const OLD_DQUOTE_REGEX = String.raw`/(["\\$` + "`!])/g";
-// biome-ignore lint/style/useTemplate: backtick in string literal can't be in template
-const NEW_DQUOTE_REGEX = String.raw`/(["\\$` + "`])/g";
+const OLD_DQUOTE_PATTERN = '(["\\\\$`!])';
+const NEW_DQUOTE_PATTERN = '(["\\\\$`])';
+const OLD_BARE_PATTERN = "([A-Za-z]:)?([#!\"$&'()*,:;<=>?@[\\\\\\]^`{|}])";
+const NEW_BARE_PATTERN = "([A-Za-z]:)?([#\"$&'()*,:;<=>?@[\\\\\\]^`{|}])";
 
-// Bare-word escaping path: remove ! from the character class
-// Original regex has ! between # and "
-// biome-ignore lint/style/useTemplate: backtick in string literal can't be in template
-const OLD_BARE_CLASS =
-	String.raw`([#!"$&'()*,:;<=>?@[\\` + String.raw`\]^` + "`{|}])";
-// biome-ignore lint/style/useTemplate: backtick in string literal can't be in template
-const NEW_BARE_CLASS =
-	String.raw`([#"$&'()*,:;<=>?@[\\` + String.raw`\]^` + "`{|}])";
+function createShellQuoteFixMutator(): traverse.Visitor {
+	return {
+		RegExpLiteral(path) {
+			if (path.node.pattern === OLD_DQUOTE_PATTERN) {
+				path.node.pattern = NEW_DQUOTE_PATTERN;
+				return;
+			}
+			if (path.node.pattern === OLD_BARE_PATTERN) {
+				path.node.pattern = NEW_BARE_PATTERN;
+			}
+		},
+	};
+}
+
+function verifyShellQuoteFix(code: string, ast?: t.File): true | string {
+	const verifyAst = getVerifyAst(code, ast);
+	if (!verifyAst) return "Unable to parse AST for shell-quote verification";
+
+	let hasNewDquote = false;
+	let hasNewBare = false;
+	let hasOldDquote = false;
+	let hasOldBare = false;
+
+	traverse.default(verifyAst, {
+		RegExpLiteral(path) {
+			if (path.node.pattern === OLD_DQUOTE_PATTERN) hasOldDquote = true;
+			if (path.node.pattern === OLD_BARE_PATTERN) hasOldBare = true;
+			if (path.node.pattern === NEW_DQUOTE_PATTERN) hasNewDquote = true;
+			if (path.node.pattern === NEW_BARE_PATTERN) hasNewBare = true;
+		},
+	});
+
+	if (hasOldDquote) return "shell-quote double-quote path still escapes !";
+	if (hasOldBare) return "shell-quote bare-word path still escapes !";
+	if (!hasNewDquote) return "shell-quote double-quote fix not found";
+	if (!hasNewBare) return "shell-quote bare-word fix not found";
+
+	return true;
+}
 
 export const shellQuoteFix: Patch = {
 	tag: "shell-quote-fix",
 
-	string: (code) => {
-		let result = code;
-		// Use function replacers: replacement strings contain $& and $`
-		// which String.replace interprets as match/pre-match substitutions
-		result = result.replace(OLD_DQUOTE_REGEX, () => NEW_DQUOTE_REGEX);
-		result = result.replace(OLD_BARE_CLASS, () => NEW_BARE_CLASS);
-		return result;
-	},
+	astPasses: () => [{ pass: "mutate", visitor: createShellQuoteFixMutator() }],
 
-	verify: (code) => {
-		// The old patterns should not exist
-		if (code.includes(OLD_DQUOTE_REGEX)) {
-			return "shell-quote double-quote path still escapes !";
-		}
-		if (code.includes(OLD_BARE_CLASS)) {
-			return "shell-quote bare-word path still escapes !";
-		}
-
-		// The new patterns should exist
-		if (!code.includes(NEW_DQUOTE_REGEX)) {
-			return "shell-quote double-quote fix not found";
-		}
-		if (!code.includes(NEW_BARE_CLASS)) {
-			return "shell-quote bare-word fix not found";
-		}
-
-		return true;
-	},
+	verify: verifyShellQuoteFix,
 };
