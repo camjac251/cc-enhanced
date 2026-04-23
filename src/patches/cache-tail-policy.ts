@@ -9,6 +9,13 @@ import {
 	objectPatternHasKey,
 } from "./ast-helpers.js";
 
+const AGENT_CACHE_TTL_QUERY_SOURCE = "agent:*";
+const CACHE_TTL_ALLOWLIST_ANCHORS = [
+	"repl_main_thread*",
+	"sdk",
+	"auto_mode",
+] as const;
+
 function isMarkerCall(node: t.Expression): boolean {
 	if (!t.isCallExpression(node)) return false;
 	if (node.arguments.length < 1) return false;
@@ -685,6 +692,211 @@ function createCacheControlTtlMutator(): traverse.Visitor {
 }
 
 // ---------------------------------------------------------------------------
+// Cache control 1h TTL allowlist mutator
+// ---------------------------------------------------------------------------
+
+function getStringLiteralArrayValues(
+	array: t.ArrayExpression,
+): string[] | null {
+	const values: string[] = [];
+	for (const element of array.elements) {
+		if (!t.isStringLiteral(element)) return null;
+		values.push(element.value);
+	}
+	return values;
+}
+
+function isCacheTtlAllowlistProperty(
+	prop: t.ObjectProperty,
+): prop is t.ObjectProperty & { value: t.ArrayExpression } {
+	if (getObjectKeyName(prop.key) !== "allowlist") return false;
+	if (!t.isArrayExpression(prop.value)) return false;
+	const values = getStringLiteralArrayValues(prop.value);
+	if (!values) return false;
+	return CACHE_TTL_ALLOWLIST_ANCHORS.every((entry) => values.includes(entry));
+}
+
+function nodeContains(
+	node: t.Node,
+	predicate: (candidate: t.Node) => boolean,
+): boolean {
+	const seen = new Set<t.Node>();
+
+	const walk = (value: unknown): boolean => {
+		if (!value) return false;
+		if (Array.isArray(value)) return value.some((item) => walk(item));
+		if (typeof value !== "object") return false;
+
+		const maybeNode = value as t.Node;
+		if (typeof (maybeNode as { type?: unknown }).type !== "string") {
+			return false;
+		}
+		if (seen.has(maybeNode)) return false;
+		seen.add(maybeNode);
+
+		if (predicate(maybeNode)) return true;
+		return Object.values(maybeNode as unknown as Record<string, unknown>).some(
+			(child) => walk(child),
+		);
+	};
+
+	return walk(node);
+}
+
+function getSomeCallObjectName(
+	node: t.Expression | null | undefined,
+): string | null {
+	if (!node) return null;
+	if (t.isParenthesizedExpression(node)) {
+		return getSomeCallObjectName(node.expression);
+	}
+	if (t.isSequenceExpression(node)) {
+		for (const expression of node.expressions) {
+			const name = getSomeCallObjectName(expression);
+			if (name) return name;
+		}
+		return null;
+	}
+	if (t.isLogicalExpression(node)) {
+		return (
+			getSomeCallObjectName(node.left) ?? getSomeCallObjectName(node.right)
+		);
+	}
+	if (
+		t.isCallExpression(node) &&
+		t.isMemberExpression(node.callee) &&
+		t.isIdentifier(node.callee.object) &&
+		isMemberPropertyName(node.callee, "some")
+	) {
+		return node.callee.object.name;
+	}
+	return null;
+}
+
+function findCacheTtlAllowlistReturn(
+	body: t.Statement[],
+): { index: number; allowlistName: string } | null {
+	for (let index = 0; index < body.length; index++) {
+		const stmt = body[index];
+		if (!t.isReturnStatement(stmt) || !t.isExpression(stmt.argument)) continue;
+		const allowlistName = getSomeCallObjectName(stmt.argument);
+		if (allowlistName) return { index, allowlistName };
+	}
+	return null;
+}
+
+function hasAgentCacheTtlRuntimeGuard(
+	body: t.Statement[],
+	allowlistName: string,
+): boolean {
+	return body.some(
+		(stmt) =>
+			nodeContains(stmt, (node) =>
+				t.isStringLiteral(node, { value: AGENT_CACHE_TTL_QUERY_SOURCE }),
+			) &&
+			nodeContains(
+				stmt,
+				(node) =>
+					t.isCallExpression(node) &&
+					t.isMemberExpression(node.callee) &&
+					t.isIdentifier(node.callee.object, { name: allowlistName }) &&
+					isMemberPropertyName(node.callee, "includes"),
+			) &&
+			nodeContains(
+				stmt,
+				(node) =>
+					t.isCallExpression(node) &&
+					t.isMemberExpression(node.callee) &&
+					t.isIdentifier(node.callee.object, { name: allowlistName }) &&
+					isMemberPropertyName(node.callee, "push"),
+			),
+	);
+}
+
+function createAgentCacheTtlRuntimeGuard(allowlistName: string): t.Statement {
+	return template.statement(
+		`
+        if (Array.isArray(ALLOWLIST) && !ALLOWLIST.includes(AGENT_SOURCE)) {
+            ALLOWLIST.push(AGENT_SOURCE);
+        }
+    `,
+		{ placeholderPattern: /^(ALLOWLIST|AGENT_SOURCE)$/ },
+	)({
+		ALLOWLIST: t.identifier(allowlistName),
+		AGENT_SOURCE: t.stringLiteral(AGENT_CACHE_TTL_QUERY_SOURCE),
+	});
+}
+
+function getEnclosingFunctionBody(
+	path: traverse.NodePath,
+): t.Statement[] | null {
+	const functionPath = path.findParent((parentPath) => parentPath.isFunction());
+	if (!functionPath) return null;
+
+	const functionNode = functionPath.node;
+	if (
+		!(
+			t.isFunctionDeclaration(functionNode) ||
+			t.isFunctionExpression(functionNode) ||
+			t.isArrowFunctionExpression(functionNode)
+		)
+	) {
+		return null;
+	}
+	if (!t.isBlockStatement(functionNode.body)) return null;
+
+	return functionNode.body.body;
+}
+
+function patchAgentCacheTtlRuntimeGuard(path: traverse.NodePath): boolean {
+	const body = getEnclosingFunctionBody(path);
+	if (!body) return false;
+	const allowlistReturn = findCacheTtlAllowlistReturn(body);
+	if (!allowlistReturn) return false;
+	if (hasAgentCacheTtlRuntimeGuard(body, allowlistReturn.allowlistName)) {
+		return true;
+	}
+
+	body.splice(
+		allowlistReturn.index,
+		0,
+		createAgentCacheTtlRuntimeGuard(allowlistReturn.allowlistName),
+	);
+	return true;
+}
+
+function createAgentCacheTtlAllowlistMutator(): traverse.Visitor {
+	let patchedDefault = false;
+	let patchedRuntimeGuard = false;
+
+	return {
+		ObjectProperty(path) {
+			if (patchedDefault && patchedRuntimeGuard) return;
+			if (!isCacheTtlAllowlistProperty(path.node)) return;
+
+			const values = getStringLiteralArrayValues(path.node.value);
+			if (!values) return;
+			if (!values.includes(AGENT_CACHE_TTL_QUERY_SOURCE)) {
+				path.node.value.elements.push(
+					t.stringLiteral(AGENT_CACHE_TTL_QUERY_SOURCE),
+				);
+			}
+			patchedDefault = true;
+			patchedRuntimeGuard = patchAgentCacheTtlRuntimeGuard(path);
+		},
+		Program: {
+			exit() {
+				if (!patchedDefault || !patchedRuntimeGuard) {
+					console.warn(
+						"cache-tail-policy: Could not patch 1h cache TTL allowlist for subagents",
+					);
+				}
+			},
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
 // Cache control block cap mutator
 // ---------------------------------------------------------------------------
 
@@ -761,6 +973,131 @@ function isClampReturnStatement(
 		}
 	}
 	return hasRequestSpread && hasMaxTokensProp;
+}
+
+function getObjectExpressionFromExpression(
+	node: t.Expression | null | undefined,
+): t.ObjectExpression | null {
+	if (!node) return null;
+	if (t.isObjectExpression(node)) return node;
+	if (t.isParenthesizedExpression(node)) {
+		return getObjectExpressionFromExpression(node.expression);
+	}
+	if (t.isSequenceExpression(node)) {
+		const last = node.expressions.at(-1);
+		return getObjectExpressionFromExpression(last);
+	}
+	return null;
+}
+
+function objectExpressionHasOwnKeys(
+	obj: t.ObjectExpression,
+	requiredKeys: string[],
+): boolean {
+	const keys = new Set<string>();
+	for (const prop of obj.properties) {
+		if (!t.isObjectProperty(prop)) continue;
+		const keyName = getObjectKeyName(prop.key);
+		if (keyName) keys.add(keyName);
+	}
+	return requiredKeys.every((key) => keys.has(key));
+}
+
+function isMainRequestObjectExpression(obj: t.ObjectExpression): boolean {
+	return objectExpressionHasOwnKeys(obj, [
+		"model",
+		"messages",
+		"system",
+		"tools",
+		"tool_choice",
+		"metadata",
+		"max_tokens",
+	]);
+}
+
+function hasCacheControlCapDeclaration(body: t.Statement[]): boolean {
+	return body.some(
+		(stmt) =>
+			t.isVariableDeclaration(stmt) &&
+			stmt.declarations.some((decl) =>
+				t.isIdentifier(decl.id, {
+					name: "cacheControlExcess",
+				}),
+			),
+	);
+}
+
+function createCacheControlCapStatements(
+	requestIdentifier: t.Identifier,
+): t.Statement[] {
+	return template.statements(
+		`
+		let cacheControlExcess = -4;
+		if (Array.isArray(REQUEST.tools)) {
+			for (let cacheTool of REQUEST.tools) {
+				if (cacheTool && typeof cacheTool === "object" && "cache_control" in cacheTool) {
+					cacheControlExcess++;
+				}
+			}
+		}
+		if (Array.isArray(REQUEST.system)) {
+			for (let cacheBlock of REQUEST.system) {
+				if (cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
+					cacheControlExcess++;
+				}
+			}
+		}
+		if (Array.isArray(REQUEST.messages)) {
+			for (let cacheMessage of REQUEST.messages) {
+				if (!cacheMessage || typeof cacheMessage !== "object" || !Array.isArray(cacheMessage.content)) continue;
+				for (let cacheBlock of cacheMessage.content) {
+					if (cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
+						cacheControlExcess++;
+					}
+				}
+			}
+		}
+		if (cacheControlExcess > 0 && Array.isArray(REQUEST.messages)) {
+			REQUEST.messages = REQUEST.messages.map((cacheMessage) => {
+				if (cacheControlExcess <= 0 || !cacheMessage || typeof cacheMessage !== "object" || !Array.isArray(cacheMessage.content)) {
+					return cacheMessage;
+				}
+				let cacheContent = cacheMessage.content.map((cacheBlock) => {
+					if (cacheControlExcess > 0 && cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
+						cacheControlExcess--;
+						let { cache_control: removedCacheControl, ...cacheBlockRest } = cacheBlock;
+						return cacheBlockRest;
+					}
+					return cacheBlock;
+				});
+				return { ...cacheMessage, content: cacheContent };
+			});
+		}
+		if (cacheControlExcess > 0 && Array.isArray(REQUEST.system)) {
+			REQUEST.system = REQUEST.system.map((cacheBlock) => {
+				if (cacheControlExcess > 0 && cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
+					cacheControlExcess--;
+					let { cache_control: removedCacheControl, ...cacheBlockRest } = cacheBlock;
+					return cacheBlockRest;
+				}
+				return cacheBlock;
+			});
+		}
+		if (cacheControlExcess > 0 && Array.isArray(REQUEST.tools)) {
+			REQUEST.tools = REQUEST.tools.map((cacheTool) => {
+				if (cacheControlExcess > 0 && cacheTool && typeof cacheTool === "object" && "cache_control" in cacheTool) {
+					cacheControlExcess--;
+					let { cache_control: removedCacheControl, ...cacheToolRest } = cacheTool;
+					return cacheToolRest;
+				}
+				return cacheTool;
+			});
+		}
+	`,
+		{ placeholderPattern: /^(REQUEST)$/ },
+	)({
+		REQUEST: requestIdentifier,
+	});
 }
 
 function findRequestClampFunction(ast: t.File): {
@@ -853,92 +1190,60 @@ function createCacheControlBlockCapClampInjector(
 					return;
 				}
 
-				if (
-					clampFn.body.some(
-						(stmt) =>
-							t.isVariableDeclaration(stmt) &&
-							stmt.declarations.some((decl) =>
-								t.isIdentifier(decl.id, {
-									name: "cacheControlExcess",
-								}),
-							),
-					)
-				) {
+				if (hasCacheControlCapDeclaration(clampFn.body)) {
 					return; // already injected
 				}
 
 				const returnIndex = clampFn.body.indexOf(clampFn.returnStmt);
 				if (returnIndex < 0) return;
 
-				const injected = template.statements(
-					`
-					let cacheControlExcess = -4;
-					if (Array.isArray(REQUEST.tools)) {
-						for (let cacheTool of REQUEST.tools) {
-							if (cacheTool && typeof cacheTool === "object" && "cache_control" in cacheTool) {
-								cacheControlExcess++;
-							}
-						}
-					}
-					if (Array.isArray(REQUEST.system)) {
-						for (let cacheBlock of REQUEST.system) {
-							if (cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
-								cacheControlExcess++;
-							}
-						}
-					}
-					if (Array.isArray(REQUEST.messages)) {
-						for (let cacheMessage of REQUEST.messages) {
-							if (!cacheMessage || typeof cacheMessage !== "object" || !Array.isArray(cacheMessage.content)) continue;
-							for (let cacheBlock of cacheMessage.content) {
-								if (cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
-									cacheControlExcess++;
-								}
-							}
-						}
-					}
-					if (cacheControlExcess > 0 && Array.isArray(REQUEST.messages)) {
-						REQUEST.messages = REQUEST.messages.map((cacheMessage) => {
-							if (cacheControlExcess <= 0 || !cacheMessage || typeof cacheMessage !== "object" || !Array.isArray(cacheMessage.content)) {
-								return cacheMessage;
-							}
-							let cacheContent = cacheMessage.content.map((cacheBlock) => {
-								if (cacheControlExcess > 0 && cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
-									cacheControlExcess--;
-									let { cache_control: removedCacheControl, ...cacheBlockRest } = cacheBlock;
-									return cacheBlockRest;
-								}
-								return cacheBlock;
-							});
-							return { ...cacheMessage, content: cacheContent };
-						});
-					}
-					if (cacheControlExcess > 0 && Array.isArray(REQUEST.system)) {
-						REQUEST.system = REQUEST.system.map((cacheBlock) => {
-							if (cacheControlExcess > 0 && cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
-								cacheControlExcess--;
-								let { cache_control: removedCacheControl, ...cacheBlockRest } = cacheBlock;
-								return cacheBlockRest;
-							}
-							return cacheBlock;
-						});
-					}
-					if (cacheControlExcess > 0 && Array.isArray(REQUEST.tools)) {
-						REQUEST.tools = REQUEST.tools.map((cacheTool) => {
-							if (cacheControlExcess > 0 && cacheTool && typeof cacheTool === "object" && "cache_control" in cacheTool) {
-								cacheControlExcess--;
-								let { cache_control: removedCacheControl, ...cacheToolRest } = cacheTool;
-								return cacheToolRest;
-							}
-							return cacheTool;
-						});
-					}
-				`,
-					{ placeholderPattern: /^(REQUEST)$/ },
-				)({
-					REQUEST: t.identifier(clampFn.requestCopyName),
-				});
+				const injected = createCacheControlCapStatements(
+					t.identifier(clampFn.requestCopyName),
+				);
 				clampFn.body.splice(returnIndex, 0, ...injected);
+			},
+		},
+	};
+}
+
+function createCacheControlBlockCapRequestBuilderInjector(): traverse.Visitor {
+	let patched = false;
+
+	return {
+		Function(path) {
+			if (patched) return;
+			if (!t.isBlockStatement(path.node.body)) return;
+			const body = path.node.body.body;
+			if (hasCacheControlCapDeclaration(body)) return;
+
+			for (let index = 0; index < body.length; index++) {
+				const stmt = body[index];
+				if (!t.isReturnStatement(stmt)) continue;
+				if (!stmt.argument || !t.isExpression(stmt.argument)) continue;
+				const obj = getObjectExpressionFromExpression(stmt.argument);
+				if (!obj || !isMainRequestObjectExpression(obj)) continue;
+
+				const requestId = path.scope.generateUidIdentifier(
+					"cacheControlledRequest",
+				);
+				const requestDeclaration = t.variableDeclaration("let", [
+					t.variableDeclarator(requestId, stmt.argument),
+				]);
+				const injected = createCacheControlCapStatements(requestId);
+
+				stmt.argument = t.cloneNode(requestId);
+				body.splice(index, 0, requestDeclaration, ...injected);
+				patched = true;
+				return;
+			}
+		},
+		Program: {
+			exit() {
+				if (!patched) {
+					console.warn(
+						"cache-tail-policy: Could not patch live request cache_control cap",
+					);
+				}
 			},
 		},
 	};
@@ -1267,14 +1572,57 @@ function verifyScopedCacheControlTtl(ast: t.File): true | string {
 	return true;
 }
 
+function verifyAgentCacheTtlAllowlist(ast: t.File): true | string {
+	let foundAllowlist = false;
+	let hasAgentQuerySource = false;
+	let hasRuntimeGuard = false;
+
+	traverse.default(ast, {
+		ObjectProperty(path) {
+			if (!isCacheTtlAllowlistProperty(path.node)) return;
+			foundAllowlist = true;
+
+			const values = getStringLiteralArrayValues(path.node.value);
+			if (values?.includes(AGENT_CACHE_TTL_QUERY_SOURCE)) {
+				hasAgentQuerySource = true;
+			}
+			const body = getEnclosingFunctionBody(path);
+			const allowlistReturn = body ? findCacheTtlAllowlistReturn(body) : null;
+			if (
+				body &&
+				allowlistReturn &&
+				hasAgentCacheTtlRuntimeGuard(body, allowlistReturn.allowlistName)
+			) {
+				hasRuntimeGuard = true;
+			}
+			if (hasAgentQuerySource && hasRuntimeGuard) {
+				path.stop();
+			}
+		},
+	});
+
+	if (!foundAllowlist) {
+		return "Could not locate 1h cache TTL allowlist anchor";
+	}
+	if (!hasAgentQuerySource) {
+		return `1h cache TTL allowlist missing ${JSON.stringify(AGENT_CACHE_TTL_QUERY_SOURCE)} query source`;
+	}
+	if (!hasRuntimeGuard) {
+		return `1h cache TTL runtime allowlist missing ${JSON.stringify(AGENT_CACHE_TTL_QUERY_SOURCE)} query source`;
+	}
+	return true;
+}
+
 function verifyCacheControlBlockCap(ast: t.File): true | string {
 	const requestClampAnchor = findRequestClampFunction(ast);
 	if (!requestClampAnchor) {
 		return "Could not locate request clamp helper for cache_control cap";
 	}
 
-	let fixedDeclCount = 0;
-	const strippedTargets = new Set<string>();
+	let fixedClampDeclCount = 0;
+	let fixedRequestBuilderDeclCount = 0;
+	const strippedClampTargets = new Set<string>();
+	const strippedRequestBuilderTargets = new Set<string>();
 
 	traverse.default(ast, {
 		Function(path) {
@@ -1286,8 +1634,27 @@ function verifyCacheControlBlockCap(ast: t.File): true | string {
 				return;
 			}
 			const functionName = getFunctionIdentifierName(path.node);
-			if (functionName !== requestClampAnchor.functionName) return;
 			if (!t.isBlockStatement(path.node.body)) return;
+
+			const isClampFunction = functionName === requestClampAnchor.functionName;
+			let requestBuilderVarName: string | null = null;
+
+			if (!isClampFunction) {
+				for (const stmt of path.node.body.body) {
+					if (t.isVariableDeclaration(stmt)) {
+						for (const decl of stmt.declarations) {
+							if (!t.isIdentifier(decl.id)) continue;
+							if (!t.isExpression(decl.init)) continue;
+							const obj = getObjectExpressionFromExpression(decl.init);
+							if (!obj || !isMainRequestObjectExpression(obj)) continue;
+							requestBuilderVarName = decl.id.name;
+							break;
+						}
+					}
+					if (requestBuilderVarName) break;
+				}
+				if (!requestBuilderVarName) return;
+			}
 
 			path.traverse({
 				VariableDeclarator(varPath) {
@@ -1304,20 +1671,22 @@ function verifyCacheControlBlockCap(ast: t.File): true | string {
 						}) &&
 						t.isNumericLiteral(varPath.node.init.argument, { value: 4 })
 					) {
-						fixedDeclCount += 1;
+						if (isClampFunction) {
+							fixedClampDeclCount += 1;
+						} else {
+							fixedRequestBuilderDeclCount += 1;
+						}
 					}
 				},
 				AssignmentExpression(assignPath) {
 					const left = assignPath.node.left;
 					const right = assignPath.node.right;
 					if (!t.isMemberExpression(left)) return;
-					if (
-						!t.isIdentifier(left.object, {
-							name: requestClampAnchor.requestCopyName,
-						})
-					) {
-						return;
-					}
+					const expectedTarget = isClampFunction
+						? requestClampAnchor.requestCopyName
+						: requestBuilderVarName;
+					if (!expectedTarget) return;
+					if (!t.isIdentifier(left.object, { name: expectedTarget })) return;
 					if (
 						!t.isCallExpression(right) ||
 						!t.isMemberExpression(right.callee)
@@ -1331,24 +1700,35 @@ function verifyCacheControlBlockCap(ast: t.File): true | string {
 						keyName === "system" ||
 						keyName === "tools"
 					) {
-						strippedTargets.add(keyName);
+						if (isClampFunction) {
+							strippedClampTargets.add(keyName);
+						} else {
+							strippedRequestBuilderTargets.add(keyName);
+						}
 					}
 				},
 			});
-
-			path.stop();
 		},
 	});
 
-	if (fixedDeclCount === 0) {
+	if (fixedClampDeclCount === 0) {
 		return "Request clamp helper missing fixed cacheControlExcess = -4 block cap";
 	}
-	if (fixedDeclCount !== 1) {
-		return `cacheControlExcess declaration is ambiguous (${fixedDeclCount} declarations)`;
+	if (fixedClampDeclCount !== 1) {
+		return `Request clamp cacheControlExcess declaration is ambiguous (${fixedClampDeclCount} declarations)`;
+	}
+	if (fixedRequestBuilderDeclCount === 0) {
+		return "Live request builder missing fixed cacheControlExcess = -4 block cap";
+	}
+	if (fixedRequestBuilderDeclCount !== 1) {
+		return `Live request builder cacheControlExcess declaration is ambiguous (${fixedRequestBuilderDeclCount} declarations)`;
 	}
 	for (const target of ["messages", "system", "tools"]) {
-		if (!strippedTargets.has(target)) {
+		if (!strippedClampTargets.has(target)) {
 			return `Request clamp helper missing cache_control strip pass for ${target}`;
+		}
+		if (!strippedRequestBuilderTargets.has(target)) {
+			return `Live request builder missing cache_control strip pass for ${target}`;
 		}
 	}
 	return true;
@@ -1378,6 +1758,14 @@ export const cacheTailPolicy: Patch = {
 			pass: "mutate",
 			visitor: createCacheControlBlockCapClampInjector(ast),
 		},
+		{
+			pass: "mutate",
+			visitor: createCacheControlBlockCapRequestBuilderInjector(),
+		},
+		{
+			pass: "mutate",
+			visitor: createAgentCacheTtlAllowlistMutator(),
+		},
 	],
 
 	verify: (code, ast) => {
@@ -1390,6 +1778,7 @@ export const cacheTailPolicy: Patch = {
 			verifyTailWindowPolicy,
 			verifySyspromptGlobalScope,
 			verifyScopedCacheControlTtl,
+			verifyAgentCacheTtlAllowlist,
 			verifyCacheControlBlockCap,
 		]) {
 			const result = check(verifyAst);
