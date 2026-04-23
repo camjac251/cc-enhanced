@@ -228,6 +228,21 @@ function buildCacheControl({ scope: H, ttl: $ } = {}) {
 }
 `;
 
+const CACHE_TTL_ALLOWLIST_FIXTURE = `
+function shouldUseOneHourCache(querySource) {
+  if (truthy(process.env.FORCE_PROMPT_CACHING_5M)) return false;
+  if (truthy(process.env.ENABLE_PROMPT_CACHING_1H)) return true;
+  if (!promptCachingAvailable() || account.isUsingOverage) return false;
+  let allowlist = getCachedAllowlist();
+  if (allowlist === null)
+    ((allowlist =
+      flag("tengu_prompt_cache_1h_config", { allowlist: ["repl_main_thread*", "sdk", "auto_mode"] })
+        .allowlist ?? []),
+      setCachedAllowlist(allowlist));
+  return querySource !== void 0 && allowlist.some((entry) => (entry.endsWith("*") ? querySource.startsWith(entry.slice(0, -1)) : querySource === entry));
+}
+`;
+
 test("cache-tail-policy patches cache control builder for 1h TTL on scoped blocks", async () => {
 	const ast = parse(CACHE_CONTROL_BUILDER_FIXTURE);
 	await runCacheTailViaPasses(ast);
@@ -236,6 +251,17 @@ test("cache-tail-policy patches cache control builder for 1h TTL on scoped block
 	// Post-patch: `(H || $) && { ttl: H ? "1h" : $ }`.
 	assert.equal(output.includes("H || $"), true);
 	assert.equal(output.includes('H ? "1h" : $'), true);
+});
+
+test("cache-tail-policy extends 1h TTL allowlist to subagent query sources", async () => {
+	const ast = parse(CACHE_TTL_ALLOWLIST_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes('"agent:*"'), true);
+	assert.equal(output.includes('allowlist.push("agent:*")'), true);
+	assert.equal(output.includes('"hook_agent"'), false);
+	assert.equal(output.includes('"verification_agent"'), false);
 });
 
 test("cache-tail-policy patches all required features in full fixture", async () => {
@@ -262,6 +288,11 @@ test("cache-tail-policy patches all required features in full fixture", async ()
 		output.includes('H ? "1h" : $'),
 		true,
 		"scope-gated 1h TTL ternary value",
+	);
+	assert.equal(
+		output.includes('"agent:*"'),
+		true,
+		"subagent query sources get 1h TTL",
 	);
 	assert.equal(
 		output.includes("let cacheControlExcess = -4;"),
@@ -301,6 +332,27 @@ test("cache-tail-policy verify rejects unpatched cache control builder in combin
 	);
 });
 
+test("cache-tail-policy verify rejects unpatched 1h TTL subagent allowlist in combined fixture", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	let output = print(ast);
+
+	assert.equal(
+		cacheTailPolicy.verify(output, parse(output)),
+		true,
+		"fully patched passes",
+	);
+
+	output = output.replaceAll('"agent:*"', '"agent:missing"');
+	const result = cacheTailPolicy.verify(output, parse(output));
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("agent:*") || String(result).includes("allowlist"),
+		true,
+		`Expected subagent allowlist failure, got: ${result}`,
+	);
+});
+
 test("cache-tail-policy verify rejects regressed cache_control block cap in combined fixture", async () => {
 	const ast = parse(FULL_VERIFY_FIXTURE);
 	await runCacheTailViaPasses(ast);
@@ -337,12 +389,28 @@ function clampRequest(H, $) {
   return { ...L, max_tokens: A };
 }
 
+function buildRequest(messages, system, tools, model, maxTokens, betas, cacheEnabled, ttl, cacheEdits, pinnedEdits, skipCacheWrite) {
+  return (
+    betas = [],
+    {
+      model: model,
+      messages: buildCacheBreakpoints(messages, cacheEnabled, ttl, true, cacheEdits, pinnedEdits, skipCacheWrite),
+      system: system,
+      tools: tools,
+      tool_choice: undefined,
+      metadata: {},
+      max_tokens: maxTokens,
+      ...(betas.length > 0 && { betas }),
+    }
+  );
+}
+
 async function sendNonStream(client, request) {
   return await client.beta.messages.create({ ...clampRequest(request, V_M) });
 }
 
 async function sendStream(client, request, signal) {
-  return await client.beta.messages.stream({ ...request }, { signal });
+  return await client.beta.messages.stream({ ...buildRequest(request.messages, request.system, request.tools, request.model, request.max_tokens, request.betas, request.cacheEnabled, request.ttl, request.cacheEdits, request.pinnedEdits, request.skipCacheWrite), stream: true }, { signal });
 }
 `;
 
@@ -350,6 +418,7 @@ const FULL_VERIFY_FIXTURE =
 	CACHE_TAIL_FIXTURE +
 	SYSPROMPT_SCOPE_FIXTURE +
 	CACHE_CONTROL_BUILDER_FIXTURE +
+	CACHE_TTL_ALLOWLIST_FIXTURE +
 	CACHE_CONTROL_BLOCK_CAP_FIXTURE;
 
 const PARTIAL_DECL_FIXTURE =
@@ -366,22 +435,23 @@ function buildCacheBreakpoints(messages) {
 ` +
 	SYSPROMPT_SCOPE_FIXTURE +
 	CACHE_CONTROL_BUILDER_FIXTURE +
+	CACHE_TTL_ALLOWLIST_FIXTURE +
 	CACHE_CONTROL_BLOCK_CAP_FIXTURE;
 
-test("cache-tail-policy caps cache_control blocks in the request clamp helper", async () => {
+test("cache-tail-policy caps cache_control blocks in the live request builder and request clamp helper", async () => {
 	const ast = parse(CACHE_TAIL_FIXTURE + CACHE_CONTROL_BLOCK_CAP_FIXTURE);
 	await runCacheTailViaPasses(ast);
 	const output = print(ast);
 
 	assert.equal(
-		output.includes("let cacheControlExcess = -4;"),
-		true,
-		"request clamp helper should count excess cache_control blocks",
+		(output.match(/let cacheControlExcess = -4;/g) ?? []).length,
+		2,
+		"live request builder and request clamp helper should count excess cache_control blocks",
 	);
 	assert.match(
 		output,
-		/\.beta\.messages\.stream\(\{\s*\.\.\.request\s*\},\s*\{\s*signal\s*\}\)/,
-		"streaming request should remain unchanged",
+		/let _cacheControlledRequest =/,
+		"live request builder should materialize the request before stripping excess cache_control blocks",
 	);
 	assert.equal(
 		output.indexOf(".messages = ") < output.indexOf(".system = "),
