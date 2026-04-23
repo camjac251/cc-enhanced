@@ -13,7 +13,7 @@ import {
 /**
  * Add output_tail and max_output options to Bash tool.
  *
- * Stock behavior (2.1.77): truncation is head-first only (first 30K chars).
+ * Stock behavior: truncation is head-first only (first 30K chars).
  * Build errors, test failures, and other end-of-output content is lost.
  * Persistence saves to disk with a 2K head-only preview.
  *

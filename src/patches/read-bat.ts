@@ -106,10 +106,6 @@ Examples:
 - Read PDF pages 1-5: \`{ file_path: "/path/to/doc.pdf", pages: "1-5" }\`
 - Debug whitespace: \`{ file_path: "/path/to/file.ts", show_whitespace: true }\``;
 
-function findReadToolObject(ast: t.File): t.ObjectExpression | null {
-	return findReadToolObjectPath(ast)?.node ?? null;
-}
-
 function findReadToolObjectPath(
 	ast: t.File,
 ): NodePath<t.ObjectExpression> | null {
@@ -2149,9 +2145,8 @@ export const readWithBat: Patch = {
 								}
 
 								// === Probe for inline vs delegation ===
-								// In 2.1.42+, the D2I() text-reading call was extracted from call()
-								// into a separate helper function (name varies per version: JZI, XwI, …).
-								// Detect which layout we have and set targetBody accordingly.
+								// Detect whether the text-reading call is inline or delegated
+								// to a helper function, then patch the body that owns the read.
 								let targetBody: t.BlockStatement = callMethod.body;
 
 								{
@@ -2177,8 +2172,8 @@ export const readWithBat: Patch = {
 									);
 
 									if (!foundInline) {
-										// Delegation detected (2.1.42+): the call method delegates to a
-										// helper function with 11+ arguments.  Thread our new params
+										// Delegation detected: the call method delegates to a
+										// helper function with several arguments. Thread our new params
 										// through every delegation call and patch the helper body instead.
 										// Collect delegation call candidates (8+ args, lowered from 11
 										// for resilience). Verify the resolved helper contains the D2I

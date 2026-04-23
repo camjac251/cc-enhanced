@@ -91,6 +91,79 @@ function buildWorktreeSetStatement(
 	);
 }
 
+function walkNode(
+	node: t.Node | null | undefined,
+	visit: (node: t.Node) => boolean | undefined,
+): boolean {
+	if (!node) return false;
+	if (visit(node)) return true;
+	for (const key of t.VISITOR_KEYS[node.type] ?? []) {
+		const child = (node as any)[key];
+		if (Array.isArray(child)) {
+			for (const item of child) {
+				if (item && typeof item.type === "string" && walkNode(item, visit)) {
+					return true;
+				}
+			}
+			continue;
+		}
+		if (child && typeof child.type === "string" && walkNode(child, visit)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function isWorktreePathAccess(
+	node: t.Node | null | undefined,
+	objectName: string,
+	options: { optional?: boolean } = {},
+): boolean {
+	if (options.optional) {
+		return (
+			t.isOptionalMemberExpression(node) &&
+			t.isIdentifier(node.object, { name: objectName }) &&
+			getMemberPropertyName(node) === "worktreePath"
+		);
+	}
+	return (
+		t.isMemberExpression(node) &&
+		t.isIdentifier(node.object, { name: objectName }) &&
+		getMemberPropertyName(node) === "worktreePath"
+	);
+}
+
+function isAdditionalWorkingDirectorySessionSet(
+	node: t.Node,
+	permVarName: string,
+): node is t.CallExpression {
+	if (!t.isCallExpression(node)) return false;
+	const callee = node.callee;
+	if (!t.isMemberExpression(callee)) return false;
+	if (getMemberPropertyName(callee) !== "set") return false;
+	if (!t.isMemberExpression(callee.object)) return false;
+	if (getMemberPropertyName(callee.object) !== "additionalWorkingDirectories")
+		return false;
+	if (!t.isIdentifier(callee.object.object, { name: permVarName })) {
+		return false;
+	}
+	if (node.arguments.length < 2) return false;
+	return t.isStringLiteral(node.arguments[1], { value: "session" });
+}
+
+function nodeHasDirectorySet(
+	node: t.Node,
+	permVarName: string,
+	matchesValue: (node: t.Node | null | undefined) => boolean,
+): boolean {
+	return walkNode(node, (candidate) => {
+		if (!isAdditionalWorkingDirectorySessionSet(candidate, permVarName)) {
+			return false;
+		}
+		return matchesValue(candidate.arguments[0]);
+	});
+}
+
 function createMutateVisitor(): traverse.Visitor {
 	let patchedSpawn = false;
 	let patchedResume = false;
@@ -123,9 +196,7 @@ function createMutateVisitor(): traverse.Visitor {
 
 			if (stmtParent.isBlockStatement() || stmtParent.isProgram()) {
 				siblings = stmtParent.get("body") as any[];
-				declIndex = siblings.findIndex(
-					(s: any) => s.node === declPath.node,
-				);
+				declIndex = siblings.findIndex((s: any) => s.node === declPath.node);
 			} else {
 				return;
 			}
@@ -149,10 +220,7 @@ function createMutateVisitor(): traverse.Visitor {
 						const s = siblings[j];
 						if (!s.isVariableDeclaration()) continue;
 						for (const d of s.node.declarations) {
-							if (
-								t.isIdentifier(d.id) &&
-								t.isNullLiteral(d.init)
-							) {
+							if (t.isIdentifier(d.id) && t.isNullLiteral(d.init)) {
 								worktreeVarName = d.id.name;
 							}
 						}
@@ -160,10 +228,7 @@ function createMutateVisitor(): traverse.Visitor {
 					// Also check within the same VariableDeclaration (comma-separated)
 					if (!worktreeVarName) {
 						for (const d of declPath.node.declarations) {
-							if (
-								t.isIdentifier(d.id) &&
-								t.isNullLiteral(d.init)
-							) {
+							if (t.isIdentifier(d.id) && t.isNullLiteral(d.init)) {
 								worktreeVarName = d.id.name;
 							}
 						}
@@ -184,6 +249,16 @@ function createMutateVisitor(): traverse.Visitor {
 						t.identifier(worktreeVarName),
 						t.identifier("worktreePath"),
 					);
+					if (
+						siblings.some((s) =>
+							nodeHasDirectorySet(s.node, permVarName, (value) =>
+								isWorktreePathAccess(value, worktreeVarName),
+							),
+						)
+					) {
+						patchedSpawn = true;
+						return;
+					}
 					const ifStmt = buildWorktreeSetStatement(
 						permVarName,
 						worktreePathExpr,
@@ -201,7 +276,9 @@ function createMutateVisitor(): traverse.Visitor {
 			// a worktreePath property in the query object. Find the variable
 			// that holds it by scanning declarators in the same VariableDeclaration
 			// (comma-separated let) and sibling statements.
-			const searchDeclarators = (declarations: t.VariableDeclarator[]): string | null => {
+			const searchDeclarators = (
+				declarations: t.VariableDeclarator[],
+			): string | null => {
 				for (const d of declarations) {
 					if (!t.isObjectExpression(d.init)) continue;
 					for (const prop of d.init.properties) {
@@ -231,6 +308,16 @@ function createMutateVisitor(): traverse.Visitor {
 			}
 
 			if (wtPathVar) {
+				if (
+					siblings.some((s) =>
+						nodeHasDirectorySet(s.node, permVarName, (value) =>
+							t.isIdentifier(value, { name: wtPathVar }),
+						),
+					)
+				) {
+					patchedResume = true;
+					return;
+				}
 				const ifStmt = buildWorktreeSetStatement(
 					permVarName,
 					t.identifier(wtPathVar),
@@ -247,9 +334,7 @@ function createMutateVisitor(): traverse.Visitor {
 				if (patchedSpawn) parts.push("spawn");
 				if (patchedResume) parts.push("resume");
 				if (parts.length > 0) {
-					console.log(
-						`Worktree permissions: patched ${parts.join(" + ")}`,
-					);
+					console.log(`Worktree permissions: patched ${parts.join(" + ")}`);
 				}
 				if (!patchedSpawn) {
 					console.warn(
@@ -272,36 +357,49 @@ function verifyWorktreePerms(code: string, ast?: t.File): true | string {
 		return "Unable to parse AST for worktree-perms verification";
 	}
 
-	let foundAdditionalWorkingDirectoriesSet = 0;
+	let foundSpawnSet = false;
+	let foundResumeSet = false;
 
 	traverse.default(verifyAst, {
 		CallExpression(path) {
-			// Look for: X.additionalWorkingDirectories.set(Y, "session")
 			const callee = path.node.callee;
 			if (!t.isMemberExpression(callee)) return;
-			if (getMemberPropertyName(callee) !== "set") return;
 			if (!t.isMemberExpression(callee.object)) return;
-			if (
-				getMemberPropertyName(callee.object) !==
-				"additionalWorkingDirectories"
-			)
+			if (!t.isIdentifier(callee.object.object)) return;
+			const permVarName = callee.object.object.name;
+			if (!isAdditionalWorkingDirectorySessionSet(path.node, permVarName)) {
 				return;
-
-			// Check second arg is "session"
-			if (path.node.arguments.length < 2) return;
-			if (!t.isStringLiteral(path.node.arguments[1], { value: "session" }))
-				return;
-
-			// Must be inside an if-statement (our injected guard)
+			}
 			const ifParent = path.findParent((p) => p.isIfStatement());
-			if (!ifParent) return;
+			if (!ifParent?.isIfStatement()) return;
 
-			foundAdditionalWorkingDirectoriesSet++;
+			const [valueArg] = path.node.arguments;
+			if (
+				t.isMemberExpression(valueArg) &&
+				getMemberPropertyName(valueArg) === "worktreePath" &&
+				t.isIdentifier(valueArg.object) &&
+				isWorktreePathAccess(ifParent.node.test, valueArg.object.name, {
+					optional: true,
+				})
+			) {
+				foundSpawnSet = true;
+				return;
+			}
+
+			if (
+				t.isIdentifier(valueArg) &&
+				t.isIdentifier(ifParent.node.test, { name: valueArg.name })
+			) {
+				foundResumeSet = true;
+			}
 		},
 	});
 
-	if (foundAdditionalWorkingDirectoriesSet < 2) {
-		return `Expected 2 additionalWorkingDirectories.set("session") calls inside if-guards, found ${foundAdditionalWorkingDirectoriesSet}`;
+	if (!foundSpawnSet) {
+		return "Missing guarded spawn worktree additionalWorkingDirectories update";
+	}
+	if (!foundResumeSet) {
+		return "Missing guarded resume worktree additionalWorkingDirectories update";
 	}
 
 	return true;
