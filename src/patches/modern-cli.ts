@@ -35,15 +35,21 @@ export function buildModernReadonlyReplacement(
 	toolExpr: string,
 	indent = "",
 ): string {
+	// Upstream sometimes wraps the tool name in a template placeholder
+	// (${someBinding}). Carrying that through into the replacement leaves
+	// an unresolved interpolation in the exported prompt surface. The
+	// replacement is about the Bash tool regardless of upstream binding,
+	// so normalize to the literal name.
+	const normalized = /^\$\{[^}]+\}$/.test(toolExpr) ? "Bash" : toolExpr;
 	return [
 		"- Use Read when you know the specific file path you need to read",
 		"- For multi-file architecture questions, prefer semantic codebase research and deep cross-file analysis when available before ad hoc searching",
 		"- For structural code patterns, prefer ast-grep or other syntax-aware code search over broad text matching",
 		"- Use broad text search primarily for logs, config, comments, or other non-code text",
-		`- Use ${toolExpr} ${MODERN_READONLY_OPS}`,
+		`- Use ${normalized} ${MODERN_READONLY_OPS}`,
 		`- ${MODERN_TOOL_PREFERENCE}`,
 		`- ${MODERN_STDOUT_CAP}`,
-		`- ${PROHIBITED_BASH_OPS.replace("%TOOL%", toolExpr)}`,
+		`- ${PROHIBITED_BASH_OPS.replace("%TOOL%", normalized)}`,
 	]
 		.map((line) => `${indent}${line}`)
 		.join("\n");

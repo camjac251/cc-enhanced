@@ -45,10 +45,7 @@ async function createValidSurfaceFixture(root: string): Promise<void> {
 	await writeSurface(
 		root,
 		"system/sections/using-your-tools.md",
-		[
-			"For shell-native file discovery use `fd` and `eza`.",
-			"For text search use `rg`; use `sg` for structural code search when available.",
-		].join("\n"),
+		"Neutral using-your-tools guidance that does not reference Glob or Grep.",
 	);
 	await writeSurface(
 		root,

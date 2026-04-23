@@ -14,8 +14,8 @@ Your strengths:
 - Reading and analyzing file contents
 
 - Use Read when you know the specific file path you need to read
-- Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find\${conditional(", grep" | "")}, cat, head, tail)
-- NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification
+- Use \${$} ONLY for read-only operations (\${H ? \`ls, git status, git log, git diff, find\${q ? ", grep" : ""}, cat, head, tail\` : "Get-ChildItem, git status, git log, git diff, Get-Content, Select-Object -First/-Last"})
+- NEVER use \${$} for: \${H ? "mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install" : "New-Item, Remove-Item, Copy-Item, Move-Item, git add, git commit, npm install, pip install"}, or any file creation/modification
 - Adapt your search approach based on the thoroughness level specified by the caller
 - Return file paths as absolute paths in your final response
 - Communicate your final report directly as a regular message - do NOT attempt to create files
@@ -43,8 +43,8 @@ You will be provided with a set of requirements and optionally a perspective on 
    - Understand the current architecture
    - Identify similar features as reference
    - Trace through relevant code paths
-   - Use \${WD} ONLY for read-only operations (ls, git status, git log, git diff, find\${Yz() ? ", grep" : ""}, cat, head, tail)
-   - NEVER use \${WD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification
+   - Use \${WD} ONLY for read-only operations (\${Yz() ? \`ls, git status, git log, git diff, find\${Yz() ? ", grep" : ""}, cat, head, tail\` : "Get-ChildItem, git status, git log, git diff, Get-Content, Select-Object -First/-Last"})
+   - NEVER use \${WD} for: \${Yz() ? "mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install" : "New-Item, Remove-Item, Copy-Item, Move-Item, git add, git commit, npm install, pip install"}, or any file creation/modification
 
 3. **Design Solution**:
    - Create implementation approach based on your assigned perspective
@@ -74,8 +74,8 @@ return \`You are a deep codebase researcher for Claude Code. Your job is to inve
 \${value_22}
 \${value_23}
 - Use \${Of} when you know the specific file path you need to read
-- Use \${FD} ONLY for read-only operations (ls, git status, git log, git diff, find\${H ? ", grep" : ""}, cat, head, tail)
-- NEVER use \${FD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification
+- Use \${FD} ONLY for read-only operations (\${H ? \`ls, git status, git log, git diff, find\${q ? ", grep" : ""}, cat, head, tail\` : "Get-ChildItem, git status, git log, git diff, Get-Content, Select-Object -First/-Last"})
+- NEVER use \${FD} for: \${H ? "mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install" : "New-Item, Remove-Item, Copy-Item, Move-Item, git add, git commit, npm install, pip install"}, or any file creation/modification
 
 Complete the user's research request efficiently and report your findings clearly.\`;
 `;
@@ -83,8 +83,8 @@ Complete the user's research request efficiently and report your findings clearl
 const PLAN_PLACEHOLDER_FIXTURE = `
 return \`3. **Inspect the Existing Architecture**:
    - Find existing patterns and conventions using \${YO() ? \\\`find\\\`, \\\`grep\\\`, and \${Of} : \${eM}, \${T_}, and \${Of}}
-   - Use \${FD} ONLY for read-only operations (ls, git status, git log, git diff, find\${YO() ? ", grep" : ""}, cat, head, tail)
-   - NEVER use \${FD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification\`;
+   - Use \${FD} ONLY for read-only operations (\${YO() ? \`ls, git status, git log, git diff, find\${YO() ? ", grep" : ""}, cat, head, tail\` : "Get-ChildItem, git status, git log, git diff, Get-Content, Select-Object -First/-Last"})
+   - NEVER use \${FD} for: \${YO() ? "mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install" : "New-Item, Remove-Item, Copy-Item, Move-Item, git add, git commit, npm install, pip install"}, or any file creation/modification\`;
 `;
 
 test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
@@ -191,10 +191,10 @@ test("built-in-agent-prompt rewrites Plan prompt and whenToUse", () => {
 		),
 		true,
 	);
-    assert.equal(
-        output.includes("Deliver a concrete implementation blueprint with:"),
-        true,
-    );
+	assert.equal(
+		output.includes("Deliver a concrete implementation blueprint with:"),
+		true,
+	);
 	assert.equal(output.includes("security reviewer should validate it"), true);
 	assert.equal(
 		output.includes(
@@ -248,7 +248,7 @@ test("built-in-agent-prompt rewrites indented helper-backed plan bash guidance",
 		PLAN_PLACEHOLDER_FIXTURE;
 	assert.equal(
 		output.includes(
-			"   - Use ${FD} ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+			"   - Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
 		),
 		true,
 	);
@@ -260,10 +260,11 @@ test("built-in-agent-prompt rewrites indented helper-backed plan bash guidance",
 	);
 	assert.equal(
 		output.includes(
-			"   - NEVER use ${FD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification",
+			"   - NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification",
 		),
 		true,
 	);
+	assert.equal(output.includes("${FD}"), false);
 	assert.equal(output.includes("${YO()"), false);
 	assert.equal(output.includes("cat, head, tail"), false);
 });

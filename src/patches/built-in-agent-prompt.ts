@@ -47,18 +47,6 @@ const EXPLORE_SECTION_REPLACEMENTS: Array<[string, string]> = [
 - Narrowing broad search results down to the highest-signal files`,
 	],
 	[
-		`- Use Read when you know the specific file path you need to read
-- Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find\${conditional(", grep" | "")}, cat, head, tail)
-- NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-		`- Use Read when you know the specific file path you need to read
-- For multi-file architecture questions, prefer semantic codebase research and deep cross-file analysis when available before ad hoc searching
-- For structural code patterns, prefer ast-grep or other syntax-aware code search over broad text matching
-- Use broad text search primarily for logs, config, comments, or other non-code text
-- Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)
-- Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail
-- NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-	],
-	[
 		`- Adapt your search approach based on the thoroughness level specified by the caller`,
 		`- Start broad, then narrow down to the highest-signal files, functions, and call paths`,
 	],
@@ -145,20 +133,6 @@ const PLAN_SECTION_REPLACEMENTS: Array<[string, string]> = [
 	[
 		`   - Trace through relevant code paths`,
 		`   - Trace the relevant code paths deeply enough to avoid speculative design and cite the key files that justify the design`,
-	],
-	[
-		`   - Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find\${conditional(", grep" | "")}, cat, head, tail)
-   - NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-		`   - Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)
-   - Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail
-   - NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-	],
-	[
-		`   - Use \${WD} ONLY for read-only operations (ls, git status, git log, git diff, find\${Yz() ? ", grep" : ""}, cat, head, tail)
-   - NEVER use \${WD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
-		`   - Use \${WD} ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)
-   - Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail
-   - NEVER use \${WD} for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification`,
 	],
 	[`3. **Design Solution**:`, `3. **Design the Implementation Blueprint**:`],
 	[
@@ -260,14 +234,25 @@ const PLAN_OPTIONAL_PATCHED_SIGNALS = [
 ];
 
 const PLACEHOLDER_TOOL_EXPR = "\\$\\{[^}]+\\}|Bash";
-const PLACEHOLDER_FIND_EXPR = "find\\$\\{[^}]+\\}";
 const PLACEHOLDER_INTERPOLATION_EXPR = "\\$\\{[^}]+\\}";
-const LEGACY_READONLY_OPS_RE = new RegExp(
-	`(^|\\n)([ \\t]*)- Use (${PLACEHOLDER_TOOL_EXPR}) ONLY for read-only operations \\(ls, git status, git log, git diff, ${PLACEHOLDER_FIND_EXPR}, cat, head, tail\\)\\n\\2- NEVER use (${PLACEHOLDER_TOOL_EXPR}) for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation\\/modification`,
+// Matches the cross-platform read-only ops block that wraps the POSIX and
+// PowerShell lists in an outer ternary. The POSIX branch is a backtick
+// template literal containing a nested `find${...}` interpolation.
+//
+// Shape:
+//   - Use ${TOOL} ONLY for read-only operations (${COND ? `ls, git status,
+//     git log, git diff, find${INNER ? ", grep" : ""}, cat, head, tail`
+//     : "Get-ChildItem, ... Select-Object -First/-Last"})
+//   - NEVER use ${TOOL} for: ${COND ? "mkdir, touch, ..." :
+//     "New-Item, Remove-Item, ..."}, or any file creation/modification
+const CROSS_PLATFORM_READONLY_OPS_RE = new RegExp(
+	`(^|\\n)([ \\t]*)- Use (${PLACEHOLDER_TOOL_EXPR}) ONLY for read-only operations \\(\\$\\{[^?]+\\? \`ls, git status, git log, git diff, find\\$\\{[^}]+\\}, cat, head, tail\` : "Get-ChildItem[^"]*"\\}\\)\\n\\2- NEVER use (${PLACEHOLDER_TOOL_EXPR}) for: \\$\\{[^?]+\\? "mkdir[^"]*" : "New-Item[^"]*"\\}, or any file creation\\/modification`,
 	"g",
 );
+// Matches the Explore-agent Guidelines block where two placeholder search
+// guidance interpolations sit above the Read line and the read-only block.
 const EXPLORE_HELPER_GUIDELINES_RE = new RegExp(
-	`Guidelines:\\n${PLACEHOLDER_INTERPOLATION_EXPR}\\n${PLACEHOLDER_INTERPOLATION_EXPR}\\n- Use ${PLACEHOLDER_INTERPOLATION_EXPR} when you know the specific file path you need to read\\n- Use (${PLACEHOLDER_TOOL_EXPR}) ONLY for read-only operations \\(ls, git status, git log, git diff, ${PLACEHOLDER_FIND_EXPR}, cat, head, tail\\)\\n- NEVER use (${PLACEHOLDER_TOOL_EXPR}) for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation\\/modification`,
+	`Guidelines:\\n${PLACEHOLDER_INTERPOLATION_EXPR}\\n${PLACEHOLDER_INTERPOLATION_EXPR}\\n- Use ${PLACEHOLDER_INTERPOLATION_EXPR} when you know the specific file path you need to read\\n- Use (${PLACEHOLDER_TOOL_EXPR}) ONLY for read-only operations \\(\\$\\{[^?]+\\? \`ls, git status, git log, git diff, find\\$\\{[^}]+\\}, cat, head, tail\` : "Get-ChildItem[^"]*"\\}\\)\\n- NEVER use (${PLACEHOLDER_TOOL_EXPR}) for: \\$\\{[^?]+\\? "mkdir[^"]*" : "New-Item[^"]*"\\}, or any file creation\\/modification`,
 	"g",
 );
 const PLAN_HELPER_FIND_LINE_RE =
@@ -345,7 +330,7 @@ export const builtInAgentPrompt: Patch = {
 					: match,
 		);
 		result = result.replace(
-			LEGACY_READONLY_OPS_RE,
+			CROSS_PLATFORM_READONLY_OPS_RE,
 			(
 				match,
 				prefix: string,
