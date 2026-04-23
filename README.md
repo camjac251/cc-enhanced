@@ -112,7 +112,7 @@ Runtime behavior, caching, memory, and configuration.
 
 | Patch | Effect |
 |-------|--------|
-| [`cache-tail-policy`](src/patches/cache-tail-policy.ts) | Widens the prompt-cache tail window, switches the system-prompt scope to global, raises the cache TTL to one hour, and clamps the live cache-control block count so eviction behaves predictably on long sessions. |
+| [`cache-tail-policy`](src/patches/cache-tail-policy.ts) | Widens the prompt-cache tail window, switches the system-prompt scope to global, extends one-hour cache TTL eligibility to subagent queries, and clamps the live cache-control block count so eviction behaves predictably on long sessions. |
 | [`effort-max`](src/patches/effort-max.ts) | The interactive `/effort` picker offers the full `max` tier across supported models, and the ultrathink notification reports the selected tier accurately. |
 | [`no-autoupdate`](src/patches/no-autoupdate.ts) | Forces the autoupdater guard to a safe stub so the patched binary is not replaced in the background. Marketplace plugin autoupdates continue to work through the same guard path. |
 | [`limits`](src/patches/limits.ts) | Read keeps larger files inline. Byte ceiling 256K -> 1M, token budget 25K -> 50K (still overridable via `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`), persistence threshold 50K -> 120K chars, per-tool result cap 100K -> 250K chars. |
