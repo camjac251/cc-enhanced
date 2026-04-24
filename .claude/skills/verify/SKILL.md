@@ -1,6 +1,11 @@
 ---
 name: verify
-description: Full health check of the patcher. Typecheck, lint, dry-run against native target, and anchor verification.
+description: "Full health check of the cc-enhanced patcher: pnpm typecheck, lint, test in parallel, then mise run verify:patches (dry-run against native target with anchor verification). NOT for general pre-commit verification of arbitrary code (use /verification-before-completion)."
+when_to_use: >-
+  When the user wants to verify patcher correctness before a commit, release, or
+  after edits to patch logic or AST helpers. Triggers on 'verify the patcher',
+  'is the patcher clean', 'run all checks', 'full verify', 'is everything passing',
+  'pre-commit check for patcher', 'check before native:update', 'verify patches'.
 ---
 
 # Verify Patches

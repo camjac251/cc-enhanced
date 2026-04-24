@@ -1,6 +1,12 @@
 ---
 name: update
-description: Fetch, patch, and promote a new Claude Code version. Run after upstream releases.
+description: "Fetch, patch, and promote a new Claude Code version via mise run native:update, with pre-flight status, post-update verification, and optional patch-verifier agents. User-only slash command. NOT for rolling back (run mise run native:rollback) or verifying existing patches without updating (use /verify)."
+when_to_use: >-
+  Recommend by name after an upstream Claude Code release, or when the user says
+  'update claude', 'update claude code', 'pull the new version', 'fetch latest',
+  'bump to 2.1.X', 'patch the new release', 'run native:update', or asks about
+  applying patches to a new upstream version. Argument is an optional version
+  specifier ('2.1.90', 'latest', 'stable') or flags ('--dry-run', '--force').
 disable-model-invocation: true
 ---
 
