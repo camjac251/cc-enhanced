@@ -82,8 +82,8 @@ test("session-memory patches extraction, coral-fern paths, and env-tunable limit
 	assert.equal(output.includes("CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT"), true);
 	assert.equal(output.includes("CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE"), true);
 	assert.equal(output.includes("CC_SM_TOOL_CALLS_BETWEEN_UPDATES"), true);
-    assert.equal(sessionMemory.verify(output, ast), true);
-    assert.equal(sessionMemory.verify(output), true);
+	assert.equal(sessionMemory.verify(output, ast), true);
+	assert.equal(sessionMemory.verify(output), true);
 });
 
 test("session-memory verify detects old coral-fern return[] guard regression", async () => {
@@ -110,21 +110,19 @@ test("session-memory verify detects old coral-fern return[] guard regression", a
 });
 
 test("session-memory verify detects missing update-threshold env override", async () => {
-    const ast = parse(SESSION_MEMORY_FIXTURE);
-    await runSessionMemoryViaPasses(ast);
-    const output = print(ast);
-    const mutated = output.replace(
-        "CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT",
-        "CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT_BROKEN",
-    );
-    assert.notEqual(mutated, output);
+	const ast = parse(SESSION_MEMORY_FIXTURE);
+	await runSessionMemoryViaPasses(ast);
+	const output = print(ast);
+	const mutated = output.replace(
+		"CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT",
+		"CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT_BROKEN",
+	);
+	assert.notEqual(mutated, output);
 
-    const result = sessionMemory.verify(mutated);
-    assert.equal(typeof result, "string");
-    assert.equal(
-        String(result).includes(
-            "CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT must appear",
-        ),
-        true,
-    );
+	const result = sessionMemory.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT must appear"),
+		true,
+	);
 });
