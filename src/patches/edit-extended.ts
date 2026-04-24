@@ -1088,6 +1088,160 @@ Error recovery:
 			}
 		},
 	});
+
+	patchEditRenderToolUseMessage(ast);
+}
+
+// Append "· batch(N)" / "· replace_all" suffix to the Edit tool-use chip when
+// the agent passes edits or replace_all. Stock renders only the file path, so
+// batch ops and global replaces are indistinguishable from single targeted edits.
+function patchEditRenderToolUseMessage(ast: t.File): void {
+	let patched = false;
+	const EDITS_BINDING = "_claudeEditEdits";
+	const REPLACE_ALL_BINDING = "_claudeEditReplaceAll";
+
+	traverse.default(ast, {
+		FunctionDeclaration(path) {
+			if (patched) return;
+			const node = path.node;
+			if (node.params.length !== 2) return;
+			const firstParam = node.params[0];
+			const secondParam = node.params[1];
+			if (!t.isObjectPattern(firstParam)) return;
+			if (!t.isObjectPattern(secondParam)) return;
+
+			const firstKeys = new Set<string>();
+			for (const prop of firstParam.properties) {
+				if (!t.isObjectProperty(prop)) continue;
+				const keyName = getObjectKeyName(prop.key);
+				if (keyName) firstKeys.add(keyName);
+			}
+			const secondKeys = new Set<string>();
+			for (const prop of secondParam.properties) {
+				if (!t.isObjectProperty(prop)) continue;
+				const keyName = getObjectKeyName(prop.key);
+				if (keyName) secondKeys.add(keyName);
+			}
+
+			if (!firstKeys.has("file_path")) return;
+			if (!secondKeys.has("verbose")) return;
+			if (
+				firstKeys.has("range") ||
+				firstKeys.has("show_whitespace") ||
+				firstKeys.has("pages") ||
+				firstKeys.has("offset") ||
+				firstKeys.has("limit")
+			)
+				return;
+			if (firstKeys.has("edits") || firstKeys.has("replace_all")) return;
+
+			let filePathBinding: string | null = null;
+			for (const prop of firstParam.properties) {
+				if (!t.isObjectProperty(prop)) continue;
+				if (getObjectKeyName(prop.key) !== "file_path") continue;
+				if (t.isIdentifier(prop.value)) filePathBinding = prop.value.name;
+				else if (
+					t.isAssignmentPattern(prop.value) &&
+					t.isIdentifier(prop.value.left)
+				) {
+					filePathBinding = prop.value.left.name;
+				}
+			}
+			if (!filePathBinding) return;
+
+			// Discriminate Edit's renderer from other 2-param {file_path}/{verbose}
+			// renderers (e.g. the operation-summary renderer) by the unique early
+			// guard `if (!<filePath>) return null;` followed by a second guard that
+			// returns "" for the plan-preview path. The second guard may be rewritten
+			// to `if (false)` by plan-diff-ui; we check for either shape.
+			const isReturnNull = (s: t.Statement): boolean =>
+				(t.isReturnStatement(s) && t.isNullLiteral(s.argument)) ||
+				(t.isBlockStatement(s) &&
+					s.body.length === 1 &&
+					t.isReturnStatement(s.body[0]) &&
+					t.isNullLiteral(s.body[0].argument));
+			const isReturnEmptyString = (s: t.Statement): boolean =>
+				(t.isReturnStatement(s) &&
+					t.isStringLiteral(s.argument, { value: "" })) ||
+				(t.isBlockStatement(s) &&
+					s.body.length === 1 &&
+					t.isReturnStatement(s.body[0]) &&
+					t.isStringLiteral(s.body[0].argument, { value: "" }));
+			const body = node.body.body;
+			const hasNullGuard =
+				body.length >= 1 &&
+				t.isIfStatement(body[0]) &&
+				t.isUnaryExpression(body[0].test, { operator: "!" }) &&
+				t.isIdentifier(body[0].test.argument, { name: filePathBinding }) &&
+				isReturnNull(body[0].consequent);
+			const hasEmptyStringGuard =
+				body.length >= 2 &&
+				t.isIfStatement(body[1]) &&
+				isReturnEmptyString(body[1].consequent);
+			if (!hasNullGuard || !hasEmptyStringGuard) return;
+
+			firstParam.properties.push(
+				t.objectProperty(t.identifier("edits"), t.identifier(EDITS_BINDING)),
+				t.objectProperty(
+					t.identifier("replace_all"),
+					t.identifier(REPLACE_ALL_BINDING),
+				),
+			);
+
+			path.traverse({
+				Function(innerPath) {
+					innerPath.skip();
+				},
+				ReturnStatement(retPath) {
+					if (!retPath.node.argument) return;
+					const arg = retPath.node.argument;
+					if (
+						t.isCallExpression(arg) &&
+						t.isIdentifier(arg.callee, { name: "_editAppendOpts" })
+					)
+						return;
+					retPath.node.argument = t.callExpression(
+						t.identifier("_editAppendOpts"),
+						[arg],
+					);
+				},
+			});
+
+			const injected = template.default.statements(
+				`
+				var _editOptsRaw = [];
+				if (Array.isArray(${EDITS_BINDING}) && ${EDITS_BINDING}.length > 0) {
+					_editOptsRaw.push("batch(" + ${EDITS_BINDING}.length + ")");
+				}
+				if (${REPLACE_ALL_BINDING}) {
+					_editOptsRaw.push("replace_all");
+				}
+				var _editOptsSuffix = _editOptsRaw.length > 0
+					? " · " + _editOptsRaw.join(", ")
+					: "";
+				function _editAppendOpts(_editResult) {
+					if (!_editOptsSuffix || _editResult == null || _editResult === "") return _editResult;
+					if (typeof _editResult === "string") return _editResult + _editOptsSuffix;
+					if (_editResult && typeof _editResult === "object" && _editResult.props) {
+						var _editChildren = _editResult.props.children;
+						var _editArr = _editChildren == null
+							? []
+							: (Array.isArray(_editChildren) ? _editChildren.slice() : [_editChildren]);
+						_editArr.push(_editOptsSuffix);
+						return Object.assign({}, _editResult, {
+							props: Object.assign({}, _editResult.props, { children: _editArr }),
+						});
+					}
+					return _editResult;
+				}
+			`,
+				{ placeholderPattern: false },
+			)();
+
+			node.body.body.unshift(...injected);
+			patched = true;
+		},
+	});
 }
 
 interface EditVerifyContext {
@@ -1373,6 +1527,28 @@ function verifyIdeDiffConfigGuard(ctx: EditVerifyContext): string | null {
 	return null;
 }
 
+function verifyEditRenderOpts(ctx: EditVerifyContext): string | null {
+	let hasHelper = false;
+	let hasCall = false;
+	traverse.default(ctx.ast, {
+		Identifier(path) {
+			if (path.node.name !== "_editAppendOpts") return;
+			const parent = path.parent;
+			if (t.isFunctionDeclaration(parent) && parent.id === path.node) {
+				hasHelper = true;
+			}
+			if (t.isCallExpression(parent) && parent.callee === path.node) {
+				hasCall = true;
+			}
+		},
+	});
+	if (!hasHelper)
+		return "Missing _editAppendOpts helper in Edit renderToolUseMessage";
+	if (!hasCall)
+		return "Missing _editAppendOpts call-site in Edit renderToolUseMessage";
+	return null;
+}
+
 export const editTool: Patch = {
 	tag: "edit-extended",
 
@@ -1411,6 +1587,7 @@ export const editTool: Patch = {
 			verifyEditValidateAndCallFlow,
 			verifyEditAliasNormalization,
 			verifyIdeDiffConfigGuard,
+			verifyEditRenderOpts,
 		];
 		for (const validator of validators) {
 			const result = validator(context);
