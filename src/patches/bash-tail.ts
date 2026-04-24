@@ -177,6 +177,7 @@ function createBashOutputTailMutator(): traverse.Visitor {
 	let persistencePatched = false;
 	let truncationPatched = false;
 	let previewPatched = false;
+	let renderPatched = false;
 
 	return {
 		// 1. Add output_tail and max_output to Bash schema
@@ -492,6 +493,102 @@ function createBashOutputTailMutator(): traverse.Visitor {
 				},
 			});
 		},
+
+		// 8. renderToolUseMessage: append patched opts to the displayed label so
+		// run_in_background / output_tail / max_output surface in the tool chip.
+		FunctionDeclaration(path) {
+			if (renderPatched) return;
+			const node = path.node;
+			if (node.params.length !== 2) return;
+			const firstParam = node.params[0];
+			const secondParam = node.params[1];
+			if (!t.isIdentifier(firstParam)) return;
+			if (!t.isObjectPattern(secondParam)) return;
+
+			const secondKeys = new Set<string>();
+			for (const prop of secondParam.properties) {
+				if (!t.isObjectProperty(prop)) continue;
+				const keyName = getObjectKeyName(prop.key);
+				if (keyName) secondKeys.add(keyName);
+			}
+			if (!secondKeys.has("verbose") || !secondKeys.has("theme")) return;
+
+			if (!t.isBlockStatement(node.body)) return;
+			let commandDestructureFound = false;
+			for (const stmt of node.body.body) {
+				if (!t.isVariableDeclaration(stmt)) continue;
+				for (const decl of stmt.declarations) {
+					if (!t.isObjectPattern(decl.id)) continue;
+					if (
+						!decl.init ||
+						!t.isIdentifier(decl.init, { name: firstParam.name })
+					)
+						continue;
+					const keys = new Set<string>();
+					for (const p of decl.id.properties) {
+						if (!t.isObjectProperty(p)) continue;
+						const keyName = getObjectKeyName(p.key);
+						if (keyName) keys.add(keyName);
+					}
+					if (keys.has("command") && keys.has("rerun")) {
+						commandDestructureFound = true;
+						break;
+					}
+				}
+				if (commandDestructureFound) break;
+			}
+			if (!commandDestructureFound) return;
+
+			path.traverse({
+				Function(innerPath) {
+					innerPath.skip();
+				},
+				ReturnStatement(retPath) {
+					if (!retPath.node.argument) return;
+					const arg = retPath.node.argument;
+					if (
+						t.isCallExpression(arg) &&
+						t.isIdentifier(arg.callee, { name: "_bashAppendOpts" })
+					)
+						return;
+					retPath.node.argument = t.callExpression(
+						t.identifier("_bashAppendOpts"),
+						[arg],
+					);
+				},
+			});
+
+			const injected = template.default.statements(`
+				var _bashOptsRaw = INPUT ? [
+					INPUT.run_in_background ? "background" : null,
+					INPUT.output_tail ? "tail" : null,
+					(typeof INPUT.max_output === "number" && INPUT.max_output > 0)
+						? "max_output: " + INPUT.max_output
+						: null,
+				].filter(function (v) { return v != null; }) : [];
+				var _bashOptsSuffix = _bashOptsRaw.length > 0
+					? " · " + _bashOptsRaw.join(", ")
+					: "";
+				function _bashAppendOpts(_bashResult) {
+					if (!_bashOptsSuffix || _bashResult == null) return _bashResult;
+					if (typeof _bashResult === "string") return _bashResult + _bashOptsSuffix;
+					if (_bashResult && typeof _bashResult === "object" && _bashResult.props) {
+						var _bashChildren = _bashResult.props.children;
+						var _bashArr = _bashChildren == null
+							? []
+							: (Array.isArray(_bashChildren) ? _bashChildren.slice() : [_bashChildren]);
+						_bashArr.push(_bashOptsSuffix);
+						return Object.assign({}, _bashResult, {
+							props: Object.assign({}, _bashResult.props, { children: _bashArr }),
+						});
+					}
+					return _bashResult;
+				}
+			`)({ INPUT: t.identifier(firstParam.name) });
+
+			node.body.body.unshift(...injected);
+			renderPatched = true;
+		},
 	};
 }
 
@@ -540,6 +637,8 @@ export const bashOutputTail: Patch = {
 		let hasTailSlice = false;
 		let hasDestructuringOutputTail = false;
 		let hasPersistenceMaxOutput = false;
+		let hasRenderOptsHelper = false;
+		let hasRenderOptsCall = false;
 
 		traverse.default(verifyAst, {
 			// Schema check
@@ -657,6 +756,18 @@ export const bashOutputTail: Patch = {
 					hasPersistenceMaxOutput = true;
 				}
 			},
+
+			// renderToolUseMessage opts suffix: helper declaration + call-site
+			Identifier(path) {
+				if (path.node.name !== "_bashAppendOpts") return;
+				const parent = path.parent;
+				if (t.isFunctionDeclaration(parent) && parent.id === path.node) {
+					hasRenderOptsHelper = true;
+				}
+				if (t.isCallExpression(parent) && parent.callee === path.node) {
+					hasRenderOptsCall = true;
+				}
+			},
 		});
 
 		if (!foundBashSchema) return "Bash input schema not found";
@@ -671,6 +782,10 @@ export const bashOutputTail: Patch = {
 			return "Missing outputTail in mapToolResult destructuring";
 		if (!hasPersistenceMaxOutput)
 			return "Missing maxOutput conditional in persistence";
+		if (!hasRenderOptsHelper)
+			return "Missing _bashAppendOpts helper in renderToolUseMessage";
+		if (!hasRenderOptsCall)
+			return "Missing _bashAppendOpts call-site in renderToolUseMessage";
 
 		// Prompt checks
 		if (!code.includes("Disk persistence"))

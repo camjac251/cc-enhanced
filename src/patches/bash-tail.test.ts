@@ -9,40 +9,42 @@ import { parse, print } from "../loader.js";
 import { bashOutputTail } from "./bash-tail.js";
 
 async function applyBashTailPatch(source: string): Promise<string> {
-    const stringPatched = bashOutputTail.string?.(source) ?? source;
-    const ast = parse(stringPatched);
-    const passes = (await bashOutputTail.astPasses?.(ast)) ?? [];
-    await runCombinedAstPasses(
-        ast,
-        passes.map((pass) => ({ tag: bashOutputTail.tag, pass })),
-        () => {},
-        () => {},
-        (_tag, error) => {
-            throw error;
-        },
-    );
-    const output = print(ast);
-    assert.equal(bashOutputTail.verify(output, ast), true);
-    return output;
+	const stringPatched = bashOutputTail.string?.(source) ?? source;
+	const ast = parse(stringPatched);
+	const passes = (await bashOutputTail.astPasses?.(ast)) ?? [];
+	await runCombinedAstPasses(
+		ast,
+		passes.map((pass) => ({ tag: bashOutputTail.tag, pass })),
+		() => {},
+		() => {},
+		(_tag, error) => {
+			throw error;
+		},
+	);
+	const output = print(ast);
+	assert.equal(bashOutputTail.verify(output, ast), true);
+	return output;
 }
 
 async function loadPatchedBashTailRuntimeModule() {
-    const output = await applyBashTailPatch(BASH_TAIL_FIXTURE);
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-tail-runtime-"));
-    const modulePath = path.join(tempDir, "patched-bash-tail-runtime.mjs");
-    await fs.writeFile(
-        modulePath,
-        `${output}
-export { BashTool, persistBlocks, truncateOutput };`,
-        "utf8",
-    );
-    const mod = await import(pathToFileURL(modulePath).href);
-    return {
-        mod,
-        cleanup: async () => {
-            await fs.rm(tempDir, { recursive: true, force: true });
-        },
-    };
+	const output = await applyBashTailPatch(BASH_TAIL_FIXTURE);
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "bash-tail-runtime-"),
+	);
+	const modulePath = path.join(tempDir, "patched-bash-tail-runtime.mjs");
+	await fs.writeFile(
+		modulePath,
+		`${output}
+export { BashTool, persistBlocks, truncateOutput, renderBashMessage };`,
+		"utf8",
+	);
+	const mod = await import(pathToFileURL(modulePath).href);
+	return {
+		mod,
+		cleanup: async () => {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		},
+	};
 }
 
 const BASH_TAIL_FIXTURE = `
@@ -124,58 +126,97 @@ function truncateOutput(text) {
     isImage: image,
   };
 }
+
+function renderBashMessage(input, { verbose, theme }) {
+  let { command, rerun } = input;
+  if (!command) return rerun ? \`rerun \${rerun}\` : null;
+  if (command.length > 100) {
+    return { type: "Text", props: { children: [command.slice(0, 100), "\\u2026"] } };
+  }
+  return command;
+}
 `;
 
 test("bash-tail verify rejects the unpatched fixture", () => {
-    const ast = parse(BASH_TAIL_FIXTURE);
-    const result = bashOutputTail.verify(BASH_TAIL_FIXTURE, ast);
-    assert.notEqual(result, true);
-    assert.equal(typeof result, "string");
+	const ast = parse(BASH_TAIL_FIXTURE);
+	const result = bashOutputTail.verify(BASH_TAIL_FIXTURE, ast);
+	assert.notEqual(result, true);
+	assert.equal(typeof result, "string");
 });
 
 test("bash-tail patches schema, prompt, persistence, and preview surfaces", async () => {
-    const output = await applyBashTailPatch(BASH_TAIL_FIXTURE);
+	const output = await applyBashTailPatch(BASH_TAIL_FIXTURE);
 
-    assert.equal(output.includes("output_tail"), true);
-    assert.equal(output.includes("max_output"), true);
-    assert.equal(output.includes("outputTail"), true);
-    assert.equal(output.includes("maxOutput"), true);
-    assert.equal(output.includes("globalThis.__bashTailOpts"), true);
-    assert.equal(output.includes("Disk persistence"), true);
-    assert.equal(output.includes("build commands"), true);
-    assert.equal(output.includes("maxOutput > 0"), true);
-    assert.equal(output.includes("**NEVER** pipe to `| head -N`"), true);
+	assert.equal(output.includes("output_tail"), true);
+	assert.equal(output.includes("max_output"), true);
+	assert.equal(output.includes("outputTail"), true);
+	assert.equal(output.includes("maxOutput"), true);
+	assert.equal(output.includes("globalThis.__bashTailOpts"), true);
+	assert.equal(output.includes("Disk persistence"), true);
+	assert.equal(output.includes("build commands"), true);
+	assert.equal(output.includes("maxOutput > 0"), true);
+	assert.equal(output.includes("**NEVER** pipe to `| head -N`"), true);
 });
 
 test("bash-tail runtime keeps tail content, fixes preview, and honors max_output persistence override", async () => {
-    const { mod, cleanup } = await loadPatchedBashTailRuntimeModule();
-    try {
-        await mod.BashTool.call(
-            { command: "ignored", output_tail: true, max_output: 5 },
-            {},
-        );
-        const tailed = mod.truncateOutput("0123456789ABCDEFG");
-        assert.equal(tailed.truncatedContent.startsWith("... ["), true);
-        assert.equal(tailed.truncatedContent.endsWith("CDEFG"), true);
+	const { mod, cleanup } = await loadPatchedBashTailRuntimeModule();
+	try {
+		await mod.BashTool.call(
+			{ command: "ignored", output_tail: true, max_output: 5 },
+			{},
+		);
+		const tailed = mod.truncateOutput("0123456789ABCDEFG");
+		assert.equal(tailed.truncatedContent.startsWith("... ["), true);
+		assert.equal(tailed.truncatedContent.endsWith("CDEFG"), true);
 
-        await mod.BashTool.call({ command: "ignored", max_output: 5 }, {});
-        const headed = mod.truncateOutput("0123456789ABCDEFG");
-        assert.equal(headed.truncatedContent.startsWith("01234"), true);
-        assert.equal(
-            headed.truncatedContent.includes("... [1 lines truncated] ..."),
-            true,
-        );
+		await mod.BashTool.call({ command: "ignored", max_output: 5 }, {});
+		const headed = mod.truncateOutput("0123456789ABCDEFG");
+		assert.equal(headed.truncatedContent.startsWith("01234"), true);
+		assert.equal(
+			headed.truncatedContent.includes("... [1 lines truncated] ..."),
+			true,
+		);
 
-        const preview = mod.BashTool.mapToolResultToToolResultBlockParam(
-            {
-                stdout: "abcdef",
-                outputTail: true,
-            },
-            3,
-        );
-        assert.deepEqual(preview, { preview: "def", hasMore: true });
+		const preview = mod.BashTool.mapToolResultToToolResultBlockParam(
+			{
+				stdout: "abcdef",
+				outputTail: true,
+			},
+			3,
+		);
+		assert.deepEqual(preview, { preview: "def", hasMore: true });
 
-    } finally {
-        await cleanup();
-    }
+		const ctx = { verbose: false, theme: "dark" };
+		assert.equal(mod.renderBashMessage({ command: "ls" }, ctx), "ls");
+		assert.equal(mod.renderBashMessage({}, ctx), null);
+		assert.equal(
+			mod.renderBashMessage({ command: "ls", output_tail: true }, ctx),
+			"ls · tail",
+		);
+		assert.equal(
+			mod.renderBashMessage(
+				{ command: "ls", run_in_background: true, max_output: 100 },
+				ctx,
+			),
+			"ls · background, max_output: 100",
+		);
+		assert.equal(
+			mod.renderBashMessage({ command: "ls", max_output: 0 }, ctx),
+			"ls",
+		);
+		assert.equal(
+			mod.renderBashMessage({ rerun: "foo", output_tail: true }, ctx),
+			"rerun foo · tail",
+		);
+		const longCmd = "x".repeat(200);
+		const el = mod.renderBashMessage(
+			{ command: longCmd, output_tail: true },
+			ctx,
+		);
+		assert.equal(el.type, "Text");
+		assert.equal(Array.isArray(el.props.children), true);
+		assert.equal(el.props.children[el.props.children.length - 1], " · tail");
+	} finally {
+		await cleanup();
+	}
 });

@@ -28,14 +28,14 @@ async function loadPatchedEditRuntimeModule() {
 	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "edit-extended-"));
 	const modulePath = path.join(tempDir, "patched-edit-runtime.mjs");
 
-    await fs.writeFile(
-        modulePath,
-        `const toolChoice = { name: "Other" };
+	await fs.writeFile(
+		modulePath,
+		`const toolChoice = { name: "Other" };
 const incoming = {};
 ${output}
-export { EditTool, EditRenderer, GenericRenderer, renderEditDialog, _claudeEditNormalizeEdits, _claudeApplyExtendedFileEdits, _claudeDecodeExtendedEditTransport, kB, Pj, S6_, yD7, jM_, v58 };`,
-        "utf8",
-    );
+export { EditTool, EditRenderer, GenericRenderer, renderEditDialog, renderEditMessage, _claudeEditNormalizeEdits, _claudeApplyExtendedFileEdits, _claudeDecodeExtendedEditTransport, kB, Pj, S6_, yD7, jM_, v58 };`,
+		"utf8",
+	);
 
 	const mod = await import(pathToFileURL(modulePath).href);
 	return {
@@ -207,6 +207,15 @@ switch (toolChoice.name) {
       void marker;
     }
 }
+
+function renderEditMessage({ file_path: f }, { verbose: v }) {
+  if (!f) return null;
+  if (f.startsWith("/tmp/plan/")) return "";
+  if (f.length > 100) {
+    return { type: "Text", props: { children: [f.slice(0, 100), "\\u2026"] } };
+  }
+  return v ? f : f.split("/").pop();
+}
 `;
 
 test("verify rejects unpatched code", () => {
@@ -255,37 +264,43 @@ test("edit-extended verify accepts escaped Bash guidance in emitted prompt strin
 });
 
 test("edit-extended keeps Edit identity while preserving structured edits through normalization", async () => {
-    const ast = parse(EDIT_FIXTURE);
-    await runEditToolViaPasses(ast);
-    const output = print(ast);
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
 
-    assert.equal(
-        output.includes("function _claudeEncodeExtendedEditTransport(INPUT)"),
-        false,
-    );
-    assert.equal(
-        output.includes("function _claudeDecodeExtendedEditTransport(INPUT)"),
-        true,
-    );
+	assert.equal(
+		output.includes("function _claudeEncodeExtendedEditTransport(INPUT)"),
+		false,
+	);
+	assert.equal(
+		output.includes("function _claudeDecodeExtendedEditTransport(INPUT)"),
+		true,
+	);
 	assert.equal(
 		output.includes("function _claudeGetExtendedEditToolSchema()"),
 		false,
 	);
-    assert.equal(output.includes("function _claudeGetExtendedEditTool()"), false);
-    assert.equal(output.includes("_args[0] = _input;"), true);
-    assert.equal(
-        output.includes("inputSchema.parse(_claudeEncodeExtendedEditTransport(H))"),
-        false,
-    );
-    assert.equal(
-        output.includes("_input = _claudeDecodeExtendedEditTransport(_input);"),
-        true,
-    );
-    assert.equal(output.includes("_claudeEditHasExtendedFields(L) ? L.edits : ["), true);
-    assert.equal(output.includes("...(_claudeEditHasExtendedFields(L) ? { edits: f } : {})"), true);
-    assert.equal(output.includes("_claudeEditInputsEquivalent"), true);
-    assert.equal(output.includes("JSON.stringify(_leftInput)"), false);
-    assert.equal(output.includes("return EditTool.inputSchema.parse(H);"), true);
+	assert.equal(output.includes("function _claudeGetExtendedEditTool()"), false);
+	assert.equal(output.includes("_args[0] = _input;"), true);
+	assert.equal(
+		output.includes("inputSchema.parse(_claudeEncodeExtendedEditTransport(H))"),
+		false,
+	);
+	assert.equal(
+		output.includes("_input = _claudeDecodeExtendedEditTransport(_input);"),
+		true,
+	);
+	assert.equal(
+		output.includes("_claudeEditHasExtendedFields(L) ? L.edits : ["),
+		true,
+	);
+	assert.equal(
+		output.includes("...(_claudeEditHasExtendedFields(L) ? { edits: f } : {})"),
+		true,
+	);
+	assert.equal(output.includes("_claudeEditInputsEquivalent"), true);
+	assert.equal(output.includes("JSON.stringify(_leftInput)"), false);
+	assert.equal(output.includes("return EditTool.inputSchema.parse(H);"), true);
 });
 
 test("edit-extended bypasses ideDiffSupport.getConfig for structured edit confirmations", async () => {
@@ -302,14 +317,14 @@ test("edit-extended bypasses ideDiffSupport.getConfig for structured edit confir
 });
 
 test("edit-extended verify fails when structured edit wiring is broken", async () => {
-    const ast = parse(EDIT_FIXTURE);
-    await runEditToolViaPasses(ast);
-    const output = print(ast);
-    const mutated = output.replaceAll(
-        "_claudeDecodeExtendedEditTransport",
-        "_claudeDecodeExtendedEditTransportBroken",
-    );
-    assert.notEqual(mutated, output);
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+	const mutated = output.replaceAll(
+		"_claudeDecodeExtendedEditTransport",
+		"_claudeDecodeExtendedEditTransportBroken",
+	);
+	assert.notEqual(mutated, output);
 
 	const result = editTool.verify(mutated);
 	assert.equal(typeof result, "string");
@@ -363,68 +378,64 @@ test("edit-extended runtime rejects empty old_string and new_string in batch", a
 });
 
 test("edit-extended original Edit tool preserves raw batch input parsing", async () => {
-    const { mod, cleanup } = await loadPatchedEditRuntimeModule();
-    try {
-        assert.equal(typeof mod._claudeDecodeExtendedEditTransport, "function");
-        assert.equal(mod.kB()[1], mod.EditTool);
-        assert.equal(mod.Pj()[2], mod.EditTool);
-        assert.equal(mod.jM_(mod.EditTool), mod.EditRenderer);
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		assert.equal(typeof mod._claudeDecodeExtendedEditTransport, "function");
+		assert.equal(mod.kB()[1], mod.EditTool);
+		assert.equal(mod.Pj()[2], mod.EditTool);
+		assert.equal(mod.jM_(mod.EditTool), mod.EditRenderer);
 
-        const parsed = mod.S6_({
-            file_path: "/tmp/example.ts",
-            edits: [{ old_string: "foo", new_string: "bar" }],
-        });
-        assert.equal(parsed.file_path, "/tmp/example.ts");
-        assert.deepEqual(parsed.edits, [{ old_string: "foo", new_string: "bar" }]);
-        assert.equal("old_string" in parsed, false);
-    } finally {
-        await cleanup();
-    }
+		const parsed = mod.S6_({
+			file_path: "/tmp/example.ts",
+			edits: [{ old_string: "foo", new_string: "bar" }],
+		});
+		assert.equal(parsed.file_path, "/tmp/example.ts");
+		assert.deepEqual(parsed.edits, [{ old_string: "foo", new_string: "bar" }]);
+		assert.equal("old_string" in parsed, false);
+	} finally {
+		await cleanup();
+	}
 });
 
 test("edit-extended runtime preserves structured edits through source-like normalization", async () => {
-    const { mod, cleanup } = await loadPatchedEditRuntimeModule();
-    try {
-        const normalized = mod.v58(mod.EditTool, {
-            file_path: "/tmp/example.ts",
-            edits: [{ old_string: "foo", new_string: "bar", replace_all: true }],
-        });
-        assert.deepEqual(normalized, {
-            file_path: "/tmp/example.ts",
-            old_string: "foo",
-            new_string: "bar",
-            replace_all: true,
-            edits: [
-                { old_string: "foo", new_string: "bar", replace_all: true },
-            ],
-        });
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const normalized = mod.v58(mod.EditTool, {
+			file_path: "/tmp/example.ts",
+			edits: [{ old_string: "foo", new_string: "bar", replace_all: true }],
+		});
+		assert.deepEqual(normalized, {
+			file_path: "/tmp/example.ts",
+			old_string: "foo",
+			new_string: "bar",
+			replace_all: true,
+			edits: [{ old_string: "foo", new_string: "bar", replace_all: true }],
+		});
 
-        const transcriptInput = mod.yD7(mod.EditTool, normalized);
-        assert.deepEqual(transcriptInput, {
-            file_path: "/tmp/example.ts",
-            edits: [
-                { old_string: "foo", new_string: "bar", replace_all: true },
-            ],
-        });
-    } finally {
-        await cleanup();
-    }
+		const transcriptInput = mod.yD7(mod.EditTool, normalized);
+		assert.deepEqual(transcriptInput, {
+			file_path: "/tmp/example.ts",
+			edits: [{ old_string: "foo", new_string: "bar", replace_all: true }],
+		});
+	} finally {
+		await cleanup();
+	}
 });
 
 test("edit-extended runtime builds auto-classifier input from structured edits", async () => {
-    const { mod, cleanup } = await loadPatchedEditRuntimeModule();
-    try {
-        const autoClassifierInput = mod.EditTool.toAutoClassifierInput({
-            file_path: "/tmp/example.ts",
-            edits: [
-                { oldString: "foo", newString: "bar" },
-                { old_string: "baz", new_string: "qux" },
-            ],
-        });
-        assert.equal(autoClassifierInput, "/tmp/example.ts: bar\nqux");
-    } finally {
-        await cleanup();
-    }
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const autoClassifierInput = mod.EditTool.toAutoClassifierInput({
+			file_path: "/tmp/example.ts",
+			edits: [
+				{ oldString: "foo", newString: "bar" },
+				{ old_string: "baz", new_string: "qux" },
+			],
+		});
+		assert.equal(autoClassifierInput, "/tmp/example.ts: bar\nqux");
+	} finally {
+		await cleanup();
+	}
 });
 
 test("edit-extended runtime preserves notebook rejection via batch edits", async () => {
@@ -680,5 +691,85 @@ test("edit-extended runtime uses semantic equality for structured edits", async 
 	} finally {
 		await cleanup();
 		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("edit-extended runtime surfaces batch and replace_all opts in tool chip", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const ctx = { verbose: false };
+		assert.equal(
+			mod.renderEditMessage({ file_path: "/home/me/src/index.ts" }, ctx),
+			"index.ts",
+		);
+		assert.equal(mod.renderEditMessage({}, ctx), null);
+		assert.equal(
+			mod.renderEditMessage({ file_path: "/tmp/plan/scratch.md" }, ctx),
+			"",
+		);
+		assert.equal(
+			mod.renderEditMessage(
+				{
+					file_path: "/tmp/plan/scratch.md",
+					edits: [{ old_string: "a", new_string: "b" }],
+				},
+				ctx,
+			),
+			"",
+			"plan-preview suppression must win over opts suffix",
+		);
+		assert.equal(
+			mod.renderEditMessage(
+				{ file_path: "/home/me/src/index.ts", replace_all: true },
+				ctx,
+			),
+			"index.ts · replace_all",
+		);
+		assert.equal(
+			mod.renderEditMessage(
+				{
+					file_path: "/home/me/src/index.ts",
+					edits: [
+						{ old_string: "a", new_string: "A" },
+						{ old_string: "b", new_string: "B" },
+						{ old_string: "c", new_string: "C" },
+					],
+				},
+				ctx,
+			),
+			"index.ts · batch(3)",
+		);
+		assert.equal(
+			mod.renderEditMessage(
+				{
+					file_path: "/home/me/src/index.ts",
+					edits: [{ old_string: "a", new_string: "A" }],
+					replace_all: true,
+				},
+				ctx,
+			),
+			"index.ts · batch(1), replace_all",
+		);
+		assert.equal(
+			mod.renderEditMessage(
+				{ file_path: "/home/me/src/index.ts", edits: [] },
+				ctx,
+			),
+			"index.ts",
+			"empty edits array must not trigger batch suffix",
+		);
+		const longPath = "/home/me/" + "x".repeat(200) + ".ts";
+		const el = mod.renderEditMessage(
+			{ file_path: longPath, replace_all: true },
+			ctx,
+		);
+		assert.equal(el.type, "Text");
+		assert.equal(Array.isArray(el.props.children), true);
+		assert.equal(
+			el.props.children[el.props.children.length - 1],
+			" · replace_all",
+		);
+	} finally {
+		await cleanup();
 	}
 });
