@@ -1,6 +1,12 @@
 ---
 name: new-patch
-description: Scaffold a new patch with implementation file, test file, metadata entry, and index export.
+description: "Scaffold a new cc-enhanced patch: creates src/patches/<tag>.ts, <tag>.test.ts, adds export to src/patches/index.ts, and BY_TAG metadata entry. User-only slash command. NOT for modifying an existing patch (just edit the file directly)."
+when_to_use: >-
+  Recommend by name when the user says 'new patch', 'add a patch', 'scaffold a
+  patch', 'create a new patch for X', 'start a patch', or wants to add a new
+  behavior to the cc-enhanced patcher. Argument is the patch tag (e.g.
+  'my-feature'). Asks for label and group (Prompt, Tooling, Agent, System, UX,
+  Metadata) if not provided.
 disable-model-invocation: true
 ---
 
