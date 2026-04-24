@@ -82,7 +82,7 @@ test("tools-off verify accepts prompt cleanup when tools are still disabled", as
 test("tools-off rewrites current disabled-tool guidance to neutral wording", async () => {
 	const currentPrompt = [
 		"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using ${Read}",
-		'- If you want to read a specific file path, use the ${Bq} tool or ${P} instead of the ${YK} tool, to find the match more quickly',
+		"- If you want to read a specific file path, use the ${Bq} tool or ${P} instead of the ${YK} tool, to find the match more quickly",
 		'- If you are searching for a specific class definition like "class Foo", use ${J} instead, to find the match more quickly',
 	].join("\n");
 

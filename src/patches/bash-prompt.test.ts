@@ -210,11 +210,11 @@ function nl1() {
 		),
 		true,
 	);
-    assert.equal(output.includes("appropriate dedicated tool"), false);
+	assert.equal(output.includes("appropriate dedicated tool"), false);
 });
 
 test("bash-prompt patches latest tool-guidance gate routed through an intermediate array", async () => {
-    const fixture = `
+	const fixture = `
 function ES1(H) {
   let $ = [Vv, RE].find((A) => H.has(A));
   if (xD()) {
@@ -238,10 +238,10 @@ function ES1(H) {
 }
 `;
 
-    const ast = parse(fixture);
-    await runBashPromptViaPasses(ast);
-    const output = print(ast);
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
 
-    assert.equal(output.includes("let q = !0"), true);
-    assert.equal(output.includes("Prefer dedicated tools over"), true);
+	assert.equal(output.includes("let q = !0"), true);
+	assert.equal(output.includes("Prefer dedicated tools over"), true);
 });

@@ -213,7 +213,7 @@ function createSessionMemoryMutator(truthyFn: string): traverse.Visitor {
 	let patchedPastSessions = false;
 	let patchedSectionLimits = false;
 	let patchedThresholds = false;
-    return {
+	return {
 		Function(path: any) {
 			if (patchedExtraction) return;
 			if (!t.isBlockStatement(path.node.body)) return;
@@ -334,9 +334,9 @@ function createSessionMemoryMutator(truthyFn: string): traverse.Visitor {
 						getObjectKeyName(p.key) === name && t.isNumericLiteral(p.value),
 				);
 
-            const minInit = getProp("minimumMessageTokensToInit");
-            const minBetween = getProp("minimumTokensBetweenUpdate");
-            const toolCalls = getProp("toolCallsBetweenUpdates");
+			const minInit = getProp("minimumMessageTokensToInit");
+			const minBetween = getProp("minimumTokensBetweenUpdate");
+			const toolCalls = getProp("toolCallsBetweenUpdates");
 			if (!minInit || !minBetween || !toolCalls) return;
 
 			if (
@@ -383,9 +383,9 @@ function createSessionMemoryMutator(truthyFn: string): traverse.Visitor {
 						"Session memory: Could not find session update threshold defaults",
 					);
 				}
-            },
-        },
-    };
+			},
+		},
+	};
 }
 
 export const sessionMemory: Patch = {
@@ -417,13 +417,13 @@ export const sessionMemory: Patch = {
 		let hasPastSessionsEnv = false;
 
 		// Env vars that must appear as arguments to call expressions
-        const callScopedEnvVars = new Set([
-            "CC_SM_PER_SECTION_TOKENS",
-            "CC_SM_TOTAL_FILE_LIMIT",
-            "CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT",
-            "CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE",
-            "CC_SM_TOOL_CALLS_BETWEEN_UPDATES",
-        ]);
+		const callScopedEnvVars = new Set([
+			"CC_SM_PER_SECTION_TOKENS",
+			"CC_SM_TOTAL_FILE_LIMIT",
+			"CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT",
+			"CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE",
+			"CC_SM_TOOL_CALLS_BETWEEN_UPDATES",
+		]);
 		const seenCallScopedEnv = new Set<string>();
 
 		traverse.default(verifyAst, {
