@@ -109,6 +109,73 @@ function hasReturnWithTruncatedContent(body: t.Statement[]): boolean {
 	return false;
 }
 
+function getBashRenderInputName(node: t.FunctionDeclaration): string | null {
+	if (node.params.length !== 2) return null;
+	const firstParam = node.params[0];
+	const secondParam = node.params[1];
+	if (!t.isIdentifier(firstParam)) return null;
+	if (!t.isObjectPattern(secondParam)) return null;
+	if (!objectPatternHasKey(secondParam, "verbose")) return null;
+	if (!objectPatternHasKey(secondParam, "theme")) return null;
+
+	for (const stmt of node.body.body) {
+		if (!t.isVariableDeclaration(stmt)) continue;
+		for (const decl of stmt.declarations) {
+			if (!t.isObjectPattern(decl.id)) continue;
+			if (!t.isIdentifier(decl.init, { name: firstParam.name })) continue;
+			if (
+				objectPatternHasKey(decl.id, "command") &&
+				objectPatternHasKey(decl.id, "rerun")
+			) {
+				return firstParam.name;
+			}
+		}
+	}
+
+	return null;
+}
+
+function functionBodyHasDeclaration(
+	node: t.FunctionDeclaration,
+	name: string,
+): boolean {
+	return node.body.body.some(
+		(stmt) =>
+			t.isFunctionDeclaration(stmt) && t.isIdentifier(stmt.id, { name }),
+	);
+}
+
+function returnCallsHelper(
+	ret: t.ReturnStatement,
+	helperName: string,
+): boolean {
+	return (
+		t.isCallExpression(ret.argument) &&
+		t.isIdentifier(ret.argument.callee, { name: helperName })
+	);
+}
+
+function hasOnlyWrappedTopLevelReturns(path: any, helperName: string): boolean {
+	let wrappedReturns = 0;
+	let unwrappedReturn = false;
+
+	path.traverse({
+		Function(innerPath: any) {
+			innerPath.skip();
+		},
+		ReturnStatement(retPath: any) {
+			if (!retPath.node.argument) return;
+			if (returnCallsHelper(retPath.node, helperName)) {
+				wrappedReturns += 1;
+				return;
+			}
+			unwrappedReturn = true;
+		},
+	});
+
+	return wrappedReturns > 0 && !unwrappedReturn;
+}
+
 function findIsImageCallName(
 	body: t.Statement[],
 	paramName: string,
@@ -637,8 +704,9 @@ export const bashOutputTail: Patch = {
 		let hasTailSlice = false;
 		let hasDestructuringOutputTail = false;
 		let hasPersistenceMaxOutput = false;
+		let hasRenderOptsFunction = false;
 		let hasRenderOptsHelper = false;
-		let hasRenderOptsCall = false;
+		let hasRenderOptsWrappedReturns = false;
 
 		traverse.default(verifyAst, {
 			// Schema check
@@ -757,15 +825,15 @@ export const bashOutputTail: Patch = {
 				}
 			},
 
-			// renderToolUseMessage opts suffix: helper declaration + call-site
-			Identifier(path) {
-				if (path.node.name !== "_bashAppendOpts") return;
-				const parent = path.parent;
-				if (t.isFunctionDeclaration(parent) && parent.id === path.node) {
+			// renderToolUseMessage opts suffix: verify the Bash renderer itself.
+			FunctionDeclaration(path) {
+				if (!getBashRenderInputName(path.node)) return;
+				hasRenderOptsFunction = true;
+				if (functionBodyHasDeclaration(path.node, "_bashAppendOpts")) {
 					hasRenderOptsHelper = true;
 				}
-				if (t.isCallExpression(parent) && parent.callee === path.node) {
-					hasRenderOptsCall = true;
+				if (hasOnlyWrappedTopLevelReturns(path, "_bashAppendOpts")) {
+					hasRenderOptsWrappedReturns = true;
 				}
 			},
 		});
@@ -782,10 +850,12 @@ export const bashOutputTail: Patch = {
 			return "Missing outputTail in mapToolResult destructuring";
 		if (!hasPersistenceMaxOutput)
 			return "Missing maxOutput conditional in persistence";
+		if (!hasRenderOptsFunction)
+			return "Missing Bash renderToolUseMessage current-shape function";
 		if (!hasRenderOptsHelper)
 			return "Missing _bashAppendOpts helper in renderToolUseMessage";
-		if (!hasRenderOptsCall)
-			return "Missing _bashAppendOpts call-site in renderToolUseMessage";
+		if (!hasRenderOptsWrappedReturns)
+			return "Bash renderToolUseMessage returns are not all wrapped with _bashAppendOpts";
 
 		// Prompt checks
 		if (!code.includes("Disk persistence"))

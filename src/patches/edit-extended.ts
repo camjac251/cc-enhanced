@@ -12,6 +12,7 @@ import {
 	getVerifyAst,
 	hasObjectKeyName,
 	isMemberPropertyName,
+	objectPatternHasKey,
 } from "./ast-helpers.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -58,6 +59,168 @@ function getToolObjectMethod(
 				t.isObjectMethod(prop) && getObjectKeyName(prop.key) === methodName,
 		) ?? null
 	);
+}
+
+const EDIT_RENDER_EXCLUDED_KEYS = [
+	"range",
+	"show_whitespace",
+	"pages",
+	"offset",
+	"limit",
+];
+
+function getObjectPatternKeySet(pattern: t.ObjectPattern): Set<string> {
+	const keys = new Set<string>();
+	for (const prop of pattern.properties) {
+		if (!t.isObjectProperty(prop)) continue;
+		const keyName = getObjectKeyName(prop.key);
+		if (keyName) keys.add(keyName);
+	}
+	return keys;
+}
+
+function getEditRenderReturnArgument(stmt: t.Statement): t.Expression | null {
+	let argument: t.Expression | null | undefined = null;
+	if (t.isReturnStatement(stmt)) {
+		argument = stmt.argument;
+	} else if (
+		t.isBlockStatement(stmt) &&
+		stmt.body.length === 1 &&
+		t.isReturnStatement(stmt.body[0])
+	) {
+		argument = stmt.body[0].argument;
+	}
+	if (!argument) return null;
+	if (
+		t.isCallExpression(argument) &&
+		t.isIdentifier(argument.callee, { name: "_editAppendOpts" }) &&
+		argument.arguments.length === 1 &&
+		t.isExpression(argument.arguments[0])
+	) {
+		return argument.arguments[0];
+	}
+	return argument;
+}
+
+function statementReturnsNull(stmt: t.Statement): boolean {
+	return t.isNullLiteral(getEditRenderReturnArgument(stmt));
+}
+
+function statementReturnsEmptyString(stmt: t.Statement): boolean {
+	return t.isStringLiteral(getEditRenderReturnArgument(stmt), { value: "" });
+}
+
+function isFilePathNullGuard(
+	stmt: t.Statement,
+	filePathBinding: string,
+): boolean {
+	return (
+		t.isIfStatement(stmt) &&
+		t.isUnaryExpression(stmt.test, { operator: "!" }) &&
+		t.isIdentifier(stmt.test.argument, { name: filePathBinding }) &&
+		statementReturnsNull(stmt.consequent)
+	);
+}
+
+function hasEditRenderGuards(
+	body: t.Statement[],
+	filePathBinding: string,
+): boolean {
+	let sawNullGuard = false;
+
+	for (const stmt of body) {
+		if (!sawNullGuard) {
+			if (isFilePathNullGuard(stmt, filePathBinding)) {
+				sawNullGuard = true;
+			}
+			if (t.isReturnStatement(stmt)) return false;
+			continue;
+		}
+
+		if (t.isIfStatement(stmt) && statementReturnsEmptyString(stmt.consequent)) {
+			return true;
+		}
+		if (t.isReturnStatement(stmt)) return false;
+	}
+
+	return false;
+}
+
+function getEditRenderFilePathBinding(
+	node: t.FunctionDeclaration,
+	opts: {
+		requireExtendedFields?: boolean;
+		rejectExtendedFields?: boolean;
+	} = {},
+): string | null {
+	if (node.params.length !== 2) return null;
+	const firstParam = node.params[0];
+	const secondParam = node.params[1];
+	if (!t.isObjectPattern(firstParam)) return null;
+	if (!t.isObjectPattern(secondParam)) return null;
+
+	const firstKeys = getObjectPatternKeySet(firstParam);
+	if (!firstKeys.has("file_path")) return null;
+	if (!objectPatternHasKey(secondParam, "verbose")) return null;
+	if (EDIT_RENDER_EXCLUDED_KEYS.some((key) => firstKeys.has(key))) return null;
+	if (
+		opts.requireExtendedFields &&
+		(!firstKeys.has("edits") || !firstKeys.has("replace_all"))
+	) {
+		return null;
+	}
+	if (
+		opts.rejectExtendedFields &&
+		(firstKeys.has("edits") || firstKeys.has("replace_all"))
+	) {
+		return null;
+	}
+
+	const filePathBinding = getObjectPatternBindingName(firstParam, "file_path");
+	if (!filePathBinding) return null;
+	if (!hasEditRenderGuards(node.body.body, filePathBinding)) return null;
+	return filePathBinding;
+}
+
+function functionBodyHasDeclaration(
+	node: t.FunctionDeclaration,
+	name: string,
+): boolean {
+	return node.body.body.some(
+		(stmt) =>
+			t.isFunctionDeclaration(stmt) && t.isIdentifier(stmt.id, { name }),
+	);
+}
+
+function returnCallsHelper(
+	ret: t.ReturnStatement,
+	helperName: string,
+): boolean {
+	return (
+		t.isCallExpression(ret.argument) &&
+		t.isIdentifier(ret.argument.callee, { name: helperName })
+	);
+}
+
+function hasOnlyWrappedTopLevelReturns(path: any, helperName: string): boolean {
+	let wrappedReturns = 0;
+	let unwrappedReturn = false;
+
+	path.traverse({
+		Function(innerPath: any) {
+			innerPath.skip();
+		},
+		ReturnStatement(retPath: any) {
+			if (!retPath.node.argument) return;
+			if (returnCallsHelper(retPath.node, helperName)) {
+				wrappedReturns += 1;
+				return;
+			}
+			unwrappedReturn = true;
+		},
+	});
+
+	return wrappedReturns > 0 && !unwrappedReturn;
 }
 
 function inspectValidateExtendedFlow(validateMethod: t.ObjectMethod | null): {
@@ -550,6 +713,9 @@ function getObjectPatternBindingName(
 			continue;
 		}
 		if (t.isIdentifier(prop.value)) return prop.value.name;
+		if (t.isAssignmentPattern(prop.value) && t.isIdentifier(prop.value.left)) {
+			return prop.value.left.name;
+		}
 	}
 	return null;
 }
@@ -1104,49 +1270,11 @@ function patchEditRenderToolUseMessage(ast: t.File): void {
 		FunctionDeclaration(path) {
 			if (patched) return;
 			const node = path.node;
-			if (node.params.length !== 2) return;
 			const firstParam = node.params[0];
-			const secondParam = node.params[1];
 			if (!t.isObjectPattern(firstParam)) return;
-			if (!t.isObjectPattern(secondParam)) return;
-
-			const firstKeys = new Set<string>();
-			for (const prop of firstParam.properties) {
-				if (!t.isObjectProperty(prop)) continue;
-				const keyName = getObjectKeyName(prop.key);
-				if (keyName) firstKeys.add(keyName);
-			}
-			const secondKeys = new Set<string>();
-			for (const prop of secondParam.properties) {
-				if (!t.isObjectProperty(prop)) continue;
-				const keyName = getObjectKeyName(prop.key);
-				if (keyName) secondKeys.add(keyName);
-			}
-
-			if (!firstKeys.has("file_path")) return;
-			if (!secondKeys.has("verbose")) return;
-			if (
-				firstKeys.has("range") ||
-				firstKeys.has("show_whitespace") ||
-				firstKeys.has("pages") ||
-				firstKeys.has("offset") ||
-				firstKeys.has("limit")
-			)
-				return;
-			if (firstKeys.has("edits") || firstKeys.has("replace_all")) return;
-
-			let filePathBinding: string | null = null;
-			for (const prop of firstParam.properties) {
-				if (!t.isObjectProperty(prop)) continue;
-				if (getObjectKeyName(prop.key) !== "file_path") continue;
-				if (t.isIdentifier(prop.value)) filePathBinding = prop.value.name;
-				else if (
-					t.isAssignmentPattern(prop.value) &&
-					t.isIdentifier(prop.value.left)
-				) {
-					filePathBinding = prop.value.left.name;
-				}
-			}
+			const filePathBinding = getEditRenderFilePathBinding(node, {
+				rejectExtendedFields: true,
+			});
 			if (!filePathBinding) return;
 
 			// Discriminate Edit's renderer from other 2-param {file_path}/{verbose}
@@ -1154,31 +1282,6 @@ function patchEditRenderToolUseMessage(ast: t.File): void {
 			// guard `if (!<filePath>) return null;` followed by a second guard that
 			// returns "" for the plan-preview path. The second guard may be rewritten
 			// to `if (false)` by plan-diff-ui; we check for either shape.
-			const isReturnNull = (s: t.Statement): boolean =>
-				(t.isReturnStatement(s) && t.isNullLiteral(s.argument)) ||
-				(t.isBlockStatement(s) &&
-					s.body.length === 1 &&
-					t.isReturnStatement(s.body[0]) &&
-					t.isNullLiteral(s.body[0].argument));
-			const isReturnEmptyString = (s: t.Statement): boolean =>
-				(t.isReturnStatement(s) &&
-					t.isStringLiteral(s.argument, { value: "" })) ||
-				(t.isBlockStatement(s) &&
-					s.body.length === 1 &&
-					t.isReturnStatement(s.body[0]) &&
-					t.isStringLiteral(s.body[0].argument, { value: "" }));
-			const body = node.body.body;
-			const hasNullGuard =
-				body.length >= 1 &&
-				t.isIfStatement(body[0]) &&
-				t.isUnaryExpression(body[0].test, { operator: "!" }) &&
-				t.isIdentifier(body[0].test.argument, { name: filePathBinding }) &&
-				isReturnNull(body[0].consequent);
-			const hasEmptyStringGuard =
-				body.length >= 2 &&
-				t.isIfStatement(body[1]) &&
-				isReturnEmptyString(body[1].consequent);
-			if (!hasNullGuard || !hasEmptyStringGuard) return;
 
 			firstParam.properties.push(
 				t.objectProperty(t.identifier("edits"), t.identifier(EDITS_BINDING)),
@@ -1528,24 +1631,33 @@ function verifyIdeDiffConfigGuard(ctx: EditVerifyContext): string | null {
 }
 
 function verifyEditRenderOpts(ctx: EditVerifyContext): string | null {
+	let hasRenderFunction = false;
 	let hasHelper = false;
-	let hasCall = false;
+	let hasWrappedReturns = false;
 	traverse.default(ctx.ast, {
-		Identifier(path) {
-			if (path.node.name !== "_editAppendOpts") return;
-			const parent = path.parent;
-			if (t.isFunctionDeclaration(parent) && parent.id === path.node) {
+		FunctionDeclaration(path) {
+			if (
+				!getEditRenderFilePathBinding(path.node, {
+					requireExtendedFields: true,
+				})
+			) {
+				return;
+			}
+			hasRenderFunction = true;
+			if (functionBodyHasDeclaration(path.node, "_editAppendOpts")) {
 				hasHelper = true;
 			}
-			if (t.isCallExpression(parent) && parent.callee === path.node) {
-				hasCall = true;
+			if (hasOnlyWrappedTopLevelReturns(path, "_editAppendOpts")) {
+				hasWrappedReturns = true;
 			}
 		},
 	});
+	if (!hasRenderFunction)
+		return "Missing Edit renderToolUseMessage current-shape function with extended fields";
 	if (!hasHelper)
 		return "Missing _editAppendOpts helper in Edit renderToolUseMessage";
-	if (!hasCall)
-		return "Missing _editAppendOpts call-site in Edit renderToolUseMessage";
+	if (!hasWrappedReturns)
+		return "Edit renderToolUseMessage returns are not all wrapped with _editAppendOpts";
 	return null;
 }
 
