@@ -11,7 +11,7 @@
 		"verify:prompt-surfaces": "bun src/index.ts --verify-prompt-surfaces",
 		"verify:cache": "bun src/verification/verify-cache-efficiency.ts",
 		"prompts:export": "bun scripts/export-prompts-current.ts",
-		"test": "bun test src/",
+		"test": "bun test src/ --parallel=1",
 		"typecheck": "tsc --noEmit",
 		"lint": "biome check src/",
 		"lint:fix": "biome check --write src/",

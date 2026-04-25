@@ -44,5 +44,7 @@ pre-push:
   parallel: false
   commands:
     test:
-      run: bun test src/
+      # --parallel=1 because bun's node:test shim mishandles concurrent
+      # file loads (checkNotInsideTest false-positives across files).
+      run: bun test src/ --parallel=1
       priority: 1

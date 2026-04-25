@@ -123,8 +123,8 @@ const EditTool = {
 };
 
 function renderEditDialog(ARG) {
-  const before = "alpha";
-  const after = "beta";
+  let before = "alpha";
+  let after = "beta";
   const rows = [{ old_string: before, new_string: after, replace_all: false }];
   return { title: "Edit file", rows };
 }
@@ -758,7 +758,7 @@ test("edit-extended runtime surfaces batch and replace_all opts in tool chip", a
 			"index.ts",
 			"empty edits array must not trigger batch suffix",
 		);
-		const longPath = "/home/me/" + "x".repeat(200) + ".ts";
+		const longPath = `/home/me/${"x".repeat(200)}.ts`;
 		const el = mod.renderEditMessage(
 			{ file_path: longPath, replace_all: true },
 			ctx,
