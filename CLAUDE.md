@@ -69,4 +69,10 @@ Do not set `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Th
 
 ## Testing
 
-Tests use Bun's `bun test` runner against the `node:test` API shim. Run with `bun test src/`. Focus on patcher correctness and drift detection, not brittle minified internals. Anchor on structure and stable literals.
+Tests use Bun's `bun test` runner against the `node:test` API shim. Run with `bun run test` (or `bun test src/ --parallel=1`). The `--parallel=1` flag is mandatory: bun's `node:test` shim mishandles concurrent file loads (`checkNotInsideTest` false-positives across files). Pre-push hook and `bun run test` already pin it; raw `bun test src/` will fail.
+
+Two bun runtime gotchas bite test fixtures:
+- **PATH mutation is ignored for spawn lookups.** Bun snapshots `process.env.PATH` at process startup; in-test mutations don't reach `child_process.execFileSync`. To stub a spawned binary, intercept `execFileSync` directly via `createRequire(import.meta.url)("child_process")` rather than installing a fake on disk and prepending PATH.
+- **ESM dynamic-import namespaces freeze at first import.** Both bun and node bake `cp.execFileSync` into the namespace returned by the first `await import("child_process")`. Per-test set/restore on the require'd object leaks the first stub forever. Install one persistent interceptor at module load and dispatch through a closure-captured "active stub" reference that tests swap.
+
+Focus on patcher correctness and drift detection, not brittle minified internals. Anchor on structure and stable literals.

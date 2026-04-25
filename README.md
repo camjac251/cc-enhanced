@@ -6,7 +6,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
-  <img src="https://img.shields.io/badge/Runtime-Node_24-339933.svg" alt="Node 24">
+  <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
   <img src="https://img.shields.io/badge/Patches-28-orange.svg" alt="28 Patches">
   <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.119-8A2BE2.svg" alt="Tested against Claude Code 2.1.119">
 </p>
@@ -200,7 +200,7 @@ mise run status                                   # Show current, previous, cach
 mise run verify:patches                           # Typecheck + lint + dry-run on native target
 mise run verify:anchors                           # Diff clean vs patched anchors
 bun run cli --list                                   # List available patches
-bun test src/                                         # Run the test suite
+bun run test                                         # Run the test suite (pinned to --parallel=1)
 ```
 
 `mise run patch` is intentionally disabled; it exists only to redirect to `native:update`. See `mise.toml` for the full task list and `bun run cli --help` for CLI flags.
@@ -246,12 +246,13 @@ Current target: **Claude Code 2.1.119**. Tracks the latest upstream release and 
 
 ## Requirements
 
-- **Node.js 24+** (managed via `mise`)
-- **bun 1.3+** (via mise)
+- **bun 1.3+** (managed via `mise`)
 - **Linux x86_64** (native ELF support is built in; other platforms require `node-lief`)
 - A working **Claude Code** installation
 
 Babel AST + generator over the 16 MB bundle is the heaviest part of the patcher. JSC (Bun's engine) sizes its heap dynamically, so no explicit flag is required; both direct `bun src/index.ts ...` and `mise` task invocations work.
+
+The test suite uses `bun test` against the `node:test` API shim and is pinned to `--parallel=1` because bun's shim mishandles concurrent file loads. Use `bun run test` (which already pins the flag) rather than raw `bun test src/`.
 
 ## Disclaimer
 
