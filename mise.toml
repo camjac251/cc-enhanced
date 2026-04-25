@@ -309,7 +309,7 @@ bun run verify:cache "${ARGS[@]}"
 [tasks."prompts:export"]
 description = "Extract prompt artifacts from promoted binary or clean version"
 usage = 'arg "[source]" help="Version or current (default: current)"'
-run = "npx tsx scripts/export-prompts-current.ts ${usage_source:-current}"
+run = "bun scripts/export-prompts-current.ts ${usage_source:-current}"
 
 
 [tasks.clean]
@@ -415,7 +415,7 @@ if [[ -n "$NATIVE_TARGET" && -f "$NATIVE_TARGET" ]]; then
   assert_clean_summary "$NATIVE_SUMMARY" "native"
   bun run cli --target "$NATIVE_TARGET" --output "$NATIVE_PATCHED_FOR_PROMPTS"
   bun run cli --target "$NATIVE_PATCHED_FOR_PROMPTS" --unpack "$NATIVE_PATCHED_JS"
-  npx tsx scripts/export-prompts.ts "$NATIVE_PATCHED_JS"
+  bun scripts/export-prompts.ts "$NATIVE_PATCHED_JS"
   bun run verify:prompt-surfaces "$NATIVE_PROMPT_EXPORT_DIR"
 else
   echo "Skipping native dry-run (no NATIVE_TARGET and no promoted binary found)"
