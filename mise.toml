@@ -86,7 +86,7 @@ echo "$FETCH_OUTPUT"
 
 # Resolve version from fetch output (not cache listing)
 CACHE_DIR="${HOME}/.claude-patcher/native-cache"
-VERSION=$(echo "$FETCH_OUTPUT" | sed -nE 's#.*native-cache/([0-9]+\\.[0-9]+\\.[0-9]+).*#\\1#p' | head -1)
+VERSION=$(echo "$FETCH_OUTPUT" | sed -nE '\\#native-cache/[0-9]+\\.[0-9]+\\.[0-9]+#{s#.*native-cache/([0-9]+\\.[0-9]+\\.[0-9]+).*#\\1#;p;q;}')
 if [[ -z "$VERSION" ]]; then
   echo "Could not determine fetched version from output" >&2
   exit 1
