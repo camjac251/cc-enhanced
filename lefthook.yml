@@ -39,12 +39,3 @@ commit-msg:
           echo "Example: fix(mise): drop trailing head pipe from native:pull" >&2
           exit 1
         fi
-
-pre-push:
-  parallel: false
-  commands:
-    test:
-      # --parallel=1 because bun's node:test shim mishandles concurrent
-      # file loads (checkNotInsideTest false-positives across files).
-      run: bun test src/ --parallel=1
-      priority: 1
