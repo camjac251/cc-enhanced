@@ -261,7 +261,7 @@ function loadNodeLief(): NodeLiefModule {
 		return require("node-lief") as NodeLiefModule;
 	} catch {
 		throw new Error(
-			"Mach-O/PE native patching requires node-lief. Install it with `pnpm add node-lief`.",
+			"Mach-O/PE native patching requires node-lief. Install it with `bun add node-lief`.",
 		);
 	}
 }

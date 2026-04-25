@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import type * as t from "@babel/types";
+import { traverse } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getVerifyAst } from "./ast-helpers.js";
 
@@ -65,7 +65,7 @@ export const signature: Patch = {
 		// Full signature for --version output
 		const sigFull = `patched: ${tags.join(", ")}`;
 
-		traverse.default(ast, {
+		traverse(ast, {
 			StringLiteral(path: any) {
 				const val = path.node.value;
 				if (isVersionStringTarget(val)) {
@@ -103,7 +103,7 @@ export const signature: Patch = {
 		let hasPatchedTitle = false;
 		let hasLegacyTitle = false;
 
-		traverse.default(verifyAst, {
+		traverse(verifyAst, {
 			StringLiteral(path) {
 				const value = path.node.value;
 				if (isVersionStringTarget(value)) {

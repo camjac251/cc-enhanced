@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { type NodePath, traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
 	getObjectKeyName,
@@ -73,7 +73,7 @@ export const noCollapse: Patch = {
 
 		// Collect 3-arg function call stats first so wrapper verification can
 		// require that the patched function is actually called by UI paths.
-		traverse.default(ast, {
+		traverse(ast, {
 			CallExpression(path) {
 				if (!t.isIdentifier(path.node.callee)) return;
 				if (path.node.arguments.length !== 3) return;
@@ -95,7 +95,7 @@ export const noCollapse: Patch = {
 			},
 		});
 
-		traverse.default(ast, {
+		traverse(ast, {
 			// Check 1: the guard was patched from (isCollapsible||isREPL) to (isREPL||isMemoryWrite)
 			IfStatement(path) {
 				const test = path.node.test;
@@ -207,7 +207,7 @@ export const noCollapse: Patch = {
 		});
 
 		function checkWrapperFunction(
-			path: traverse.NodePath<t.FunctionDeclaration | t.FunctionExpression>,
+			path: NodePath<t.FunctionDeclaration | t.FunctionExpression>,
 		) {
 			const body = path.node.body.body;
 			if (body.length !== 1) return;
@@ -252,7 +252,7 @@ export const noCollapse: Patch = {
 		}
 
 		function getCallableName(
-			path: traverse.NodePath<t.FunctionDeclaration | t.FunctionExpression>,
+			path: NodePath<t.FunctionDeclaration | t.FunctionExpression>,
 		): string | null {
 			if (t.isFunctionDeclaration(path.node) && path.node.id?.name) {
 				return path.node.id.name;
@@ -308,7 +308,7 @@ function verifyMemoryWriteUi(ast: t.File): true | string {
 	let patchedCorrectly = false;
 	let foundUnpatchedResultObject = false;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		ReturnStatement(path) {
 			const arg = path.node.argument;
 			if (!t.isObjectExpression(arg)) return;
@@ -354,7 +354,7 @@ function verifyMemoryWriteUi(ast: t.File): true | string {
 	return true;
 }
 
-function createMemoryWriteUiMutator(): traverse.Visitor {
+function createMemoryWriteUiMutator(): Visitor {
 	let patched = false;
 	return {
 		ReturnStatement(path) {
@@ -397,12 +397,12 @@ function createMemoryWriteUiMutator(): traverse.Visitor {
 // Collapse UI mutator
 // ---------------------------------------------------------------------------
 
-function createNoCollapseMutator(): traverse.Visitor {
+function createNoCollapseMutator(): Visitor {
 	let patchedCollapseGuard = false;
 	let patchedUtWrapper = false;
 
 	const patchUtWrapperBody = (
-		path: traverse.NodePath<t.FunctionDeclaration | t.FunctionExpression>,
+		path: NodePath<t.FunctionDeclaration | t.FunctionExpression>,
 	) => {
 		const body = path.node.body.body;
 		if (body.length !== 1) return;

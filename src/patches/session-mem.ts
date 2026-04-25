@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
 	getMemberPropertyName,
@@ -41,7 +41,7 @@ function findTruthyCheckFn(ast: t.File): string | null {
 		scores.set(name, (scores.get(name) ?? 0) + weight);
 	};
 
-	traverse.default(ast, {
+	traverse(ast, {
 		CallExpression(path) {
 			// Look for pattern: X(process.env.SOME_VAR)
 			if (!t.isIdentifier(path.node.callee)) return;
@@ -208,7 +208,7 @@ function nodeContainsEnvRef(node: t.Node, envName: string): boolean {
 	return visit(node);
 }
 
-function createSessionMemoryMutator(truthyFn: string): traverse.Visitor {
+function createSessionMemoryMutator(truthyFn: string): Visitor {
 	let patchedExtraction = false;
 	let patchedPastSessions = false;
 	let patchedSectionLimits = false;
@@ -426,7 +426,7 @@ export const sessionMemory: Patch = {
 		]);
 		const seenCallScopedEnv = new Set<string>();
 
-		traverse.default(verifyAst, {
+		traverse(verifyAst, {
 			MemberExpression(path) {
 				// ENABLE_SESSION_MEMORY must be in a LogicalExpression(||)
 				if (isProcessEnvMember(path.node, "ENABLE_SESSION_MEMORY")) {

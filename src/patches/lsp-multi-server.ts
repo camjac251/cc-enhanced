@@ -1,6 +1,5 @@
-import type { NodePath } from "@babel/traverse";
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { type NodePath, traverse, type Visitor } from "../babel.js";
 import { parse } from "../loader.js";
 import type { Patch } from "../types.js";
 import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
@@ -45,7 +44,7 @@ let discoveredRefs: LspRefs | null = null;
 function discoverRefs(ast: t.File): LspRefs | null {
 	let result: LspRefs | null = null;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		ReturnStatement(path) {
 			const arg = path.node.argument;
 			if (!t.isObjectExpression(arg)) return;
@@ -360,7 +359,7 @@ function buildCloseFile(r: LspRefs, params: string[]): t.Statement[] {
 
 // === Mutation visitor ===
 
-function createMutateVisitor(refs: LspRefs): traverse.Visitor {
+function createMutateVisitor(refs: LspRefs): Visitor {
 	const builders = new Map<string, (params: string[]) => t.Statement[]>([
 		[refs.openFile, (p) => buildOpenFile(refs, p)],
 		[refs.changeFile, (p) => buildChangeFile(refs, p)],
@@ -420,7 +419,7 @@ function verifyMultiServer(code: string, ast?: t.File): true | string {
 
 	// Find the factory function and check lifecycle functions have for-loops
 	let factoryBody: t.Statement[] | null = null;
-	traverse.default(verifyAst, {
+	traverse(verifyAst, {
 		FunctionDeclaration(path) {
 			if (path.node.id?.name === refs.factoryName) {
 				factoryBody = path.node.body.body;

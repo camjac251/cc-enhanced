@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
 	getObjectKeyName,
@@ -520,7 +520,7 @@ export const disableTools: Patch = {
 		if (!ast) return "Missing AST for tools-off verification";
 
 		const disabledTools = new Set<string>();
-		traverse.default(ast, {
+		traverse(ast, {
 			ObjectExpression(path: any) {
 				const nameProp = path.node.properties.find(
 					(p: any) => t.isObjectProperty(p) && hasObjectKeyName(p, "name"),
@@ -639,7 +639,7 @@ function verifySkillTools(code: string, ast: t.File): true | string {
 	// AST: filePatternTools arrays
 	let filePatternToolsCount = 0;
 	let hasForbiddenTool = false;
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectProperty(path) {
 			if (getObjectKeyName(path.node.key) !== "filePatternTools") return;
 			if (!t.isArrayExpression(path.node.value)) return;
@@ -768,7 +768,7 @@ function verifySkillTools(code: string, ast: t.File): true | string {
 // AST mutators
 // ---------------------------------------------------------------------------
 
-function createSkillAllowedToolsMutator(): traverse.Visitor {
+function createSkillAllowedToolsMutator(): Visitor {
 	return {
 		ObjectProperty(path: any) {
 			if (
@@ -786,7 +786,7 @@ function createSkillAllowedToolsMutator(): traverse.Visitor {
 	};
 }
 
-function createDisableToolsMutator(): traverse.Visitor {
+function createDisableToolsMutator(): Visitor {
 	return {
 		ObjectExpression(path: any) {
 			const nameProp = path.node.properties.find(

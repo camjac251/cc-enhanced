@@ -1,10 +1,10 @@
-#!/usr/bin/env tsx
+#!/usr/bin/env bun
 /**
  * Export prompt artifacts from the currently promoted (patched) binary.
  *
  * Usage:
- *   tsx scripts/export-prompts-current.ts          # promoted binary -> <version>_patched
- *   tsx scripts/export-prompts-current.ts 2.1.71   # clean version from versions_clean/
+ *   bun scripts/export-prompts-current.ts          # promoted binary -> <version>_patched
+ *   bun scripts/export-prompts-current.ts 2.1.71   # clean version from versions_clean/
  */
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -20,7 +20,7 @@ const versionsDir = path.join(repoRoot, "versions_clean");
 
 function run(label: string): void {
 	console.log(`Exporting prompts for: ${label}`);
-	execFileSync("npx", ["tsx", exportScript, label], {
+	execFileSync("bun", [exportScript, label], {
 		cwd: repoRoot,
 		stdio: "inherit",
 	});

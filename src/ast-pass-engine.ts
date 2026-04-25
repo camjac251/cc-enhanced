@@ -1,5 +1,5 @@
-import traverse, { type NodePath, type Visitor } from "@babel/traverse";
 import type * as t from "@babel/types";
+import { type NodePath, traverse, type Visitor } from "./babel.js";
 import type { AstPassName, PatchAstPass } from "./types.js";
 
 export interface PatchPassEntry {
@@ -233,7 +233,7 @@ export async function runCombinedAstPasses(
 			onPatchError,
 			globallyFailedTags,
 		);
-		traverse.default(ast, safeVisitor);
+		traverse(ast, safeVisitor);
 		onPassEnd(passName, passEntries.length);
 	}
 }

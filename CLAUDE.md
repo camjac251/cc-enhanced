@@ -11,13 +11,13 @@ AST-based patcher for customizing the Claude Code CLI. Patches a ~16MB minified 
 
 **AST-Pass-First Patching**: all logic/structure changes use Babel AST traversal via a unified combined-pass engine (`discover` -> `mutate` -> `finalize`). String patches are only acceptable for replacing prompt text where AST adds no value. Each patch includes a co-located `verify` function. See `src/types.ts` for the `Patch` interface.
 
-27 active patches grouped in `src/patch-metadata.ts`. Run `pnpm cli --list` to see them.
+27 active patches grouped in `src/patch-metadata.ts`. Run `bun run cli --list` to see them.
 
 ## Commands
 
-No build step. All source runs directly via `tsx`. Babel AST + generator needs ~10GB heap for cli.js. `mise.toml` sets `NODE_OPTIONS="--max-old-space-size=12288"` automatically. Running `pnpm cli` directly without mise will OOM.
+No build step. All source runs directly via Bun. Babel AST + generator over the 16 MB cli.js is heavy but JSC sizes its heap dynamically, so no explicit heap flag is required.
 
-Standard workflow: `mise run native:update` (fetch + patch + promote). `mise run patch` deliberately fails as a safety guard; always use `native:update`. See `mise.toml` for all tasks, `pnpm cli --help` for all CLI options.
+Standard workflow: `mise run native:update` (fetch + patch + promote). `mise run patch` deliberately fails as a safety guard; always use `native:update`. See `mise.toml` for all tasks, `bun run cli --help` for all CLI options.
 
 Key env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS`, `CLAUDE_PATCHER_CACHE_KEEP`, `CLAUDE_PATCHER_REVISION`.
 
@@ -61,7 +61,7 @@ Known interaction: `plan-diff-ui` rewrites Edit's plan-preview `startsWith` guar
 
 ## Searching cli.js
 
-**Never use ast-grep (sg) on cli.js.** Minified names make structural patterns useless. Use `rg` for string search or `pnpm inspect search` for AST context with breadcrumbs. Extract clean JS first with `mise run native:pull <version>`.
+**Never use ast-grep (sg) on cli.js.** Minified names make structural patterns useless. Use `rg` for string search or `bun run inspect search` for AST context with breadcrumbs. Extract clean JS first with `mise run native:pull <version>`.
 
 ## Feature Flags
 
@@ -69,4 +69,4 @@ Do not set `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Th
 
 ## Testing
 
-Tests use Node's built-in test runner: `pnpm test` runs `tsx --test`. Focus on patcher correctness and drift detection, not brittle minified internals. Anchor on structure and stable literals.
+Tests use Bun's `bun test` runner against the `node:test` API shim. Run with `bun test src/`. Focus on patcher correctness and drift detection, not brittle minified internals. Anchor on structure and stable literals.

@@ -36,7 +36,7 @@ async function loadPatchTagsWithEnv(
 	delete childEnv.CLAUDE_PATCHER_EXCLUDE_TAGS;
 	const { stdout } = await execFileAsync(
 		process.execPath,
-		["--import", "tsx", "--eval", script],
+		["--eval", script],
 		{
 			cwd: repoRoot,
 			env: {

@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { type NodePath, traverse } from "../babel.js";
 import type { Patch, PatchAstPass } from "../types.js";
 import { getMemberPropertyName } from "./ast-helpers.js";
 
@@ -53,9 +53,7 @@ function isForceAutoupdatePluginsCheck(
 	return getMemberPropertyName(arg) === "FORCE_AUTOUPDATE_PLUGINS";
 }
 
-function hasDisableAutoupdaterCheck(
-	path: traverse.NodePath<t.Function>,
-): boolean {
+function hasDisableAutoupdaterCheck(path: NodePath<t.Function>): boolean {
 	let hasDisableCheck = false;
 	path.traverse({
 		IfStatement(ifPath) {
@@ -67,9 +65,7 @@ function hasDisableAutoupdaterCheck(
 	return hasDisableCheck;
 }
 
-function hasPluginAutoupdateForceCheck(
-	path: traverse.NodePath<t.Function>,
-): boolean {
+function hasPluginAutoupdateForceCheck(path: NodePath<t.Function>): boolean {
 	let hasForceCheck = false;
 	path.traverse({
 		CallExpression(callPath) {
@@ -100,9 +96,7 @@ function isPluginGatePatchedStatement(
 	return t.isBooleanLiteral(stmt.consequent.argument, { value: false });
 }
 
-function getCallableFunctionName(
-	path: traverse.NodePath<t.Function>,
-): string | null {
+function getCallableFunctionName(path: NodePath<t.Function>): string | null {
 	const node = path.node;
 	if (t.isFunctionDeclaration(node) && node.id?.name) return node.id.name;
 	if (t.isFunctionExpression(node) && node.id?.name) return node.id.name;
@@ -258,7 +252,7 @@ export const disableAutoupdater: Patch = {
 		let pluginGateTargetCount = 0;
 		let pluginGatePatchedCount = 0;
 
-		traverse.default(ast, {
+		traverse(ast, {
 			Function(path) {
 				if (!t.isBlockStatement(path.node.body)) return;
 				if (!hasDisableAutoupdaterCheck(path)) return;
@@ -279,7 +273,7 @@ export const disableAutoupdater: Patch = {
 		});
 
 		if (guardFunctionNames.size === 1) {
-			traverse.default(ast, {
+			traverse(ast, {
 				Function(path) {
 					if (!t.isBlockStatement(path.node.body)) return;
 					if (!hasPluginAutoupdateForceCheck(path)) return;

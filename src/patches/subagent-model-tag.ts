@@ -1,5 +1,5 @@
-import traverse, { type NodePath } from "@babel/traverse";
 import * as t from "@babel/types";
+import { type NodePath, traverse } from "../babel.js";
 import type { Patch, PatchAstPass } from "../types.js";
 import { getObjectKeyName, getVerifyAst, isTrueLike } from "./ast-helpers.js";
 
@@ -24,7 +24,7 @@ function nodeContains(
 	if (!node) return false;
 	if (predicate(node)) return true;
 	let found = false;
-	traverse.default(
+	traverse(
 		node,
 		{
 			enter(path) {
@@ -210,7 +210,7 @@ export const subagentModelTag: Patch = {
 		let patchedCount = 0;
 		let unpatchedCount = 0;
 
-		traverse.default(verifyAst, {
+		traverse(verifyAst, {
 			IfStatement(path) {
 				if (!isCandidate(path)) return;
 

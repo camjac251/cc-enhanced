@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 
 /**
@@ -45,7 +45,7 @@ export const mcpServerName: Patch = {
 		let updatedCount = 0;
 		let oldValidationCount = 0;
 
-		traverse.default(ast, {
+		traverse(ast, {
 			CallExpression(path) {
 				if (!isRegexCall(path.node)) return;
 				if (path.node.arguments.length < 2) return;
@@ -78,7 +78,7 @@ export const mcpServerName: Patch = {
 	},
 };
 
-function createMcpServerNameMutator(): traverse.Visitor {
+function createMcpServerNameMutator(): Visitor {
 	let patchedCount = 0;
 	return {
 		CallExpression(path) {

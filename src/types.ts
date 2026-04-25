@@ -1,11 +1,11 @@
-import type traverse from "@babel/traverse";
 import type * as t from "@babel/types";
+import type { Visitor } from "./babel.js";
 
 export type AstPassName = "discover" | "mutate" | "finalize";
 
 export interface PatchAstPass {
 	pass: AstPassName;
-	visitor: traverse.Visitor;
+	visitor: Visitor;
 }
 
 export interface PatchVerification {

@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
@@ -67,7 +67,7 @@ function resolveCommandName(scope: any, name: string): string | null {
 	return getCommandNameFromObject(firstArg);
 }
 
-function createCommandsRegistryMutator(): traverse.Visitor {
+function createCommandsRegistryMutator(): Visitor {
 	let foundRegistry = false;
 	let foundDisabledDefinition = false;
 
@@ -125,7 +125,7 @@ function verifyCommandRegistry(ast: t.File): true | string {
 	let foundRegistry = false;
 	let leakedCommandName: string | null = null;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectExpression(path) {
 			const name = getCommandNameFromObject(path.node);
 			if (name && COMMANDS_TO_DISABLE.has(name)) {

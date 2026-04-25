@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getVerifyAst } from "./ast-helpers.js";
 
@@ -99,7 +99,7 @@ ${WORKSPACE_SYMBOL_QUERY_SECTION}`,
 	return touched ? next : null;
 }
 
-function createMutateVisitor(): traverse.Visitor {
+function createMutateVisitor(): Visitor {
 	let schemaPatched = false;
 	let mappingPatched = false;
 	let promptPatched = false;
@@ -273,7 +273,7 @@ function verifyWorkspaceSymbol(code: string, ast?: t.File): true | string {
 	let sawPromptSurface = false;
 	let hasPromptQueryGuidance = false;
 
-	traverse.default(verifyAst, {
+	traverse(verifyAst, {
 		StringLiteral(path) {
 			const value = path.node.value;
 			if (

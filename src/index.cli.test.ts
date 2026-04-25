@@ -15,7 +15,7 @@ test("CLI rejects unknown options", async () => {
 	try {
 		await execFileAsync(
 			process.execPath,
-			["--import", "tsx", "./src/index.ts", "--definitely-unknown-flag"],
+			["./src/index.ts", "--definitely-unknown-flag"],
 			{
 				cwd: repoRoot,
 				env: { ...process.env, NO_COLOR: "1" },

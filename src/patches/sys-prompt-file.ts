@@ -1,6 +1,5 @@
-import template from "@babel/template";
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { type NodePath, template, traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
@@ -22,7 +21,7 @@ function isMemberOnOptions(
 
 function hasEnvOverrideStrings(node: t.Statement): boolean {
 	let found = false;
-	traverse.default(t.file(t.program([node])), {
+	traverse(t.file(t.program([node])), {
 		StringLiteral(path) {
 			if (
 				path.node.value === "CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE" ||
@@ -185,7 +184,7 @@ function isProcessEnvOverrideAccess(node: t.Node): boolean {
 	);
 }
 
-function inspectAutoAppendGuard(path: traverse.NodePath<t.IfStatement>): {
+function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 	hasEnvOverride: boolean;
 	hasDefaultPath: boolean;
 	hasAppendAssignment: boolean;
@@ -261,7 +260,7 @@ function findAutoAppendGuard(ast: t.File): {
 		hasExistsSync: boolean;
 	} | null = null;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		IfStatement(path) {
 			const inspected = inspectAutoAppendGuard(path);
 			if (!inspected) return;
@@ -274,8 +273,8 @@ function findAutoAppendGuard(ast: t.File): {
 }
 
 function isAppendSystemPromptFileBranch(
-	path: traverse.NodePath<t.IfStatement>,
-): path is traverse.NodePath<t.IfStatement> {
+	path: NodePath<t.IfStatement>,
+): path is NodePath<t.IfStatement> {
 	if (!t.isMemberExpression(path.node.test)) return false;
 	if (
 		getObjectKeyName(path.node.test.property as t.Expression | t.Identifier) !==
@@ -326,7 +325,7 @@ export const systemPromptFile: Patch = {
 	},
 };
 
-function createSystemPromptFileMutator(): traverse.Visitor {
+function createSystemPromptFileMutator(): Visitor {
 	let patched = false;
 	return {
 		IfStatement(path) {
@@ -355,7 +354,7 @@ function createSystemPromptFileMutator(): traverse.Visitor {
 			if (siblingIndex < 0) return;
 			if (!hasAppendPromptConflictCheck(path.node, optionsName)) return;
 
-			const [autoAppendIf] = template.default.statements(
+			const [autoAppendIf] = template.statements(
 				`
 				if (OPTIONS.appendSystemPromptFile === void 0 && OPTIONS.appendSystemPrompt === void 0) {
 					let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";

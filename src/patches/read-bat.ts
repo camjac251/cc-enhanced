@@ -1,6 +1,5 @@
-import template from "@babel/template";
-import traverse, { type NodePath } from "@babel/traverse";
 import * as t from "@babel/types";
+import { type NodePath, template, traverse } from "../babel.js";
 import { print } from "../loader.js";
 import type { Patch } from "../types.js";
 import {
@@ -110,7 +109,7 @@ function findReadToolObjectPath(
 	ast: t.File,
 ): NodePath<t.ObjectExpression> | null {
 	let found: NodePath<t.ObjectExpression> | null = null;
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectExpression(path) {
 			if (found) return;
 			const nameProp = getObjectPropertyByName(path.node, "name");
@@ -212,7 +211,7 @@ function ensureReadPromptPatchHelpers(ast: t.File): void {
 	let hasPromptHelper = false;
 	let hasDescriptionHelper = false;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		FunctionDeclaration(path) {
 			if (t.isIdentifier(path.node.id, { name: READ_PROMPT_PATCH_HELPER })) {
 				hasPromptHelper = true;
@@ -232,7 +231,7 @@ function ensureReadPromptPatchHelpers(ast: t.File): void {
 		return;
 	}
 
-	const helpers = template.default.statements(
+	const helpers = template.statements(
 		`
 function ${READ_DESCRIPTION_PATCH_HELPER}(description) {
   const canonical = ${JSON.stringify(READ_DESCRIPTION_TEXT)};
@@ -410,7 +409,7 @@ function getReadInputSchemaObject(
 	}
 
 	let found: t.ObjectExpression | null = null;
-	traverse.default(ast, {
+	traverse(ast, {
 		CallExpression(path) {
 			if (found) return;
 			if (!t.isMemberExpression(path.node.callee)) return;
@@ -440,7 +439,7 @@ function expressionHasMethodCall(
 	const file = t.file(
 		t.program([t.expressionStatement(t.cloneNode(expr, true) as t.Expression)]),
 	);
-	traverse.default(file, {
+	traverse(file, {
 		CallExpression(path) {
 			if (found) {
 				path.stop();
@@ -512,7 +511,7 @@ function objectPatternPropertyHasVoidZeroDefault(
 
 function hasFallbackFnBoundedArgs(ast: t.File): boolean {
 	let found = false;
-	traverse.default(ast, {
+	traverse(ast, {
 		CallExpression(path) {
 			if (!t.isIdentifier(path.node.callee, { name: "fallbackFn" })) return;
 			const args = path.node.arguments;
@@ -593,7 +592,7 @@ function getObjectPatternBindingName(
 }
 
 function setBindingStringValue(
-	path: traverse.NodePath<t.ObjectExpression>,
+	path: NodePath<t.ObjectExpression>,
 	valueNode: t.Expression,
 	nextValue: string,
 ): boolean {
@@ -619,7 +618,7 @@ function setBindingStringValue(
 }
 
 function setOrReplaceObjectPropertyStringValue(
-	path: traverse.NodePath<t.ObjectExpression>,
+	path: NodePath<t.ObjectExpression>,
 	property: t.ObjectProperty,
 	nextValue: string,
 ): void {
@@ -672,10 +671,10 @@ function containsVoidZeroMemberComparison(
 function hasCallCompatRangeBridge(ast: t.File, rangeVarName: string): boolean {
 	let found = false;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectMethod(path) {
 			if (getObjectKeyName(path.node.key) !== "call") return;
-			traverse.default(
+			traverse(
 				path.node.body,
 				{
 					IfStatement(ifPath) {
@@ -697,7 +696,7 @@ function hasCallCompatRangeBridge(ast: t.File, rangeVarName: string): boolean {
 						}
 
 						let hasRangeAssignment = false;
-						traverse.default(
+						traverse(
 							ifPath.node.consequent,
 							{
 								AssignmentExpression(assignPath) {
@@ -738,7 +737,7 @@ function hasCallCompatRangeBridge(ast: t.File, rangeVarName: string): boolean {
 
 function hasEnsureTotalLinesHelper(ast: t.File): boolean {
 	let found = false;
-	traverse.default(ast, {
+	traverse(ast, {
 		VariableDeclarator(path) {
 			if (!t.isIdentifier(path.node.id, { name: "ensureTotalLines" })) return;
 			if (
@@ -755,7 +754,7 @@ function hasEnsureTotalLinesHelper(ast: t.File): boolean {
 
 function hasNormalizedRangeTotalLinesRefresh(ast: t.File): boolean {
 	let found = false;
-	traverse.default(ast, {
+	traverse(ast, {
 		IfStatement(path) {
 			if (!t.isLogicalExpression(path.node.test, { operator: "&&" })) return;
 			const terms = flattenLogicalAndTerms(path.node.test);
@@ -796,7 +795,7 @@ function hasReadFileStateCompatMarkers(ast: t.File): {
 	let hasOffsetCompat = false;
 	let hasLimitCompat = false;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		CallExpression(path) {
 			const callee = path.node.callee;
 			if (!t.isMemberExpression(callee)) return;
@@ -856,7 +855,7 @@ function isImplicitOutputTailExclusion(term: t.Expression): boolean {
 
 function hasReadStateRebuildRangeGuard(ast: t.File): boolean {
 	let found = false;
-	traverse.default(ast, {
+	traverse(ast, {
 		IfStatement(path) {
 			if (!t.isExpression(path.node.test)) return;
 			const terms = flattenLogicalAndTerms(path.node.test);
@@ -910,7 +909,7 @@ function hasReadStateRebuildRangeGuard(ast: t.File): boolean {
 
 function hasChangedSnippetCap8000(ast: t.File): boolean {
 	let found = false;
-	traverse.default(ast, {
+	traverse(ast, {
 		VariableDeclarator(path) {
 			if (!t.isIdentifier(path.node.id, { name: "maxChangedSnippetChars" })) {
 				return;
@@ -926,7 +925,7 @@ function hasChangedSnippetCap8000(ast: t.File): boolean {
 
 function hasSnippetSourceCall(ast: t.File): boolean {
 	let found = false;
-	traverse.default(ast, {
+	traverse(ast, {
 		VariableDeclarator(path) {
 			if (!t.isIdentifier(path.node.id, { name: "changedSnippetRaw" })) return;
 			if (t.isCallExpression(path.node.init)) {
@@ -940,7 +939,7 @@ function hasSnippetSourceCall(ast: t.File): boolean {
 
 function hasChangedSnippetReturnBinding(ast: t.File): boolean {
 	let found = false;
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectProperty(path) {
 			if (getObjectKeyName(path.node.key) !== "snippet") return;
 			if (t.isIdentifier(path.node.value, { name: "changedSnippet" })) {
@@ -954,7 +953,7 @@ function hasChangedSnippetReturnBinding(ast: t.File): boolean {
 
 function hasRegexLiteral(ast: t.File, pattern: string, flags = ""): boolean {
 	let found = false;
-	traverse.default(ast, {
+	traverse(ast, {
 		RegExpLiteral(path) {
 			if (path.node.pattern !== pattern) return;
 			if (path.node.flags !== flags) return;
@@ -967,7 +966,7 @@ function hasRegexLiteral(ast: t.File, pattern: string, flags = ""): boolean {
 
 function hasFallbackSingleLineLimit(ast: t.File): boolean {
 	let found = false;
-	traverse.default(ast, {
+	traverse(ast, {
 		AssignmentExpression(path) {
 			if (path.node.operator !== "=") return;
 			if (!t.isIdentifier(path.node.left, { name: "fallbackLimit" })) return;
@@ -981,7 +980,7 @@ function hasFallbackSingleLineLimit(ast: t.File): boolean {
 
 function hasFallbackSizeLimitBinding(ast: t.File): boolean {
 	let found = false;
-	traverse.default(ast, {
+	traverse(ast, {
 		VariableDeclarator(path) {
 			if (!t.isIdentifier(path.node.id, { name: "fallbackSizeLimit" })) return;
 			found = true;
@@ -1429,7 +1428,7 @@ export const readWithBat: Patch = {
 
 						// 0b. Patch the Read tool schema from offset/limit to
 						// range/show_whitespace.
-						traverse.default(ast, {
+						traverse(ast, {
 							CallExpression(path) {
 								const callee = path.node.callee;
 								if (!t.isMemberExpression(callee)) return;
@@ -1597,7 +1596,7 @@ export const readWithBat: Patch = {
 							return [expr];
 						};
 
-						traverse.default(ast, {
+						traverse(ast, {
 							ObjectExpression(path) {
 								// Find Read tool by name property
 								const nameProp = path.node.properties.find(
@@ -1961,7 +1960,7 @@ export const readWithBat: Patch = {
 											return null;
 										};
 
-										traverse.default(
+										traverse(
 											validateMethod.body,
 											{
 												IfStatement(ifPath) {
@@ -2043,7 +2042,7 @@ export const readWithBat: Patch = {
 								// The removed vars ($ for offset, q for limit) cause ReferenceError
 								// on the second read of any file. Rewrite to compare range instead.
 								if (removedCallCompatVars.size > 0) {
-									traverse.default(
+									traverse(
 										callMethod.body,
 										{
 											IfStatement(ifPath) {
@@ -2151,7 +2150,7 @@ export const readWithBat: Patch = {
 
 								{
 									let foundInline = false;
-									traverse.default(
+									traverse(
 										callMethod.body,
 										{
 											VariableDeclarator(probePath) {
@@ -2181,7 +2180,7 @@ export const readWithBat: Patch = {
 										// the bundle changes argument counts.
 										let helperName: string | null = null;
 										const delegationCalls: t.CallExpression[] = [];
-										traverse.default(
+										traverse(
 											callMethod.body,
 											{
 												AwaitExpression(awaitPath) {
@@ -2217,7 +2216,7 @@ export const readWithBat: Patch = {
 												if (helperFn && t.isBlockStatement(helperFn.body)) {
 													// Verify helper contains D2I destructuring (content/lineCount/totalLines)
 													let hasD2I = false;
-													traverse.default(
+													traverse(
 														helperFn.body,
 														{
 															ObjectPattern(patternPath) {
@@ -2269,7 +2268,7 @@ export const readWithBat: Patch = {
 								// offset/limit (for example at-mention attachment flows). When
 								// range is absent, synthesize an equivalent range.
 								if (callCompatRestVarName) {
-									const compatGuard = template.default.statement(
+									const compatGuard = template.statement(
 										`if (RVAR === void 0 && COMPAT && (COMPAT.offset !== void 0 || COMPAT.limit !== void 0)) {
   var __compatReadOffset = Number(COMPAT.offset);
   var __compatReadLimit = Number(COMPAT.limit);
@@ -2290,7 +2289,7 @@ export const readWithBat: Patch = {
 
 								// === 2. Find and replace text reading logic ===
 								// Look for: { content: X, lineCount: Y, totalLines: Z } = someFunc(path, offset, limit)
-								traverse.default(
+								traverse(
 									targetBody,
 									{
 										VariableDeclarator(declPath) {
@@ -2332,7 +2331,7 @@ export const readWithBat: Patch = {
 
 											// Build bat reading async IIFE — all runtime code is self-contained
 											// (async function(filePath, range, showWs, fallbackFn, fallbackMaxBytes, fallbackSignal) { ... })(D, R, WSPC, KtB, MAX, SIGNAL)
-											const batFn = template.default.expression(
+											const batFn = template.expression(
 												`async function(filePath, range, showWs, fallbackFn, fallbackMaxBytes, fallbackSignal) {
   var fs = await import("fs");
   var stat = fs.statSync(filePath);
@@ -2612,7 +2611,7 @@ export const readWithBat: Patch = {
 								// Change: Z.set(D, { content: K, timestamp: ..., offset: Q, limit: B })
 								// To: Z.set(D, { content: K, timestamp: ..., range: R,
 								// compatibility markers })
-								traverse.default(
+								traverse(
 									targetBody,
 									{
 										CallExpression(callPath) {
@@ -2741,7 +2740,7 @@ export const readWithBat: Patch = {
 
 								// === 4. Fix startLine in result object ===
 								// Change: startLine: Q (where Q was offset) to startLine: START_LINE
-								traverse.default(
+								traverse(
 									targetBody,
 									{
 										ObjectProperty(propPath) {
@@ -2778,7 +2777,7 @@ export const readWithBat: Patch = {
 						// offset/limit ===
 						// Find: function X({ file_path: A, offset: Q, limit: B }, { verbose: G }) { ... }
 						// Change to show range in the UI display
-						traverse.default(ast, {
+						traverse(ast, {
 							FunctionDeclaration(path) {
 								const params = path.node.params;
 								if (params.length !== 2) return;
@@ -2873,7 +2872,7 @@ export const readWithBat: Patch = {
 								let filePathComp = "sk";
 								let displayVar = "Z";
 
-								traverse.default(
+								traverse(
 									path.node.body,
 									{
 										// Find: let Z = G ? A : j6(A)
@@ -2929,7 +2928,7 @@ export const readWithBat: Patch = {
 
 								// Build new function body with options display
 								const newBody = t.blockStatement(
-									template.default.statements(
+									template.statements(
 										`
 					if (!FILE_PATH) return null;
 					if (CHECK_FN(FILE_PATH)) return "";
@@ -2974,7 +2973,7 @@ export const readWithBat: Patch = {
 						// reads are treated like partial reads and do not get rebuilt as full
 						// snapshots.
 						let patchedHistoryReadGuard = false;
-						traverse.default(ast, {
+						traverse(ast, {
 							IfStatement(path) {
 								if (patchedHistoryReadGuard) return;
 								const { test } = path.node;
@@ -3061,7 +3060,7 @@ export const readWithBat: Patch = {
 						// It calls the diff function twice (emptiness check + snippet payload) and emits unbounded snippets.
 						// Compute once and cap payload size before it is injected as system-reminder text.
 						let patchedChangedFileSnippet = false;
-						traverse.default(ast, {
+						traverse(ast, {
 							IfStatement(path) {
 								if (patchedChangedFileSnippet) return;
 

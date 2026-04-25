@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import type * as t from "@babel/types";
+import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getVerifyAst } from "./ast-helpers.js";
 
@@ -24,7 +24,7 @@ const NEW_DQUOTE_PATTERN = '(["\\\\$`])';
 const OLD_BARE_PATTERN = "([A-Za-z]:)?([#!\"$&'()*,:;<=>?@[\\\\\\]^`{|}])";
 const NEW_BARE_PATTERN = "([A-Za-z]:)?([#\"$&'()*,:;<=>?@[\\\\\\]^`{|}])";
 
-function createShellQuoteFixMutator(): traverse.Visitor {
+function createShellQuoteFixMutator(): Visitor {
 	return {
 		RegExpLiteral(path) {
 			if (path.node.pattern === OLD_DQUOTE_PATTERN) {
@@ -47,7 +47,7 @@ function verifyShellQuoteFix(code: string, ast?: t.File): true | string {
 	let hasOldDquote = false;
 	let hasOldBare = false;
 
-	traverse.default(verifyAst, {
+	traverse(verifyAst, {
 		RegExpLiteral(path) {
 			if (path.node.pattern === OLD_DQUOTE_PATTERN) hasOldDquote = true;
 			if (path.node.pattern === OLD_BARE_PATTERN) hasOldBare = true;
