@@ -1,11 +1,10 @@
 import * as fs from "node:fs";
-import generator from "@babel/generator";
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
 import chalk from "chalk";
 import * as Diff from "diff";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
+import { generator, traverse } from "./babel.js";
 import { parse } from "./loader.js";
 
 async function main() {
@@ -81,7 +80,7 @@ async function runDiff(argv: any) {
 	const map2 = new Map<string, string>();
 
 	const collect = (ast: any, map: Map<string, string>) => {
-		traverse.default(ast, {
+		traverse(ast, {
 			enter(path: any) {
 				const node = path.node;
 				// We focus on "Identifiable" nodes
@@ -91,7 +90,7 @@ async function runDiff(argv: any) {
 					(t.isObjectProperty(node) && t.isIdentifier(node.key))
 				) {
 					const sig = getNodeSignature(node);
-					const code = generator.default(node, { minified: true }).code;
+					const code = generator(node, { minified: true }).code;
 
 					// Store the full path signature to disambiguate
 					const breadcrumb = generateBreadcrumbs(path);
@@ -126,10 +125,10 @@ async function runDiff(argv: any) {
 				let pretty1 = code1;
 				let pretty2 = code2;
 				try {
-					pretty1 = generator.default(parse(code1).program.body[0], {
+					pretty1 = generator(parse(code1).program.body[0], {
 						minified: false,
 					}).code;
-					pretty2 = generator.default(parse(code2).program.body[0], {
+					pretty2 = generator(parse(code2).program.body[0], {
 						minified: false,
 					}).code;
 				} catch {}

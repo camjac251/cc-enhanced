@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { type NodePath, traverse } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getVerifyAst } from "./ast-helpers.js";
 import { MODERN_FINDING_TOOLS } from "./modern-cli.js";
@@ -89,7 +89,7 @@ function rewriteLegacyText(text: string): string {
 	return next;
 }
 
-function containsAnchor(path: traverse.NodePath<t.Function>): boolean {
+function containsAnchor(path: NodePath<t.Function>): boolean {
 	let found = false;
 	path.traverse({
 		StringLiteral(inner) {
@@ -229,11 +229,11 @@ function isGateInitExpression(node: t.Node | null | undefined): boolean {
  * conditional only when the reference is part of its test — not a branch value.
  */
 function findEnclosingConditionalTest(
-	refPath: traverse.NodePath<t.Node>,
-): traverse.NodePath<t.ConditionalExpression> | null {
-	let current: traverse.NodePath<t.Node> | null = refPath;
+	refPath: NodePath<t.Node>,
+): NodePath<t.ConditionalExpression> | null {
+	let current: NodePath<t.Node> | null = refPath;
 	while (current) {
-		const parent: traverse.NodePath<t.Node> | null = current.parentPath;
+		const parent: NodePath<t.Node> | null = current.parentPath;
 		if (!parent) return null;
 		if (parent.isConditionalExpression() && parent.node.test === current.node) {
 			return parent;
@@ -248,17 +248,17 @@ function findEnclosingConditionalTest(
 }
 
 interface GateCandidate {
-	declPath: traverse.NodePath<t.VariableDeclarator>;
+	declPath: NodePath<t.VariableDeclarator>;
 	/**
 	 * When set, mutation targets the test of this conditional rather than the
 	 * declarator init. Used when the variable is referenced through a logical
 	 * combination that forms a guidance conditional's test.
 	 */
-	conditionalToForce?: traverse.NodePath<t.ConditionalExpression>;
+	conditionalToForce?: NodePath<t.ConditionalExpression>;
 }
 
 function findEmbeddedSearchGateDeclarator(
-	path: traverse.NodePath<t.Function>,
+	path: NodePath<t.Function>,
 ): GateCandidate | null {
 	const candidates: GateCandidate[] = [];
 
@@ -271,9 +271,7 @@ function findEmbeddedSearchGateDeclarator(
 
 			const init = declPath.node.init;
 			if (isGateInitExpression(init)) {
-				let conditionalToForce:
-					| traverse.NodePath<t.ConditionalExpression>
-					| undefined;
+				let conditionalToForce: NodePath<t.ConditionalExpression> | undefined;
 				const controlsGuidance = binding.referencePaths.some((refPath) => {
 					const conditional = findEnclosingConditionalTest(refPath);
 					if (!conditional) return false;
@@ -319,7 +317,7 @@ function findEmbeddedSearchGateDeclarator(
 	return candidates.length === 1 ? candidates[0] : null;
 }
 
-function patchGateInFunction(path: traverse.NodePath<t.Function>): boolean {
+function patchGateInFunction(path: NodePath<t.Function>): boolean {
 	const candidate = findEmbeddedSearchGateDeclarator(path);
 	if (!candidate) return false;
 	const { declPath, conditionalToForce } = candidate;
@@ -345,7 +343,7 @@ function patchGateInFunction(path: traverse.NodePath<t.Function>): boolean {
 	return false;
 }
 
-function patchPromptTextInFunction(path: traverse.NodePath<t.Function>): void {
+function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 	path.traverse({
 		TemplateLiteral(templatePath) {
 			const pattern = templatePattern(templatePath.node);
@@ -474,7 +472,7 @@ function patchPromptTextInFunction(path: traverse.NodePath<t.Function>): void {
 	});
 }
 
-function findAnchor(path: traverse.NodePath<t.Function>): string | null {
+function findAnchor(path: NodePath<t.Function>): string | null {
 	let matched: string | null = null;
 	path.traverse({
 		StringLiteral(inner) {
@@ -517,7 +515,7 @@ export const bashPrompt: Patch = {
 		{
 			pass: "mutate" as const,
 			visitor: {
-				Function(path: traverse.NodePath<t.Function>) {
+				Function(path: NodePath<t.Function>) {
 					if (!containsAnchor(path)) return;
 					patchGateInFunction(path);
 					patchPromptTextInFunction(path);
@@ -566,7 +564,7 @@ export const bashPrompt: Patch = {
 		// After mutation the pre-patch reference shape is gone, so scan the
 		// function for evidence of forcing rather than re-detecting the gate.
 		const forcedAnchors = new Set<string>();
-		traverse.default(verifyAst, {
+		traverse(verifyAst, {
 			Function(path) {
 				const anchor = findAnchor(path);
 				if (!anchor) return;

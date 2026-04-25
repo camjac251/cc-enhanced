@@ -1,9 +1,9 @@
-#!/usr/bin/env tsx
+#!/usr/bin/env bun
 /**
  * Export prompt artifacts from a clean/patched claude-code cli.js.
  *
  * Usage:
- *   tsx scripts/export-prompts.ts [version-or-path]
+ *   bun scripts/export-prompts.ts [version-or-path]
  *
  * Input resolution order:
  * - explicit path to cli.js

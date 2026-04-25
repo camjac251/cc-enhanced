@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
 	getObjectKeyName,
@@ -101,7 +101,7 @@ function buildBasenameExpr(fileExpr: t.Expression): t.LogicalExpression {
 
 // --- Mutator ---
 
-function createTaskOutputExtMutator(): traverse.Visitor {
+function createTaskOutputExtMutator(): Visitor {
 	let serializerPatched = false;
 	let responsePatched = false;
 
@@ -329,7 +329,7 @@ export const taskOutputExt: Patch = {
 		let hasOutputFileTag = false;
 		let hasOutputFilenameTag = false;
 
-		traverse.default(verifyAst, {
+		traverse(verifyAst, {
 			ObjectExpression(path) {
 				if (!isTaskSerializerObject(path.node)) return;
 				taskSerializerFound = true;

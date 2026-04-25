@@ -1,9 +1,9 @@
 import * as fs from "node:fs";
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
 import chalk from "chalk";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
+import { traverse } from "./babel.js";
 import { parse } from "./loader.js";
 
 function getSourceLines(
@@ -139,7 +139,7 @@ async function runSearch(argv: any) {
 	let matches = 0;
 	const seen = new Set<string>();
 
-	traverse.default(ast, {
+	traverse(ast, {
 		enter(path: any) {
 			if (matches >= limit) return;
 

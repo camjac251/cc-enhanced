@@ -1,6 +1,6 @@
-import generator, { type GeneratorOptions } from "@babel/generator";
 import * as parser from "@babel/parser";
 import type * as t from "@babel/types";
+import { type GeneratorOptions, generator } from "./babel.js";
 
 type ParseSourceType = "module" | "script";
 
@@ -73,5 +73,5 @@ export function parse(code: string, options: ParseOptions = {}): t.File {
 }
 
 export function print(ast: t.Node | t.File): string {
-	return generator.default(ast, GENERATOR_OPTIONS).code;
+	return generator(ast, GENERATOR_OPTIONS).code;
 }

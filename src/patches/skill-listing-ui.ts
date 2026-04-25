@@ -1,6 +1,5 @@
-import template from "@babel/template";
-import traverse, { type NodePath } from "@babel/traverse";
 import * as t from "@babel/types";
+import { type NodePath, template, traverse } from "../babel.js";
 import type { Patch, PatchAstPass } from "../types.js";
 import {
 	getObjectKeyName,
@@ -12,7 +11,7 @@ import {
 const SKILL_LISTING_SUMMARY_HELPER = "_claudePatchFormatSkillListingSummary";
 
 function buildSkillListingSummaryHelper(): t.Statement {
-	return template.default.statement(
+	return template.statement(
 		`
 function ${SKILL_LISTING_SUMMARY_HELPER}(attachment) {
   let skillNames = Array.isArray(attachment.skillNames)
@@ -319,7 +318,7 @@ export const skillListingUi: Patch = {
 		let attachmentPatched = false;
 		let rendererPatched = false;
 
-		traverse.default(verifyAst, {
+		traverse(verifyAst, {
 			FunctionDeclaration(path) {
 				if (
 					t.isIdentifier(path.node.id, {

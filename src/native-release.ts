@@ -267,7 +267,7 @@ async function downloadToFile(url: string, outPath: string): Promise<void> {
 			throw new Error(`No response body from ${url}`);
 		}
 		const nodeStream = Readable.fromWeb(
-			res.body as Parameters<typeof Readable.fromWeb>[0],
+			res.body as unknown as Parameters<typeof Readable.fromWeb>[0],
 		);
 		await pipeline(nodeStream, fs.createWriteStream(outPath));
 	} catch (error) {

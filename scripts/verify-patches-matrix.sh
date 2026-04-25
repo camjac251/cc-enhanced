@@ -62,7 +62,7 @@ log_path="${TMP_DIR}/run-${selected_version}.log"
 
 echo "==> Verifying selected version ${selected_version}: ${target}"
 if ! env -u CLAUDE_PATCHER_INCLUDE_TAGS -u CLAUDE_PATCHER_EXCLUDE_TAGS \
-  pnpm cli --target "$target" --dry-run --summary-path "$summary_path" >"$log_path" 2>&1; then
+  bun src/index.ts --target "$target" --dry-run --summary-path "$summary_path" >"$log_path" 2>&1; then
   echo "  FAIL: patch run command failed (see $log_path)"
   exit 1
 fi

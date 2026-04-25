@@ -1,14 +1,9 @@
 [tools]
-node = "24"
-pnpm = "10"
+bun = "latest"
 lefthook = "latest"
 
 [hooks]
 enter = "lefthook install"
-
-[env]
-# cli.js is ~16MB; Babel AST + generator needs ~10GB during repack
-NODE_OPTIONS = "--max-old-space-size=12288"
 
 [tasks.patch]
 description = "Safety guard: in-place detect-target patching is disabled; use native:update"
@@ -37,7 +32,7 @@ DEFAULT_OUTPUT="${usage_target?}.patched"
 ARGS+=(--output "${usage_output:-$DEFAULT_OUTPUT}")
 [[ "${usage_dry_run:-}" == "true" ]] && ARGS+=(--dry-run)
 [[ -n "${usage_summary:-}" ]] && ARGS+=(--summary-path "${usage_summary}")
-pnpm cli "${ARGS[@]}"
+bun run cli "${ARGS[@]}"
 """
 
 [tasks."native:backup"]
@@ -46,7 +41,7 @@ usage = '''
 arg "<target>" help="Path to native claude binary"
 arg "[backup_path]" help="Optional explicit backup file path"
 '''
-run = "pnpm cli --target ${usage_target?} --backup-only ${usage_backup_path:+--backup-path ${usage_backup_path}}"
+run = "bun run cli --target ${usage_target?} --backup-only ${usage_backup_path:+--backup-path ${usage_backup_path}}"
 
 [tasks."native:restore"]
 description = "Restore an explicit native target from backup"
@@ -54,7 +49,7 @@ usage = '''
 arg "<target>" help="Path to native claude binary"
 arg "[backup_path]" help="Optional explicit backup file path"
 '''
-run = "pnpm cli --target ${usage_target?} --restore ${usage_backup_path:+--backup-path ${usage_backup_path}}"
+run = "bun run cli --target ${usage_target?} --restore ${usage_backup_path:+--backup-path ${usage_backup_path}}"
 
 [tasks."native:unpack"]
 description = "Extract embedded JS from a native target"
@@ -62,7 +57,7 @@ usage = '''
 arg "<target>" help="Path to native claude binary"
 arg "<output_js>" help="Path to write extracted JS"
 '''
-run = "pnpm cli --target ${usage_target?} --unpack ${usage_output_js?}"
+run = "bun run cli --target ${usage_target?} --unpack ${usage_output_js?}"
 
 [tasks."native:repack"]
 description = "Repack JS file back into a native target"
@@ -71,7 +66,7 @@ arg "<target>" help="Path to native claude binary"
 arg "<input_js>" help="Path to JS to embed"
 arg "[output]" help="Optional output binary path (default in-place)"
 '''
-run = "pnpm cli --target ${usage_target?} --repack ${usage_input_js?} ${usage_output:+--output ${usage_output}}"
+run = "bun run cli --target ${usage_target?} --repack ${usage_input_js?} ${usage_output:+--output ${usage_output}}"
 
 [tasks."native:pull"]
 description = "Fetch native binary and extract clean formatted JS (for diffing)"
@@ -85,7 +80,7 @@ set -euo pipefail
 SPEC="${usage_spec:-latest}"
 FETCH_ARGS=(--native-fetch "$SPEC" --native-fetch-only)
 [[ -n "${usage_platform:-}" ]] && FETCH_ARGS+=(--native-platform "${usage_platform}")
-FETCH_OUTPUT=$(pnpm cli "${FETCH_ARGS[@]}" 2>&1)
+FETCH_OUTPUT=$(bun run cli "${FETCH_ARGS[@]}" 2>&1)
 echo "$FETCH_OUTPUT"
 
 # Resolve version from fetch output (not cache listing)
@@ -106,7 +101,7 @@ fi
 OUT_DIR="versions_clean/$VERSION"
 mkdir -p "$OUT_DIR"
 UNPACK_ARGS=(--target "$BINARY" --unpack "$OUT_DIR/cli.js")
-pnpm cli "${UNPACK_ARGS[@]}"
+bun run cli "${UNPACK_ARGS[@]}"
 echo "Clean JS: $OUT_DIR/cli.js"
 """
 
@@ -123,7 +118,7 @@ set -euo pipefail
 ARGS=(--native-fetch "${usage_spec:-latest}" --native-fetch-only)
 [[ "${usage_force:-}" == "true" ]] && ARGS+=(--native-force-download)
 [[ -n "${usage_platform:-}" ]] && ARGS+=(--native-platform "${usage_platform}")
-pnpm cli "${ARGS[@]}"
+bun run cli "${ARGS[@]}"
 """
 
 [tasks."native:fetch-patch"]
@@ -143,7 +138,7 @@ ARGS=(--native-fetch "${usage_spec:-latest}")
 [[ "${usage_dry_run:-}" == "true" ]] && ARGS+=(--dry-run)
 [[ -n "${usage_platform:-}" ]] && ARGS+=(--native-platform "${usage_platform}")
 [[ -n "${usage_summary:-}" ]] && ARGS+=(--summary-path "${usage_summary}")
-pnpm cli "${ARGS[@]}"
+bun run cli "${ARGS[@]}"
 """
 
 [tasks."native:update"]
@@ -170,26 +165,26 @@ ARGS=(--update)
 [[ "${usage_diff:-}" == "true" ]] && ARGS+=(--diff)
 [[ -n "${usage_summary:-}" ]] && ARGS+=(--summary-path "${usage_summary}")
 [[ "${usage_skip_smoke_test:-}" == "true" ]] && ARGS+=(--skip-smoke-test)
-pnpm cli "${ARGS[@]}"
+bun run cli "${ARGS[@]}"
 """
 
 [tasks."native:promote"]
 description = "Promote a patched native binary to active launcher"
 usage = 'arg "<target>" help="Path to patched native binary"'
-run = "pnpm cli --promote ${usage_target?}"
+run = "bun run cli --promote ${usage_target?}"
 
 [tasks."native:rollback"]
 description = "Roll back to previous promoted binary"
 usage = 'arg "[target]" help="Optional explicit rollback target"'
-run = "pnpm cli --rollback ${usage_target:+--rollback-target ${usage_target}}"
+run = "bun run cli --rollback ${usage_target:+--rollback-target ${usage_target}}"
 
 [tasks.status]
 description = "Show current/previous/cached version status"
-run = "pnpm cli --status"
+run = "bun run cli --status"
 
 [tasks.list]
 description = "List available patches"
-run = "pnpm cli --list"
+run = "bun run cli --list"
 
 [tasks.inspect]
 description = "AST search tool with breadcrumbs and context"
@@ -211,7 +206,7 @@ ARGS=(search "${usage_file?}" "${usage_query?}")
 [[ -n "${usage_context:-}" ]] && ARGS+=(-C "${usage_context}")
 [[ -n "${usage_limit:-}" ]] && ARGS+=(-l "${usage_limit}")
 [[ -n "${usage_type:-}" ]] && ARGS+=(-t "${usage_type}")
-pnpm inspect "${ARGS[@]}"
+bun run inspect "${ARGS[@]}"
 """
 
 [tasks."inspect:view"]
@@ -220,7 +215,7 @@ usage = '''
 arg "<file>" help="Path to JS file"
 arg "<range>" help="Line range (e.g. 1000:1050)"
 '''
-run = "pnpm inspect view ${usage_file?} ${usage_range?}"
+run = "bun run inspect view ${usage_file?} ${usage_range?}"
 
 [tasks.diff]
 description = "Structural AST diff between two JS files"
@@ -228,11 +223,11 @@ usage = '''
 arg "<original>" help="Path to original JS file"
 arg "<patched>" help="Path to patched JS file"
 '''
-run = "pnpm diff ${usage_original?} ${usage_patched?}"
+run = "bun run diff ${usage_original?} ${usage_patched?}"
 
 [tasks."lint:fix"]
 description = "Auto-fix lint and format issues"
-run = "pnpm biome check --write src/"
+run = "bunx biome check --write src/"
 
 [tasks."verify:anchors"]
 description = "Compare patched and clean cli.js anchors (signature + key patch markers)"
@@ -240,12 +235,12 @@ usage = '''
 arg "<patched_cli>" help="Path to patched cli.js"
 arg "<clean_cli>" help="Path to clean/unpatched cli.js"
 '''
-run = "pnpm verify:anchors ${usage_patched_cli?} ${usage_clean_cli?}"
+run = "bun run verify:anchors ${usage_patched_cli?} ${usage_clean_cli?}"
 
 [tasks."verify:prompt-surfaces"]
 description = "Verify exported live prompt surfaces in tools/agents/system markdown"
 usage = 'arg "<export_dir>" help="Path to exported-prompts/<label> directory"'
-run = "pnpm verify:prompt-surfaces ${usage_export_dir?}"
+run = "bun run verify:prompt-surfaces ${usage_export_dir?}"
 
 [tasks."verify:cache"]
 description = "Run live cache efficiency benchmark (baseline vs patched policy) when ANTHROPIC_API_KEY is set"
@@ -278,7 +273,7 @@ ARGS=()
 [[ -n "${usage_min_cache_read_delta:-}" ]] && ARGS+=(--min-cache-read-delta "${usage_min_cache_read_delta}")
 [[ "${usage_dry_run:-}" == "true" ]] && ARGS+=(--dry-run)
 
-pnpm verify:cache "${ARGS[@]}"
+bun run verify:cache "${ARGS[@]}"
 """
 
 [tasks."verify:cache:agent"]
@@ -308,7 +303,7 @@ ARGS+=(--min-cache-read-delta "${usage_min_cache_read_delta:--1000000}")
 [[ -n "${usage_output_csv:-}" ]] && ARGS+=(--output-csv "${usage_output_csv}")
 [[ "${usage_dry_run:-}" == "true" ]] && ARGS+=(--dry-run)
 
-pnpm verify:cache "${ARGS[@]}"
+bun run verify:cache "${ARGS[@]}"
 """
 
 [tasks."prompts:export"]
@@ -323,15 +318,15 @@ run = "rm -rf versions_clean"
 
 [tasks.typecheck]
 description = "Run TypeScript type checking"
-run = "pnpm typecheck"
+run = "bun run typecheck"
 
 [tasks.lint]
 description = "Lint source files"
-run = "pnpm biome check src/"
+run = "bunx biome check src/"
 
 [tasks.format]
 description = "Format source files"
-run = "pnpm biome format --write src/"
+run = "bunx biome format --write src/"
 
 [tasks."verify:patches"]
 description = "Verify patcher health and dry-run patch application for native target (cli.js optional)"
@@ -388,11 +383,11 @@ assert_clean_summary() {
   fi
 }
 
-pnpm typecheck
-pnpm biome check src/index.ts src/manager.ts src/patch-runner.ts src/patches/index.ts src/patches/edit-extended.ts src/templates/edit_hook.js
+bun run typecheck
+bunx biome check src/index.ts src/manager.ts src/patch-runner.ts src/patches/index.ts src/patches/edit-extended.ts src/templates/edit_hook.js
 
 if [[ -n "$CLI_TARGET" && -f "$CLI_TARGET" ]]; then
-  pnpm cli --target "$CLI_TARGET" --dry-run --summary-path "$CLI_SUMMARY"
+  bun run cli --target "$CLI_TARGET" --dry-run --summary-path "$CLI_SUMMARY"
   assert_clean_summary "$CLI_SUMMARY" "cli.js"
 else
   echo "Skipping cli.js dry-run (set CLI_TARGET to enable)"
@@ -416,20 +411,20 @@ if [[ -z "$NATIVE_TARGET" ]]; then
 fi
 
 if [[ -n "$NATIVE_TARGET" && -f "$NATIVE_TARGET" ]]; then
-  pnpm cli --target "$NATIVE_TARGET" --dry-run --summary-path "$NATIVE_SUMMARY"
+  bun run cli --target "$NATIVE_TARGET" --dry-run --summary-path "$NATIVE_SUMMARY"
   assert_clean_summary "$NATIVE_SUMMARY" "native"
-  pnpm cli --target "$NATIVE_TARGET" --output "$NATIVE_PATCHED_FOR_PROMPTS"
-  pnpm cli --target "$NATIVE_PATCHED_FOR_PROMPTS" --unpack "$NATIVE_PATCHED_JS"
+  bun run cli --target "$NATIVE_TARGET" --output "$NATIVE_PATCHED_FOR_PROMPTS"
+  bun run cli --target "$NATIVE_PATCHED_FOR_PROMPTS" --unpack "$NATIVE_PATCHED_JS"
   npx tsx scripts/export-prompts.ts "$NATIVE_PATCHED_JS"
-  pnpm verify:prompt-surfaces "$NATIVE_PROMPT_EXPORT_DIR"
+  bun run verify:prompt-surfaces "$NATIVE_PROMPT_EXPORT_DIR"
 else
   echo "Skipping native dry-run (no NATIVE_TARGET and no promoted binary found)"
 fi
 
 if [[ -n "$CLI_TARGET" && -f "$CLI_TARGET" ]]; then
   cp "$CLI_TARGET" "$CLI_PATCHED_FOR_ANCHORS"
-  pnpm cli --target "$CLI_PATCHED_FOR_ANCHORS"
-  pnpm verify:anchors "$CLI_PATCHED_FOR_ANCHORS" "$CLI_TARGET"
+  bun run cli --target "$CLI_PATCHED_FOR_ANCHORS"
+  bun run verify:anchors "$CLI_PATCHED_FOR_ANCHORS" "$CLI_TARGET"
 else
   echo "Skipping anchor checks (set CLI_TARGET to enable)"
 fi

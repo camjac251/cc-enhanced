@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
 	getMemberPropertyName,
@@ -164,7 +164,7 @@ function nodeHasDirectorySet(
 	});
 }
 
-function createMutateVisitor(): traverse.Visitor {
+function createMutateVisitor(): Visitor {
 	let patchedSpawn = false;
 	let patchedResume = false;
 
@@ -360,7 +360,7 @@ function verifyWorktreePerms(code: string, ast?: t.File): true | string {
 	let foundSpawnSet = false;
 	let foundResumeSet = false;
 
-	traverse.default(verifyAst, {
+	traverse(verifyAst, {
 		CallExpression(path) {
 			const callee = path.node.callee;
 			if (!t.isMemberExpression(callee)) return;

@@ -14,16 +14,16 @@ pre-commit:
   commands:
     format:
       glob: "{src/**/*.{ts,js,mjs,json},scripts/**/*.{ts,js,mjs},biome.json}"
-      run: pnpm biome format --write --no-errors-on-unmatched {staged_files}
+      run: bunx biome format --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
       priority: 1
     lint:
       glob: "{src/**/*.{ts,js,mjs,json},scripts/**/*.{ts,js,mjs},biome.json}"
-      run: pnpm biome check --no-errors-on-unmatched {staged_files}
+      run: bunx biome check --no-errors-on-unmatched {staged_files}
       priority: 2
     typecheck:
       glob: "{src/**/*.ts,tsconfig.json,package.json}"
-      run: pnpm typecheck
+      run: bun run typecheck
       priority: 3
 
 commit-msg:
@@ -44,5 +44,5 @@ pre-push:
   parallel: false
   commands:
     test:
-      run: pnpm test
+      run: bun test src/
       priority: 1

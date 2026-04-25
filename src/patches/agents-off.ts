@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
 	getObjectPropertyByName,
@@ -110,7 +110,7 @@ function collectReturnedIdentifiers(fnPath: any): Set<string> {
 	return returned;
 }
 
-function createAgentRegistryMutator(): traverse.Visitor {
+function createAgentRegistryMutator(): Visitor {
 	let foundRegistry = false;
 
 	return {
@@ -208,7 +208,7 @@ function verifyBuiltInAgentRegistry(ast: t.File): true | string {
 	let foundRegistry = false;
 	let leakedAgentType: string | null = null;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectExpression(path: any) {
 			const agentTypeProp = getObjectPropertyByName(path.node, "agentType");
 			if (!agentTypeProp || !t.isObjectProperty(agentTypeProp)) return;

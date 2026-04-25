@@ -1,6 +1,5 @@
-import template from "@babel/template";
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { type NodePath, template, traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
 	getObjectKeyName,
@@ -243,7 +242,7 @@ function nodeContainsMarkerOutsideNestedFunctions(
 	return visit(node, true);
 }
 
-function createCacheTailPolicyMutator(): traverse.Visitor {
+function createCacheTailPolicyMutator(): Visitor {
 	let patchedWindow = false;
 	let patchedUserOnly = false;
 	let patchedDecls = false;
@@ -536,7 +535,7 @@ function patchFirstCacheScopeOrgToGlobal(body: t.Statement[]): boolean {
 	return false;
 }
 
-function createSyspromptGlobalScopeMutator(): traverse.Visitor {
+function createSyspromptGlobalScopeMutator(): Visitor {
 	let patched = false;
 
 	return {
@@ -586,7 +585,7 @@ function createSyspromptGlobalScopeMutator(): traverse.Visitor {
  * that any non-null scope (including "global") emits `ttl: "1h"` even when the
  * caller did not opt into the 1h TTL flag.
  */
-function createCacheControlTtlMutator(): traverse.Visitor {
+function createCacheControlTtlMutator(): Visitor {
 	let patched = false;
 
 	return {
@@ -827,9 +826,7 @@ function createAgentCacheTtlRuntimeGuard(allowlistName: string): t.Statement {
 	});
 }
 
-function getEnclosingFunctionBody(
-	path: traverse.NodePath,
-): t.Statement[] | null {
+function getEnclosingFunctionBody(path: NodePath): t.Statement[] | null {
 	const functionPath = path.findParent((parentPath) => parentPath.isFunction());
 	if (!functionPath) return null;
 
@@ -848,7 +845,7 @@ function getEnclosingFunctionBody(
 	return functionNode.body.body;
 }
 
-function patchAgentCacheTtlRuntimeGuard(path: traverse.NodePath): boolean {
+function patchAgentCacheTtlRuntimeGuard(path: NodePath): boolean {
 	const body = getEnclosingFunctionBody(path);
 	if (!body) return false;
 	const allowlistReturn = findCacheTtlAllowlistReturn(body);
@@ -865,7 +862,7 @@ function patchAgentCacheTtlRuntimeGuard(path: traverse.NodePath): boolean {
 	return true;
 }
 
-function createAgentCacheTtlAllowlistMutator(): traverse.Visitor {
+function createAgentCacheTtlAllowlistMutator(): Visitor {
 	let patchedDefault = false;
 	let patchedRuntimeGuard = false;
 
@@ -1115,7 +1112,7 @@ function findRequestClampFunction(ast: t.File): {
 		body: t.Statement[];
 	} | null = null;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		Function(path) {
 			if (match) return;
 			if (
@@ -1176,9 +1173,7 @@ function findRequestClampFunction(ast: t.File): {
 	return match;
 }
 
-function createCacheControlBlockCapClampInjector(
-	ast: t.File,
-): traverse.Visitor {
+function createCacheControlBlockCapClampInjector(ast: t.File): Visitor {
 	return {
 		Program: {
 			exit() {
@@ -1206,7 +1201,7 @@ function createCacheControlBlockCapClampInjector(
 	};
 }
 
-function createCacheControlBlockCapRequestBuilderInjector(): traverse.Visitor {
+function createCacheControlBlockCapRequestBuilderInjector(): Visitor {
 	let patched = false;
 
 	return {
@@ -1265,7 +1260,7 @@ function verifyTailWindowPolicy(ast: t.File): true | string {
 	let hasUserOnlyConditional = false;
 	let hasLegacyTailEqualityGate = false;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		Function(path) {
 			if (foundMarkerFunction) return;
 			if (!t.isBlockStatement(path.node.body)) return;
@@ -1441,7 +1436,7 @@ function verifySyspromptGlobalScope(ast: t.File): true | string {
 		}
 	};
 
-	traverse.default(ast, {
+	traverse(ast, {
 		Function(path) {
 			if (foundSyspromptMarker) return;
 			if (!t.isBlockStatement(path.node.body)) return;
@@ -1490,7 +1485,7 @@ function verifyScopedCacheControlTtl(ast: t.File): true | string {
 	let foundCacheControlBuilder = false;
 	let hasScopeTtlGate = false;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		Function(path) {
 			if (foundCacheControlBuilder) return;
 			if (!t.isBlockStatement(path.node.body)) return;
@@ -1577,7 +1572,7 @@ function verifyAgentCacheTtlAllowlist(ast: t.File): true | string {
 	let hasAgentQuerySource = false;
 	let hasRuntimeGuard = false;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectProperty(path) {
 			if (!isCacheTtlAllowlistProperty(path.node)) return;
 			foundAllowlist = true;
@@ -1624,7 +1619,7 @@ function verifyCacheControlBlockCap(ast: t.File): true | string {
 	const strippedClampTargets = new Set<string>();
 	const strippedRequestBuilderTargets = new Set<string>();
 
-	traverse.default(ast, {
+	traverse(ast, {
 		Function(path) {
 			if (
 				!path.isFunctionDeclaration() &&

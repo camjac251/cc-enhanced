@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { traverse } from "../babel.js";
 import { print } from "../loader.js";
 import type { Patch, PatchResult } from "../types.js";
 import { getObjectKeyName, isMemberPropertyName } from "./ast-helpers.js";
@@ -137,7 +137,7 @@ function collectCurrentLimits(ast: t.File): {
 		readMaxResultSize?: number;
 	} = {};
 
-	traverse.default(ast, {
+	traverse(ast, {
 		TemplateLiteral(path: any) {
 			if (current.linesCap !== undefined && current.lineChars !== undefined)
 				return;
@@ -164,7 +164,7 @@ function collectCurrentLimits(ast: t.File): {
 		},
 	});
 
-	traverse.default(ast, {
+	traverse(ast, {
 		Function(path: any) {
 			if (current.byteCeiling !== undefined) return;
 			if (!t.isBlockStatement(path.node.body)) return;
@@ -221,7 +221,7 @@ function collectCurrentLimits(ast: t.File): {
 		},
 	});
 
-	traverse.default(ast, {
+	traverse(ast, {
 		Function(path: any) {
 			if (current.tokenBudget !== undefined) return;
 			if (!t.isBlockStatement(path.node.body)) return;
@@ -260,7 +260,7 @@ function collectCurrentLimits(ast: t.File): {
 		},
 	});
 
-	traverse.default(ast, {
+	traverse(ast, {
 		Function(path: any) {
 			if (current.resultSizeCap !== undefined) return;
 			const resolved = resolveResultSizeCapBinding(path);
@@ -272,7 +272,7 @@ function collectCurrentLimits(ast: t.File): {
 	});
 
 	// Find Read tool's maxResultSizeChars
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectExpression(path: any) {
 			if (current.readMaxResultSize !== undefined) return;
 			const nameProp = path.node.properties.find(
@@ -331,7 +331,7 @@ function runLimitsPatch(ast: t.File): void {
 	patchResultSizeCap(ast);
 	patchReadMaxResultSize(ast);
 
-	traverse.default(ast, {
+	traverse(ast, {
 		TemplateLiteral(path: any) {
 			const quasis = path.node.quasis;
 			const hasTrigger = isReadPromptTemplate(quasis);
@@ -364,7 +364,7 @@ function runLimitsPatch(ast: t.File): void {
 	function patchByteCeiling(ast: any) {
 		let patched = false;
 
-		traverse.default(ast, {
+		traverse(ast, {
 			Function(path: any) {
 				if (patched) return;
 				if (!t.isBlockStatement(path.node.body)) return;
@@ -429,7 +429,7 @@ function runLimitsPatch(ast: t.File): void {
 	function patchTokenBudget(ast: any) {
 		let patched = false;
 
-		traverse.default(ast, {
+		traverse(ast, {
 			Function(path: any) {
 				if (patched) return;
 				if (!t.isBlockStatement(path.node.body)) return;
@@ -475,7 +475,7 @@ function runLimitsPatch(ast: t.File): void {
 	function patchResultSizeCap(ast: any) {
 		let patched = false;
 
-		traverse.default(ast, {
+		traverse(ast, {
 			Function(path: any) {
 				if (patched) return;
 				const resolved = resolveResultSizeCapBinding(path);
@@ -497,7 +497,7 @@ function runLimitsPatch(ast: t.File): void {
 	function patchReadMaxResultSize(ast: any) {
 		let patched = false;
 
-		traverse.default(ast, {
+		traverse(ast, {
 			ObjectExpression(path: any) {
 				if (patched) return;
 				const nameProp = path.node.properties.find(
@@ -570,7 +570,7 @@ function runLimitsPatch(ast: t.File): void {
 		newValue: number,
 		limitKey: keyof NonNullable<PatchResult["limits"]>,
 	) {
-		traverse.default(ast, {
+		traverse(ast, {
 			VariableDeclarator(path: any) {
 				if (t.isIdentifier(path.node.id) && path.node.id.name === varName) {
 					const oldValue = t.isNumericLiteral(path.node.init)
@@ -650,7 +650,7 @@ export const limits: Patch = {
 
 		// Verify the token budget function still references the env var override
 		let hasTokenEnvRef = false;
-		traverse.default(ast, {
+		traverse(ast, {
 			MemberExpression(path: any) {
 				const prop = path.node.property;
 				const propName =

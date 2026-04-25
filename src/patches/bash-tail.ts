@@ -1,6 +1,5 @@
-import template from "@babel/template";
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { template, traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
 	getObjectKeyName,
@@ -61,7 +60,7 @@ function buildZodProperty(
 ): t.ObjectProperty {
 	return t.objectProperty(
 		t.identifier(key),
-		template.default.expression(`ZOD.TYPE().optional().describe(DESC)`)({
+		template.expression(`ZOD.TYPE().optional().describe(DESC)`)({
 			ZOD: t.identifier(zodVar),
 			TYPE: t.identifier(type),
 			DESC: t.stringLiteral(description),
@@ -201,7 +200,7 @@ function buildTruncationBody(
 	isImageFn: string,
 	thresholdFn: string,
 ): t.Statement[] {
-	const buildStmts = template.default.statements(`
+	const buildStmts = template.statements(`
 		var _opts = globalThis.__bashTailOpts;
 		if (_opts) globalThis.__bashTailOpts = null;
 		let _img = IS_IMAGE(PARAM);
@@ -240,7 +239,7 @@ function buildTruncationBody(
 
 // --- Mutator ---
 
-function createBashOutputTailMutator(): traverse.Visitor {
+function createBashOutputTailMutator(): Visitor {
 	let persistencePatched = false;
 	let truncationPatched = false;
 	let previewPatched = false;
@@ -349,7 +348,7 @@ function createBashOutputTailMutator(): traverse.Visitor {
 			const callParam = funcPath.node.params[0];
 			if (!t.isIdentifier(callParam)) return;
 
-			const globalSetter = template.default.statement(`
+			const globalSetter = template.statement(`
 				globalThis.__bashTailOpts = {
 					outputTail: "output_tail" in INPUT ? INPUT.output_tail : void 0,
 					maxOutput: "max_output" in INPUT ? INPUT.max_output : void 0,
@@ -625,7 +624,7 @@ function createBashOutputTailMutator(): traverse.Visitor {
 				},
 			});
 
-			const injected = template.default.statements(`
+			const injected = template.statements(`
 				var _bashOptsRaw = INPUT ? [
 					INPUT.run_in_background ? "background" : null,
 					INPUT.output_tail ? "tail" : null,
@@ -708,7 +707,7 @@ export const bashOutputTail: Patch = {
 		let hasRenderOptsHelper = false;
 		let hasRenderOptsWrappedReturns = false;
 
-		traverse.default(verifyAst, {
+		traverse(verifyAst, {
 			// Schema check
 			ObjectExpression(path) {
 				const keyNames = new Set<string>();

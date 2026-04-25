@@ -1,9 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import template from "@babel/template";
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { template, traverse } from "../babel.js";
 import { parse } from "../loader.js";
 import type { Patch } from "../types.js";
 import {
@@ -38,7 +37,7 @@ function adaptHookCodeForRuntime(hookCode: string): string {
 
 function findNamedToolObjectPath(ast: t.File, toolName: string): any {
 	let found: any = null;
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectExpression(path) {
 			if (found) return;
 			if (resolveToolName(path) !== toolName) return;
@@ -237,7 +236,7 @@ function inspectValidateExtendedFlow(validateMethod: t.ObjectMethod | null): {
 		t.program([t.functionDeclaration(null, [], validateMethod.body)]),
 	);
 
-	traverse.default(validateWrapper, {
+	traverse(validateWrapper, {
 		IfStatement(ifPath) {
 			const test = ifPath.node.test;
 			if (!t.isCallExpression(test)) return;
@@ -260,7 +259,7 @@ function inspectValidateExtendedFlow(validateMethod: t.ObjectMethod | null): {
 			let sawCanonicalizeCall = false;
 			let sawReturnTrue = false;
 
-			traverse.default(
+			traverse(
 				ifPath.node.consequent,
 				{
 					CallExpression(callPath) {
@@ -306,7 +305,7 @@ function inspectValidateExtendedFlow(validateMethod: t.ObjectMethod | null): {
 }
 
 function patchApprovalDialog(ast: any) {
-	traverse.default(ast, {
+	traverse(ast, {
 		Function(path: any) {
 			const body = path.node.body;
 			if (!t.isBlockStatement(body)) return;
@@ -368,7 +367,7 @@ function patchApprovalDialog(ast: any) {
 
 			if (!oldStringVarName || !newStringVarName || !insertBeforePath) return;
 
-			const buildPatchCode = template.default.statements(
+			const buildPatchCode = template.statements(
 				`
                     const _claudeEditPreviewMarker = "EXTENDED_EDIT_PREVIEW_v1";
                     try {
@@ -435,7 +434,7 @@ function resolveToolName(path: any): string | null {
 }
 
 function patchReadStateGuards(ast: any): void {
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectExpression(path: any) {
 			const toolName = resolveToolName(path);
 			if (toolName !== "Edit") return;
@@ -445,7 +444,7 @@ function patchReadStateGuards(ast: any): void {
 					t.isObjectMethod(p) && getObjectPropertyName(p) === "call",
 			);
 			if (callMethod) {
-				traverse.default(
+				traverse(
 					callMethod.body,
 					{
 						IfStatement(ifPath: any) {
@@ -487,7 +486,7 @@ function patchReadStateGuards(ast: any): void {
 }
 
 function patchIdeDiffConfigGuards(ast: t.File): void {
-	traverse.default(ast, {
+	traverse(ast, {
 		ConditionalExpression(path: any) {
 			if (!t.isNullLiteral(path.node.alternate)) return;
 			if (!t.isCallExpression(path.node.consequent)) return;
@@ -540,7 +539,7 @@ function injectExtendedEditTransportHelpers(ast: t.File): void {
 	);
 	if (existing) return;
 
-	const helperStatements = template.default.statements(
+	const helperStatements = template.statements(
 		`
         const _claudeExtendedEditTransportPrefix = ${JSON.stringify(EXTENDED_EDIT_TRANSPORT_PREFIX)};
 
@@ -584,7 +583,7 @@ function injectExtendedEditTransportHelpers(ast: t.File): void {
  * tool's own validation and normalization logic can run.
  */
 function patchEditSchemaForBatchEdits(ast: t.File): void {
-	traverse.default(ast, {
+	traverse(ast, {
 		CallExpression(path) {
 			if (!t.isMemberExpression(path.node.callee)) return;
 			if (!isMemberPropertyName(path.node.callee, "strictObject")) return;
@@ -761,7 +760,7 @@ function patchStructuredEditInputNormalization(
 	ast: t.File,
 	toolVarName: string,
 ): void {
-	traverse.default(ast, {
+	traverse(ast, {
 		CallExpression(path) {
 			if (path.node.arguments.length < 1) return;
 			const [inputArg] = path.node.arguments;
@@ -896,7 +895,7 @@ function patchEditAutoClassifierInput(editToolObj: t.ObjectExpression): void {
 		return;
 	}
 
-	const classifierLogic = template.default.statements(
+	const classifierLogic = template.statements(
 		`
             if (_claudeEditHasExtendedFields(INPUT)) {
                 const _normalized = _claudeEditNormalizeEdits(INPUT);
@@ -923,7 +922,7 @@ function runEditToolPatch(ast: t.File): void {
 	let toolVarName: string | null = null;
 	let editToolObj: any = null;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		StringLiteral(path: any) {
 			if (path.node.value === "A tool for editing files") {
 				let p = path.parentPath;
@@ -1057,7 +1056,7 @@ function runEditToolPatch(ast: t.File): void {
 					),
 				]);
 
-				const logicAst = template.default.statements(validateLogic, {
+				const logicAst = template.statements(validateLogic, {
 					placeholderPattern: false,
 				})();
 				validateMethod.body.body.unshift(restoreParams);
@@ -1101,7 +1100,7 @@ function runEditToolPatch(ast: t.File): void {
 					]),
 				];
 
-				const logicAst = template.default.statements(callLogic, {
+				const logicAst = template.statements(callLogic, {
 					placeholderPattern: false,
 				})();
 
@@ -1131,7 +1130,7 @@ function runEditToolPatch(ast: t.File): void {
                             return _claudeEditInputsEquivalent(_leftInput, _rightInput);
                         }
                     }`;
-				const logicAst = template.default.statements(eqLogic, {
+				const logicAst = template.statements(eqLogic, {
 					placeholderPattern: false,
 				})();
 				eqMethod.body.body.unshift(...logicAst);
@@ -1191,7 +1190,7 @@ Error recovery:
 	patchReadStateGuards(ast);
 	patchIdeDiffConfigGuards(ast);
 
-	traverse.default(ast, {
+	traverse(ast, {
 		StringLiteral(path: any) {
 			if (
 				path.node.value.startsWith(
@@ -1231,7 +1230,7 @@ Error recovery:
 				if (patchProp && t.isIdentifier(patchProp.value)) {
 					const patchVarName = patchProp.value.name;
 
-					traverse.default(t.file(t.program([path.node])), {
+					traverse(t.file(t.program([path.node])), {
 						CallExpression(innerPath: any) {
 							if (
 								t.isMemberExpression(innerPath.node.callee) &&
@@ -1266,7 +1265,7 @@ function patchEditRenderToolUseMessage(ast: t.File): void {
 	const EDITS_BINDING = "_claudeEditEdits";
 	const REPLACE_ALL_BINDING = "_claudeEditReplaceAll";
 
-	traverse.default(ast, {
+	traverse(ast, {
 		FunctionDeclaration(path) {
 			if (patched) return;
 			const node = path.node;
@@ -1310,7 +1309,7 @@ function patchEditRenderToolUseMessage(ast: t.File): void {
 				},
 			});
 
-			const injected = template.default.statements(
+			const injected = template.statements(
 				`
 				var _editOptsRaw = [];
 				if (Array.isArray(${EDITS_BINDING}) && ${EDITS_BINDING}.length > 0) {
@@ -1444,7 +1443,7 @@ function verifyEditAliasNormalization(ctx: EditVerifyContext): string | null {
 
 function hasFunctionDeclaration(ast: t.File, name: string): boolean {
 	let found = false;
-	traverse.default(ast, {
+	traverse(ast, {
 		FunctionDeclaration(path) {
 			if (t.isIdentifier(path.node.id, { name })) {
 				found = true;
@@ -1458,7 +1457,7 @@ function hasFunctionDeclaration(ast: t.File, name: string): boolean {
 function hasIdeDiffConfigGuard(ast: t.File): boolean {
 	let found = false;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		ConditionalExpression(path) {
 			if (found) {
 				path.stop();
@@ -1519,7 +1518,7 @@ function hasStructuredEditInputNormalization(ast: t.File): {
 	let prefersParsedEdits = false;
 	let returnsStructuredEdits = false;
 
-	traverse.default(ast, {
+	traverse(ast, {
 		ConditionalExpression(path) {
 			const test = path.node.test;
 			if (
@@ -1572,7 +1571,7 @@ function methodCallsHelper(
 	const wrapper = t.file(
 		t.program([t.functionDeclaration(null, [], method.body)]),
 	);
-	traverse.default(wrapper, {
+	traverse(wrapper, {
 		CallExpression(path) {
 			if (t.isIdentifier(path.node.callee, { name: helperName })) {
 				found = true;
@@ -1634,7 +1633,7 @@ function verifyEditRenderOpts(ctx: EditVerifyContext): string | null {
 	let hasRenderFunction = false;
 	let hasHelper = false;
 	let hasWrappedReturns = false;
-	traverse.default(ctx.ast, {
+	traverse(ctx.ast, {
 		FunctionDeclaration(path) {
 			if (
 				!getEditRenderFilePathBinding(path.node, {

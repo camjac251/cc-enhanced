@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { type NodePath, traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
 	getObjectKeyName,
@@ -146,7 +146,7 @@ function statementContainsEmptyStringReturn(statement: t.Statement): boolean {
 }
 
 function collectFunctionReturnLabels(
-	path: traverse.NodePath<t.FunctionDeclaration | t.FunctionExpression>,
+	path: NodePath<t.FunctionDeclaration | t.FunctionExpression>,
 ): Set<string> {
 	const labels = new Set<string>();
 	path.traverse({
@@ -174,34 +174,28 @@ function isPlanPreviewHintValue(value: t.Expression): boolean {
 	return false;
 }
 
-function isUnpatchedPlanPreviewGuard(
-	path: traverse.NodePath<t.IfStatement>,
-): boolean {
+function isUnpatchedPlanPreviewGuard(path: NodePath<t.IfStatement>): boolean {
 	if (!containsStartsWithZeroArgCall(path.node.test)) return false;
 	if (t.isBooleanLiteral(path.node.test, { value: false })) return false;
 	return statementContainsPlanPreviewReturn(path.node.consequent);
 }
 
 function isUnpatchedPlanToolUseHideGuard(
-	path: traverse.NodePath<t.IfStatement>,
+	path: NodePath<t.IfStatement>,
 ): boolean {
 	if (!containsStartsWithZeroArgCall(path.node.test)) return false;
 	if (t.isBooleanLiteral(path.node.test, { value: false })) return false;
 	return statementContainsEmptyStringReturn(path.node.consequent);
 }
 
-function isPatchedPlanPreviewGuard(
-	path: traverse.NodePath<t.IfStatement>,
-): boolean {
+function isPatchedPlanPreviewGuard(path: NodePath<t.IfStatement>): boolean {
 	return (
 		t.isBooleanLiteral(path.node.test, { value: false }) &&
 		statementContainsPlanPreviewReturn(path.node.consequent)
 	);
 }
 
-function isPatchedPlanToolUseHideGuard(
-	path: traverse.NodePath<t.IfStatement>,
-): boolean {
+function isPatchedPlanToolUseHideGuard(path: NodePath<t.IfStatement>): boolean {
 	return (
 		t.isBooleanLiteral(path.node.test, { value: false }) &&
 		statementContainsEmptyStringReturn(path.node.consequent)
@@ -216,9 +210,7 @@ function isPatchedPreviewHintValue(value: t.Expression): boolean {
 	);
 }
 
-function isPatchedPlanLabelReturn(
-	path: traverse.NodePath<t.ReturnStatement>,
-): boolean {
+function isPatchedPlanLabelReturn(path: NodePath<t.ReturnStatement>): boolean {
 	if (!t.isStringLiteral(path.node.argument)) return false;
 	if (
 		path.node.argument.value !== "Write" &&
@@ -228,7 +220,7 @@ function isPatchedPlanLabelReturn(
 		return false;
 	}
 
-	let current: traverse.NodePath<t.Node> | null = path.parentPath;
+	let current: NodePath<t.Node> | null = path.parentPath;
 	while (current && !current.isProgram() && !current.isFunction()) {
 		if (
 			current.isIfStatement() &&
@@ -266,7 +258,7 @@ export const planDiffUi: Patch = {
 		let hasPatchedPreviewGuard = false;
 		let hasPatchedToolUseHideGuard = false;
 
-		traverse.default(verifyAst, {
+		traverse(verifyAst, {
 			ReturnStatement(path) {
 				if (t.isStringLiteral(path.node.argument, { value: "Updated plan" })) {
 					hasUpdatedPlanLabel = true;
@@ -364,7 +356,7 @@ export const planDiffUi: Patch = {
 	},
 };
 
-function createPlanDiffUiMutator(): traverse.Visitor {
+function createPlanDiffUiMutator(): Visitor {
 	let patchedLabelReturns = 0;
 	let patchedPreviewHints = 0;
 	let patchedPreviewGuards = 0;

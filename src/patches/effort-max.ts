@@ -1,5 +1,5 @@
-import traverse from "@babel/traverse";
 import * as t from "@babel/types";
+import { type NodePath, traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
@@ -26,7 +26,7 @@ function getObjectProp(
 }
 
 function getSingleIdentifierParam(
-	path: traverse.NodePath<t.Function>,
+	path: NodePath<t.Function>,
 ): t.Identifier | null {
 	return path.node.params.length === 1 && t.isIdentifier(path.node.params[0])
 		? path.node.params[0]
@@ -34,7 +34,7 @@ function getSingleIdentifierParam(
 }
 
 function getReturnedExpression(
-	path: traverse.NodePath<t.Function>,
+	path: NodePath<t.Function>,
 ): t.Expression | null {
 	const body = path.node.body;
 	if (t.isExpression(body)) return body;
@@ -72,7 +72,7 @@ function isUndefinedOverrideReturn(
 	);
 }
 
-function isMaxCapabilityGate(path: traverse.NodePath<t.Function>): boolean {
+function isMaxCapabilityGate(path: NodePath<t.Function>): boolean {
 	const param = getSingleIdentifierParam(path);
 	if (!param) return false;
 	const body = path.node.body;
@@ -90,9 +90,7 @@ function isMaxCapabilityGate(path: traverse.NodePath<t.Function>): boolean {
 	);
 }
 
-function isPatchedMaxCapabilityGate(
-	path: traverse.NodePath<t.Function>,
-): boolean {
+function isPatchedMaxCapabilityGate(path: NodePath<t.Function>): boolean {
 	const returned = getReturnedExpression(path);
 	return !!returned && t.isBooleanLiteral(returned, { value: true });
 }
@@ -105,9 +103,7 @@ function hasEffortOptionValue(
 	return node.properties.some((prop) => objectValueValue(prop) === value);
 }
 
-function isEffortPickerArray(
-	path: traverse.NodePath<t.ArrayExpression>,
-): boolean {
+function isEffortPickerArray(path: NodePath<t.ArrayExpression>): boolean {
 	const values = new Set<string>();
 	for (const element of path.node.elements) {
 		if (!element || !t.isObjectExpression(element)) continue;
@@ -134,11 +130,11 @@ function isVoidZero(node: t.Node | null | undefined): boolean {
 	);
 }
 
-function createEffortMaxMutator(): traverse.Visitor {
+function createEffortMaxMutator(): Visitor {
 	let patchedMaxCapabilityGate = 0;
 	let patchedNotification = 0;
 
-	function patchFunction(path: traverse.NodePath<t.Function>): void {
+	function patchFunction(path: NodePath<t.Function>): void {
 		if (!isMaxCapabilityGate(path)) return;
 
 		path
@@ -212,7 +208,7 @@ export const effortMax: Patch = {
 		let hasPatchedPicker = false;
 		let hasMaxUltrathinkNotification = false;
 
-		traverse.default(verifyAst, {
+		traverse(verifyAst, {
 			Function(path) {
 				if (isMaxCapabilityGate(path)) {
 					hasLegacyMaxCapabilityGate = true;

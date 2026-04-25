@@ -53,7 +53,7 @@ Prompt-only edits run first as string transforms. Everything structural shares a
 ## Quick Start
 
 ```bash
-pnpm install
+bun install
 
 # Fetch latest upstream, patch it, and promote the result to active.
 mise run native:update
@@ -197,11 +197,11 @@ mise run native:rollback                          # Swap current and previous sy
 mise run status                                   # Show current, previous, cached
 mise run verify:patches                           # Typecheck + lint + dry-run on native target
 mise run verify:anchors                           # Diff clean vs patched anchors
-pnpm cli --list                                   # List available patches
-pnpm test                                         # Run the test suite
+bun run cli --list                                   # List available patches
+bun test src/                                         # Run the test suite
 ```
 
-`mise run patch` is intentionally disabled; it exists only to redirect to `native:update`. See `mise.toml` for the full task list and `pnpm cli --help` for CLI flags.
+`mise run patch` is intentionally disabled; it exists only to redirect to `native:update`. See `mise.toml` for the full task list and `bun run cli --help` for CLI flags.
 
 ## Extending
 
@@ -245,11 +245,11 @@ Current target: **Claude Code 2.1.119**. Tracks the latest upstream release and 
 ## Requirements
 
 - **Node.js 24+** (managed via `mise`)
-- **pnpm 10+** (via corepack)
+- **bun 1.3+** (via mise)
 - **Linux x86_64** (native ELF support is built in; other platforms require `node-lief`)
 - A working **Claude Code** installation
 
-Babel AST + generator over the 16 MB bundle needs roughly 10 GB of heap. `mise.toml` sets `NODE_OPTIONS=--max-old-space-size=12288` automatically, so run through `mise` or `pnpm` scripts. Raw `node`/`tsx` invocations will OOM.
+Babel AST + generator over the 16 MB bundle is the heaviest part of the patcher. JSC (Bun's engine) sizes its heap dynamically, so no explicit flag is required; both direct `bun src/index.ts ...` and `mise` task invocations work.
 
 ## Disclaimer
 
