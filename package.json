@@ -27,7 +27,7 @@
 		"@types/babel__template": "^7.4.4",
 		"@types/node": "^24.10.1",
 		"@types/yargs": "^17.0.35",
-		"typescript": "^5.9.3"
+		"typescript": "^6.0.0"
 	},
 	"dependencies": {
 		"@babel/generator": "^7.28.5",
