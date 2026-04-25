@@ -1,6 +1,10 @@
 [tools]
 node = "24"
 pnpm = "10"
+lefthook = "latest"
+
+[hooks]
+enter = "lefthook install"
 
 [env]
 # cli.js is ~16MB; Babel AST + generator needs ~10GB during repack
