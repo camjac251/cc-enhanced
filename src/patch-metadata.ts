@@ -86,11 +86,6 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Disable agent tools",
 		group: "Agent",
 	},
-	"always-load-mcp": {
-		tag: "always-load-mcp",
-		label: "Always-load MCP allowlist",
-		group: "Tooling",
-	},
 	"commands-off": {
 		tag: "commands-off",
 		label: "Disable built-in commands",
