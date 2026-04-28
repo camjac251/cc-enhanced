@@ -16,8 +16,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as parser from "@babel/parser";
-import traverse, { type NodePath } from "@babel/traverse";
 import * as t from "@babel/types";
+import { type NodePath, traverse } from "../src/babel.js";
 import {
 	buildPromptCorpusDebug,
 	buildPromptCorpusIdMap,
@@ -398,7 +398,7 @@ function renderTemplateLiteralWithResolver(
 function collectStringBindings(ast: t.File, context: RenderContext): void {
 	const rawBindings = new Map<string, t.Expression>();
 
-	traverse.default(ast, {
+	traverse(ast, {
 		VariableDeclarator(pathRef) {
 			if (!t.isIdentifier(pathRef.node.id) || !pathRef.node.init) return;
 			const init = pathRef.node.init;
@@ -458,7 +458,7 @@ function collectStringBindings(ast: t.File, context: RenderContext): void {
 }
 
 function collectFunctionBindings(ast: t.File, context: RenderContext): void {
-	traverse.default(ast, {
+	traverse(ast, {
 		FunctionDeclaration(pathRef) {
 			if (!pathRef.node.id) return;
 			context.functionBindings.set(pathRef.node.id.name, pathRef.node);
@@ -528,21 +528,16 @@ function renderPromptExpression(
 
 	// Binary string concatenation: str + str
 	if (t.isBinaryExpression(expression) && expression.operator === "+") {
-		const left = renderPromptExpression(
-			expression.left,
-			context,
-			seenFunctions,
-		);
-		const right = renderPromptExpression(
-			expression.right,
-			context,
-			seenFunctions,
-		);
+		if (!t.isExpression(expression.left)) return null;
+		const leftExpr = expression.left;
+		const rightExpr = expression.right;
+		const left = renderPromptExpression(leftExpr, context, seenFunctions);
+		const right = renderPromptExpression(rightExpr, context, seenFunctions);
 		if (left !== null && right !== null) return left + right;
 		if (left !== null)
-			return `${left}\${${describeExpression(expression.right, context)}}`;
+			return `${left}\${${describeExpression(rightExpr, context)}}`;
 		if (right !== null)
-			return `\${${describeExpression(expression.left, context)}}${right}`;
+			return `\${${describeExpression(leftExpr, context)}}${right}`;
 	}
 
 	return null;
@@ -718,9 +713,10 @@ function extractPromptFromFunctionNode(
 		return renderPromptExpression(node.body, context, seenFunctions);
 	}
 	if (!t.isBlockStatement(node.body)) return null;
-	const localExprs = collectLocalBindings(node.body.body);
+	const blockBody = node.body.body;
+	const localExprs = collectLocalBindings(blockBody);
 	return withLocalBindings(context, localExprs, seenFunctions, () => {
-		for (const statement of node.body.body) {
+		for (const statement of blockBody) {
 			if (!t.isReturnStatement(statement) || !statement.argument) continue;
 			const direct = renderPromptExpression(
 				statement.argument as t.Expression,
@@ -945,7 +941,7 @@ function collectBuiltInTools(
 	const byName = new Map<string, ToolPrompt>();
 	const usedSlugs = new Set<string>();
 
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectExpression(pathRef) {
 			const nameProp = getObjectProperty(pathRef.node, "name");
 			const promptProp = getObjectProperty(pathRef.node, "prompt");
@@ -1006,7 +1002,7 @@ function collectSchemaTools(
 	const byName = new Map<string, SchemaTool>();
 	const usedSlugs = new Set<string>();
 
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectExpression(pathRef) {
 			const nameProp = getObjectProperty(pathRef.node, "name");
 			const descriptionProp = getObjectProperty(pathRef.node, "description");
@@ -1056,7 +1052,7 @@ function collectAgentPrompts(
 	context: RenderContext,
 ): AgentPrompt[] {
 	const byType = new Map<string, AgentPrompt>();
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectExpression(pathRef) {
 			const agentTypeProp = getObjectProperty(pathRef.node, "agentType");
 			const getPromptProp = getObjectProperty(pathRef.node, "getSystemPrompt");
@@ -1098,7 +1094,7 @@ function collectSectionPrompts(
 	allowedSymbols?: Set<string>,
 ): SectionPrompt[] {
 	const bySlug = new Map<string, SectionPrompt>();
-	traverse.default(ast, {
+	traverse(ast, {
 		Function(pathRef) {
 			const sourceSymbol = getFunctionSymbol(pathRef);
 			if (
@@ -1236,7 +1232,7 @@ function collectOutputStyles(
 	context: RenderContext,
 ): OutputStylesResult | null {
 	let best: OutputStylesResult | null = null;
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectExpression(pathRef) {
 			const candidate = extractOutputStylesFromObject(pathRef.node, context);
 			if (!candidate) return;
@@ -1274,7 +1270,7 @@ function collectPromptCorpus(
 ): PromptCorpusEntry[] {
 	const candidates: PromptCorpusEntry[] = [];
 
-	traverse.default(ast, {
+	traverse(ast, {
 		StringLiteral(pathRef) {
 			const text = pathRef.node.value;
 			if (!isValidPromptText(text)) return;
@@ -1365,7 +1361,7 @@ function collectSystemPromptVariants(
 	for (const text of context.stringBindings.values()) {
 		addVariant(text);
 	}
-	traverse.default(ast, {
+	traverse(ast, {
 		Function(pathRef) {
 			for (const snippet of collectPromptSnippetsFromFunction(
 				pathRef,
@@ -1412,12 +1408,13 @@ function extractBuilderOutline(
 	ast: t.File,
 	context: RenderContext,
 ): BuilderOutline | null {
-	let best: {
+	type BuilderCandidate = {
 		pathRef: NodePath<t.Function>;
 		score: number;
-	} | null = null;
+	};
+	const state: { best: BuilderCandidate | null } = { best: null };
 
-	traverse.default(ast, {
+	traverse(ast, {
 		Function(pathRef) {
 			const snippets = collectFunctionPromptSnippets(pathRef, context);
 			const containsAnchor = snippets.some((snippet) =>
@@ -1425,19 +1422,20 @@ function extractBuilderOutline(
 			);
 			if (!containsAnchor) return;
 			const source =
-				pathRef.node.start !== null && pathRef.node.end !== null
+				pathRef.node.start != null && pathRef.node.end != null
 					? pathRef.node.end - pathRef.node.start
 					: 0;
 			const hasSimpleGuard = snippets.some((snippet) =>
 				snippet.includes("CWD:"),
 			);
 			const score = source + (hasSimpleGuard ? 1_000_000 : 0);
-			if (!best || score > best.score) {
-				best = { pathRef, score };
+			if (!state.best || score > state.best.score) {
+				state.best = { pathRef, score };
 			}
 		},
 	});
 
+	const best = state.best;
 	if (!best) return null;
 
 	const sourceSymbol = getFunctionSymbol(best.pathRef);
@@ -1655,7 +1653,7 @@ function collectSkillPrompts(
 	const byName = new Map<string, SkillPrompt>();
 	const usedSlugs = new Set<string>();
 
-	traverse.default(ast, {
+	traverse(ast, {
 		ObjectExpression(pathRef) {
 			const nameProp = getObjectProperty(pathRef.node, "name");
 			const getPromptProp =
@@ -1772,7 +1770,7 @@ function collectSystemReminders(
 	const seen = new Set<string>();
 	const usedSlugs = new Set<string>();
 
-	traverse.default(ast, {
+	traverse(ast, {
 		TemplateLiteral(pathRef) {
 			const text = renderTemplateLiteral(pathRef.node, context);
 			if (!text.includes("<system-reminder>")) return;
@@ -1830,7 +1828,7 @@ function collectSystemReminders(
 	});
 
 	// Also find system-reminder wrapper calls with static content
-	traverse.default(ast, {
+	traverse(ast, {
 		CallExpression(pathRef) {
 			if (!t.isIdentifier(pathRef.node.callee)) return;
 			// Look for calls to the system-reminder wrapper (single-arg, returns <system-reminder>)

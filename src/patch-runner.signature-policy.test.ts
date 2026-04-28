@@ -34,18 +34,14 @@ async function loadPatchTagsWithEnv(
 	const childEnv: NodeJS.ProcessEnv = { ...process.env };
 	delete childEnv.CLAUDE_PATCHER_INCLUDE_TAGS;
 	delete childEnv.CLAUDE_PATCHER_EXCLUDE_TAGS;
-	const { stdout } = await execFileAsync(
-		process.execPath,
-		["--eval", script],
-		{
-			cwd: repoRoot,
-			env: {
-				...childEnv,
-				...env,
-			},
-			encoding: "utf-8",
+	const { stdout } = await execFileAsync(process.execPath, ["--eval", script], {
+		cwd: repoRoot,
+		env: {
+			...childEnv,
+			...env,
 		},
-	);
+		encoding: "utf-8",
+	});
 	const lines = stdout
 		.split("\n")
 		.map((line) => line.trim())

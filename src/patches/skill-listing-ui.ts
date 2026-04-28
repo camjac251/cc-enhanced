@@ -100,7 +100,7 @@ function getSkillListingRenderRootCall(
 	const returnStmt = getSkillListingRenderStatements(path).find(
 		(stmt): stmt is t.ReturnStatement => t.isReturnStatement(stmt),
 	);
-	if (!returnStmt || !returnStmt.argument) return null;
+	if (!returnStmt?.argument) return null;
 	if (!t.isCallExpression(returnStmt.argument)) return null;
 
 	const rootCall = returnStmt.argument;
@@ -229,12 +229,13 @@ function createSkillListingUiPasses(): PatchAstPass[] {
 					}
 				},
 				SwitchCase(path) {
+					if (!isSkillListingRenderCase(path)) return;
+					const renderRoot = getSkillListingRenderRootCall(path);
+					if (!renderRoot) return;
 					if (
-						isSkillListingRenderCase(path) &&
-						!!getSkillListingRenderRootCall(path) &&
 						isSkillListingRenderLine(
-							getSkillListingRenderRootCall(path)!.rootCall,
-							getSkillListingRenderRootCall(path)!.attachmentName,
+							renderRoot.rootCall,
+							renderRoot.attachmentName,
 						)
 					) {
 						renderCandidates.push(path);
