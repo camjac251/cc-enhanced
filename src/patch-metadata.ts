@@ -61,6 +61,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Interactive max effort",
 		group: "System",
 	},
+	"image-limits": {
+		tag: "image-limits",
+		label: "Opus 4.7 image limits",
+		group: "System",
+	},
 	"plan-diff-ui": {
 		tag: "plan-diff-ui",
 		label: "Plan diff UI",

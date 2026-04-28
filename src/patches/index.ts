@@ -9,6 +9,7 @@ export { claudeMdSystemPrompt } from "./claudemd-strong.js";
 export { commandsOff } from "./commands-off.js";
 export { editTool } from "./edit-extended.js";
 export { effortMax } from "./effort-max.js";
+export { imageLimits } from "./image-limits.js";
 export { getLimitsChanged, limits } from "./limits.js";
 export { lspMultiServer } from "./lsp-multi-server.js";
 export { lspWorkspaceSymbol } from "./lsp-workspace-symbol.js";
@@ -39,6 +40,7 @@ import { claudeMdSystemPrompt } from "./claudemd-strong.js";
 import { commandsOff } from "./commands-off.js";
 import { editTool } from "./edit-extended.js";
 import { effortMax } from "./effort-max.js";
+import { imageLimits } from "./image-limits.js";
 import { limits } from "./limits.js";
 import { lspMultiServer } from "./lsp-multi-server.js";
 import { lspWorkspaceSymbol } from "./lsp-workspace-symbol.js";
@@ -82,6 +84,7 @@ const basePatches: Patch[] = [
 	cacheTailPolicy,
 	editTool,
 	effortMax,
+	imageLimits,
 	planDiffUi,
 	disableTools,
 	disableAutoupdater,
