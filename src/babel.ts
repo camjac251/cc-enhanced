@@ -15,9 +15,11 @@ type TraverseFn = (typeof _traverse)["default"];
 type GeneratorFn = (typeof _generator)["default"];
 type TemplateFn = (typeof _template)["default"];
 
-// biome-ignore lint/suspicious/noExplicitAny: CJS interop, type erased
-function unwrap(mod: any): any {
-	return mod?.default ?? mod;
+function unwrap(mod: unknown): unknown {
+	if (mod && typeof mod === "object" && "default" in mod) {
+		return (mod as { default: unknown }).default ?? mod;
+	}
+	return mod;
 }
 
 export const traverse = unwrap(_traverse) as TraverseFn;

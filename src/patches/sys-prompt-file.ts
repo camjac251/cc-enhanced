@@ -342,7 +342,7 @@ function createSystemPromptFileMutator(): Visitor {
 			const statementPath = path.getStatementParent();
 			if (!statementPath) return;
 			const parentPath = statementPath.parentPath;
-			if (!parentPath || !parentPath.isBlockStatement()) return;
+			if (!parentPath?.isBlockStatement()) return;
 
 			const parentBlock = parentPath.node;
 			if (hasEnvOverrideStrings(parentBlock)) {
