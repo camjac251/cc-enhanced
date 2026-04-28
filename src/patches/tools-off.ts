@@ -46,24 +46,13 @@ const REGEX_REPLACEMENTS: Array<{ pattern: RegExp; replacement: string }> = [
 			/use the \$\{([^}]+)\} tool or \$\{[^}]+\} instead of the \$\{([^}]+)\} tool/g,
 		replacement: "use the ${$1} tool instead of the ${$2} tool",
 	},
-	{
-		// Current agent prompt: class Foo guidance with "${X} instead"
-		pattern:
-			/- If you are searching for a specific class definition like (?:\\"|")class Foo(?:\\"|"), use \$\{[^}]+\} instead, (?:to find the match more quickly|for faster access)/g,
-		replacement:
-			'- If you are searching for code patterns like "class Foo", use available code-search tooling for faster access',
-	},
 ];
 
-const TRIGGER_PHRASES = [
-	"Reference local project files (CLAUDE.md",
-	'searching for a specific class definition like "class Foo"',
-];
+const TRIGGER_PHRASES = ["Reference local project files (CLAUDE.md"];
 
 const FORBIDDEN_PROMPT_FRAGMENTS = [
 	/Reference local project files \(CLAUDE\.md, \.claude\/ directory\) when relevant using \$\{[^}]+\}/,
 	/use the \$\{[^}]+\} tool or \$\{[^}]+\} instead of the \$\{[^}]+\} tool/,
-	/searching for a specific class definition like "class Foo"/,
 ];
 
 const CONDITIONAL_REWRITE_MARKERS: Array<{
@@ -75,12 +64,6 @@ const CONDITIONAL_REWRITE_MARKERS: Array<{
 			"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using ${",
 		required:
 			"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using Read",
-	},
-	{
-		trigger:
-			'- If you are searching for a specific class definition like "class Foo", use',
-		required:
-			'- If you are searching for code patterns like "class Foo", use available code-search tooling for faster access',
 	},
 ];
 

@@ -83,7 +83,6 @@ test("tools-off rewrites current disabled-tool guidance to neutral wording", asy
 	const currentPrompt = [
 		"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using ${Read}",
 		"- If you want to read a specific file path, use the ${Bq} tool or ${P} instead of the ${YK} tool, to find the match more quickly",
-		'- If you are searching for a specific class definition like "class Foo", use ${J} instead, to find the match more quickly',
 	].join("\n");
 
 	const input = `${TOOL_FIXTURE}\nconst prompt = \`${currentPrompt}\`;`;
@@ -97,10 +96,6 @@ test("tools-off rewrites current disabled-tool guidance to neutral wording", asy
 		rewritten,
 		/use the \$\{Bq\} tool instead of the \$\{YK\} tool, for faster access/,
 	);
-	assert.match(
-		rewritten,
-		/- If you are searching for code patterns like "class Foo", use available code-search tooling for faster access/,
-	);
 
 	const ast = parse(rewritten);
 	await runToolsOffViaPasses(ast);
@@ -113,16 +108,6 @@ test("tools-off verify ignores unrelated GrepTool labels outside prompt guidance
 	const ast = parse(stringPatched);
 	await runToolsOffViaPasses(ast);
 	assert.equal(disableTools.verify(print(ast), ast), true);
-});
-
-test("tools-off verify fails when current class guidance survives without neutral rewrite", () => {
-	const ast = parse(
-		`${TOOL_FIXTURE}\nconst prompt = '- If you are searching for a specific class definition like "class Foo", use \${J} instead, to find the match more quickly';`,
-	);
-	assert.equal(
-		disableTools.verify(print(ast), ast),
-		'Still contains disabled-tool prompt guidance: searching for a specific class definition like "class Foo"',
-	);
 });
 
 // ---------------------------------------------------------------------------
