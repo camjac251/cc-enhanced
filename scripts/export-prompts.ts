@@ -492,9 +492,12 @@ function renderPromptExpression(
 		return renderPromptExpression(expression.argument, context, seenFunctions);
 	}
 
-	if (t.isCallExpression(expression) && expression.arguments.length === 0) {
-		// Direct function call: fn()
-		if (t.isIdentifier(expression.callee)) {
+	if (t.isCallExpression(expression)) {
+		// Direct function call: fn() or fn(arg, ...). Follow into the callee body
+		// regardless of arity. Recursion is bounded by `seenFunctions`, and any
+		// reference to an unresolved parameter inside the body falls back to null,
+		// so callees that genuinely depend on their arguments still fail closed.
+		if (expression.arguments.length === 0 && t.isIdentifier(expression.callee)) {
 			const symbol = expression.callee.name;
 			if (seenFunctions.has(symbol)) return null;
 			const target = context.functionBindings.get(symbol);
@@ -502,8 +505,18 @@ function renderPromptExpression(
 			seenFunctions.add(symbol);
 			return extractPromptFromFunctionNode(target, context, seenFunctions);
 		}
+		if (expression.arguments.length > 0 && t.isIdentifier(expression.callee)) {
+			const symbol = expression.callee.name;
+			if (seenFunctions.has(symbol)) return null;
+			const target = context.functionBindings.get(symbol);
+			if (target) {
+				seenFunctions.add(symbol);
+				return extractPromptFromFunctionNode(target, context, seenFunctions);
+			}
+		}
 		// Method call on string-like: `template`.trim(), str.trim()
 		if (
+			expression.arguments.length === 0 &&
 			t.isMemberExpression(expression.callee) &&
 			!expression.callee.computed &&
 			t.isIdentifier(expression.callee.property)
