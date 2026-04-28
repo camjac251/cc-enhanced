@@ -433,48 +433,35 @@ function resolveToolName(path: any): string | null {
 	return null;
 }
 
-function patchReadStateGuards(ast: any): void {
+// Bypass the "file modified since read" guard inside Edit's validateInput and
+// call methods when batched edits are in flight. Upstream 2.1.121 split the
+// historical combined guard `if (!w || mtime > w.timestamp)` into two separate
+// guards (`if (!w || w.isPartialView)` for the not-read case, and a nested
+// `if (mtime > w.timestamp)` for the modified-since-read case). We only wrap
+// the mtime guard: between batched edits in the same call we modify the file
+// ourselves so the mtime check would otherwise fail with a false positive.
+// The not-read / partial-view guard stays as-is -- canonicalization needs the
+// full read state and would have failed earlier without it.
+function patchReadStateGuards(ast: any): { wrappedCount: number } {
+	let wrappedCount = 0;
+
 	traverse(ast, {
 		ObjectExpression(path: any) {
 			const toolName = resolveToolName(path);
 			if (toolName !== "Edit") return;
 
-			const callMethod = path.node.properties.find(
-				(p: any): p is t.ObjectMethod =>
-					t.isObjectMethod(p) && getObjectPropertyName(p) === "call",
-			);
-			if (callMethod) {
+			for (const methodName of ["validateInput", "call"] as const) {
+				const method = path.node.properties.find(
+					(p: any): p is t.ObjectMethod =>
+						t.isObjectMethod(p) && getObjectPropertyName(p) === methodName,
+				);
+				if (!method) continue;
+
 				traverse(
-					callMethod.body,
+					method.body,
 					{
 						IfStatement(ifPath: any) {
-							const test = ifPath.node.test;
-							if (!t.isLogicalExpression(test, { operator: "||" })) return;
-							if (!t.isUnaryExpression(test.left, { operator: "!" })) return;
-							if (!t.isIdentifier(test.left.argument)) return;
-							if (!t.isBinaryExpression(test.right, { operator: ">" })) return;
-							if (!t.isMemberExpression(test.right.right)) return;
-							if (!t.isIdentifier(test.right.right.object)) return;
-							if (!isMemberPropertyName(test.right.right, "timestamp")) return;
-
-							const stateVar = test.left.argument.name;
-							if (test.right.right.object.name !== stateVar) return;
-
-							ifPath.node.test = t.logicalExpression(
-								"&&",
-								t.logicalExpression(
-									"||",
-									t.unaryExpression("!", t.identifier(stateVar)),
-									t.cloneNode(test.right),
-								),
-								t.unaryExpression(
-									"!",
-									t.callExpression(
-										t.identifier("_claudeEditHasExtendedFields"),
-										[t.identifier("_input")],
-									),
-								),
-							);
+							if (tryWrapMtimeGuard(ifPath)) wrappedCount++;
 						},
 					},
 					path.scope,
@@ -483,6 +470,43 @@ function patchReadStateGuards(ast: any): void {
 			}
 		},
 	});
+
+	return { wrappedCount };
+}
+
+// Match `if (callExpr > stateVar.timestamp)` with consequent free to be a
+// returned error or a thrown error. Idempotent: skip already-wrapped guards.
+function tryWrapMtimeGuard(ifPath: any): boolean {
+	const test = ifPath.node.test;
+
+	if (
+		t.isLogicalExpression(test, { operator: "&&" }) &&
+		t.isUnaryExpression(test.right, { operator: "!" }) &&
+		t.isCallExpression(test.right.argument) &&
+		t.isIdentifier(test.right.argument.callee, {
+			name: "_claudeEditHasExtendedFields",
+		})
+	) {
+		return false;
+	}
+
+	if (!t.isBinaryExpression(test, { operator: ">" })) return false;
+	if (!t.isCallExpression(test.left)) return false;
+	if (!t.isMemberExpression(test.right)) return false;
+	if (!t.isIdentifier(test.right.object)) return false;
+	if (!isMemberPropertyName(test.right, "timestamp")) return false;
+
+	ifPath.node.test = t.logicalExpression(
+		"&&",
+		t.cloneNode(test),
+		t.unaryExpression(
+			"!",
+			t.callExpression(t.identifier("_claudeEditHasExtendedFields"), [
+				t.identifier("_input"),
+			]),
+		),
+	);
+	return true;
 }
 
 function patchIdeDiffConfigGuards(ast: t.File): void {
@@ -1629,6 +1653,51 @@ function verifyIdeDiffConfigGuard(ctx: EditVerifyContext): string | null {
 	return null;
 }
 
+function verifyReadStateGuards(ctx: EditVerifyContext): string | null {
+	const { validateMethod, callMethod } = ctx;
+
+	for (const method of [validateMethod, callMethod]) {
+		if (!method) continue;
+		const wrapper = t.file(
+			t.program([t.functionDeclaration(null, [], method.body)]),
+		);
+		let unwrappedFound = false;
+
+		traverse(wrapper, {
+			IfStatement(ifPath) {
+				const test = ifPath.node.test;
+
+				if (
+					t.isLogicalExpression(test, { operator: "&&" }) &&
+					t.isUnaryExpression(test.right, { operator: "!" }) &&
+					t.isCallExpression(test.right.argument) &&
+					t.isIdentifier(test.right.argument.callee, {
+						name: "_claudeEditHasExtendedFields",
+					})
+				) {
+					return;
+				}
+
+				if (
+					t.isBinaryExpression(test, { operator: ">" }) &&
+					t.isCallExpression(test.left) &&
+					t.isMemberExpression(test.right) &&
+					t.isIdentifier(test.right.object) &&
+					t.isIdentifier(test.right.property, { name: "timestamp" })
+				) {
+					unwrappedFound = true;
+				}
+			},
+		});
+
+		if (unwrappedFound) {
+			return "Edit read-state mtime guard left unwrapped (batched-edit bypass missing)";
+		}
+	}
+
+	return null;
+}
+
 function verifyEditRenderOpts(ctx: EditVerifyContext): string | null {
 	let hasRenderFunction = false;
 	let hasHelper = false;
@@ -1698,6 +1767,7 @@ export const editTool: Patch = {
 			verifyEditValidateAndCallFlow,
 			verifyEditAliasNormalization,
 			verifyIdeDiffConfigGuard,
+			verifyReadStateGuards,
 			verifyEditRenderOpts,
 		];
 		for (const validator of validators) {
