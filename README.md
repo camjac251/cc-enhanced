@@ -7,13 +7,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
-  <img src="https://img.shields.io/badge/Patches-27-orange.svg" alt="27 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.121-8A2BE2.svg" alt="Tested against Claude Code 2.1.121">
+  <img src="https://img.shields.io/badge/Patches-28-orange.svg" alt="28 Patches">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.122-8A2BE2.svg" alt="Tested against Claude Code 2.1.122">
 </p>
 
 ---
 
-cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 27 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 28 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
 
 Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting, LSP fan-out, worktree permissions), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read, batched `edits[]` on Edit, output tails on Bash), and replace prompt fragments that steer the model toward better shell tooling.
 
@@ -59,7 +59,7 @@ bun install
 mise run native:update
 
 claude --version
-# 2.1.121 (Claude Code; patched: shell-quote-fix, bash-prompt, ..., signature)
+# 2.1.122 (Claude Code; patched: shell-quote-fix, bash-prompt, ..., signature)
 
 mise run status
 # Shows current, previous, and cached versions.
@@ -71,8 +71,8 @@ Rollback is a symlink swap, not a reinstall. `mise run native:rollback` exchange
 flowchart LR
     Launcher["~/.local/bin/claude"] --> Current["versions/current"]
     Previous["versions/previous"]
-    Current --> NewBuild[["build N<br/>patched 2.1.121"]]
-    Previous --> OldBuild[["build N-1<br/>patched 2.1.120"]]
+    Current --> NewBuild[["build N<br/>patched 2.1.122"]]
+    Previous --> OldBuild[["build N-1<br/>patched 2.1.121"]]
     NewBuild <-. swap .-> OldBuild
 
     classDef sym fill:#0b2545,stroke:#0b2545,color:#fff
@@ -114,6 +114,7 @@ Runtime behavior, caching, memory, and configuration.
 |-------|--------|
 | [`cache-tail-policy`](src/patches/cache-tail-policy.ts) | Widens the prompt-cache tail window, switches the system-prompt scope to global, extends one-hour cache TTL eligibility to subagent queries, and clamps the live cache-control block count so eviction behaves predictably on long sessions. |
 | [`effort-max`](src/patches/effort-max.ts) | The interactive `/effort` picker offers the full `max` tier across supported models, and the ultrathink notification reports the selected tier accurately. |
+| [`image-limits`](src/patches/image-limits.ts) | Restores the per-side image cap for `claude-opus-4-7` to the documented 2576px (3.75 MP). Upstream 2.1.122 silently downgraded the override to 2000px so conversations with more than 20 images would stop tripping the API's many-image batch limit ("dimension exceeds max for many-image requests: 2000 pixels"), but the per-message API limit is 8000px and the model itself processes Opus 4.7 input up to 2576px on the long edge. The downgrade trades documented headroom for everyone to silence one error class for heavy multi-screenshot sessions. The patch keeps the headroom; conversations that pile up more than 20 images at >2000px on either side will still hit the original 400 error and need a fresh session or a manual downscale. |
 | [`no-autoupdate`](src/patches/no-autoupdate.ts) | Forces the autoupdater guard to a safe stub so the patched binary is not replaced in the background. Marketplace plugin autoupdates continue to work through the same guard path. |
 | [`limits`](src/patches/limits.ts) | Read keeps larger files inline. Byte ceiling 256K -> 1M, token budget 25K -> 50K (still overridable via `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`), persistence threshold 50K -> 120K chars, per-tool result cap 100K -> 250K chars. |
 | [`session-mem`](src/patches/session-mem.ts) | Session memory is controllable via `ENABLE_SESSION_MEMORY`, `ENABLE_SESSION_MEMORY_PAST`, `CC_SM_PER_SECTION_TOKENS` (default 2000), `CC_SM_TOTAL_FILE_LIMIT` (default 12000), `CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT`, `CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE`, and `CC_SM_TOOL_CALLS_BETWEEN_UPDATES`. |
@@ -189,9 +190,9 @@ Do not set `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Th
 
 ```bash
 mise run native:update                            # Fetch + patch + promote (standard workflow)
-mise run native:update 2.1.121                    # Pin a specific version
+mise run native:update 2.1.122                    # Pin a specific version
 mise run native:update --dry-run                  # Preview without promoting
-mise run native:fetch-patch 2.1.121 --dry-run     # Fetch + patch preview for a pinned version
+mise run native:fetch-patch 2.1.122 --dry-run     # Fetch + patch preview for a pinned version
 mise run native:promote <build-path>              # Promote an already-patched cached build
 mise run native:rollback                          # Swap current and previous symlinks
 mise run status                                   # Show current, previous, cached
@@ -240,7 +241,7 @@ Principles baked into the codebase:
 
 ## Compatibility
 
-Current target: **Claude Code 2.1.121**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
+Current target: **Claude Code 2.1.122**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
 
 ## Requirements
 
