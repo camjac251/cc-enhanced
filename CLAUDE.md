@@ -11,15 +11,17 @@ AST-based patcher for customizing the Claude Code CLI. Patches a ~16MB minified 
 
 **AST-Pass-First Patching**: all logic/structure changes use Babel AST traversal via a unified combined-pass engine (`discover` -> `mutate` -> `finalize`). String patches are only acceptable for replacing prompt text where AST adds no value. Each patch includes a co-located `verify` function. See `src/types.ts` for the `Patch` interface.
 
-27 active patches grouped in `src/patch-metadata.ts`. Run `bun run cli --list` to see them.
+28 active patches grouped in `src/patch-metadata.ts`. Run `bun run cli --list` to see them.
 
 ## Commands
 
-No build step. All source runs directly via Bun. Babel AST + generator over the 16 MB cli.js is heavy but JSC sizes its heap dynamically, so no explicit heap flag is required.
+No build step. Project TypeScript runs directly via Bun. Babel AST + generator over the 16 MB cli.js is heavy but JSC sizes its heap dynamically, so no explicit heap flag is required.
 
 Standard workflow: `mise run native:update` (fetch + patch + promote). `mise run patch` deliberately fails as a safety guard; always use `native:update`. See `mise.toml` for all tasks, `bun run cli --help` for all CLI options.
 
 Key env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS`, `CLAUDE_PATCHER_CACHE_KEEP`, `CLAUDE_PATCHER_REVISION`.
+
+Prompt export workflow: `mise run prompts:export` exports the promoted binary, or pass a clean version/path. Use `--output-dir <dir>` for scratch exports and `--max-uncategorized <n>` to fail when uncategorized prompt-corpus entries exceed a budget. The current-binary exporter uses an OS temp directory and must never write into `versions_clean/<label>`.
 
 ## Runtime
 
@@ -62,6 +64,14 @@ Known interaction: `plan-diff-ui` rewrites Edit's plan-preview `startsWith` guar
 ## Searching cli.js
 
 **Never use ast-grep (sg) on cli.js.** Minified names make structural patterns useless. Use `rg` for string search or `bun run inspect search` for AST context with breadcrumbs. Extract clean JS first with `mise run native:pull <version>`.
+
+`bun run inspect search <cli.js> <query...>` parses the bundle once and can run multiple queries. Add `--json` for machine-readable output, `--scope`/`--children` for richer AST context, and `--breadcrumb-depth <n>` for longer ancestry. Use `bun run inspect prompts <cli.js> [query]` to list prompt-like string/template nodes.
+
+## Prompt Artifacts
+
+Prompt artifacts are generated from native-extracted or legacy npm package `cli.js` bundles. Artifact paths must be unique, and duplicate writes should fail instead of overwriting and duplicating manifest entries.
+
+Prompt-surface verification is intentionally strict for curated live surfaces. Dynamic markers and unresolved helper placeholders (`${value_...}`, `${conditional(...)`, `${...spread}`) are verifier failures unless the surface explicitly allows a literal placeholder example. If a clean upstream export still has unresolved runtime placeholders in broad corpus outputs, track that through `quality.uncategorizedCount` and use `--max-uncategorized` only where a budget is meaningful.
 
 ## Feature Flags
 
