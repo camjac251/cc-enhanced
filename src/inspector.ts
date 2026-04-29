@@ -15,19 +15,55 @@ interface LoadedFile {
 
 interface SearchOptions {
 	type?: string;
+	field: SearchField;
 	context: number;
 	limit: number;
 	declaration?: boolean;
 	exact?: boolean;
+	regex?: boolean;
+	ignoreCase?: boolean;
 	json?: boolean;
 	breadcrumbDepth: number;
 	showChildren?: boolean;
 	showScope?: boolean;
+	showObject?: boolean;
+}
+
+type SearchField = "all" | "string" | "template" | "identifier" | "key";
+
+interface SearchCandidate {
+	field: Exclude<SearchField, "all">;
+	value: string;
+	exactWeight: number;
+	partialWeight: number;
+}
+
+interface CandidateMatch {
+	field: Exclude<SearchField, "all">;
+	value: string;
+	score: number;
+}
+
+interface QueryMatcher {
+	raw: string;
+	normalizedRaw: string;
+	regex?: RegExp;
+}
+
+interface ObjectSummary {
+	line: number;
+	start: number | null;
+	end: number | null;
+	keys: string[];
+	labels: Record<string, string>;
 }
 
 interface MatchResult {
 	query: string;
 	type: string;
+	field: string;
+	matchedValue: string;
+	score: number;
 	line: number;
 	column: number;
 	endLine: number;
@@ -37,6 +73,7 @@ interface MatchResult {
 	breadcrumbs: string;
 	scope: string | null;
 	children?: string[];
+	object?: ObjectSummary;
 	source: string;
 }
 
@@ -152,44 +189,229 @@ function childNodeTypes(node: t.Node): string[] {
 	return [...types].sort();
 }
 
-function searchableValues(node: any): string[] {
-	const values: string[] = [];
-	if (node.value !== undefined) values.push(String(node.value));
-	if (node.name !== undefined) values.push(String(node.name));
-	if (node.key?.name !== undefined) values.push(String(node.key.name));
-	if (node.key?.value !== undefined) values.push(String(node.key.value));
-	if (node.quasis) {
-		for (const quasi of node.quasis) {
-			values.push(quasi.value.raw, quasi.value.cooked ?? "");
+function nearestObjectPath(path: any): any | null {
+	let current = path;
+	while (current) {
+		if (t.isObjectExpression(current.node)) return current;
+		current = current.parentPath;
+	}
+	return null;
+}
+
+function literalLabelValue(node: t.Node | null | undefined): string | null {
+	if (!node) return null;
+	if (t.isStringLiteral(node)) return node.value;
+	if (t.isNumericLiteral(node)) return String(node.value);
+	if (t.isBooleanLiteral(node)) return node.value ? "true" : "false";
+	if (t.isTemplateLiteral(node)) return renderTemplateForPromptSearch(node);
+	return null;
+}
+
+function nearestObjectSummary(path: any): ObjectSummary | null {
+	const objectPath = nearestObjectPath(path);
+	if (!objectPath) return null;
+	const node = objectPath.node as t.ObjectExpression;
+	const loc = node.loc;
+	if (!loc) return null;
+
+	const keys: string[] = [];
+	const labels: Record<string, string> = {};
+	const labelKeys = new Set([
+		"name",
+		"type",
+		"title",
+		"description",
+		"prompt",
+		"command",
+		"inputSchema",
+		"agentType",
+	]);
+
+	for (const property of node.properties) {
+		if (!t.isObjectProperty(property) && !t.isObjectMethod(property)) continue;
+		const key = propertyKeyName(property);
+		if (!key) continue;
+		keys.push(key);
+		if (!labelKeys.has(key) || !t.isObjectProperty(property)) continue;
+		const label = literalLabelValue(property.value);
+		if (label !== null) {
+			labels[key] =
+				label.length > 160 ? `${label.slice(0, 157).trimEnd()}...` : label;
+		} else if (key === "inputSchema") {
+			labels[key] = property.value.type;
 		}
+	}
+
+	return {
+		line: loc.start.line,
+		start: node.start ?? null,
+		end: node.end ?? null,
+		keys: keys.slice(0, 40),
+		labels,
+	};
+}
+
+function propertyKeyName(node: any): string | null {
+	if (!t.isObjectProperty(node) && !t.isObjectMethod(node)) return null;
+	if (t.isIdentifier(node.key)) return node.key.name;
+	if (t.isStringLiteral(node.key)) return node.key.value;
+	if (t.isNumericLiteral(node.key)) return String(node.key.value);
+	return null;
+}
+
+function searchableCandidates(node: any): SearchCandidate[] {
+	const values: SearchCandidate[] = [];
+	if (t.isStringLiteral(node)) {
+		values.push({
+			field: "string",
+			value: node.value,
+			exactWeight: 1000,
+			partialWeight: looksPromptLike(node.value) ? 760 : 720,
+		});
+	}
+	if (t.isTemplateLiteral(node)) {
+		for (const quasi of node.quasis) {
+			const value = quasi.value.cooked ?? quasi.value.raw;
+			values.push({
+				field: "template",
+				value,
+				exactWeight: 980,
+				partialWeight: looksPromptLike(value) ? 750 : 700,
+			});
+		}
+	}
+	if (t.isIdentifier(node)) {
+		values.push({
+			field: "identifier",
+			value: node.name,
+			exactWeight: 820,
+			partialWeight: 250,
+		});
+	}
+	const keyName = propertyKeyName(node);
+	if (keyName) {
+		values.push({
+			field: "key",
+			value: keyName,
+			exactWeight: 900,
+			partialWeight: 520,
+		});
 	}
 	return values;
 }
 
-function matchesText(
-	values: string[],
+function createQueryMatcher(
 	query: string,
-	exact?: boolean,
-): boolean {
-	return values.some((value) =>
-		exact ? value === query : value.includes(query),
-	);
+	options: SearchOptions,
+): QueryMatcher {
+	const flags = options.ignoreCase ? "i" : "";
+	const regex = options.regex ? new RegExp(query, flags) : undefined;
+	return {
+		raw: query,
+		normalizedRaw: options.ignoreCase ? query.toLowerCase() : query,
+		regex,
+	};
 }
 
-function matchesDeclaration(
+function normalizeForMatch(value: string, options: SearchOptions): string {
+	return options.ignoreCase ? value.toLowerCase() : value;
+}
+
+function scoreCandidate(
+	candidate: SearchCandidate,
+	matcher: QueryMatcher,
+	options: SearchOptions,
+): CandidateMatch | null {
+	if (options.field !== "all" && candidate.field !== options.field) {
+		return null;
+	}
+
+	if (matcher.regex) {
+		if (!matcher.regex.test(candidate.value)) return null;
+		matcher.regex.lastIndex = 0;
+		return {
+			field: candidate.field,
+			value: candidate.value,
+			score: candidate.partialWeight + 40,
+		};
+	}
+
+	const value = normalizeForMatch(candidate.value, options);
+	if (options.exact) {
+		if (value !== matcher.normalizedRaw) return null;
+		return {
+			field: candidate.field,
+			value: candidate.value,
+			score: candidate.exactWeight,
+		};
+	}
+
+	if (value === matcher.normalizedRaw) {
+		return {
+			field: candidate.field,
+			value: candidate.value,
+			score: candidate.exactWeight,
+		};
+	}
+	if (!value.includes(matcher.normalizedRaw)) return null;
+
+	let score = candidate.partialWeight;
+	if (value.startsWith(matcher.normalizedRaw)) score += 80;
+	if (candidate.value.length <= matcher.raw.length + 8) score += 40;
+	return {
+		field: candidate.field,
+		value: candidate.value,
+		score,
+	};
+}
+
+function bestCandidateMatch(
+	candidates: SearchCandidate[],
+	matcher: QueryMatcher,
+	options: SearchOptions,
+): CandidateMatch | null {
+	let best: CandidateMatch | null = null;
+	for (const candidate of candidates) {
+		const match = scoreCandidate(candidate, matcher, options);
+		if (!match) continue;
+		if (!best || match.score > best.score) best = match;
+	}
+	return best;
+}
+
+function matchDeclarationCandidate(
 	node: any,
-	query: string,
-	exact?: boolean,
-): boolean {
+	matcher: QueryMatcher,
+	options: SearchOptions,
+): CandidateMatch | null {
 	if (
 		!t.isVariableDeclarator(node) &&
 		!t.isFunctionDeclaration(node) &&
 		!t.isClassDeclaration(node)
 	) {
-		return false;
+		return null;
 	}
-	if (!node.id || !t.isIdentifier(node.id)) return false;
-	return exact ? node.id.name === query : node.id.name.includes(query);
+	if (!node.id || !t.isIdentifier(node.id)) return null;
+	return scoreCandidate(
+		{
+			field: "identifier",
+			value: node.id.name,
+			exactWeight: 900,
+			partialWeight: 500,
+		},
+		matcher,
+		options,
+	);
+}
+
+function rankMatches(matches: MatchResult[]): MatchResult[] {
+	return matches.sort((left, right) => {
+		const scoreDelta = right.score - left.score;
+		if (scoreDelta !== 0) return scoreDelta;
+		const lineDelta = left.line - right.line;
+		if (lineDelta !== 0) return lineDelta;
+		return left.column - right.column;
+	});
 }
 
 function createMatch(
@@ -197,6 +419,7 @@ function createMatch(
 	path: any,
 	query: string,
 	options: SearchOptions,
+	candidate: CandidateMatch,
 ): MatchResult | null {
 	const node = path.node;
 	const loc = node.loc;
@@ -204,6 +427,9 @@ function createMatch(
 	const result: MatchResult = {
 		query,
 		type: node.type,
+		field: candidate.field,
+		matchedValue: candidate.value,
+		score: candidate.score,
 		line: loc.start.line,
 		column: loc.start.column,
 		endLine: loc.end.line,
@@ -222,6 +448,10 @@ function createMatch(
 	if (options.showChildren) {
 		result.children = childNodeTypes(node);
 	}
+	if (options.showObject) {
+		const object = nearestObjectSummary(path);
+		if (object) result.object = object;
+	}
 	return result;
 }
 
@@ -232,31 +462,30 @@ function collectSearchMatches(
 ): MatchResult[] {
 	const matches: MatchResult[] = [];
 	const seen = new Set<string>();
+	const matcher = createQueryMatcher(query, options);
 
 	traverse(loaded.ast, {
 		enter(pathRef: any) {
-			if (matches.length >= options.limit) return;
-
 			const node = pathRef.node;
 			if (options.type && node.type !== options.type) return;
 
-			const matchFound = options.declaration
-				? matchesDeclaration(node, query, options.exact)
-				: matchesText(searchableValues(node), query, options.exact);
-			if (!matchFound) return;
+			const candidate = options.declaration
+				? matchDeclarationCandidate(node, matcher, options)
+				: bestCandidateMatch(searchableCandidates(node), matcher, options);
+			if (!candidate) return;
 
 			const loc = node.loc;
 			if (!loc) return;
-			const key = `${loc.start.line}:${loc.start.column}:${node.type}:${query}`;
+			const key = `${loc.start.line}:${loc.start.column}:${node.type}:${query}:${candidate.field}:${candidate.value}`;
 			if (seen.has(key)) return;
 			seen.add(key);
 
-			const match = createMatch(loaded, pathRef, query, options);
+			const match = createMatch(loaded, pathRef, query, options, candidate);
 			if (match) matches.push(match);
 		},
 	});
 
-	return matches;
+	return rankMatches(matches).slice(0, options.limit);
 }
 
 function renderTemplateForPromptSearch(node: t.TemplateLiteral): string {
@@ -295,19 +524,42 @@ function collectPromptMatches(
 	options: SearchOptions,
 ): MatchResult[] {
 	const matches: MatchResult[] = [];
+	const matcher = query ? createQueryMatcher(query, options) : null;
 	traverse(loaded.ast, {
 		enter(pathRef: any) {
-			if (matches.length >= options.limit) return;
 			const text = promptTextFromNode(pathRef.node);
 			if (!text || !looksPromptLike(text)) return;
-			if (query && !(options.exact ? text === query : text.includes(query))) {
-				return;
-			}
-			const match = createMatch(loaded, pathRef, query ?? "<prompt>", options);
+			const field: Exclude<SearchField, "all"> = t.isTemplateLiteral(
+				pathRef.node,
+			)
+				? "template"
+				: "string";
+			const candidate = matcher
+				? bestCandidateMatch(
+						[
+							{
+								field,
+								value: text,
+								exactWeight: field === "template" ? 980 : 1000,
+								partialWeight: field === "template" ? 750 : 760,
+							},
+						],
+						matcher,
+						options,
+					)
+				: { field, value: text, score: field === "template" ? 750 : 760 };
+			if (!candidate) return;
+			const match = createMatch(
+				loaded,
+				pathRef,
+				query ?? "<prompt>",
+				options,
+				candidate,
+			);
 			if (match) matches.push(match);
 		},
 	});
-	return matches;
+	return rankMatches(matches).slice(0, options.limit);
 }
 
 async function main() {
@@ -369,11 +621,17 @@ function addSearchOptions(yargs: any) {
 			type: "string",
 			description: "Filter node type",
 		})
+		.option("field", {
+			type: "string",
+			choices: ["all", "string", "template", "identifier", "key"],
+			default: "all",
+			description: "Filter searched node value kind",
+		})
 		.option("context", {
 			alias: "C",
 			type: "number",
 			default: 1,
-			description: "Source lines context",
+			description: "Context lines",
 		})
 		.option("limit", { alias: "l", type: "number", default: 10 })
 		.option("declaration", {
@@ -385,6 +643,15 @@ function addSearchOptions(yargs: any) {
 			alias: "e",
 			type: "boolean",
 			description: "Exact match for identifiers/literals",
+		})
+		.option("regex", {
+			type: "boolean",
+			description: "Treat query as a JavaScript regular expression",
+		})
+		.option("ignore-case", {
+			alias: "i",
+			type: "boolean",
+			description: "Case-insensitive search",
 		})
 		.option("json", {
 			type: "boolean",
@@ -402,6 +669,10 @@ function addSearchOptions(yargs: any) {
 		.option("scope", {
 			type: "boolean",
 			description: "Include nearest function/class/variable scope",
+		})
+		.option("object", {
+			type: "boolean",
+			description: "Include nearest object literal keys and selected labels",
 		});
 }
 
@@ -473,15 +744,29 @@ async function runPrompts(argv: any) {
 function normalizeSearchOptions(argv: any): SearchOptions {
 	return {
 		type: argv.type,
+		field: isSearchField(argv.field) ? argv.field : "all",
 		context: Number(argv.context ?? 1),
 		limit: Number(argv.limit ?? 10),
 		declaration: Boolean(argv.declaration),
 		exact: Boolean(argv.exact),
+		regex: Boolean(argv.regex),
+		ignoreCase: Boolean(argv.ignoreCase),
 		json: Boolean(argv.json),
 		breadcrumbDepth: Number(argv.breadcrumbDepth ?? 8),
 		showChildren: Boolean(argv.children),
 		showScope: Boolean(argv.scope),
+		showObject: Boolean(argv.object),
 	};
+}
+
+function isSearchField(value: unknown): value is SearchField {
+	return (
+		value === "all" ||
+		value === "string" ||
+		value === "template" ||
+		value === "identifier" ||
+		value === "key"
+	);
 }
 
 function printRuns(
@@ -504,18 +789,41 @@ function printRuns(
 			console.log(chalk.yellow("-".repeat(60)));
 			console.log(
 				chalk.green(
-					`Match #${index + 1} [${match.type}] at line ${match.line}, bytes ${match.start ?? "?"}-${match.end ?? "?"}`,
+					`Match #${index + 1} [${match.type}/${match.field}, score ${match.score}] at line ${match.line}, bytes ${match.start ?? "?"}-${match.end ?? "?"}`,
 				),
 			);
+			console.log(chalk.cyan("Value: ") + summarizeValue(match.matchedValue));
 			console.log(chalk.cyan("Path: ") + match.breadcrumbs);
 			if (match.scope) console.log(chalk.cyan("Scope: ") + match.scope);
 			if (match.children) {
 				console.log(chalk.cyan("Children: ") + match.children.join(", "));
 			}
+			if (match.object) {
+				console.log(
+					chalk.cyan("Object: ") +
+						`line ${match.object.line}, keys: ${match.object.keys.join(", ")}`,
+				);
+				const labels = Object.entries(match.object.labels);
+				if (labels.length > 0) {
+					console.log(
+						chalk.cyan("Labels: ") +
+							labels
+								.map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+								.join(", "),
+					);
+				}
+			}
 			console.log(match.source);
 		});
 		console.log(chalk.blue(`Found ${run.matches.length} matches.`));
 	}
+}
+
+function summarizeValue(value: string): string {
+	const normalized = value.replace(/\s+/g, " ").trim();
+	return normalized.length > 220
+		? `${normalized.slice(0, 217).trimEnd()}...`
+		: normalized;
 }
 
 main();

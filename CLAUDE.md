@@ -65,7 +65,7 @@ Known interaction: `plan-diff-ui` rewrites Edit's plan-preview `startsWith` guar
 
 **Never use ast-grep (sg) on cli.js.** Minified names make structural patterns useless. Use `rg` for string search or `bun run inspect search` for AST context with breadcrumbs. Extract clean JS first with `mise run native:pull <version>`.
 
-`bun run inspect search <cli.js> <query...>` parses the bundle once and can run multiple queries. Add `--json` for machine-readable output, `--scope`/`--children` for richer AST context, and `--breadcrumb-depth <n>` for longer ancestry. Use `bun run inspect prompts <cli.js> [query]` to list prompt-like string/template nodes.
+`bun run inspect search <cli.js> <query...>` parses the bundle once and can run multiple queries. Results are ranked so exact strings and durable object keys beat incidental minified identifier substrings. Add `--field string|template|identifier|key`, `--regex`, `--ignore-case`, `--object`, `--json`, `--scope`, `--children`, or `--breadcrumb-depth <n>` as needed. Use `bun run inspect prompts <cli.js> [query]` to list prompt-like string/template nodes.
 
 ## Prompt Artifacts
 
