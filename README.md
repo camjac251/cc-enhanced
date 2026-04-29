@@ -196,6 +196,9 @@ mise run native:fetch-patch 2.1.123 --dry-run     # Fetch + patch preview for a 
 mise run native:promote <build-path>              # Promote an already-patched cached build
 mise run native:rollback                          # Swap current and previous symlinks
 mise run status                                   # Show current, previous, cached
+mise run native:pull <version>                    # Fetch upstream + extract clean JS to versions_clean/<version>/cli.js
+mise run native:unpack-current <out>              # Extract patched JS from the currently-promoted binary (auto-detects via PATH)
+mise run native:unpack <bin> <out>                # Extract embedded JS from any native binary
 mise run verify:patches                           # Typecheck + lint + dry-run on native target
 scripts/verify-patches-matrix.sh                  # Dry-run patches against latest clean cli.js
 VERIFY_PATCHES_MATRIX_SCOPE=all scripts/verify-patches-matrix.sh
@@ -234,11 +237,20 @@ Useful outputs:
 The inspector parses a bundle once per invocation and can run multiple search queries:
 
 ```bash
+# Clean upstream JS for matcher development
+mise run native:pull 2.1.123                            # writes versions_clean/2.1.123/cli.js
+
+# Currently-promoted patched JS for verifying a patch landed in the running build
+mise run native:unpack-current /tmp/cli-patched.js
+
 bun run inspect search versions_clean/2.1.123/cli.js "You are Claude Code" "Read a file" \
   --json --limit 5 --breadcrumb-depth 10 --object
 
 bun run inspect search versions_clean/2.1.123/cli.js '^read$' --regex --ignore-case --field string
 bun run inspect prompts versions_clean/2.1.123/cli.js "Command sandbox" --context 2
+
+# Diff patched output against clean upstream
+bun run diff versions_clean/2.1.123/cli.js /tmp/cli-patched.js
 ```
 
 Use `rg` for quick literal string search in `cli.js`; use `bun run inspect search` when you need ranked AST matches, value-kind filters, nearest object context, byte span, breadcrumbs, scope, or JSON output. Do not use `sg` on `cli.js`.

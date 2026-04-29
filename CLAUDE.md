@@ -63,7 +63,13 @@ Known interaction: `plan-diff-ui` rewrites Edit's plan-preview `startsWith` guar
 
 ## Searching cli.js
 
-**Never use ast-grep (sg) on cli.js.** Minified names make structural patterns useless. Use `rg` for string search or `bun run inspect search` for AST context with breadcrumbs. Extract clean JS first with `mise run native:pull <version>`.
+**Never use ast-grep (sg) on cli.js.** Minified names make structural patterns useless. Use `rg` for string search or `bun run inspect search` for AST context with breadcrumbs.
+
+Two extraction paths, depending on what you want to inspect:
+
+- Clean upstream JS for any version: `mise run native:pull <version>` writes `versions_clean/<version>/cli.js`. Use this when authoring or debugging a patch matcher against pristine upstream.
+- Currently-promoted patched JS: `mise run native:unpack-current <output_js>` auto-detects the active binary via PATH. Use this to confirm a patch landed in the running build, diff against clean upstream, or hand the file to `bun run inspect`.
+- Arbitrary native binary: `mise run native:unpack <target> <output_js>` for any cached or out-of-tree binary.
 
 `bun run inspect search <cli.js> <query...>` parses the bundle once and can run multiple queries. Results are ranked so exact strings and durable object keys beat incidental minified identifier substrings. Add `--field string|template|identifier|key`, `--regex`, `--ignore-case`, `--object`, `--json`, `--scope`, `--children`, or `--breadcrumb-depth <n>` as needed. Use `bun run inspect prompts <cli.js> [query]` to list prompt-like string/template nodes.
 
