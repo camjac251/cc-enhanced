@@ -202,7 +202,7 @@ VERIFY_PATCHES_MATRIX_SCOPE=all scripts/verify-patches-matrix.sh
 mise run verify:anchors                           # Diff clean vs patched anchors
 mise run prompts:export                           # Export prompt artifacts from promoted binary
 mise run prompts:export 2.1.123 --output-dir /tmp/prompts-2.1.123
-bun run inspect search versions_clean/2.1.123/cli.js "You are Claude Code" "Read a file" --json
+bun run inspect search versions_clean/2.1.123/cli.js "Read" --field string --object
 bun run inspect prompts versions_clean/2.1.123/cli.js "Command sandbox"
 bun run cli --list                                   # List available patches
 bun run test                                         # Run the test suite (pinned to --parallel=1)
@@ -235,12 +235,13 @@ The inspector parses a bundle once per invocation and can run multiple search qu
 
 ```bash
 bun run inspect search versions_clean/2.1.123/cli.js "You are Claude Code" "Read a file" \
-  --json --limit 5 --breadcrumb-depth 10
+  --json --limit 5 --breadcrumb-depth 10 --object
 
+bun run inspect search versions_clean/2.1.123/cli.js '^read$' --regex --ignore-case --field string
 bun run inspect prompts versions_clean/2.1.123/cli.js "Command sandbox" --context 2
 ```
 
-Use `rg` for quick literal string search in `cli.js`; use `bun run inspect search` when you need AST node type, byte span, breadcrumbs, scope, or JSON output. Do not use `sg` on `cli.js`.
+Use `rg` for quick literal string search in `cli.js`; use `bun run inspect search` when you need ranked AST matches, value-kind filters, nearest object context, byte span, breadcrumbs, scope, or JSON output. Do not use `sg` on `cli.js`.
 
 ## Extending
 

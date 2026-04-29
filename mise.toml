@@ -193,7 +193,11 @@ arg "<file>" help="Path to JS file to inspect"
 arg "<query>" help="Search query string"
 flag "-d" help="Definitions only"
 flag "-e" help="Exact match"
+flag "-i --ignore-case" help="Case-insensitive search"
+flag "--regex" help="Treat query as a JavaScript regular expression"
+flag "--field <field>" help="Search value kind: all|string|template|identifier|key"
 flag "--json" help="Emit machine-readable JSON"
+flag "--object" help="Include nearest object literal keys and selected labels"
 flag "--children" help="Include immediate child node types"
 flag "--scope" help="Include nearest function/class/variable scope"
 flag "-C --context <n>" help="Context lines (default: 1)"
@@ -207,7 +211,11 @@ set -euo pipefail
 ARGS=(search "${usage_file?}" "${usage_query?}")
 [[ "${usage_d:-}" == "true" ]] && ARGS+=(-d)
 [[ "${usage_e:-}" == "true" ]] && ARGS+=(-e)
+[[ "${usage_i:-}" == "true" ]] && ARGS+=(-i)
+[[ "${usage_regex:-}" == "true" ]] && ARGS+=(--regex)
+[[ -n "${usage_field:-}" ]] && ARGS+=(--field "${usage_field}")
 [[ "${usage_json:-}" == "true" ]] && ARGS+=(--json)
+[[ "${usage_object:-}" == "true" ]] && ARGS+=(--object)
 [[ "${usage_children:-}" == "true" ]] && ARGS+=(--children)
 [[ "${usage_scope:-}" == "true" ]] && ARGS+=(--scope)
 [[ -n "${usage_context:-}" ]] && ARGS+=(-C "${usage_context}")
@@ -223,6 +231,9 @@ usage = '''
 arg "<file>" help="Path to JS file to inspect"
 arg "[query]" help="Optional prompt text filter"
 flag "--json" help="Emit machine-readable JSON"
+flag "-i --ignore-case" help="Case-insensitive search"
+flag "--regex" help="Treat query as a JavaScript regular expression"
+flag "--object" help="Include nearest object literal keys and selected labels"
 flag "-C --context <n>" help="Context lines (default: 1)"
 flag "-l --limit <n>" help="Max results (default: 10)"
 flag "--breadcrumb-depth <n>" help="Ancestor breadcrumb depth (default: 8)"
@@ -233,6 +244,9 @@ set -euo pipefail
 ARGS=(prompts "${usage_file?}")
 [[ -n "${usage_query:-}" ]] && ARGS+=("${usage_query}")
 [[ "${usage_json:-}" == "true" ]] && ARGS+=(--json)
+[[ "${usage_i:-}" == "true" ]] && ARGS+=(-i)
+[[ "${usage_regex:-}" == "true" ]] && ARGS+=(--regex)
+[[ "${usage_object:-}" == "true" ]] && ARGS+=(--object)
 [[ -n "${usage_context:-}" ]] && ARGS+=(-C "${usage_context}")
 [[ -n "${usage_limit:-}" ]] && ARGS+=(-l "${usage_limit}")
 [[ -n "${usage_breadcrumb_depth:-}" ]] && ARGS+=(--breadcrumb-depth "${usage_breadcrumb_depth}")
