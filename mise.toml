@@ -59,6 +59,13 @@ arg "<output_js>" help="Path to write extracted JS"
 '''
 run = "bun run cli --target ${usage_target?} --unpack ${usage_output_js?}"
 
+[tasks."native:unpack-current"]
+description = "Extract embedded JS from the currently-promoted patched binary (auto-detects via PATH)"
+usage = '''
+arg "<output_js>" help="Path to write extracted JS"
+'''
+run = "bun run cli --detect-target --unpack ${usage_output_js?}"
+
 [tasks."native:repack"]
 description = "Repack JS file back into a native target"
 usage = '''
