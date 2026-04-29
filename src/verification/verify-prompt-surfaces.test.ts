@@ -72,7 +72,7 @@ test("verifyPromptSurfaces reports unreadable surface files", async () => {
 	}
 });
 
-test("verifyPromptSurfaces allows dynamic Read prompt exports", async () => {
+test("verifyPromptSurfaces rejects dynamic Read prompt exports", async () => {
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "verify-prompt-surfaces-dynamic-read-"),
 	);
@@ -84,8 +84,13 @@ test("verifyPromptSurfaces allows dynamic Read prompt exports", async () => {
 			"# Tool: Read\n\n## Prompt\n\n(Dynamic prompt: not statically resolved from cli.js AST.)",
 		);
 		const result = await verifyPromptSurfaces({ exportDir: tempDir });
-		assert.equal(result.ok, true);
-		assert.deepEqual(result.failures, []);
+		assert.equal(result.ok, false);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "surface-dynamic-prompt",
+			),
+		);
+		assert.ok(result.failures.some((failure) => failure.id === "read-range"));
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}
@@ -136,6 +141,7 @@ test("verifyPromptSurfaces rejects legacy live prompt guidance", async () => {
 				"Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
 				"Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail",
 				"${value_22}",
+				"${...conditional(array(2) | array(0))}",
 				"npm view ${object.PACKAGE_URL}@${value_1} version",
 			].join("\n"),
 		);
@@ -159,6 +165,16 @@ test("verifyPromptSurfaces rejects legacy live prompt guidance", async () => {
 		);
 		assert.ok(
 			result.failures.some((failure) => failure.id === "explore-placeholder"),
+		);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "surface-unresolved-value",
+			),
+		);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "surface-unresolved-spread",
+			),
 		);
 		assert.ok(
 			result.failures.some((failure) => failure.id === "explore-stray-command"),

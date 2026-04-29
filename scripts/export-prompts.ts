@@ -17,6 +17,8 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as parser from "@babel/parser";
 import * as t from "@babel/types";
+import yargs from "yargs";
+import { hideBin } from "yargs/helpers";
 import { type NodePath, traverse } from "../src/babel.js";
 import {
 	buildPromptCorpusDebug,
@@ -28,6 +30,7 @@ import {
 	isValidPromptText,
 	type PromptCorpusEntry,
 } from "../src/prompt-corpus.js";
+import { createUniqueSlug, writeArtifact } from "../src/prompt-export-utils.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,6 +50,13 @@ type FunctionLikeNode =
 interface ResolvedInput {
 	label: string;
 	cliPath: string;
+}
+
+interface PromptExportOptions {
+	inputArg?: string;
+	label?: string;
+	outputDir?: string;
+	maxUncategorized?: number;
 }
 
 interface AgentPrompt {
@@ -161,18 +171,24 @@ interface ToolSubSection {
 interface RenderContext {
 	aliases: Map<string, string>;
 	stringBindings: Map<string, string>;
+	expressionBindings: Map<string, t.Expression>;
 	functionBindings: Map<string, FunctionLikeNode>;
 	syntheticByKey: Map<string, string>;
 	syntheticCounter: number;
+	activeExpressions: Set<string>;
+	activeListExpressions: Set<string>;
 }
 
 function createRenderContext(): RenderContext {
 	return {
 		aliases: new Map<string, string>(),
 		stringBindings: new Map<string, string>(),
+		expressionBindings: new Map<string, t.Expression>(),
 		functionBindings: new Map<string, FunctionLikeNode>(),
 		syntheticByKey: new Map<string, string>(),
 		syntheticCounter: 1,
+		activeExpressions: new Set<string>(),
+		activeListExpressions: new Set<string>(),
 	};
 }
 
@@ -214,18 +230,62 @@ function compareSemverLike(a: string, b: string): number {
 	return 0;
 }
 
-function resolveInput(rawArg?: string): ResolvedInput {
+function parseOptions(): PromptExportOptions {
+	const argv = yargs(hideBin(process.argv))
+		.scriptName("export-prompts")
+		.usage("$0 [version-or-path] [options]")
+		.version(false)
+		.option("label", {
+			type: "string",
+			description: "Override export label",
+		})
+		.option("output-dir", {
+			type: "string",
+			description: "Override output directory",
+		})
+		.option("max-uncategorized", {
+			type: "number",
+			description: "Fail if uncategorized corpus count exceeds this value",
+		})
+		.strictOptions()
+		.parseSync();
+
+	const positional = ((argv._ as unknown[]) ?? [])
+		.map((value) => String(value))
+		.filter((value) => value !== "$0");
+	if (positional.length > 1) {
+		throw new Error(
+			`Unexpected extra positional argument "${positional[1]}". Expected at most one version or cli.js path.`,
+		);
+	}
+	const maxUncategorized = argv.maxUncategorized;
+	if (
+		maxUncategorized !== undefined &&
+		(!Number.isInteger(maxUncategorized) || maxUncategorized < 0)
+	) {
+		throw new Error("--max-uncategorized must be a non-negative integer");
+	}
+
+	return {
+		inputArg: positional[0],
+		label: argv.label,
+		outputDir: argv.outputDir,
+		maxUncategorized,
+	};
+}
+
+function resolveInput(rawArg?: string, labelOverride?: string): ResolvedInput {
 	if (rawArg) {
 		const maybePath = path.resolve(rawArg);
 		if (fs.existsSync(maybePath) && fs.statSync(maybePath).isFile()) {
 			return {
-				label: path.basename(path.dirname(maybePath)),
+				label: labelOverride ?? path.basename(path.dirname(maybePath)),
 				cliPath: maybePath,
 			};
 		}
 		const versionPath = path.join(versionsDir, rawArg, "cli.js");
 		if (fs.existsSync(versionPath)) {
-			return { label: rawArg, cliPath: versionPath };
+			return { label: labelOverride ?? rawArg, cliPath: versionPath };
 		}
 		throw new Error(
 			`Could not resolve input "${rawArg}". Expected an existing cli.js path or versions_clean/<version>/cli.js`,
@@ -234,7 +294,7 @@ function resolveInput(rawArg?: string): ResolvedInput {
 
 	const patchedPath = path.join(versionsDir, "patched", "cli.js");
 	if (fs.existsSync(patchedPath)) {
-		return { label: "patched", cliPath: patchedPath };
+		return { label: labelOverride ?? "patched", cliPath: patchedPath };
 	}
 
 	const dirs = fs
@@ -248,19 +308,10 @@ function resolveInput(rawArg?: string): ResolvedInput {
 		throw new Error(`No version directories found in ${versionsDir}`);
 	}
 	const latest = dirs[dirs.length - 1];
-	return { label: latest, cliPath: path.join(versionsDir, latest, "cli.js") };
-}
-
-function writeArtifact(
-	outputDir: string,
-	written: string[],
-	relativePath: string,
-	content: string,
-): void {
-	const targetPath = path.join(outputDir, relativePath);
-	fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-	fs.writeFileSync(targetPath, content);
-	written.push(relativePath);
+	return {
+		label: labelOverride ?? latest,
+		cliPath: path.join(versionsDir, latest, "cli.js"),
+	};
 }
 
 function getPropertyName(
@@ -401,7 +452,11 @@ function collectStringBindings(ast: t.File, context: RenderContext): void {
 	traverse(ast, {
 		VariableDeclarator(pathRef) {
 			if (!t.isIdentifier(pathRef.node.id) || !pathRef.node.init) return;
+			if (pathRef.getFunctionParent()) return;
 			const init = pathRef.node.init;
+			if (t.isExpression(init)) {
+				context.expressionBindings.set(pathRef.node.id.name, init);
+			}
 			if (
 				t.isStringLiteral(init) ||
 				t.isTemplateLiteral(init) ||
@@ -412,7 +467,11 @@ function collectStringBindings(ast: t.File, context: RenderContext): void {
 		},
 		AssignmentExpression(pathRef) {
 			if (!t.isIdentifier(pathRef.node.left)) return;
+			if (pathRef.getFunctionParent()) return;
 			const right = pathRef.node.right;
+			if (t.isExpression(right)) {
+				context.expressionBindings.set(pathRef.node.left.name, right);
+			}
 			if (
 				t.isStringLiteral(right) ||
 				t.isTemplateLiteral(right) ||
@@ -480,80 +539,596 @@ function collectFunctionBindings(ast: t.File, context: RenderContext): void {
 	});
 }
 
+type PromptListItem = string | string[];
+
+function preferRenderedString(
+	consequent: string | null,
+	alternate: string | null,
+): string | null {
+	if (consequent === null) return alternate;
+	if (alternate === null) return consequent;
+	const consequentUnresolved = hasUnresolvedPlaceholder(consequent);
+	const alternateUnresolved = hasUnresolvedPlaceholder(alternate);
+	if (consequentUnresolved !== alternateUnresolved) {
+		return consequentUnresolved ? alternate : consequent;
+	}
+	if (consequent.length === 0 && alternate.length > 0) return alternate;
+	return consequent;
+}
+
+function hasUnresolvedPlaceholder(value: string): boolean {
+	return /\$\{(?:\.\.\.|value_|expr_|conditional\(|array\(|object\b)/.test(
+		value,
+	);
+}
+
 function renderPromptExpression(
 	expression: t.Expression,
 	context: RenderContext,
 	seenFunctions = new Set<string>(),
+	seenBindings = new Set<string>(),
 ): string | null {
-	const direct = renderStringLikeNode(expression, context);
-	if (direct !== null) return direct;
-
-	if (t.isAwaitExpression(expression)) {
-		return renderPromptExpression(expression.argument, context, seenFunctions);
+	const expressionKey =
+		expression.start !== null && expression.start !== undefined
+			? `${expression.start}:${expression.end ?? "?"}:${expression.type}`
+			: null;
+	if (expressionKey && context.activeExpressions.has(expressionKey)) {
+		return null;
 	}
+	if (expressionKey) context.activeExpressions.add(expressionKey);
+	try {
+		const direct = renderStringLikeNode(
+			expression,
+			context,
+			seenFunctions,
+			seenBindings,
+		);
+		if (direct !== null) return direct;
 
-	if (t.isCallExpression(expression)) {
-		// Direct function call: fn() or fn(arg, ...). Follow into the callee body
-		// regardless of arity. Recursion is bounded by `seenFunctions`, and any
-		// reference to an unresolved parameter inside the body falls back to null,
-		// so callees that genuinely depend on their arguments still fail closed.
-		if (expression.arguments.length === 0 && t.isIdentifier(expression.callee)) {
-			const symbol = expression.callee.name;
-			if (seenFunctions.has(symbol)) return null;
-			const target = context.functionBindings.get(symbol);
-			if (!target) return null;
-			seenFunctions.add(symbol);
-			return extractPromptFromFunctionNode(target, context, seenFunctions);
+		if (t.isNumericLiteral(expression)) {
+			return String(expression.value);
 		}
-		if (expression.arguments.length > 0 && t.isIdentifier(expression.callee)) {
-			const symbol = expression.callee.name;
-			if (seenFunctions.has(symbol)) return null;
-			const target = context.functionBindings.get(symbol);
-			if (target) {
-				seenFunctions.add(symbol);
-				return extractPromptFromFunctionNode(target, context, seenFunctions);
-			}
+		if (t.isBooleanLiteral(expression)) {
+			return expression.value ? "true" : "false";
 		}
-		// Method call on string-like: `template`.trim(), str.trim()
-		if (
-			expression.arguments.length === 0 &&
-			t.isMemberExpression(expression.callee) &&
-			!expression.callee.computed &&
-			t.isIdentifier(expression.callee.property)
-		) {
-			const method = expression.callee.property.name;
-			if (method === "trim" || method === "trimStart" || method === "trimEnd") {
-				const inner = renderPromptExpression(
-					expression.callee.object,
+		if (t.isNullLiteral(expression)) {
+			return "";
+		}
+
+		if (t.isAwaitExpression(expression)) {
+			return renderPromptExpression(
+				expression.argument,
+				context,
+				seenFunctions,
+				seenBindings,
+			);
+		}
+
+		if (t.isArrayExpression(expression)) {
+			const items = renderPromptListExpression(
+				expression,
+				context,
+				seenFunctions,
+				seenBindings,
+			);
+			return items ? flattenPromptListItems(items).join("\n") : null;
+		}
+
+		if (t.isConditionalExpression(expression)) {
+			const consequent = t.isExpression(expression.consequent)
+				? renderPromptExpression(
+						expression.consequent,
+						context,
+						seenFunctions,
+						seenBindings,
+					)
+				: null;
+			const alternate = t.isExpression(expression.alternate)
+				? renderPromptExpression(
+						expression.alternate,
+						context,
+						seenFunctions,
+						seenBindings,
+					)
+				: null;
+			return preferRenderedString(consequent, alternate);
+		}
+
+		if (t.isLogicalExpression(expression)) {
+			const right = t.isExpression(expression.right)
+				? renderPromptExpression(
+						expression.right,
+						context,
+						seenFunctions,
+						seenBindings,
+					)
+				: null;
+			if (expression.operator === "&&") return right;
+			const left = t.isExpression(expression.left)
+				? renderPromptExpression(
+						expression.left,
+						context,
+						seenFunctions,
+						seenBindings,
+					)
+				: null;
+			return left && left.length > 0 ? left : right;
+		}
+
+		if (t.isCallExpression(expression)) {
+			const joined = renderJoinCallExpression(
+				expression,
+				context,
+				seenFunctions,
+				seenBindings,
+			);
+			if (joined !== null) return joined;
+			const listResult = renderPromptListCallExpression(
+				expression,
+				context,
+				seenFunctions,
+				seenBindings,
+			);
+			if (listResult) return flattenPromptListItems(listResult).join("\n");
+
+			// Direct function call: fn() or fn(arg, ...). Follow into the callee body
+			// regardless of arity. Recursion is bounded by `seenFunctions`, and any
+			// reference to an unresolved parameter inside the body falls back to null,
+			// so callees that genuinely depend on their arguments still fail closed.
+			if (t.isIdentifier(expression.callee)) {
+				const symbol = expression.callee.name;
+				if (seenFunctions.has(symbol)) return null;
+				const target = context.functionBindings.get(symbol);
+				if (!target) return null;
+				const nextSeenFunctions = new Set(seenFunctions);
+				nextSeenFunctions.add(symbol);
+				return withParameterBindings(
 					context,
-					seenFunctions,
+					target,
+					expression.arguments,
+					nextSeenFunctions,
+					seenBindings,
+					() =>
+						extractPromptFromFunctionNode(target, context, nextSeenFunctions),
 				);
-				if (inner !== null) {
-					return method === "trimStart"
-						? inner.trimStart()
-						: method === "trimEnd"
-							? inner.trimEnd()
-							: inner.trim();
+			}
+			// Method call on string-like: `template`.trim(), str.trim()
+			if (
+				expression.arguments.length === 0 &&
+				t.isMemberExpression(expression.callee) &&
+				!expression.callee.computed &&
+				t.isIdentifier(expression.callee.property)
+			) {
+				const method = expression.callee.property.name;
+				if (
+					method === "trim" ||
+					method === "trimStart" ||
+					method === "trimEnd"
+				) {
+					const inner = renderPromptExpression(
+						expression.callee.object,
+						context,
+						seenFunctions,
+						seenBindings,
+					);
+					if (inner !== null) {
+						return method === "trimStart"
+							? inner.trimStart()
+							: method === "trimEnd"
+								? inner.trimEnd()
+								: inner.trim();
+					}
 				}
 			}
 		}
+
+		// Binary string concatenation: str + str
+		if (t.isBinaryExpression(expression) && expression.operator === "+") {
+			if (!t.isExpression(expression.left)) return null;
+			const leftExpr = expression.left;
+			const rightExpr = expression.right;
+			const left = renderPromptExpression(
+				leftExpr,
+				context,
+				seenFunctions,
+				seenBindings,
+			);
+			const right = renderPromptExpression(
+				rightExpr,
+				context,
+				seenFunctions,
+				seenBindings,
+			);
+			if (left !== null && right !== null) return left + right;
+			if (left !== null)
+				return `${left}\${${describeExpression(rightExpr, context)}}`;
+			if (right !== null)
+				return `\${${describeExpression(leftExpr, context)}}${right}`;
+		}
+
+		return null;
+	} finally {
+		if (expressionKey) context.activeExpressions.delete(expressionKey);
+	}
+}
+
+function renderJoinCallExpression(
+	expression: t.CallExpression,
+	context: RenderContext,
+	seenFunctions: Set<string>,
+	seenBindings: Set<string>,
+): string | null {
+	if (
+		!t.isMemberExpression(expression.callee) ||
+		!t.isIdentifier(expression.callee.property) ||
+		expression.callee.property.name !== "join" ||
+		!t.isExpression(expression.callee.object)
+	) {
+		return null;
+	}
+	const items = renderPromptListExpression(
+		expression.callee.object,
+		context,
+		seenFunctions,
+		seenBindings,
+	);
+	if (!items) return null;
+	const separatorArg = expression.arguments[0];
+	const separator =
+		separatorArg && t.isExpression(separatorArg)
+			? (renderPromptExpression(
+					separatorArg,
+					context,
+					seenFunctions,
+					seenBindings,
+				) ?? ",")
+			: ",";
+	return flattenPromptListItems(items).join(separator);
+}
+
+function renderPromptListCallExpression(
+	expression: t.CallExpression,
+	context: RenderContext,
+	seenFunctions: Set<string>,
+	seenBindings: Set<string>,
+): PromptListItem[] | null {
+	if (isPrependBulletsCall(expression, context)) {
+		const firstArg = expression.arguments[0];
+		if (!firstArg || !t.isExpression(firstArg)) return null;
+		const items = renderPromptListExpression(
+			firstArg,
+			context,
+			seenFunctions,
+			seenBindings,
+		);
+		if (!items) return null;
+		return items.flatMap((item) =>
+			Array.isArray(item)
+				? item.map((subitem) => `  - ${subitem}`)
+				: [` - ${item}`],
+		);
 	}
 
-	// Binary string concatenation: str + str
-	if (t.isBinaryExpression(expression) && expression.operator === "+") {
-		if (!t.isExpression(expression.left)) return null;
-		const leftExpr = expression.left;
-		const rightExpr = expression.right;
-		const left = renderPromptExpression(leftExpr, context, seenFunctions);
-		const right = renderPromptExpression(rightExpr, context, seenFunctions);
-		if (left !== null && right !== null) return left + right;
-		if (left !== null)
-			return `${left}\${${describeExpression(rightExpr, context)}}`;
-		if (right !== null)
-			return `\${${describeExpression(leftExpr, context)}}${right}`;
+	if (
+		t.isMemberExpression(expression.callee) &&
+		t.isIdentifier(expression.callee.property) &&
+		expression.callee.property.name === "filter" &&
+		t.isExpression(expression.callee.object)
+	) {
+		const items = renderPromptListExpression(
+			expression.callee.object,
+			context,
+			seenFunctions,
+			seenBindings,
+		);
+		if (!items) return null;
+		return items.filter((item) =>
+			Array.isArray(item)
+				? item.some((subitem) => subitem.length > 0)
+				: item.length > 0,
+		);
 	}
 
 	return null;
+}
+
+function isPrependBulletsCall(
+	expression: t.CallExpression,
+	context: RenderContext,
+): boolean {
+	if (t.isIdentifier(expression.callee)) {
+		if (expression.callee.name === "prependBullets") return true;
+		const target = context.functionBindings.get(expression.callee.name);
+		return target ? functionContainsBulletFormatter(target) : false;
+	}
+	return false;
+}
+
+function functionContainsBulletFormatter(node: FunctionLikeNode): boolean {
+	let hasTopLevelBullet = false;
+	let hasNestedBullet = false;
+	const visit = (value: unknown): void => {
+		if (!value || typeof value !== "object") return;
+		if (Array.isArray(value)) {
+			for (const item of value) visit(item);
+			return;
+		}
+		const maybeNode = value as {
+			type?: string;
+			value?: unknown;
+			quasis?: unknown[];
+		};
+		if (
+			maybeNode.type === "StringLiteral" &&
+			typeof maybeNode.value === "string"
+		) {
+			if (maybeNode.value.includes(" - ")) hasTopLevelBullet = true;
+			if (maybeNode.value.includes("  - ")) hasNestedBullet = true;
+		}
+		if (
+			maybeNode.type === "TemplateLiteral" &&
+			Array.isArray(maybeNode.quasis)
+		) {
+			for (const quasi of maybeNode.quasis as Array<{
+				value?: { raw?: string; cooked?: string };
+			}>) {
+				const raw = quasi.value?.raw ?? "";
+				const cooked = quasi.value?.cooked ?? "";
+				if (raw.includes(" - ") || cooked.includes(" - ")) {
+					hasTopLevelBullet = true;
+				}
+				if (raw.includes("  - ") || cooked.includes("  - ")) {
+					hasNestedBullet = true;
+				}
+			}
+		}
+		for (const child of Object.values(value as Record<string, unknown>)) {
+			if (hasTopLevelBullet && hasNestedBullet) return;
+			visit(child);
+		}
+	};
+	visit(node);
+	return hasTopLevelBullet && hasNestedBullet;
+}
+
+function renderPromptListExpression(
+	expression: t.Expression,
+	context: RenderContext,
+	seenFunctions: Set<string>,
+	seenBindings: Set<string>,
+): PromptListItem[] | null {
+	const expressionKey =
+		expression.start !== null && expression.start !== undefined
+			? `${expression.start}:${expression.end ?? "?"}:${expression.type}`
+			: null;
+	if (expressionKey && context.activeListExpressions.has(expressionKey)) {
+		return null;
+	}
+	if (expressionKey) context.activeListExpressions.add(expressionKey);
+	try {
+		if (t.isArrayExpression(expression)) {
+			return renderArrayItems(expression, context, seenFunctions, seenBindings);
+		}
+
+		if (t.isIdentifier(expression)) {
+			const bound = context.expressionBindings.get(expression.name);
+			if (bound && !seenBindings.has(expression.name)) {
+				const nextSeenBindings = new Set(seenBindings);
+				nextSeenBindings.add(expression.name);
+				const rendered = renderPromptListExpression(
+					bound,
+					context,
+					seenFunctions,
+					nextSeenBindings,
+				);
+				if (rendered) return rendered;
+			}
+			const rendered = renderPromptExpression(
+				expression,
+				context,
+				seenFunctions,
+				seenBindings,
+			);
+			return rendered === null ? null : [rendered];
+		}
+
+		if (t.isConditionalExpression(expression)) {
+			const consequent = t.isExpression(expression.consequent)
+				? renderPromptListExpression(
+						expression.consequent,
+						context,
+						seenFunctions,
+						seenBindings,
+					)
+				: null;
+			const alternate = t.isExpression(expression.alternate)
+				? renderPromptListExpression(
+						expression.alternate,
+						context,
+						seenFunctions,
+						seenBindings,
+					)
+				: null;
+			return preferPromptListItems(consequent, alternate);
+		}
+
+		if (t.isLogicalExpression(expression)) {
+			const right = t.isExpression(expression.right)
+				? renderPromptListExpression(
+						expression.right,
+						context,
+						seenFunctions,
+						seenBindings,
+					)
+				: null;
+			if (expression.operator === "&&") return right;
+			const left = t.isExpression(expression.left)
+				? renderPromptListExpression(
+						expression.left,
+						context,
+						seenFunctions,
+						seenBindings,
+					)
+				: null;
+			return left && left.length > 0 ? left : right;
+		}
+
+		if (t.isCallExpression(expression)) {
+			const listResult = renderPromptListCallExpression(
+				expression,
+				context,
+				seenFunctions,
+				seenBindings,
+			);
+			if (listResult) return listResult;
+			const joined = renderJoinCallExpression(
+				expression,
+				context,
+				seenFunctions,
+				seenBindings,
+			);
+			if (joined !== null) return [joined];
+			return null;
+		}
+
+		const rendered = renderPromptExpression(
+			expression,
+			context,
+			seenFunctions,
+			seenBindings,
+		);
+		return rendered === null ? null : [rendered];
+	} finally {
+		if (expressionKey) context.activeListExpressions.delete(expressionKey);
+	}
+}
+
+function renderArrayItems(
+	array: t.ArrayExpression,
+	context: RenderContext,
+	seenFunctions: Set<string>,
+	seenBindings: Set<string>,
+): PromptListItem[] {
+	const items: PromptListItem[] = [];
+	for (const element of array.elements) {
+		if (!element) continue;
+		if (t.isSpreadElement(element)) {
+			if (t.isExpression(element.argument)) {
+				const spreadItems = renderPromptListExpression(
+					element.argument,
+					context,
+					seenFunctions,
+					seenBindings,
+				);
+				if (spreadItems) items.push(...spreadItems);
+			}
+			continue;
+		}
+		if (!t.isExpression(element)) continue;
+		if (t.isArrayExpression(element)) {
+			items.push(
+				flattenPromptListItems(
+					renderArrayItems(element, context, seenFunctions, seenBindings),
+				),
+			);
+			continue;
+		}
+		if (t.isIdentifier(element)) {
+			const bound = context.expressionBindings.get(element.name);
+			if (
+				bound &&
+				t.isArrayExpression(bound) &&
+				!seenBindings.has(element.name)
+			) {
+				const nextSeenBindings = new Set(seenBindings);
+				nextSeenBindings.add(element.name);
+				items.push(
+					flattenPromptListItems(
+						renderArrayItems(bound, context, seenFunctions, nextSeenBindings),
+					),
+				);
+				continue;
+			}
+		}
+		const rendered = renderPromptExpression(
+			element,
+			context,
+			seenFunctions,
+			seenBindings,
+		);
+		if (rendered !== null) items.push(rendered);
+	}
+	return items;
+}
+
+function preferPromptListItems(
+	consequent: PromptListItem[] | null,
+	alternate: PromptListItem[] | null,
+): PromptListItem[] | null {
+	if (consequent === null) return alternate;
+	if (alternate === null) return consequent;
+	const consequentText = flattenPromptListItems(consequent).join("\n");
+	const alternateText = flattenPromptListItems(alternate).join("\n");
+	const preferred = preferRenderedString(consequentText, alternateText);
+	return preferred === alternateText ? alternate : consequent;
+}
+
+function flattenPromptListItems(items: PromptListItem[]): string[] {
+	return items.flatMap((item) => (Array.isArray(item) ? item : [item]));
+}
+
+function withParameterBindings(
+	context: RenderContext,
+	node: FunctionLikeNode,
+	args: t.CallExpression["arguments"],
+	seenFunctions: Set<string>,
+	seenBindings: Set<string>,
+	fn: () => string | null,
+): string | null {
+	const savedStrings = new Map<string, string | undefined>();
+	const savedExpressions = new Map<string, t.Expression | undefined>();
+
+	for (let index = 0; index < node.params.length; index++) {
+		const param = node.params[index];
+		const arg = args[index];
+		if (!t.isIdentifier(param) || !arg || !t.isExpression(arg)) continue;
+		savedStrings.set(param.name, context.stringBindings.get(param.name));
+		savedExpressions.set(
+			param.name,
+			context.expressionBindings.get(param.name),
+		);
+		context.expressionBindings.set(param.name, arg);
+		const rendered = renderPromptExpression(
+			arg,
+			context,
+			seenFunctions,
+			seenBindings,
+		);
+		if (rendered !== null) {
+			context.stringBindings.set(param.name, rendered);
+		} else {
+			context.stringBindings.delete(param.name);
+		}
+	}
+
+	try {
+		return fn();
+	} finally {
+		for (const [name, value] of savedStrings) {
+			if (value === undefined) {
+				context.stringBindings.delete(name);
+			} else {
+				context.stringBindings.set(name, value);
+			}
+		}
+		for (const [name, value] of savedExpressions) {
+			if (value === undefined) {
+				context.expressionBindings.delete(name);
+			} else {
+				context.expressionBindings.set(name, value);
+			}
+		}
+	}
 }
 
 function describeExpression(
@@ -640,11 +1215,24 @@ function renderTemplateLiteral(
 function renderStringLikeNode(
 	node: t.Expression | t.StringLiteral | t.TemplateLiteral,
 	context: RenderContext,
+	seenFunctions = new Set<string>(),
+	seenBindings = new Set<string>(),
 ): string | null {
 	if (t.isStringLiteral(node)) return node.value;
 	if (t.isTemplateLiteral(node)) return renderTemplateLiteral(node, context);
 	if (t.isIdentifier(node)) {
-		return context.stringBindings.get(node.name) ?? null;
+		const direct = context.stringBindings.get(node.name);
+		if (direct !== undefined) return direct;
+		const bound = context.expressionBindings.get(node.name);
+		if (!bound || seenBindings.has(node.name)) return null;
+		const nextSeenBindings = new Set(seenBindings);
+		nextSeenBindings.add(node.name);
+		return renderPromptExpression(
+			bound,
+			context,
+			seenFunctions,
+			nextSeenBindings,
+		);
 	}
 	return null;
 }
@@ -652,24 +1240,11 @@ function renderStringLikeNode(
 function renderReturnedArray(
 	array: t.ArrayExpression,
 	context: RenderContext,
+	seenFunctions = new Set<string>(),
 ): string | null {
-	const lines: string[] = [];
-	for (const element of array.elements) {
-		if (!element) continue;
-		if (t.isSpreadElement(element)) {
-			if (t.isExpression(element.argument)) {
-				lines.push(`\${...${describeExpression(element.argument, context)}}`);
-			}
-			continue;
-		}
-		if (!t.isExpression(element)) continue;
-		const rendered = renderStringLikeNode(element, context);
-		if (rendered) {
-			lines.push(rendered);
-			continue;
-		}
-		lines.push(`\${${describeExpression(element, context)}}`);
-	}
+	const lines = flattenPromptListItems(
+		renderArrayItems(array, context, seenFunctions, new Set<string>()),
+	);
 	return lines.length > 0 ? lines.join("\n") : null;
 }
 
@@ -693,8 +1268,11 @@ function withLocalBindings(
 	fn: () => string | null,
 ): string | null {
 	const saved = new Map<string, string | undefined>();
+	const savedExpressions = new Map<string, t.Expression | undefined>();
 	for (const [name, expr] of localExprs) {
 		saved.set(name, context.stringBindings.get(name));
+		savedExpressions.set(name, context.expressionBindings.get(name));
+		context.expressionBindings.set(name, expr);
 		const resolved = renderPromptExpression(
 			expr,
 			context,
@@ -712,6 +1290,13 @@ function withLocalBindings(
 				context.stringBindings.delete(name);
 			} else {
 				context.stringBindings.set(name, original);
+			}
+		}
+		for (const [name, original] of savedExpressions) {
+			if (original === undefined) {
+				context.expressionBindings.delete(name);
+			} else {
+				context.expressionBindings.set(name, original);
 			}
 		}
 	}
@@ -739,7 +1324,11 @@ function extractPromptFromFunctionNode(
 			if (direct) return direct;
 			const returnedArray = getArrayFromReturnExpression(statement.argument);
 			if (returnedArray) {
-				const renderedArray = renderReturnedArray(returnedArray, context);
+				const renderedArray = renderReturnedArray(
+					returnedArray,
+					context,
+					seenFunctions,
+				);
 				if (renderedArray) return renderedArray;
 			}
 		}
@@ -930,17 +1519,6 @@ function extractPropertyText(
 	if (!t.isObjectProperty(property) || !t.isExpression(property.value))
 		return null;
 	return renderPromptExpression(property.value, context);
-}
-
-function createUniqueSlug(base: string, seen: Set<string>): string {
-	let candidate = base;
-	let suffix = 2;
-	while (seen.has(candidate)) {
-		candidate = `${base}-${suffix}`;
-		suffix += 1;
-	}
-	seen.add(candidate);
-	return candidate;
 }
 
 function isLikelyToolName(name: string): boolean {
@@ -2282,10 +2860,13 @@ function labelSkillVariant(
 
 function main(): void {
 	try {
-		const resolved = resolveInput(process.argv[2]);
+		const options = parseOptions();
+		const resolved = resolveInput(options.inputArg, options.label);
 		const code = fs.readFileSync(resolved.cliPath, "utf-8");
-		const outputDir = path.join(exportRoot, resolved.label);
-		const written: string[] = [];
+		const outputDir = options.outputDir
+			? path.resolve(options.outputDir)
+			: path.join(exportRoot, resolved.label);
+		const written = new Set<string>();
 		const context = createRenderContext();
 
 		const ast = parser.parse(code, {
@@ -2644,6 +3225,15 @@ function main(): void {
 				(categorySummary.get(entry.category) ?? 0) + 1,
 			);
 		}
+		const uncategorizedCount = categorySummary.get("uncategorized") ?? 0;
+		if (
+			options.maxUncategorized !== undefined &&
+			uncategorizedCount > options.maxUncategorized
+		) {
+			throw new Error(
+				`Uncategorized prompt corpus budget exceeded: ${uncategorizedCount} > ${options.maxUncategorized}`,
+			);
+		}
 		writeArtifact(
 			outputDir,
 			written,
@@ -2660,6 +3250,7 @@ function main(): void {
 					byCategory: Object.fromEntries(
 						[...categorySummary.entries()].sort(([, a], [, b]) => b - a),
 					),
+					uncategorizedBudget: options.maxUncategorized ?? null,
 				},
 				null,
 				2,
@@ -2720,8 +3311,12 @@ function main(): void {
 			(e) => e.category === "internal-agent",
 		);
 		if (internalAgents.length > 0) {
+			const usedInternalAgentSlugs = new Set<string>();
 			for (const ia of internalAgents) {
-				const iaSlug = slugify(ia.name.slice(0, 80)) || ia.id;
+				const iaSlug = createUniqueSlug(
+					slugify(ia.name.slice(0, 80)) || ia.id,
+					usedInternalAgentSlugs,
+				);
 				writeArtifact(
 					outputDir,
 					written,
@@ -2809,7 +3404,7 @@ function main(): void {
 
 		const manifest = {
 			label: resolved.label,
-			sourceCliPath: resolved.cliPath,
+			inputCliPath: resolved.cliPath,
 			generatedAt: new Date().toISOString(),
 			counts: {
 				agents: agents.length,
@@ -2826,8 +3421,16 @@ function main(): void {
 				categorizedCorpus: Object.fromEntries(categorySummary),
 				promptDataset: promptDataset.prompts.length,
 				aliases: aliasEntries.length,
+				uncategorizedCorpus: uncategorizedCount,
 			},
-			files: written.sort(),
+			quality: {
+				maxUncategorized: options.maxUncategorized ?? null,
+				uncategorizedCount,
+				uncategorizedBudgetExceeded:
+					options.maxUncategorized !== undefined &&
+					uncategorizedCount > options.maxUncategorized,
+			},
+			files: [...written, "manifest.json"].sort(),
 		};
 		writeArtifact(
 			outputDir,
@@ -2844,6 +3447,13 @@ function main(): void {
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(`Failed to export prompts: ${message}`);
+		if (
+			process.env.DEBUG_PROMPT_EXPORT &&
+			error instanceof Error &&
+			error.stack
+		) {
+			console.error(error.stack);
+		}
 		process.exit(1);
 	}
 }

@@ -55,6 +55,55 @@ function verifyPlanSurface(content: string): PromptSurfaceFailure[] {
 	return failures;
 }
 
+function verifyResolvedSurface(
+	file: string,
+	content: string,
+): PromptSurfaceFailure[] {
+	const failures: PromptSurfaceFailure[] = [];
+	const pushOnce = (id: string, reason: string): void => {
+		if (failures.some((failure) => failure.id === id)) return;
+		failures.push({ file, id, reason });
+	};
+
+	if (content.includes(DYNAMIC_PROMPT_MARKER)) {
+		pushOnce(
+			"surface-dynamic-prompt",
+			"Surface still contains a dynamic prompt marker instead of resolved prompt text",
+		);
+	}
+
+	for (const placeholder of content.match(/\$\{[^}]+\}/g) ?? []) {
+		if (PLAN_LITERAL_PLACEHOLDER.test(placeholder)) continue;
+		if (placeholder.startsWith("${...")) {
+			pushOnce(
+				"surface-unresolved-spread",
+				"Surface still contains an unresolved spread placeholder",
+			);
+			continue;
+		}
+		if (placeholder.startsWith("${value_")) {
+			pushOnce(
+				"surface-unresolved-value",
+				"Surface still contains an unresolved synthetic value placeholder",
+			);
+			continue;
+		}
+		if (placeholder.includes("conditional(")) {
+			pushOnce(
+				"surface-unresolved-conditional",
+				"Surface still contains an unresolved conditional placeholder",
+			);
+			continue;
+		}
+		pushOnce(
+			"surface-unresolved-placeholder",
+			"Surface still contains an unresolved placeholder interpolation",
+		);
+	}
+
+	return failures;
+}
+
 const SURFACE_RULES: PromptSurfaceRule[] = [
 	{
 		file: "tools/builtin/read.md",
@@ -215,18 +264,6 @@ async function readSurfaceFile(
 	}
 }
 
-function shouldSkipRequiredCheck(
-	rule: PromptSurfaceRule,
-	requiredId: string,
-	content: string,
-): boolean {
-	return (
-		rule.file === "tools/builtin/read.md" &&
-		content.includes(DYNAMIC_PROMPT_MARKER) &&
-		(requiredId === "read-range" || requiredId === "read-whitespace")
-	);
-}
-
 export async function verifyPromptSurfaces(
 	input: VerifyPromptSurfacesInput,
 ): Promise<VerifyPromptSurfacesResult> {
@@ -240,9 +277,6 @@ export async function verifyPromptSurfaces(
 
 		for (const required of rule.required ?? []) {
 			checksRun++;
-			if (shouldSkipRequiredCheck(rule, required.id, content)) {
-				continue;
-			}
 			if (!content.includes(required.needle)) {
 				failures.push({
 					file: rule.file,
@@ -262,6 +296,11 @@ export async function verifyPromptSurfaces(
 				});
 			}
 		}
+
+		const resolvedSurfaceFailures = verifyResolvedSurface(rule.file, content);
+		checksRun +=
+			resolvedSurfaceFailures.length > 0 ? resolvedSurfaceFailures.length : 1;
+		failures.push(...resolvedSurfaceFailures);
 
 		if (rule.file === "agents/plan.md") {
 			const planFailures = verifyPlanSurface(content);

@@ -18,7 +18,7 @@ cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native bi
 Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting, LSP fan-out, worktree permissions), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read, batched `edits[]` on Edit, output tails on Bash), and replace prompt fragments that steer the model toward better shell tooling.
 
 > [!NOTE]
-> This tool patches your local copy of the Claude Code binary. It does not distribute Anthropic source code. All modifications happen on your machine.
+> This tool patches your local copy of the Claude Code binary. It does not distribute Claude Code binaries or npm packages. All modifications happen on your machine.
 
 ## How It Works
 
@@ -197,12 +197,50 @@ mise run native:promote <build-path>              # Promote an already-patched c
 mise run native:rollback                          # Swap current and previous symlinks
 mise run status                                   # Show current, previous, cached
 mise run verify:patches                           # Typecheck + lint + dry-run on native target
+scripts/verify-patches-matrix.sh                  # Dry-run patches against latest clean cli.js
+VERIFY_PATCHES_MATRIX_SCOPE=all scripts/verify-patches-matrix.sh
 mise run verify:anchors                           # Diff clean vs patched anchors
+mise run prompts:export                           # Export prompt artifacts from promoted binary
+mise run prompts:export 2.1.123 --output-dir /tmp/prompts-2.1.123
+bun run inspect search versions_clean/2.1.123/cli.js "You are Claude Code" "Read a file" --json
+bun run inspect prompts versions_clean/2.1.123/cli.js "Command sandbox"
 bun run cli --list                                   # List available patches
 bun run test                                         # Run the test suite (pinned to --parallel=1)
 ```
 
 `mise run patch` is intentionally disabled; it exists only to redirect to `native:update`. See `mise.toml` for the full task list and `bun run cli --help` for CLI flags.
+
+## Prompt Artifacts and Inspection
+
+Prompt exports are generated from `cli.js` bundles extracted from native builds or from the legacy npm package. That keeps the installed artifact as the truth while still making prompt drift reviewable as Markdown and JSON artifacts.
+
+```bash
+mise run prompts:export current
+mise run prompts:export 2.1.123 --output-dir /tmp/prompts-2.1.123
+mise run prompts:export versions_clean/2.1.123/cli.js --label 2.1.123-check \
+  --output-dir /tmp/prompts-2.1.123-check --max-uncategorized 200
+```
+
+Useful outputs:
+
+| File | Purpose |
+|------|---------|
+| `manifest.json` | Counts, input bundle path, generated file list, and prompt-quality metadata such as `uncategorizedCount`. |
+| `corpus-categorized.json` | Prompt-corpus entries grouped by category. |
+| `tools/builtin/*.md`, `agents/*.md`, `system/sections/*.md` | Human-reviewable live prompt surfaces. |
+
+`verify:prompt-surfaces` checks the curated patched surfaces and fails on dynamic prompt markers or unresolved helper placeholders such as `${value_...}`, `${conditional(...)`, and `${...spread}`. Broad corpus exports may still contain runtime-only placeholders; track those with `manifest.quality.uncategorizedCount` and use `--max-uncategorized` only when you want a hard drift budget.
+
+The inspector parses a bundle once per invocation and can run multiple search queries:
+
+```bash
+bun run inspect search versions_clean/2.1.123/cli.js "You are Claude Code" "Read a file" \
+  --json --limit 5 --breadcrumb-depth 10
+
+bun run inspect prompts versions_clean/2.1.123/cli.js "Command sandbox" --context 2
+```
+
+Use `rg` for quick literal string search in `cli.js`; use `bun run inspect search` when you need AST node type, byte span, breadcrumbs, scope, or JSON output. Do not use `sg` on `cli.js`.
 
 ## Extending
 
@@ -257,7 +295,7 @@ The test suite uses `bun test` against the `node:test` API shim and is pinned to
 
 This project is not affiliated with, endorsed by, or connected to Anthropic, PBC or any of its affiliates. "Claude" and "Claude Code" are trademarks of Anthropic, PBC. All other trademarks are the property of their respective owners.
 
-This repository does not distribute the Claude Code binary or its source. Patches contain short text fragments used as match anchors for locating and replacing specific sections. The patcher operates exclusively on the end user's locally installed copy.
+This repository does not distribute Claude Code artifacts. Patches contain short text fragments used as match anchors for locating and replacing specific sections. The patcher operates exclusively on the end user's locally installed copy.
 
 This tool modifies Claude Code, which may not be permitted under Anthropic's terms of service. Users are responsible for ensuring their use complies with all applicable terms and laws. The authors hold no liability for misuse, account actions, or damages resulting from this tool. Use at your own risk.
 

@@ -187,15 +187,19 @@ description = "List available patches"
 run = "bun run cli --list"
 
 [tasks.inspect]
-description = "AST search tool with breadcrumbs and context"
+description = "AST search tool with breadcrumbs, byte spans, JSON, and context"
 usage = '''
 arg "<file>" help="Path to JS file to inspect"
 arg "<query>" help="Search query string"
 flag "-d" help="Definitions only"
 flag "-e" help="Exact match"
+flag "--json" help="Emit machine-readable JSON"
+flag "--children" help="Include immediate child node types"
+flag "--scope" help="Include nearest function/class/variable scope"
 flag "-C --context <n>" help="Context lines (default: 1)"
 flag "-l --limit <n>" help="Max results (default: 10)"
 flag "-t --type <type>" help="Filter by AST node type"
+flag "--breadcrumb-depth <n>" help="Ancestor breadcrumb depth (default: 8)"
 '''
 run = """
 #!/usr/bin/env bash
@@ -203,9 +207,35 @@ set -euo pipefail
 ARGS=(search "${usage_file?}" "${usage_query?}")
 [[ "${usage_d:-}" == "true" ]] && ARGS+=(-d)
 [[ "${usage_e:-}" == "true" ]] && ARGS+=(-e)
+[[ "${usage_json:-}" == "true" ]] && ARGS+=(--json)
+[[ "${usage_children:-}" == "true" ]] && ARGS+=(--children)
+[[ "${usage_scope:-}" == "true" ]] && ARGS+=(--scope)
 [[ -n "${usage_context:-}" ]] && ARGS+=(-C "${usage_context}")
 [[ -n "${usage_limit:-}" ]] && ARGS+=(-l "${usage_limit}")
 [[ -n "${usage_type:-}" ]] && ARGS+=(-t "${usage_type}")
+[[ -n "${usage_breadcrumb_depth:-}" ]] && ARGS+=(--breadcrumb-depth "${usage_breadcrumb_depth}")
+bun run inspect "${ARGS[@]}"
+"""
+
+[tasks."inspect:prompts"]
+description = "List prompt-like string/template nodes from a JS bundle"
+usage = '''
+arg "<file>" help="Path to JS file to inspect"
+arg "[query]" help="Optional prompt text filter"
+flag "--json" help="Emit machine-readable JSON"
+flag "-C --context <n>" help="Context lines (default: 1)"
+flag "-l --limit <n>" help="Max results (default: 10)"
+flag "--breadcrumb-depth <n>" help="Ancestor breadcrumb depth (default: 8)"
+'''
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+ARGS=(prompts "${usage_file?}")
+[[ -n "${usage_query:-}" ]] && ARGS+=("${usage_query}")
+[[ "${usage_json:-}" == "true" ]] && ARGS+=(--json)
+[[ -n "${usage_context:-}" ]] && ARGS+=(-C "${usage_context}")
+[[ -n "${usage_limit:-}" ]] && ARGS+=(-l "${usage_limit}")
+[[ -n "${usage_breadcrumb_depth:-}" ]] && ARGS+=(--breadcrumb-depth "${usage_breadcrumb_depth}")
 bun run inspect "${ARGS[@]}"
 """
 
@@ -308,8 +338,21 @@ bun run verify:cache "${ARGS[@]}"
 
 [tasks."prompts:export"]
 description = "Extract prompt artifacts from promoted binary or clean version"
-usage = 'arg "[source]" help="Version or current (default: current)"'
-run = "bun scripts/export-prompts-current.ts ${usage_source:-current}"
+usage = '''
+arg "[input]" help="Version, cli.js path, or current (default: current)"
+flag "--label <label>" help="Override export label"
+flag "--output-dir <dir>" help="Override output directory"
+flag "--max-uncategorized <n>" help="Fail if uncategorized corpus count exceeds n"
+'''
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+ARGS=("${usage_input:-current}")
+[[ -n "${usage_label:-}" ]] && ARGS+=(--label "${usage_label}")
+[[ -n "${usage_output_dir:-}" ]] && ARGS+=(--output-dir "${usage_output_dir}")
+[[ -n "${usage_max_uncategorized:-}" ]] && ARGS+=(--max-uncategorized "${usage_max_uncategorized}")
+bun scripts/export-prompts-current.ts "${ARGS[@]}"
+"""
 
 
 [tasks.clean]
@@ -321,11 +364,11 @@ description = "Run TypeScript type checking"
 run = "bun run typecheck"
 
 [tasks.lint]
-description = "Lint source files"
+description = "Lint project files"
 run = "bunx biome check src/"
 
 [tasks.format]
-description = "Format source files"
+description = "Format project files"
 run = "bunx biome format --write src/"
 
 [tasks."verify:patches"]
@@ -399,7 +442,7 @@ if [[ -z "$NATIVE_TARGET" ]]; then
   if [[ -L "$CURRENT_LINK" ]]; then
     PROMOTED_BIN="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
     if [[ -n "$PROMOTED_BIN" && -f "$PROMOTED_BIN" ]]; then
-      # Walk up from builds/<ts>-claude to <platform>/claude (source binary)
+      # Walk up from builds/<ts>-claude to <platform>/claude (original binary)
       BUILDS_DIR="$(dirname "$PROMOTED_BIN")"
       if [[ "$(basename "$BUILDS_DIR")" == "builds" ]]; then
         PLATFORM_DIR="$(dirname "$BUILDS_DIR")"
@@ -415,7 +458,8 @@ if [[ -n "$NATIVE_TARGET" && -f "$NATIVE_TARGET" ]]; then
   assert_clean_summary "$NATIVE_SUMMARY" "native"
   bun run cli --target "$NATIVE_TARGET" --output "$NATIVE_PATCHED_FOR_PROMPTS"
   bun run cli --target "$NATIVE_PATCHED_FOR_PROMPTS" --unpack "$NATIVE_PATCHED_JS"
-  bun scripts/export-prompts.ts "$NATIVE_PATCHED_JS"
+  EXPORT_ARGS=("$NATIVE_PATCHED_JS" --label "$NATIVE_PROMPT_EXPORT_LABEL" --output-dir "$NATIVE_PROMPT_EXPORT_DIR")
+  bun scripts/export-prompts.ts "${EXPORT_ARGS[@]}"
   bun run verify:prompt-surfaces "$NATIVE_PROMPT_EXPORT_DIR"
 else
   echo "Skipping native dry-run (no NATIVE_TARGET and no promoted binary found)"

@@ -42,50 +42,85 @@ detect_selected_version() {
   return 1
 }
 
-selected_version="$(detect_selected_version || true)"
-if [[ -z "$selected_version" ]]; then
-  echo "No selected version found." >&2
-  echo "Set SELECTED_VERSION=<X.Y.Z> or ensure versions_clean/<X.Y.Z>/cli.js exists." >&2
+list_clean_versions() {
+  fd -t d '^[0-9]+\.[0-9]+\.[0-9]+$' "$VERSIONS_DIR" -d 1 \
+    | xargs -I{} basename "{}" \
+    | sort -V
+}
+
+select_versions() {
+  if [[ -n "${SELECTED_VERSION:-}" ]]; then
+    echo "$SELECTED_VERSION"
+    return 0
+  fi
+
+  if [[ "${VERIFY_PATCHES_MATRIX_SCOPE:-latest}" == "all" ]]; then
+    list_clean_versions
+    return 0
+  fi
+
+  detect_selected_version
+}
+
+mapfile -t selected_versions < <(select_versions || true)
+if [[ ${#selected_versions[@]} -eq 0 ]]; then
+  echo "No versions selected." >&2
+  echo "Set SELECTED_VERSION=<X.Y.Z>, VERIFY_PATCHES_MATRIX_SCOPE=all, or ensure versions_clean/<X.Y.Z>/cli.js exists." >&2
   exit 1
 fi
 
-target="${VERSIONS_DIR}/${selected_version}/cli.js"
-if [[ ! -f "$target" ]]; then
-  echo "Selected target not found: $target" >&2
-  echo "Available clean targets:" >&2
-  fd -p 'cli\.js' "$VERSIONS_DIR" -t f | sort >&2 || true
+failures=0
+
+for selected_version in "${selected_versions[@]}"; do
+  target="${VERSIONS_DIR}/${selected_version}/cli.js"
+  if [[ ! -f "$target" ]]; then
+    echo "==> Verifying ${selected_version}: missing target"
+    echo "  FAIL: selected target not found: $target" >&2
+    failures=$((failures + 1))
+    continue
+  fi
+
+  summary_path="${TMP_DIR}/summary-${selected_version}.json"
+  log_path="${TMP_DIR}/run-${selected_version}.log"
+
+  echo "==> Verifying ${selected_version}: ${target}"
+  if ! env -u CLAUDE_PATCHER_INCLUDE_TAGS -u CLAUDE_PATCHER_EXCLUDE_TAGS \
+    bun src/index.ts --target "$target" --dry-run --summary-path "$summary_path" >"$log_path" 2>&1; then
+    echo "  FAIL: patch run command failed (see $log_path)"
+    failures=$((failures + 1))
+    continue
+  fi
+
+  if ! jq -e '.result and (.result.failedTags | type == "array") and (.result.appliedTags | type == "array")' "$summary_path" >/dev/null; then
+    echo "  FAIL: summary schema invalid"
+    jq -r . "$summary_path" >&2 || true
+    failures=$((failures + 1))
+    continue
+  fi
+
+  if ! jq -e '.error == null' "$summary_path" >/dev/null; then
+    echo "  FAIL: summary has top-level error"
+    jq -r '.error' "$summary_path" >&2
+    failures=$((failures + 1))
+    continue
+  fi
+
+  failed_count="$(jq -r '.result.failedTags | length' "$summary_path")"
+  applied_count="$(jq -r '.result.appliedTags | length' "$summary_path")"
+
+  if [[ "$failed_count" != "0" ]]; then
+    echo "  FAIL: ${failed_count} failed tag(s), ${applied_count} applied"
+    jq -r '.result.verifications[] | select(.passed == false) | "    - \(.tag): \(.reason // "unknown")"' "$summary_path"
+    failures=$((failures + 1))
+    continue
+  fi
+
+  echo "  PASS: 0 failed tags, ${applied_count} applied"
+done
+
+if [[ "$failures" != "0" ]]; then
+  echo "Matrix failed: ${failures}/${#selected_versions[@]} version(s) failed" >&2
   exit 1
 fi
 
-summary_path="${TMP_DIR}/summary-${selected_version}.json"
-log_path="${TMP_DIR}/run-${selected_version}.log"
-
-echo "==> Verifying selected version ${selected_version}: ${target}"
-if ! env -u CLAUDE_PATCHER_INCLUDE_TAGS -u CLAUDE_PATCHER_EXCLUDE_TAGS \
-  bun src/index.ts --target "$target" --dry-run --summary-path "$summary_path" >"$log_path" 2>&1; then
-  echo "  FAIL: patch run command failed (see $log_path)"
-  exit 1
-fi
-
-if ! jq -e '.result and (.result.failedTags | type == "array") and (.result.appliedTags | type == "array")' "$summary_path" >/dev/null; then
-  echo "  FAIL: summary schema invalid"
-  jq -r . "$summary_path" >&2 || true
-  exit 1
-fi
-
-if ! jq -e '.error == null' "$summary_path" >/dev/null; then
-  echo "  FAIL: summary has top-level error"
-  jq -r '.error' "$summary_path" >&2
-  exit 1
-fi
-
-failed_count="$(jq -r '.result.failedTags | length' "$summary_path")"
-applied_count="$(jq -r '.result.appliedTags | length' "$summary_path")"
-
-if [[ "$failed_count" != "0" ]]; then
-  echo "  FAIL: ${failed_count} failed tag(s), ${applied_count} applied"
-  jq -r '.result.verifications[] | select(.passed == false) | "    - \(.tag): \(.reason // "unknown")"' "$summary_path"
-  exit 1
-fi
-
-echo "  PASS: 0 failed tags, ${applied_count} applied"
+echo "Matrix passed: ${#selected_versions[@]} version(s) verified"
