@@ -433,15 +433,28 @@ function resolveToolName(path: any): string | null {
 	return null;
 }
 
-// Bypass the "file modified since read" guard inside Edit's validateInput and
-// call methods when batched edits are in flight. Upstream 2.1.121 split the
-// historical combined guard `if (!w || mtime > w.timestamp)` into two separate
-// guards (`if (!w || w.isPartialView)` for the not-read case, and a nested
-// `if (mtime > w.timestamp)` for the modified-since-read case). We only wrap
-// the mtime guard: between batched edits in the same call we modify the file
-// ourselves so the mtime check would otherwise fail with a false positive.
-// The not-read / partial-view guard stays as-is -- canonicalization needs the
-// full read state and would have failed earlier without it.
+// Bypass read-state guards inside Edit's validateInput and call methods.
+// Upstream splits the read-state precondition into two guard shapes per
+// method:
+//   - validateInput: `if (!w || w.isPartialView) return {...errorCode: 6}`
+//     (not-read / partial-view) and a nested `if (mtime > w.timestamp)`
+//     (modified-since-read).
+//   - call: `if (!x) throw Error(...)` (not-read) and a sibling
+//     `if (mtime > x.timestamp) throw Error(...)` (modified-since-read).
+//
+// We bypass the not-read guards UNCONDITIONALLY (test -> false) so plain
+// Edits work without a prior Read tool call -- canonicalization and the
+// edit application both read file contents from disk via
+// _claudeFs.readFileSync, not from the readFileState cache. The mtime
+// guards keep the existing batch-mode bypass via _claudeEditHasExtendedFields:
+// non-batch flows still see modified-since-read failures when a prior Read
+// is on file, which catches concurrent external edits.
+//
+// For the call form, removing the not-read throw leaves the readFileState
+// entry potentially undefined when the mtime sibling runs. We prepend
+// `IDENT &&` to the mtime test so accessing `.timestamp` short-circuits
+// safely. validateInput's mtime is already inside `if (w) { ... }` upstream,
+// so no extra guard is needed there.
 function patchReadStateGuards(ast: any): { wrappedCount: number } {
 	let wrappedCount = 0;
 
@@ -467,6 +480,18 @@ function patchReadStateGuards(ast: any): { wrappedCount: number } {
 					path.scope,
 					path,
 				);
+
+				traverse(
+					method.body,
+					{
+						IfStatement(ifPath: any) {
+							if (tryBypassValidateNullStateGuard(ifPath)) wrappedCount++;
+							if (tryBypassCallNullStateGuard(ifPath)) wrappedCount++;
+						},
+					},
+					path.scope,
+					path,
+				);
 			}
 		},
 	});
@@ -479,6 +504,118 @@ function patchReadStateGuards(ast: any): { wrappedCount: number } {
 function tryWrapMtimeGuard(ifPath: any): boolean {
 	const test = ifPath.node.test;
 
+	if (isAlreadyWrappedWithExtendedBypass(test)) return false;
+
+	if (!t.isBinaryExpression(test, { operator: ">" })) return false;
+	if (!t.isCallExpression(test.left)) return false;
+	if (!t.isMemberExpression(test.right)) return false;
+	if (!t.isIdentifier(test.right.object)) return false;
+	if (!isMemberPropertyName(test.right, "timestamp")) return false;
+
+	wrapIfTestWithExtendedBypass(ifPath);
+	return true;
+}
+
+// Match validateInput's not-read guard: `if (!IDENT || IDENT.isPartialView)`
+// with consequent returning an object literal containing `errorCode: 6`.
+// Replace test with literal `false` to bypass unconditionally.
+// Idempotent: skip if already bypassed.
+function tryBypassValidateNullStateGuard(ifPath: any): boolean {
+	const test = ifPath.node.test;
+
+	if (t.isBooleanLiteral(test, { value: false })) return false;
+
+	if (!t.isLogicalExpression(test, { operator: "||" })) return false;
+	if (!t.isUnaryExpression(test.left, { operator: "!" })) return false;
+	if (!t.isIdentifier(test.left.argument)) return false;
+	const varName = test.left.argument.name;
+	if (!t.isMemberExpression(test.right)) return false;
+	if (!t.isIdentifier(test.right.object, { name: varName })) return false;
+	if (!t.isIdentifier(test.right.property, { name: "isPartialView" }))
+		return false;
+
+	let stmt: t.Node = ifPath.node.consequent;
+	if (t.isBlockStatement(stmt)) {
+		if (stmt.body.length !== 1) return false;
+		stmt = stmt.body[0];
+	}
+	if (!t.isReturnStatement(stmt) || !t.isObjectExpression(stmt.argument))
+		return false;
+	const hasErrorCode6 = stmt.argument.properties.some(
+		(p: any) =>
+			t.isObjectProperty(p) &&
+			getObjectPropertyName(p) === "errorCode" &&
+			t.isNumericLiteral(p.value) &&
+			p.value.value === 6,
+	);
+	if (!hasErrorCode6) return false;
+
+	ifPath.node.test = t.booleanLiteral(false);
+	return true;
+}
+
+// Match call's not-read guard: `if (!IDENT) throw Error(IDENT)` immediately
+// preceded by `let IDENT = ANY.get(...)` (the readFileState lookup).
+// Replace test with literal `false` to bypass unconditionally, and prepend
+// `IDENT &&` to the immediately following IfStatement (the mtime guard) so
+// it short-circuits safely when readFileState entry is undefined.
+// Idempotent: skip if already bypassed.
+function tryBypassCallNullStateGuard(ifPath: any): boolean {
+	const test = ifPath.node.test;
+
+	if (t.isBooleanLiteral(test, { value: false })) return false;
+
+	if (!t.isUnaryExpression(test, { operator: "!" })) return false;
+	if (!t.isIdentifier(test.argument)) return false;
+	const varName = test.argument.name;
+
+	let stmt: t.Node = ifPath.node.consequent;
+	if (t.isBlockStatement(stmt) && stmt.body.length === 1) {
+		stmt = stmt.body[0];
+	}
+	if (!t.isThrowStatement(stmt)) return false;
+	const throwArg = stmt.argument;
+	if (!t.isCallExpression(throwArg)) return false;
+	if (!t.isIdentifier(throwArg.callee, { name: "Error" })) return false;
+
+	const parent = ifPath.parent;
+	if (!t.isBlockStatement(parent)) return false;
+	const idx = parent.body.indexOf(ifPath.node);
+	if (idx <= 0) return false;
+	const prev = parent.body[idx - 1];
+	if (!t.isVariableDeclaration(prev)) return false;
+	const declarator = prev.declarations.find((d: any) =>
+		t.isIdentifier(d.id, { name: varName }),
+	);
+	if (!declarator?.init || !t.isCallExpression(declarator.init)) return false;
+	if (!t.isMemberExpression(declarator.init.callee)) return false;
+	if (!t.isIdentifier(declarator.init.callee.property, { name: "get" }))
+		return false;
+
+	ifPath.node.test = t.booleanLiteral(false);
+
+	if (idx + 1 < parent.body.length) {
+		const next = parent.body[idx + 1];
+		if (t.isIfStatement(next)) {
+			const alreadyPrepended =
+				t.isLogicalExpression(next.test, { operator: "&&" }) &&
+				t.isIdentifier((next.test as t.LogicalExpression).left, {
+					name: varName,
+				});
+			if (!alreadyPrepended) {
+				next.test = t.logicalExpression(
+					"&&",
+					t.identifier(varName),
+					t.cloneNode(next.test),
+				);
+			}
+		}
+	}
+
+	return true;
+}
+
+function isAlreadyWrappedWithExtendedBypass(test: any): boolean {
 	if (
 		t.isLogicalExpression(test, { operator: "&&" }) &&
 		t.isUnaryExpression(test.right, { operator: "!" }) &&
@@ -487,26 +624,23 @@ function tryWrapMtimeGuard(ifPath: any): boolean {
 			name: "_claudeEditHasExtendedFields",
 		})
 	) {
-		return false;
+		return true;
 	}
+	if (
+		t.isLogicalExpression(test, { operator: "&&" }) &&
+		t.isIdentifier(test.left)
+	) {
+		return isAlreadyWrappedWithExtendedBypass(test.right);
+	}
+	return false;
+}
 
-	if (!t.isBinaryExpression(test, { operator: ">" })) return false;
-	if (!t.isCallExpression(test.left)) return false;
-	if (!t.isMemberExpression(test.right)) return false;
-	if (!t.isIdentifier(test.right.object)) return false;
-	if (!isMemberPropertyName(test.right, "timestamp")) return false;
-
+function wrapIfTestWithExtendedBypass(ifPath: any): void {
 	ifPath.node.test = t.logicalExpression(
 		"&&",
-		t.cloneNode(test),
-		t.unaryExpression(
-			"!",
-			t.callExpression(t.identifier("_claudeEditHasExtendedFields"), [
-				t.identifier("_input"),
-			]),
-		),
+		t.cloneNode(ifPath.node.test),
+		t.unaryExpression("!", buildHasExtendedFieldsCall("_input")),
 	);
-	return true;
 }
 
 function patchIdeDiffConfigGuards(ast: t.File): void {
@@ -1661,22 +1795,14 @@ function verifyReadStateGuards(ctx: EditVerifyContext): string | null {
 		const wrapper = t.file(
 			t.program([t.functionDeclaration(null, [], method.body)]),
 		);
-		let unwrappedFound = false;
+		let unwrappedFound: string | null = null;
 
 		traverse(wrapper, {
 			IfStatement(ifPath) {
 				const test = ifPath.node.test;
 
-				if (
-					t.isLogicalExpression(test, { operator: "&&" }) &&
-					t.isUnaryExpression(test.right, { operator: "!" }) &&
-					t.isCallExpression(test.right.argument) &&
-					t.isIdentifier(test.right.argument.callee, {
-						name: "_claudeEditHasExtendedFields",
-					})
-				) {
-					return;
-				}
+				if (t.isBooleanLiteral(test, { value: false })) return;
+				if (isAlreadyWrappedWithExtendedBypass(test)) return;
 
 				if (
 					t.isBinaryExpression(test, { operator: ">" }) &&
@@ -1685,13 +1811,65 @@ function verifyReadStateGuards(ctx: EditVerifyContext): string | null {
 					t.isIdentifier(test.right.object) &&
 					t.isIdentifier(test.right.property, { name: "timestamp" })
 				) {
-					unwrappedFound = true;
+					unwrappedFound = "mtime";
+					return;
+				}
+
+				if (
+					t.isLogicalExpression(test, { operator: "||" }) &&
+					t.isUnaryExpression(test.left, { operator: "!" }) &&
+					t.isIdentifier(test.left.argument) &&
+					t.isMemberExpression(test.right) &&
+					t.isIdentifier(test.right.object, {
+						name: test.left.argument.name,
+					}) &&
+					t.isIdentifier(test.right.property, { name: "isPartialView" })
+				) {
+					unwrappedFound = "validate-null";
+					return;
+				}
+
+				if (
+					t.isUnaryExpression(test, { operator: "!" }) &&
+					t.isIdentifier(test.argument)
+				) {
+					const varName = test.argument.name;
+					let stmt: t.Node = ifPath.node.consequent;
+					if (t.isBlockStatement(stmt) && stmt.body.length === 1) {
+						stmt = stmt.body[0];
+					}
+					if (
+						t.isThrowStatement(stmt) &&
+						t.isCallExpression(stmt.argument) &&
+						t.isIdentifier(stmt.argument.callee, { name: "Error" })
+					) {
+						const parent = ifPath.parent;
+						if (t.isBlockStatement(parent)) {
+							const idx = parent.body.indexOf(ifPath.node);
+							if (idx > 0) {
+								const prev = parent.body[idx - 1];
+								if (t.isVariableDeclaration(prev)) {
+									const decl = prev.declarations.find((d: any) =>
+										t.isIdentifier(d.id, { name: varName }),
+									);
+									if (
+										decl?.init &&
+										t.isCallExpression(decl.init) &&
+										t.isMemberExpression(decl.init.callee) &&
+										t.isIdentifier(decl.init.callee.property, { name: "get" })
+									) {
+										unwrappedFound = "call-null";
+									}
+								}
+							}
+						}
+					}
 				}
 			},
 		});
 
 		if (unwrappedFound) {
-			return "Edit read-state mtime guard left unwrapped (batched-edit bypass missing)";
+			return `Edit read-state guard left unwrapped (${unwrappedFound}) (read-before-write bypass missing)`;
 		}
 	}
 
