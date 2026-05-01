@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
   <img src="https://img.shields.io/badge/Patches-28-orange.svg" alt="28 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.123-8A2BE2.svg" alt="Tested against Claude Code 2.1.123">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.126-8A2BE2.svg" alt="Tested against Claude Code 2.1.126">
 </p>
 
 ---
@@ -59,7 +59,7 @@ bun install
 mise run native:update
 
 claude --version
-# 2.1.123 (Claude Code; patched: shell-quote-fix, bash-prompt, ..., signature)
+# 2.1.126 (Claude Code; patched: shell-quote-fix, bash-prompt, ..., signature)
 
 mise run status
 # Shows current, previous, and cached versions.
@@ -71,8 +71,8 @@ Rollback is a symlink swap, not a reinstall. `mise run native:rollback` exchange
 flowchart LR
     Launcher["~/.local/bin/claude"] --> Current["versions/current"]
     Previous["versions/previous"]
-    Current --> NewBuild[["build N<br/>patched 2.1.123"]]
-    Previous --> OldBuild[["build N-1<br/>patched 2.1.122"]]
+    Current --> NewBuild[["build N<br/>patched 2.1.126"]]
+    Previous --> OldBuild[["build N-1<br/>patched 2.1.124"]]
     NewBuild <-. swap .-> OldBuild
 
     classDef sym fill:#0b2545,stroke:#0b2545,color:#fff
@@ -190,9 +190,9 @@ Do not set `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Th
 
 ```bash
 mise run native:update                            # Fetch + patch + promote (standard workflow)
-mise run native:update 2.1.123                    # Pin a specific version
+mise run native:update 2.1.126                    # Pin a specific version
 mise run native:update --dry-run                  # Preview without promoting
-mise run native:fetch-patch 2.1.123 --dry-run     # Fetch + patch preview for a pinned version
+mise run native:fetch-patch 2.1.126 --dry-run     # Fetch + patch preview for a pinned version
 mise run native:promote <build-path>              # Promote an already-patched cached build
 mise run native:rollback                          # Swap current and previous symlinks
 mise run status                                   # Show current, previous, cached
@@ -204,9 +204,11 @@ scripts/verify-patches-matrix.sh                  # Dry-run patches against late
 VERIFY_PATCHES_MATRIX_SCOPE=all scripts/verify-patches-matrix.sh
 mise run verify:anchors                           # Diff clean vs patched anchors
 mise run prompts:export                           # Export prompt artifacts from promoted binary
-mise run prompts:export 2.1.123 --output-dir /tmp/prompts-2.1.123
-bun run inspect search versions_clean/2.1.123/cli.js "Read" --field string --object
-bun run inspect prompts versions_clean/2.1.123/cli.js "Command sandbox"
+mise run prompts:export 2.1.126 --output-dir /tmp/prompts-2.1.126
+bun run inspect search versions_clean/2.1.126/cli.js "Read" --field string --object
+bun run inspect prompts versions_clean/2.1.126/cli.js "Command sandbox"
+bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js
+bun run diff -- matrix versions_clean/2.1.123/cli.js versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js
 bun run cli --list                                   # List available patches
 bun run test                                         # Run the test suite (pinned to --parallel=1)
 ```
@@ -219,9 +221,9 @@ Prompt exports are generated from `cli.js` bundles extracted from native builds 
 
 ```bash
 mise run prompts:export current
-mise run prompts:export 2.1.123 --output-dir /tmp/prompts-2.1.123
-mise run prompts:export versions_clean/2.1.123/cli.js --label 2.1.123-check \
-  --output-dir /tmp/prompts-2.1.123-check --max-uncategorized 200
+mise run prompts:export 2.1.126 --output-dir /tmp/prompts-2.1.126
+mise run prompts:export versions_clean/2.1.126/cli.js --label 2.1.126-check \
+  --output-dir /tmp/prompts-2.1.126-check --max-uncategorized 200
 ```
 
 Useful outputs:
@@ -238,22 +240,67 @@ The inspector parses a bundle once per invocation and can run multiple search qu
 
 ```bash
 # Clean upstream JS for matcher development
-mise run native:pull 2.1.123                            # writes versions_clean/2.1.123/cli.js
+mise run native:pull 2.1.126                            # writes versions_clean/2.1.126/cli.js
 
 # Currently-promoted patched JS for verifying a patch landed in the running build
 mise run native:unpack-current /tmp/cli-patched.js
 
-bun run inspect search versions_clean/2.1.123/cli.js "You are Claude Code" "Read a file" \
+bun run inspect search versions_clean/2.1.126/cli.js "You are Claude Code" "Read a file" \
   --json --limit 5 --breadcrumb-depth 10 --object
 
-bun run inspect search versions_clean/2.1.123/cli.js '^read$' --regex --ignore-case --field string
-bun run inspect prompts versions_clean/2.1.123/cli.js "Command sandbox" --context 2
+bun run inspect search versions_clean/2.1.126/cli.js '^read$' --regex --ignore-case --field string
+bun run inspect prompts versions_clean/2.1.126/cli.js "Command sandbox" --context 2
 
 # Diff patched output against clean upstream
-bun run diff versions_clean/2.1.123/cli.js /tmp/cli-patched.js
+bun run diff -- versions_clean/2.1.126/cli.js /tmp/cli-patched.js
 ```
 
 Use `rg` for quick literal string search in `cli.js`; use `bun run inspect search` when you need ranked AST matches, value-kind filters, nearest object context, byte span, breadcrumbs, scope, or JSON output. Do not use `sg` on `cli.js`.
+
+## Bundle Diff and Release Triage
+
+`bun run diff` defaults to bundle-surface comparison. It is meant for upstream-to-upstream release review, where raw minified diffs are too noisy and prompt exports can miss new command wiring, telemetry surfaces, routes, or feature flags.
+
+```bash
+# Broad release report
+bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js --limit 20
+
+# Narrow reports while triaging a build
+bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js --focus commands
+bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js --focus settings
+bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js --focus rewrites --markdown
+bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js --focus patches
+
+# Cross-check prompt artifacts against added prompt-like bundle surfaces
+bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js \
+  --prompt-export /tmp/prompts-2.1.126 --focus prompts
+
+# Cache extracted surfaces for repeated analysis
+bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js --cache
+
+# Compare a run of adjacent versions and summarize latest-only additions
+bun run diff -- matrix \
+  versions_clean/2.1.123/cli.js \
+  versions_clean/2.1.124/cli.js \
+  versions_clean/2.1.126/cli.js \
+  --markdown
+```
+
+The report groups high-signal additions and removals, reconstructs command candidates with nearby descriptions and flags, detects settings-write count changes, separates `<system-reminder>` prompt surfaces, detects prefix/text rewrites such as subsystem renames, highlights capability candidates, and estimates patch relevance from local patch anchors. For clean-vs-patched AST node comparison, call the legacy mode explicitly:
+
+```bash
+bun run diff -- ast versions_clean/2.1.126/cli.js /tmp/cli-patched.js
+```
+
+Optional `bundle-diff.config.json` settings keep local triage noise out of reports without hardcoding upstream internals:
+
+```json
+{
+  "ignoreTokens": ["placeholder"],
+  "ignorePrefixes": ["[debug]"],
+  "highSignalTokens": ["gateway", "purge"]
+}
+```
 
 ## Extending
 
@@ -292,7 +339,7 @@ Principles baked into the codebase:
 
 ## Compatibility
 
-Current target: **Claude Code 2.1.123**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
+Current target: **Claude Code 2.1.126**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
 
 ## Requirements
 
