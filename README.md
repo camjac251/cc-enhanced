@@ -193,9 +193,9 @@ Do not set `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Th
 
 ```bash
 mise run native:update                            # Fetch + patch + promote (standard workflow)
-mise run native:update -- 2.1.126                 # Pin a specific version
+mise run native:update -- <version>               # Pin a specific version (e.g. 2.1.126)
 mise run native:update -- --dry-run               # Preview without promoting
-mise run native:fetch-patch -- 2.1.126 --dry-run  # Fetch + patch preview for a pinned version
+mise run native:fetch-patch -- <version> --dry-run
 mise run native:promote -- <build-path>           # Promote an already-patched cached build
 mise run native:rollback                          # Swap current and previous symlinks
 mise run status                                   # Show current, previous, cached
@@ -208,13 +208,13 @@ VERIFY_PATCHES_MATRIX_SCOPE=all mise run verify:patches:matrix
 mise run verify:anchors -- <patched-cli> <clean-cli>
 mise run verify:prompt-drift -- <export-dir> --prompt-drift-baseline <baseline.json>
 mise run prompts:export                           # Export prompt artifacts from promoted binary
-mise run prompts:export -- 2.1.126 --output-dir /tmp/prompts-2.1.126
-mise run prompts:drift-baseline -- <baseline.json> <export-dir> --prompt-drift-version 2.1.126
+mise run prompts:export -- <version> --output-dir /tmp/prompts-<version>
+mise run prompts:drift-baseline -- <baseline.json> <export-dir> --prompt-drift-version <version>
 bun run prompts:compare <vanilla-export> <patched-export> /etc/claude-code
-bun run inspect search versions_clean/2.1.126/cli.js "Read" --field string --object
-bun run inspect prompts versions_clean/2.1.126/cli.js "Command sandbox"
-bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js
-bun run diff -- matrix versions_clean/2.1.123/cli.js versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js
+bun run inspect search versions_clean/<version>/cli.js "Read" --field string --object
+bun run inspect prompts versions_clean/<version>/cli.js "Command sandbox"
+bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js
+bun run diff -- matrix versions_clean/<v1>/cli.js versions_clean/<v2>/cli.js versions_clean/<v3>/cli.js
 bun run cli --list                                   # List available patches
 bun run test                                      # Run the test suite (pinned to --parallel=1)
 ```
@@ -227,9 +227,9 @@ Prompt exports are generated from `cli.js` bundles extracted from native builds 
 
 ```bash
 mise run prompts:export -- current
-mise run prompts:export -- 2.1.126 --output-dir /tmp/prompts-2.1.126
-mise run prompts:export -- versions_clean/2.1.126/cli.js --label 2.1.126-check \
-  --output-dir /tmp/prompts-2.1.126-check --max-uncategorized 200
+mise run prompts:export -- <version> --output-dir /tmp/prompts-<version>
+mise run prompts:export -- versions_clean/<version>/cli.js --label <version>-check \
+  --output-dir /tmp/prompts-<version>-check --max-uncategorized 200
 mise run prompts:bundle -- current
 ```
 
@@ -246,13 +246,13 @@ Useful outputs:
 `verify:prompt-drift` adds a path-based drift guard for the surfaces this patcher cares about most. Generate or refresh a baseline from a known-good patched export:
 
 ```bash
-mise run prompts:drift-baseline -- prompt-surface-baseline.json exported-prompts/2.1.126_patched --prompt-drift-version 2.1.126
+mise run prompts:drift-baseline -- prompt-surface-baseline.json exported-prompts/<version>_patched --prompt-drift-version <version>
 ```
 
 Then compare future exports against it:
 
 ```bash
-mise run verify:prompt-drift -- exported-prompts/2.1.127_patched --prompt-drift-baseline prompt-surface-baseline.json
+mise run verify:prompt-drift -- exported-prompts/<new-version>_patched --prompt-drift-baseline prompt-surface-baseline.json
 PROMPT_DRIFT_BASELINE=prompt-surface-baseline.json mise run verify:patches
 ```
 
@@ -261,28 +261,28 @@ The baseline hashes normalized Markdown by exported path, not by content-derived
 `prompts:compare` is a human review report for comparing a vanilla prompt export, a patched prompt export, and the runtime `/etc/claude-code` policy layer. It reports file inventory deltas, manifest count changes, review prompt-surface status (including optional surfaces intentionally removed by patching), exact-line overlap from `/etc` into the patched bundle export, and policy-term presence across both layers.
 
 ```bash
-bun run prompts:compare exported-prompts/2.1.126 exported-prompts/2.1.126_patched /etc/claude-code
-bun run prompts:compare exported-prompts/2.1.126 exported-prompts/2.1.126_patched /etc/claude-code -- --json
-bun run prompts:compare exported-prompts/2.1.126 exported-prompts/2.1.126_patched /etc/claude-code -- --output /tmp/prompt-comparison.md
+bun run prompts:compare exported-prompts/<version> exported-prompts/<version>_patched /etc/claude-code
+bun run prompts:compare exported-prompts/<version> exported-prompts/<version>_patched /etc/claude-code -- --json
+bun run prompts:compare exported-prompts/<version> exported-prompts/<version>_patched /etc/claude-code -- --output /tmp/prompt-comparison.md
 ```
 
 The inspector parses a bundle once per invocation and can run multiple search queries:
 
 ```bash
 # Clean upstream JS for matcher development
-mise run native:pull -- 2.1.126                         # writes versions_clean/2.1.126/cli.js
+mise run native:pull -- <version>                       # writes versions_clean/<version>/cli.js
 
 # Currently-promoted patched JS for verifying a patch landed in the running build
 mise run native:unpack-current /tmp/cli-patched.js
 
-bun run inspect search versions_clean/2.1.126/cli.js "You are Claude Code" "Read a file" \
+bun run inspect search versions_clean/<version>/cli.js "You are Claude Code" "Read a file" \
   --json --limit 5 --breadcrumb-depth 10 --object
 
-bun run inspect search versions_clean/2.1.126/cli.js '^read$' --regex --ignore-case --field string
-bun run inspect prompts versions_clean/2.1.126/cli.js "Command sandbox" --context 2
+bun run inspect search versions_clean/<version>/cli.js '^read$' --regex --ignore-case --field string
+bun run inspect prompts versions_clean/<version>/cli.js "Command sandbox" --context 2
 
 # Diff patched output against clean upstream
-bun run diff -- versions_clean/2.1.126/cli.js /tmp/cli-patched.js
+bun run diff -- versions_clean/<version>/cli.js /tmp/cli-patched.js
 ```
 
 Use `rg` for quick literal string search in `cli.js`; use `bun run inspect search` when you need ranked AST matches, value-kind filters, nearest object context, byte span, breadcrumbs, scope, or JSON output. Do not use `sg` on `cli.js`.
@@ -293,33 +293,33 @@ Use `rg` for quick literal string search in `cli.js`; use `bun run inspect searc
 
 ```bash
 # Broad release report
-bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js --limit 20
+bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js --limit 20
 
 # Narrow reports while triaging a build
-bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js --focus commands
-bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js --focus settings
-bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js --focus rewrites --markdown
-bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js --focus patches
+bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js --focus commands
+bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js --focus settings
+bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js --focus rewrites --markdown
+bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js --focus patches
 
 # Cross-check prompt artifacts against added prompt-like bundle surfaces
-bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js \
-  --prompt-export /tmp/prompts-2.1.126 --focus prompts
+bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js \
+  --prompt-export /tmp/prompts-<new> --focus prompts
 
 # Cache extracted surfaces for repeated analysis
-bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js --cache
+bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js --cache
 
 # Compare a run of adjacent versions and summarize latest-only additions
 bun run diff -- matrix \
-  versions_clean/2.1.123/cli.js \
-  versions_clean/2.1.124/cli.js \
-  versions_clean/2.1.126/cli.js \
+  versions_clean/<v1>/cli.js \
+  versions_clean/<v2>/cli.js \
+  versions_clean/<v3>/cli.js \
   --markdown
 ```
 
 The report groups high-signal additions and removals, reconstructs command candidates with nearby descriptions and flags, detects settings-write count changes, separates `<system-reminder>` prompt surfaces, detects prefix/text rewrites such as subsystem renames, highlights capability candidates, and estimates patch relevance from local patch anchors. For clean-vs-patched AST node comparison, call the legacy mode explicitly:
 
 ```bash
-bun run diff -- ast versions_clean/2.1.126/cli.js /tmp/cli-patched.js
+bun run diff -- ast versions_clean/<version>/cli.js /tmp/cli-patched.js
 ```
 
 Optional `bundle-diff.config.json` settings keep local triage noise out of reports without hardcoding upstream internals:

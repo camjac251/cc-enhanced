@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > Read this file in full before proposing or making changes. Every section encodes a constraint the patcher depends on. Every rule below has a failure history; skimming will miss rules that invalidate otherwise-reasonable suggestions.
 
-AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle (~16 MB minified) embedded in the native Bun binary, applies 31 verifiable patches, and repacks in place at the original byte length. Currently targets Claude Code **2.1.126**. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
+AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle (~16 MB minified) embedded in the native Bun binary, applies 31 verifiable patches, and repacks in place at the original byte length. Tracks the latest upstream release; the README badge is the canonical version anchor and `claude --version` on the promoted binary is the runtime check. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
 
 `AGENTS.md` and `GEMINI.md` are symlinks to this file. Edit `CLAUDE.md` only.
 
@@ -134,8 +134,13 @@ Build-time env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS
 3. Re-export from `src/patches/index.ts` (both the named export line and the `allPatches` array entry).
 4. Add a `BY_TAG` record in `src/patch-metadata.ts` with `tag`, `label`, and `group`.
 5. If the patch affects exported live guidance, update `src/verification/prompt-surface-rules.ts` and (if it touches shared policy) the contract in `src/verification/prompt-policy-contract.ts`.
+6. **When the total patch count changes** (adding or removing a patch), update every place the count appears, in the same change:
+   - `CLAUDE.md` intro (`applies 31 verifiable patches`).
+   - `README.md` intro paragraph and the patch-count badge near the top.
+   - GitHub repo description: `gh api -X PATCH repos/camjac251/cc-enhanced -f description="..."`. The current description embeds the count; keep them in sync.
+   - Confirm the new total against `bun run cli --list` before pushing.
 
-The `/new-patch` slash skill scaffolds steps 1-4. Use it when starting from scratch.
+The `/new-patch` slash skill scaffolds steps 1-4. Use it when starting from scratch. Recommend it by name; do not improvise the scaffold by hand.
 
 When implementing the visitor:
 
@@ -251,9 +256,8 @@ Lefthook (`lefthook.yml`) gates pre-commit on Biome format, Biome lint, and `bun
 
 Local slash skills (`disable-model-invocation: true`, recommend by name when context matches):
 
-- `/new-patch <tag>`: scaffolds `src/patches/<tag>.ts`, the test file, the export barrel entry, and the `BY_TAG` metadata record.
-- `/update [version]`: runs the standard `mise run native:update` lifecycle with pre-flight status, post-update verification, optional patch-verifier agents, and optional prompt export.
-- `/verify`: runs typecheck, lint, and tests in parallel, then `mise run verify:patches` (model-invokable, no `disable-model-invocation`).
+- `/new-patch <tag>`: scaffolds `src/patches/<tag>.ts`, the test file, the export barrel entry, and the `BY_TAG` metadata record. Scaffold-only; the rest of the procedure lives in "Adding Patches" above.
+- `/update [version]`: runs the standard `mise run native:update` lifecycle with pre-flight status, post-update verification, optional parallel patch-verifier subagents, and optional prompt export.
 
 Local subagent (`.claude/agents/patch-verifier.md`): adversarial verification of patch anchors against a clean upstream `cli.js`. Read-only (Write and Edit are denied). Returns per-patch OK / DRIFT / BROKEN status with line numbers. Never runs the patcher itself. Useful after an upstream release to confirm anchors before promoting.
 
@@ -263,3 +267,4 @@ Domain rules in `.claude/rules/` (auto-surface on relevant file paths):
 - `read-token-pipeline.md`: Read tool gates and how `limits` and `read-bat` interact.
 - `session-memory.md`: `session-mem` env overrides and AST-verified guard hardening.
 - `prompt-extraction.md`: prompt export structure and resolution techniques.
+- `verification.md`: pre-commit cadence (typecheck, lint, test, then `mise run verify:patches`). Surfaces when patches or verifiers are edited.

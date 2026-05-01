@@ -1,15 +1,13 @@
 ---
 paths:
   - scripts/export-prompts.ts
-  - scripts/export-prompts-current.ts
   - src/prompt-corpus.ts
   - src/prompt-corpus.test.ts
 ---
 
 # Prompt Extraction
 
-`scripts/export-prompts.ts` performs AST-based extraction of all prompt text from cli.js.
-`scripts/export-prompts-current.ts` wraps it to unpack the promoted (patched) binary first.
+`scripts/export-prompts.ts` performs AST-based extraction of all prompt text from cli.js. Pass a clean version (`X.Y.Z`), a path to a `cli.js`, or `current` to extract from the currently-promoted patched binary. `--bundle` writes the navigable bundle through the same exporter.
 
 ## Output Structure
 
