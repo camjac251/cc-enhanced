@@ -556,6 +556,21 @@ function preferRenderedString(
 	return consequent;
 }
 
+function staticBooleanValue(expression: t.Expression): boolean | null {
+	if (t.isBooleanLiteral(expression)) return expression.value;
+	if (t.isNumericLiteral(expression)) return expression.value !== 0;
+	if (t.isStringLiteral(expression)) return expression.value.length > 0;
+	if (t.isNullLiteral(expression)) return false;
+	if (t.isUnaryExpression(expression)) {
+		const argument = t.isExpression(expression.argument)
+			? staticBooleanValue(expression.argument)
+			: null;
+		if (argument === null) return null;
+		if (expression.operator === "!") return !argument;
+	}
+	return null;
+}
+
 function hasUnresolvedPlaceholder(value: string): boolean {
 	return /\$\{(?:\.\.\.|value_|expr_|conditional\(|array\(|object\b)/.test(
 		value,
@@ -615,6 +630,15 @@ function renderPromptExpression(
 		}
 
 		if (t.isConditionalExpression(expression)) {
+			const staticTest = staticBooleanValue(expression.test);
+			if (staticTest !== null) {
+				const branch = staticTest
+					? expression.consequent
+					: expression.alternate;
+				return t.isExpression(branch)
+					? renderPromptExpression(branch, context, seenFunctions, seenBindings)
+					: null;
+			}
 			const consequent = t.isExpression(expression.consequent)
 				? renderPromptExpression(
 						expression.consequent,
@@ -656,6 +680,25 @@ function renderPromptExpression(
 		}
 
 		if (t.isCallExpression(expression)) {
+			if (
+				t.isIdentifier(expression.callee, { name: "String" }) &&
+				expression.arguments.length >= 1 &&
+				t.isExpression(expression.arguments[0])
+			) {
+				return renderPromptExpression(
+					expression.arguments[0],
+					context,
+					seenFunctions,
+					seenBindings,
+				);
+			}
+			const found = renderArrayFindCallExpression(
+				expression,
+				context,
+				seenFunctions,
+				seenBindings,
+			);
+			if (found !== null) return found;
 			const joined = renderJoinCallExpression(
 				expression,
 				context,
@@ -750,6 +793,30 @@ function renderPromptExpression(
 	} finally {
 		if (expressionKey) context.activeExpressions.delete(expressionKey);
 	}
+}
+
+function renderArrayFindCallExpression(
+	expression: t.CallExpression,
+	context: RenderContext,
+	seenFunctions: Set<string>,
+	seenBindings: Set<string>,
+): string | null {
+	if (
+		!t.isMemberExpression(expression.callee) ||
+		!t.isIdentifier(expression.callee.property) ||
+		expression.callee.property.name !== "find" ||
+		!t.isExpression(expression.callee.object)
+	) {
+		return null;
+	}
+	const items = renderPromptListExpression(
+		expression.callee.object,
+		context,
+		seenFunctions,
+		seenBindings,
+	);
+	if (!items) return null;
+	return flattenPromptListItems(items).find((item) => item.length > 0) ?? null;
 }
 
 function renderJoinCallExpression(
@@ -933,6 +1000,20 @@ function renderPromptListExpression(
 		}
 
 		if (t.isConditionalExpression(expression)) {
+			const staticTest = staticBooleanValue(expression.test);
+			if (staticTest !== null) {
+				const branch = staticTest
+					? expression.consequent
+					: expression.alternate;
+				return t.isExpression(branch)
+					? renderPromptListExpression(
+							branch,
+							context,
+							seenFunctions,
+							seenBindings,
+						)
+					: null;
+			}
 			const consequent = t.isExpression(expression.consequent)
 				? renderPromptListExpression(
 						expression.consequent,
@@ -1456,18 +1537,24 @@ function collectPromptSnippetsFromFunction(
 	context: RenderContext,
 ): string[] {
 	const snippets = new Map<string, string>();
-	pathRef.traverse({
-		Function(inner) {
-			if (inner !== pathRef) inner.skip();
-		},
-		StringLiteral(inner) {
-			const value = inner.node.value.trim();
-			if (isPromptSnippet(value)) snippets.set(value, value);
-		},
-		TemplateLiteral(inner) {
-			const value = renderTemplateLiteral(inner.node, context).trim();
-			if (isPromptSnippet(value)) snippets.set(value, value);
-		},
+	const localExprs = t.isBlockStatement(pathRef.node.body)
+		? collectLocalBindings(pathRef.node.body.body)
+		: new Map<string, t.Expression>();
+	withLocalBindings(context, localExprs, new Set<string>(), () => {
+		pathRef.traverse({
+			Function(inner) {
+				if (inner !== pathRef) inner.skip();
+			},
+			StringLiteral(inner) {
+				const value = inner.node.value.trim();
+				if (isPromptSnippet(value)) snippets.set(value, value);
+			},
+			TemplateLiteral(inner) {
+				const value = renderTemplateLiteral(inner.node, context).trim();
+				if (isPromptSnippet(value)) snippets.set(value, value);
+			},
+		});
+		return null;
 	});
 	return [...snippets.values()];
 }
