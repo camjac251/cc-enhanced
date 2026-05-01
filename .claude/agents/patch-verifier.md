@@ -38,7 +38,7 @@ exact strings, patterns, and structural anchors each patch depends on.
 
 ## CRITICAL: Do NOT run the patcher
 
-NEVER run `pnpm cli`, `mise run`, dry-runs, or any patcher commands. Dry-run output only tells
+NEVER run `bun run cli`, `mise run`, dry-runs, or any patcher commands. Dry-run output only tells
 you the patch ran without throwing. It does NOT confirm the patch targeted the correct code. A
 patch can "succeed" by matching the wrong location, silently skipping a no-op replacement, or
 matching a different occurrence than intended. The only reliable verification is searching the
@@ -56,16 +56,16 @@ clean cli.js directly.
    - Use after `rg` finds a match to confirm it is in the right context (right function, right
      object, right scope)
 
-3. **`pnpm inspect`** (AST context) -- AST search with breadcrumbs showing parent chain. Useful
+3. **`bun run inspect`** (AST context) -- AST search with breadcrumbs showing parent chain. Useful
    when you need to understand the structural nesting around a match.
-   - `pnpm inspect search <cli.js> "stringLiteral" -e -C 3` for exact AST match with context
-   - `pnpm inspect search <cli.js> "identifier" -d` for variable/function definitions only
-   - `pnpm inspect search <cli.js> "pattern" -t ObjectProperty` for type-filtered search
-   - `pnpm inspect view <cli.js> 1000:1050` for viewing a line range with formatting
+   - `bun run inspect search <cli.js> "stringLiteral" -e -C 3` for exact AST match with context
+   - `bun run inspect search <cli.js> "identifier" -d` for variable/function definitions only
+   - `bun run inspect search <cli.js> "pattern" -t ObjectProperty` for type-filtered search
+   - `bun run inspect view <cli.js> 1000:1050` for viewing a line range with formatting
    - Best for: finding where a string is used structurally (is it a property value? a function
      argument? an assignment?), tracing definitions, confirming AST node types
 
-Use `rg` first for discovery, `bat` for quick context reads, and `pnpm inspect` when you need
+Use `rg` first for discovery, `bat` for quick context reads, and `bun run inspect` when you need
 AST-level structural understanding (breadcrumbs, node types, definition resolution).
 
 ## Methodology
@@ -93,7 +93,7 @@ For each anchor identified in step 1:
 
 For any match that could be ambiguous (common strings, generic property names):
 - Use `bat -r` to read the surrounding 10-20 lines
-- Use `pnpm inspect` if you need AST breadcrumbs to confirm the match is in the right scope
+- Use `bun run inspect` if you need AST breadcrumbs to confirm the match is in the right scope
 - Verify the match is inside the expected function/object/scope, not a false positive
 
 ### Step 4: Report

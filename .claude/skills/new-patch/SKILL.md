@@ -1,70 +1,36 @@
 ---
 name: new-patch
-description: "Scaffold a new cc-enhanced patch: creates src/patches/<tag>.ts, <tag>.test.ts, adds export to src/patches/index.ts, and BY_TAG metadata entry. User-only slash command. NOT for modifying an existing patch (just edit the file directly)."
+description: "Scaffold the four files for a new cc-enhanced patch (src/patches/<tag>.ts, <tag>.test.ts, the export-barrel entry, and the BY_TAG metadata record). Scaffold-only; the rest of the procedure (prompt-surface rules, count sync) lives in CLAUDE.md > Adding Patches."
 when_to_use: >-
-  Recommend by name when the user says 'new patch', 'add a patch', 'scaffold a
-  patch', 'create a new patch for X', 'start a patch', or wants to add a new
-  behavior to the cc-enhanced patcher. Argument is the patch tag (e.g.
-  'my-feature'). Asks for label and group (Prompt, Tooling, Agent, System, UX,
-  Metadata) if not provided.
+  Recommend by name when the user wants to add a new patch behavior. Triggers
+  on "new patch", "add a patch", "scaffold a patch", "create a patch for X",
+  "start a patch". Argument is the patch tag (e.g. "my-feature"). If the tag,
+  one-line purpose, or group (Prompt, Tooling, Agent, System, UX, Metadata) is
+  missing, ask before scaffolding. NOT for editing an existing patch (just edit
+  the file directly) or for end-to-end implementation (this skill stops at
+  scaffolding; the user implements the visitor and verifier).
 disable-model-invocation: true
+paths:
+  - src/patches/index.ts
+  - src/patch-metadata.ts
 ---
 
-# New Patch Scaffold
+# /new-patch <tag>
 
-Create all files needed for a new patch. `$ARGUMENTS` should be the patch tag (e.g., `my-feature`).
+Create the four files needed for a new patch, then hand off to the user. `$ARGUMENTS` is the patch tag.
 
-If no tag is provided, ask the user for: tag name, one-line purpose, and which group it belongs to (Prompt, Tooling, Agent, System, UX, Metadata).
+If the tag is missing, ask the user for: tag, one-line purpose, and group.
 
 ## Files to create
 
-### 1. `src/patches/<tag>.ts`
-
-Look at an existing patch in `src/patches/` for the pattern. The key structure:
-
-- Import `traverse`, `@babel/types`, and `getVerifyAst` from `./ast-helpers.js`
-- Export a `Patch` object with `tag`, `astPasses`, and `verify`
-- `astPasses` returns an array of `{ pass: "mutate", visitor: {...} }` objects
-- `verify` returns `true` or a failure reason string
-
-### 2. `src/patches/<tag>.test.ts`
-
-Create a test file using `node:test` and `node:assert`:
-
-```typescript
-import { describe, it } from "node:test";
-import assert from "node:assert/strict";
-import { <patchExport> } from "./<tag>.js";
-
-describe("<tag> patch", () => {
-	it("has correct tag", () => {
-		assert.equal(<patchExport>.tag, "<tag>");
-	});
-
-	it("verify passes on patched code", () => {
-		// TODO: add verification test with sample code
-	});
-});
-```
-
-### 3. Update `src/patches/index.ts`
-
-- Add import: `import { <patchExport> } from "./<tag>.js";`
-- Add export: `export { <patchExport> } from "./<tag>.js";`
-- Add `<patchExport>` to the `basePatches` or `allPatches` array
-
-### 4. Update `src/patch-metadata.ts`
-
-Add entry to `BY_TAG`:
-
-```typescript
-"<tag>": {
-    tag: "<tag>",
-    label: "<Label from purpose>",
-    group: "<Group>",
-},
-```
+1. **`src/patches/<tag>.ts`**: copy the structure from a similar existing patch in `src/patches/`. Import `traverse`, `@babel/types`, and helpers from `./ast-helpers.js`. Export a `Patch` with `tag`, `astPasses`, and `verify` (see `src/types.ts` for the interface).
+2. **`src/patches/<tag>.test.ts`**: `node:test` + `node:assert/strict`. At minimum, assert the exported `tag` matches and add a placeholder for the verify behavior. Mirror the shape of a sibling `*.test.ts`.
+3. **`src/patches/index.ts`**: add the named `export ... from "./<tag>.js"`, the `import` for the array, and append the patch to `allPatches`.
+4. **`src/patch-metadata.ts`**: add a `BY_TAG["<tag>"]` record with `tag`, `label`, and `group`.
 
 ## After scaffolding
 
-Tell the user the files are ready and they should implement the `astPasses` visitor and `verify` function. Suggest looking at a similar existing patch for reference.
+Tell the user the four files are created. Do not implement the visitor or verifier; that is the user's design step. Then remind them to follow CLAUDE.md > Adding Patches:
+
+- **Step 5**: if the patch changes exported live prompt guidance, update `src/verification/prompt-surface-rules.ts` (and `src/verification/prompt-policy-contract.ts` for shared policy).
+- **Step 6**: keep the patch count in sync across `CLAUDE.md` intro, `README.md` intro and badge, and the GitHub repo description (`gh api -X PATCH repos/camjac251/cc-enhanced -f description="..."`). Confirm the new total against `bun run cli --list` before pushing.
