@@ -1632,17 +1632,7 @@ export const readWithBat: Patch = {
 										for (const stmt of promptProp.body.body) {
 											if (!t.isReturnStatement(stmt) || !stmt.argument)
 												continue;
-											const resolvedPrompt = resolveStringValue(
-												path,
-												stmt.argument,
-											);
-											stmt.argument =
-												resolvedPrompt == null
-													? wrapReadPromptExpression(
-															stmt.argument,
-															READ_PROMPT_PATCH_HELPER,
-														)
-													: t.stringLiteral(STATIC_READ_PROMPT);
+											stmt.argument = t.stringLiteral(STATIC_READ_PROMPT);
 										}
 									} else if (t.isExpression(promptProp.value)) {
 										const resolvedPrompt = resolveStringValue(
