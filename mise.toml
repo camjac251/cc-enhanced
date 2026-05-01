@@ -375,6 +375,24 @@ ARGS=("${usage_input:-current}")
 bun scripts/export-prompts-current.ts "${ARGS[@]}"
 """
 
+[tasks."prompts:bundle"]
+description = "Export prompts to a self-contained navigable bundle with clickable INDEX.md"
+usage = '''
+arg "[input]" help="Version, cli.js path, or current (default: current)"
+flag "--label <label>" help="Override export label"
+flag "--output-dir <dir>" help="Output directory (default: exported-prompts/<label>)"
+flag "--max-uncategorized <n>" help="Fail if uncategorized corpus count exceeds n"
+'''
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+ARGS=("${usage_input:-current}")
+[[ -n "${usage_label:-}" ]] && ARGS+=(--label "${usage_label}")
+[[ -n "${usage_output_dir:-}" ]] && ARGS+=(--output-dir "${usage_output_dir}")
+[[ -n "${usage_max_uncategorized:-}" ]] && ARGS+=(--max-uncategorized "${usage_max_uncategorized}")
+bun scripts/bundle-prompts.ts "${ARGS[@]}"
+"""
+
 
 [tasks.clean]
 description = "Remove output directories"
