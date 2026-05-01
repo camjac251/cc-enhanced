@@ -17,11 +17,26 @@ AST-based patcher for customizing the Claude Code CLI. Patches a ~16MB minified 
 
 No build step. Project TypeScript runs directly via Bun. Babel AST + generator over the 16 MB cli.js is heavy but JSC sizes its heap dynamically, so no explicit heap flag is required.
 
-Standard workflow: `mise run native:update` (fetch + patch + promote). `mise run patch` deliberately fails as a safety guard; always use `native:update`. `mise.toml` is a task index; non-trivial verification logic belongs in TypeScript scripts such as `scripts/verify-patches.ts`. See `mise.toml` for all task aliases and `bun run cli --help` for all CLI options.
+Standard workflow: `mise run native:update` (fetch + patch + promote). `mise run patch` deliberately fails as a safety guard; always use `native:update`.
+
+Command ownership: `package.json` is the canonical alias table. `mise.toml` is a thin task index that calls `bun run <alias>` and should not grow workflow logic, except for the `patch` safety guard. Put real behavior in TypeScript entry points and scripts such as `src/index.ts`, `scripts/export-prompts.ts`, and `scripts/verify-patches.ts`. Use `mise run <task> -- ...` to pass versions, paths, or flags through to the underlying Bun alias.
+
+Use this command map instead of opening task files for orientation:
+
+- `native:update`: standard fetch, patch, and promote flow through `src/index.ts --update`.
+- `native:fetch`, `native:fetch-patch`, `native:pull`, `native:promote`, `native:rollback`, `native:backup`, `native:restore`, `native:unpack`, `native:unpack-current`, `native:repack`, `status`, `list`: native binary/cache operations through `src/index.ts`; `native:pull` writes clean JS to `versions_clean/<version>/cli.js`.
+- `inspect`, `inspect:prompts`, `inspect:view`: bundle inspection through `src/inspector.ts`; use these for AST context, prompt-like strings, and line views of extracted bundles.
+- `diff`: release-to-release bundle drift through `src/diff.ts`; use it before changing patch anchors after an upstream release.
+- `verify:patches`, `verify:patches:matrix`: patch health and clean-version matrix checks through `scripts/verify-patches.ts`.
+- `verify:anchors`, `verify:prompt-surfaces`, `verify:prompt-drift`, `prompts:drift-baseline`: verifier and baseline entry points through `src/index.ts`.
+- `prompts:export`, `prompts:bundle`: prompt artifact export through `scripts/export-prompts.ts`; bundle mode is `--bundle` on the same exporter, not a separate workflow.
+- `prompts:compare`: vanilla-vs-patched prompt review through `scripts/compare-prompts.ts`.
+- `verify:cache`, `verify:cache:agent`: live cache efficiency checks through `src/verification/verify-cache-efficiency.ts`.
+- `test`, `typecheck`, `lint`, `format`, `lint:fix`: repository hygiene scripts.
 
 Key env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS`, `CLAUDE_PATCHER_CACHE_KEEP`, `CLAUDE_PATCHER_REVISION`.
 
-Prompt export workflow: `mise run prompts:export` exports the promoted binary, or pass a clean version/path. Use `--output-dir <dir>` for scratch exports and `--max-uncategorized <n>` to fail when uncategorized prompt-corpus entries exceed a budget. The current-binary exporter uses an OS temp directory and must never write into `versions_clean/<label>`.
+Prompt export workflow: `mise run prompts:export` exports the promoted binary, or pass a clean version/path with `mise run prompts:export -- <version-or-path>`. Use `--output-dir <dir>` for scratch exports and `--max-uncategorized <n>` to fail when uncategorized prompt-corpus entries exceed a budget. `mise run prompts:bundle -- <version-or-path>` writes the self-contained navigable bundle through the same exporter with `--bundle`; keep export and bundle behavior together in `scripts/export-prompts.ts`. The current-binary exporter uses an OS temp directory and must never write into `versions_clean/<label>`.
 
 Prompt comparison workflow: `bun run prompts:compare <vanilla-export> <patched-export> /etc/claude-code` generates a human triage report. Use `--output <file>` for a saved Markdown/JSON artifact and `--json` for machine-readable output. This is review-only: it compares file inventory, manifest count drift, review prompt-surface status, exact-line overlap from `/etc/claude-code`, and policy-term presence, but it does not replace `verify:prompt-surfaces` or `verify:prompt-drift`.
 
@@ -67,17 +82,17 @@ Known interaction: `plan-diff-ui` rewrites Edit's plan-preview `startsWith` guar
 
 **Never use ast-grep (sg) on cli.js.** Minified names make structural patterns useless. Use `rg` for string search or `bun run inspect search` for AST context with breadcrumbs.
 
-Two extraction paths, depending on what you want to inspect:
+Useful extraction paths, depending on what you want to inspect:
 
-- Clean upstream JS for any version: `mise run native:pull <version>` writes `versions_clean/<version>/cli.js`. Use this when authoring or debugging a patch matcher against pristine upstream.
-- Currently-promoted patched JS: `mise run native:unpack-current <output_js>` auto-detects the active binary via PATH. Use this to confirm a patch landed in the running build, diff against clean upstream, or hand the file to `bun run inspect`.
-- Arbitrary native binary: `mise run native:unpack <target> <output_js>` for any cached or out-of-tree binary.
+- Clean upstream JS for any version: `mise run native:pull -- <version>` writes `versions_clean/<version>/cli.js`. Use this when authoring or debugging a patch matcher against pristine upstream.
+- Currently-promoted patched JS: `mise run native:unpack-current -- <output_js>` auto-detects the active binary via PATH. Use this to confirm a patch landed in the running build, diff against clean upstream, or hand the file to `bun run inspect`.
+- Arbitrary native binary: `mise run native:unpack -- <target> <output_js>` for any cached or out-of-tree binary.
 
 `bun run inspect search <cli.js> <query...>` parses the bundle once and can run multiple queries. Results are ranked so exact strings and durable object keys beat incidental minified identifier substrings. Add `--field string|template|identifier|key`, `--regex`, `--ignore-case`, `--object`, `--json`, `--scope`, `--children`, or `--breadcrumb-depth <n>` as needed. Use `bun run inspect prompts <cli.js> [query]` to list prompt-like string/template nodes.
 
 ## Bundle Diff Triage
 
-Use `bun run diff -- <old-cli.js> <new-cli.js>` for upstream-to-upstream release review. It compares stable bundle surfaces instead of raw minified text and is the preferred way to find new commands, flags, env vars, routes, prompt-like strings, subsystem renames, and patch-risk anchors between clean builds.
+Use `mise run diff -- <old-cli.js> <new-cli.js>` for upstream-to-upstream release review. It compares stable bundle surfaces instead of raw minified text and is the preferred way to find new commands, flags, env vars, routes, prompt-like strings, subsystem renames, and patch-risk anchors between clean builds.
 
 Common focused passes:
 - `--focus commands` for command-like additions/removals and nearby flags.
@@ -88,7 +103,15 @@ Common focused passes:
 - `--focus patches` to review local patch anchors affected by removed or rewritten surfaces.
 - `--cache` for repeated work on the same bundles.
 
-Use `bun run diff -- matrix <old> <mid> <new>` when comparing adjacent builds. Matrix mode shows per-step counts and latest-only additions so release triage does not depend on a single pairwise report.
+Use `mise run diff -- matrix <old> <mid> <new>` when comparing adjacent clean builds. Matrix mode shows per-step counts and latest-only additions so release triage does not depend on a single pairwise report.
+
+Best release-drift workflow:
+
+1. Pull every adjacent clean release you care about with `mise run native:pull -- <version>`.
+2. Run `mise run diff -- matrix versions_clean/<old>/cli.js versions_clean/<mid>/cli.js versions_clean/<new>/cli.js --cache` to see which release step introduced new commands, flags, env vars, prompts, or patch-risk anchors.
+3. Re-run focused diffs on the adjacent pair that changed: `mise run diff -- <old-cli.js> <new-cli.js> --focus patches --cache`, `--focus prompts --prompt-export <dir>`, `--focus commands`, `--focus env`, or `--focus settings`.
+4. Run `SELECTED_VERSION=<new> mise run verify:patches:matrix` to dry-run patches against the new clean bundle, or `VERIFY_PATCHES_MATRIX_SCOPE=all mise run verify:patches:matrix` to sweep every pulled clean version.
+5. For prompt drift, export clean and patched prompt artifacts for the new release, run `bun run prompts:compare <vanilla-export> <patched-export> /etc/claude-code`, then run `mise run verify:prompt-drift -- <patched-export> --prompt-drift-baseline <baseline.json>` if curated surfaces changed.
 
 Keep bundle-diff config generic: `ignoreTokens`, `ignorePrefixes`, and `highSignalTokens` should describe local triage noise or durable public-facing surfaces, not upstream source-file names, module names, or reconstructed internals. Older source trees can guide heuristics, but do not encode or reveal source-specific assumptions in this repository. The output should describe product behavior and bundle-visible surfaces only.
 
@@ -104,7 +127,7 @@ Prompt-surface verification is intentionally strict for curated live surfaces. D
 
 `prompts:compare` is the broader review report. It should normally show optional tool/agent surfaces as removed when `tools-off` / `agents-off` filtered them, and zero exact-line overlap from `/etc/claude-code` into the patched export because `/etc/claude-code/system-prompt.md`, `CLAUDE.md`, and `.claude/rules/*.md` are runtime policy/context layers, not bundle prompt text. If overlap rises unexpectedly, check whether a patch copied managed policy verbatim instead of using distilled bundle wording.
 
-Prompt patches must update both their own verifier and `src/verification/prompt-surface-rules.ts` when they affect exported live guidance. The current curated surfaces include Bash/Read/REPL/tool-search, Explore/Plan, remote-planning reminders, `system/sections/session-specific-guidance.md`, and the dream-memory consolidation/pruning sections. Run an actual patched export plus `bun run verify:prompt-surfaces <export-dir>` for prompt-only changes; `bun run verify:patches` covers this through the native path.
+Prompt patches must update both their own verifier and `src/verification/prompt-surface-rules.ts` when they affect exported live guidance. The current curated surfaces include Bash/Read/REPL/tool-search, Explore/Plan, remote-planning reminders, `system/sections/session-specific-guidance.md`, and the dream-memory consolidation/pruning sections. Run an actual patched export plus `mise run verify:prompt-surfaces -- <export-dir>` for prompt-only changes; `mise run verify:patches` covers this through the native path.
 
 ## Feature Flags
 

@@ -65,11 +65,15 @@ function formatCommand(command: string, args: readonly string[]): string {
 		.join(" ");
 }
 
-function run(command: string, args: string[]): void {
+function run(
+	command: string,
+	args: string[],
+	env: NodeJS.ProcessEnv = process.env,
+): void {
 	console.log(`$ ${formatCommand(command, args)}`);
 	const result = spawnSync(command, args, {
 		cwd: repoRoot,
-		env: process.env,
+		env,
 		stdio: "inherit",
 	});
 	if (result.error) throw result.error;
@@ -82,6 +86,19 @@ function run(command: string, args: string[]): void {
 
 function runBun(args: string[]): void {
 	run("bun", args);
+}
+
+function compareSemverLike(a: string, b: string): number {
+	const parse = (value: string) =>
+		value.split(".").map((part) => Number.parseInt(part, 10) || 0);
+	const left = parse(a);
+	const right = parse(b);
+	const maxLen = Math.max(left.length, right.length);
+	for (let index = 0; index < maxLen; index++) {
+		const delta = (left[index] ?? 0) - (right[index] ?? 0);
+		if (delta !== 0) return delta;
+	}
+	return 0;
 }
 
 function createVerifyPaths(): VerifyPaths {
@@ -282,7 +299,148 @@ function cleanup(paths: VerifyPaths): void {
 	}
 }
 
+function listCleanVersions(): string[] {
+	const versionsDir = path.join(repoRoot, "versions_clean");
+	try {
+		return fs
+			.readdirSync(versionsDir, { withFileTypes: true })
+			.filter(
+				(entry) => entry.isDirectory() && /^\d+\.\d+\.\d+$/.test(entry.name),
+			)
+			.map((entry) => entry.name)
+			.sort(compareSemverLike);
+	} catch {
+		return [];
+	}
+}
+
+function detectMatrixVersion(): string | undefined {
+	const selected = envValue("SELECTED_VERSION");
+	if (selected) return selected;
+
+	const currentLink = path.join(
+		os.homedir(),
+		".local/share/claude/versions/current",
+	);
+	try {
+		const currentTarget = fs.realpathSync(currentLink);
+		const match = currentTarget.match(
+			/\/native-cache\/([0-9]+\.[0-9]+\.[0-9]+)/,
+		);
+		if (match) return match[1];
+	} catch {
+		// Fall back to the newest clean version.
+	}
+
+	const cleanVersions = listCleanVersions();
+	return cleanVersions[cleanVersions.length - 1];
+}
+
+function selectMatrixVersions(): string[] {
+	const selected = envValue("SELECTED_VERSION");
+	if (selected) return [selected];
+	if (process.env.VERIFY_PATCHES_MATRIX_SCOPE === "all") {
+		return listCleanVersions();
+	}
+	const detected = detectMatrixVersion();
+	return detected ? [detected] : [];
+}
+
+function runPatchMatrix(): void {
+	const selectedVersions = selectMatrixVersions();
+	if (selectedVersions.length === 0) {
+		throw new Error(
+			"No versions selected. Set SELECTED_VERSION=<X.Y.Z>, VERIFY_PATCHES_MATRIX_SCOPE=all, or ensure versions_clean/<X.Y.Z>/cli.js exists.",
+		);
+	}
+
+	const tmpDir = fs.mkdtempSync(
+		path.join(os.tmpdir(), "claude-patcher-matrix."),
+	);
+	let failures = 0;
+	try {
+		for (const selectedVersion of selectedVersions) {
+			const target = path.join(
+				repoRoot,
+				"versions_clean",
+				selectedVersion,
+				"cli.js",
+			);
+			if (!fileExists(target)) {
+				console.log(`==> Verifying ${selectedVersion}: missing target`);
+				console.error(`  FAIL: selected target not found: ${target}`);
+				failures += 1;
+				continue;
+			}
+
+			const summaryPath = path.join(tmpDir, `summary-${selectedVersion}.json`);
+			console.log(`==> Verifying ${selectedVersion}: ${target}`);
+			const env = { ...process.env };
+			delete env.CLAUDE_PATCHER_INCLUDE_TAGS;
+			delete env.CLAUDE_PATCHER_EXCLUDE_TAGS;
+
+			try {
+				run(
+					"bun",
+					[
+						"src/index.ts",
+						"--target",
+						target,
+						"--dry-run",
+						"--summary-path",
+						summaryPath,
+					],
+					env,
+				);
+				assertCleanSummary(summaryPath, selectedVersion);
+				const parsed = JSON.parse(
+					fs.readFileSync(summaryPath, "utf8"),
+				) as DryRunSummary;
+				const appliedCount = Array.isArray(parsed.result?.appliedTags)
+					? parsed.result.appliedTags.length
+					: 0;
+				console.log(`  PASS: 0 failed tags, ${appliedCount} applied`);
+			} catch (error) {
+				console.error(
+					`  FAIL: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				failures += 1;
+			}
+		}
+	} finally {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	}
+
+	if (failures > 0) {
+		throw new Error(
+			`Matrix failed: ${failures}/${selectedVersions.length} version(s) failed`,
+		);
+	}
+	console.log(`Matrix passed: ${selectedVersions.length} version(s) verified`);
+}
+
 function main(): void {
+	if (process.argv.includes("--help") || process.argv.includes("-h")) {
+		console.log(`Usage: bun scripts/verify-patches.ts [--matrix]
+
+Options:
+  --matrix  Dry-run patches against selected clean cli.js versions.
+
+Environment:
+  CLI_TARGET                   Optional clean cli.js target for default verification.
+  NATIVE_TARGET                Optional native binary target for default verification.
+  PROMPT_DRIFT_BASELINE        Optional prompt drift baseline for default verification.
+  SELECTED_VERSION             Version used by --matrix.
+  VERIFY_PATCHES_MATRIX_SCOPE  Set to "all" to verify every versions_clean/<version>/cli.js.
+`);
+		return;
+	}
+
+	if (process.argv.includes("--matrix")) {
+		runPatchMatrix();
+		return;
+	}
+
 	const paths = createVerifyPaths();
 	const cliTarget = envValue("CLI_TARGET")
 		? resolvePath(envValue("CLI_TARGET") as string)

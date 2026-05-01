@@ -268,7 +268,13 @@ function toCsvValue(value: string | number): string {
 }
 
 async function main() {
-	const argv = await yargs(hideBin(process.argv))
+	const rawArgs = hideBin(process.argv);
+	const argv = await yargs(rawArgs)
+		.option("preset", {
+			choices: ["default", "agent"] as const,
+			default: "default" as const,
+			description: "Apply verifier defaults for a named benchmark preset",
+		})
 		.option("transcript", {
 			type: "string",
 			default: path.resolve(
@@ -382,6 +388,22 @@ async function main() {
 		.strict()
 		.help()
 		.parse();
+
+	const hasFlag = (name: string): boolean =>
+		rawArgs.some((arg) => arg === `--${name}` || arg.startsWith(`--${name}=`));
+	if (argv.preset === "agent") {
+		if (!hasFlag("transcript")) {
+			argv.transcript = path.resolve(
+				process.cwd(),
+				"src/verification/fixtures/cache-transcript-subagent.json",
+			);
+		}
+		if (!hasFlag("ttl")) argv.ttl = "1h";
+		if (!hasFlag("max-cost-regression-pct")) argv.maxCostRegressionPct = 10;
+		if (!hasFlag("min-cache-read-delta")) {
+			argv.minCacheReadDelta = -1_000_000;
+		}
+	}
 
 	const model = String(argv.model ?? "").trim();
 

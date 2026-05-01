@@ -193,44 +193,44 @@ Do not set `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Th
 
 ```bash
 mise run native:update                            # Fetch + patch + promote (standard workflow)
-mise run native:update 2.1.126                    # Pin a specific version
-mise run native:update --dry-run                  # Preview without promoting
-mise run native:fetch-patch 2.1.126 --dry-run     # Fetch + patch preview for a pinned version
-mise run native:promote <build-path>              # Promote an already-patched cached build
+mise run native:update -- 2.1.126                 # Pin a specific version
+mise run native:update -- --dry-run               # Preview without promoting
+mise run native:fetch-patch -- 2.1.126 --dry-run  # Fetch + patch preview for a pinned version
+mise run native:promote -- <build-path>           # Promote an already-patched cached build
 mise run native:rollback                          # Swap current and previous symlinks
 mise run status                                   # Show current, previous, cached
-mise run native:pull <version>                    # Fetch upstream + extract clean JS to versions_clean/<version>/cli.js
-mise run native:unpack-current <out>              # Extract patched JS from the currently-promoted binary (auto-detects via PATH)
-mise run native:unpack <bin> <out>                # Extract embedded JS from any native binary
-bun run verify:patches                            # Typecheck + lint + dry-run on native target
-mise run verify:patches                           # Thin task-runner wrapper around bun run verify:patches
-scripts/verify-patches-matrix.sh                  # Dry-run patches against latest clean cli.js
-VERIFY_PATCHES_MATRIX_SCOPE=all scripts/verify-patches-matrix.sh
-mise run verify:anchors                           # Diff clean vs patched anchors
-mise run verify:prompt-drift <export-dir> <baseline.json>
+mise run native:pull -- <version>                 # Fetch upstream + extract clean JS to versions_clean/<version>/cli.js
+mise run native:unpack-current -- <out>           # Extract patched JS from the currently-promoted binary (auto-detects via PATH)
+mise run native:unpack -- <bin> <out>             # Extract embedded JS from any native binary
+mise run verify:patches                           # Typecheck + lint + dry-run on native target
+mise run verify:patches:matrix                    # Dry-run patches against latest clean cli.js
+VERIFY_PATCHES_MATRIX_SCOPE=all mise run verify:patches:matrix
+mise run verify:anchors -- <patched-cli> <clean-cli>
+mise run verify:prompt-drift -- <export-dir> --prompt-drift-baseline <baseline.json>
 mise run prompts:export                           # Export prompt artifacts from promoted binary
-mise run prompts:export 2.1.126 --output-dir /tmp/prompts-2.1.126
-mise run prompts:drift-baseline <export-dir> <baseline.json> --version 2.1.126
+mise run prompts:export -- 2.1.126 --output-dir /tmp/prompts-2.1.126
+mise run prompts:drift-baseline -- <baseline.json> <export-dir> --prompt-drift-version 2.1.126
 bun run prompts:compare <vanilla-export> <patched-export> /etc/claude-code
 bun run inspect search versions_clean/2.1.126/cli.js "Read" --field string --object
 bun run inspect prompts versions_clean/2.1.126/cli.js "Command sandbox"
 bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js
 bun run diff -- matrix versions_clean/2.1.123/cli.js versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js
 bun run cli --list                                   # List available patches
-bun run test                                         # Run the test suite (pinned to --parallel=1)
+bun run test                                      # Run the test suite (pinned to --parallel=1)
 ```
 
-`mise run patch` is intentionally disabled; it exists only to redirect to `native:update`. `mise.toml` is kept as a task index; non-trivial verification logic lives in TypeScript, especially [`scripts/verify-patches.ts`](scripts/verify-patches.ts). See `mise.toml` for the full task list and `bun run cli --help` for CLI flags.
+`mise run patch` is intentionally disabled; it exists only to redirect to `native:update`. `package.json` is the canonical alias table, and `mise.toml` is kept as a thin task index that calls those aliases. Use `mise run <task> -- ...` to pass versions, paths, or flags through to the underlying Bun alias. Non-trivial workflow logic lives in TypeScript, especially [`scripts/verify-patches.ts`](scripts/verify-patches.ts). See `mise.toml` for the task list and `bun run cli --help` for CLI flags.
 
 ## Prompt Artifacts and Inspection
 
 Prompt exports are generated from `cli.js` bundles extracted from native builds or from the legacy npm package. That keeps the installed artifact as the truth while still making prompt drift reviewable as Markdown and JSON artifacts.
 
 ```bash
-mise run prompts:export current
-mise run prompts:export 2.1.126 --output-dir /tmp/prompts-2.1.126
-mise run prompts:export versions_clean/2.1.126/cli.js --label 2.1.126-check \
+mise run prompts:export -- current
+mise run prompts:export -- 2.1.126 --output-dir /tmp/prompts-2.1.126
+mise run prompts:export -- versions_clean/2.1.126/cli.js --label 2.1.126-check \
   --output-dir /tmp/prompts-2.1.126-check --max-uncategorized 200
+mise run prompts:bundle -- current
 ```
 
 Useful outputs:
@@ -246,13 +246,13 @@ Useful outputs:
 `verify:prompt-drift` adds a path-based drift guard for the surfaces this patcher cares about most. Generate or refresh a baseline from a known-good patched export:
 
 ```bash
-mise run prompts:drift-baseline exported-prompts/2.1.126_patched prompt-surface-baseline.json --version 2.1.126
+mise run prompts:drift-baseline -- prompt-surface-baseline.json exported-prompts/2.1.126_patched --prompt-drift-version 2.1.126
 ```
 
 Then compare future exports against it:
 
 ```bash
-mise run verify:prompt-drift exported-prompts/2.1.127_patched prompt-surface-baseline.json
+mise run verify:prompt-drift -- exported-prompts/2.1.127_patched --prompt-drift-baseline prompt-surface-baseline.json
 PROMPT_DRIFT_BASELINE=prompt-surface-baseline.json mise run verify:patches
 ```
 
@@ -270,7 +270,7 @@ The inspector parses a bundle once per invocation and can run multiple search qu
 
 ```bash
 # Clean upstream JS for matcher development
-mise run native:pull 2.1.126                            # writes versions_clean/2.1.126/cli.js
+mise run native:pull -- 2.1.126                         # writes versions_clean/2.1.126/cli.js
 
 # Currently-promoted patched JS for verifying a patch landed in the running build
 mise run native:unpack-current /tmp/cli-patched.js

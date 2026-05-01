@@ -439,6 +439,27 @@ export class Manager {
 		});
 	}
 
+	async pullNativeCleanJs(
+		spec: string,
+		options: {
+			platform?: string;
+			forceDownload?: boolean;
+			outputRoot?: string;
+		} = {},
+	): Promise<{
+		fetchResult: NativeFetchResult;
+		outputJsPath: string;
+	}> {
+		const fetchResult = await this.fetchNativeTarget(spec, {
+			platform: options.platform,
+			forceDownload: options.forceDownload,
+		});
+		const outputRoot = path.resolve(options.outputRoot ?? "versions_clean");
+		const outputJsPath = path.join(outputRoot, fetchResult.version, "cli.js");
+		await this.unpackNativeTarget(fetchResult.binaryPath, outputJsPath);
+		return { fetchResult, outputJsPath };
+	}
+
 	async processTarget() {
 		if (!this.options.target) {
 			throw new Error("Target path is required");

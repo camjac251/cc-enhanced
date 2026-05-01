@@ -3,16 +3,16 @@
  * Export prompt artifacts from a clean/patched claude-code cli.js.
  *
  * Usage:
- *   bun scripts/export-prompts.ts [version-or-path]
+ *   bun scripts/export-prompts.ts [current|version-or-path] [--bundle]
  *
  * Input resolution order:
+ * - current promoted binary (default)
  * - explicit path to cli.js
  * - versions_clean/<arg>/cli.js
- * - versions_clean/patched/cli.js
- * - latest semver directory under versions_clean/
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as parser from "@babel/parser";
@@ -20,6 +20,8 @@ import * as t from "@babel/types";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { type NodePath, traverse } from "../src/babel.js";
+import { extractClaudeJsFromNativeBinary } from "../src/native.js";
+import { status } from "../src/promote.js";
 import {
 	buildPromptCorpusDebug,
 	buildPromptCorpusIdMap,
@@ -50,6 +52,7 @@ type FunctionLikeNode =
 interface ResolvedInput {
 	label: string;
 	cliPath: string;
+	cleanupDir?: string;
 }
 
 interface PromptExportOptions {
@@ -57,6 +60,7 @@ interface PromptExportOptions {
 	label?: string;
 	outputDir?: string;
 	maxUncategorized?: number;
+	bundle?: boolean;
 }
 
 interface AgentPrompt {
@@ -230,6 +234,39 @@ function compareSemverLike(a: string, b: string): number {
 	return 0;
 }
 
+function resolveCurrentInput(labelOverride?: string): ResolvedInput {
+	const info = status();
+	if (!info.current) {
+		throw new Error(
+			"No promoted binary found. Run `bun run native:update` first or pass an explicit version/path.",
+		);
+	}
+
+	const binaryPath = info.current.binaryPath;
+	const versionInfo = info.current.version;
+	if (!versionInfo) {
+		throw new Error(`Could not determine version from: ${binaryPath}`);
+	}
+
+	const label = versionInfo.isPatched
+		? `${versionInfo.version}_patched`
+		: versionInfo.version;
+	const cleanupDir = fs.mkdtempSync(
+		path.join(os.tmpdir(), "cc-prompts-current-"),
+	);
+	const cliPath = path.join(cleanupDir, "cli.js");
+	fs.writeFileSync(cliPath, extractClaudeJsFromNativeBinary(binaryPath));
+
+	console.log(`Promoted binary: ${binaryPath}`);
+	console.log(`Version: ${versionInfo.version} -> ${labelOverride ?? label}`);
+
+	return {
+		label: labelOverride ?? label,
+		cliPath,
+		cleanupDir,
+	};
+}
+
 function parseOptions(): PromptExportOptions {
 	const argv = yargs(hideBin(process.argv))
 		.scriptName("export-prompts")
@@ -246,6 +283,12 @@ function parseOptions(): PromptExportOptions {
 		.option("max-uncategorized", {
 			type: "number",
 			description: "Fail if uncategorized corpus count exceeds this value",
+		})
+		.option("bundle", {
+			type: "boolean",
+			default: false,
+			description:
+				"Write a self-contained navigable INDEX.md alongside artifacts",
 		})
 		.strictOptions()
 		.parseSync();
@@ -267,14 +310,19 @@ function parseOptions(): PromptExportOptions {
 	}
 
 	return {
-		inputArg: positional[0],
+		inputArg: positional[0] ?? "current",
 		label: argv.label,
 		outputDir: argv.outputDir,
 		maxUncategorized,
+		bundle: argv.bundle,
 	};
 }
 
 function resolveInput(rawArg?: string, labelOverride?: string): ResolvedInput {
+	if (!rawArg || rawArg === "current") {
+		return resolveCurrentInput(labelOverride);
+	}
+
 	if (rawArg) {
 		const maybePath = path.resolve(rawArg);
 		if (fs.existsSync(maybePath) && fs.statSync(maybePath).isFile()) {
@@ -2945,10 +2993,46 @@ function labelSkillVariant(
 	return "prompt";
 }
 
+function writeBundleIndex(outputDir: string, label: string): void {
+	const generatedAt = new Date().toISOString();
+	const lines = [
+		`# Prompt Artifacts Index: ${label}`,
+		"",
+		`Generated: ${generatedAt}`,
+		"",
+		"Self-contained navigable export of Claude Code prompt surfaces.",
+		"All links are relative; this file plus the bundle is the unit.",
+		"",
+		"## Bundle (extracted from cli.js)",
+		"- [Top-level export README](./README.md)",
+		"- [System prompts (sections, variants, reminders)](./system/README.md)",
+		"- [Built-in agents](./agents/README.md)",
+		"- [Skills](./skills/README.md)",
+		"- [Tool prompts](./tools/README.md)",
+		"- [Internal agents](./internal-agents/README.md)",
+		"- [Manifest](./manifest.json)",
+		"",
+		"## Corpora and indexes",
+		"- [Corpus (categorized)](./corpus-categorized.json)",
+		"- [Corpus summary](./corpus-summary.json)",
+		"- [Prompt corpus](./prompt-corpus.json)",
+		"- [Prompt hash index](./prompt-hash-index.json)",
+		"- [Data references](./data-references.json)",
+		"- [Runtime symbol map](./runtime-symbol-map.json)",
+		"- [Output styles](./output-styles.json)",
+		"",
+	];
+	const indexPath = path.join(outputDir, "INDEX.md");
+	fs.writeFileSync(indexPath, `${lines.join("\n")}\n`);
+	console.log(`Index: ${path.relative(repoRoot, indexPath)}`);
+}
+
 function main(): void {
+	let cleanupDir: string | undefined;
 	try {
 		const options = parseOptions();
 		const resolved = resolveInput(options.inputArg, options.label);
+		cleanupDir = resolved.cleanupDir;
 		const code = fs.readFileSync(resolved.cliPath, "utf-8");
 		const outputDir = options.outputDir
 			? path.resolve(options.outputDir)
@@ -3531,6 +3615,10 @@ function main(): void {
 		console.log(
 			`Counts: agents=${agents.length}, skills=${skills.length}, sections=${sections.length}, variants=${systemVariants.length}, reminders=${systemReminders.length}, tools=${builtInTools.length}, schemas=${schemaTools.length}, styles=${outputStyles?.styles.length ?? 0}, internalAgents=${internalAgents.length}, dataRefs=${dataRefs.length}, corpus=${promptCorpusDebug.length}, aliases=${aliasEntries.length}`,
 		);
+		if (options.bundle) {
+			writeBundleIndex(outputDir, resolved.label);
+			console.log(`Bundle ready: ${path.relative(repoRoot, outputDir)}`);
+		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(`Failed to export prompts: ${message}`);
@@ -3541,7 +3629,9 @@ function main(): void {
 		) {
 			console.error(error.stack);
 		}
-		process.exit(1);
+		process.exitCode = 1;
+	} finally {
+		if (cleanupDir) fs.rmSync(cleanupDir, { recursive: true, force: true });
 	}
 }
 

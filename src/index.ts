@@ -168,6 +168,31 @@ async function main() {
 						description:
 							"Fetch native Claude binary to cache and exit without patching",
 					})
+					.option("native-fetch-patch", {
+						type: "boolean",
+						description:
+							"Fetch native Claude binary and patch it without promoting",
+					})
+					.option("native-pull", {
+						type: "boolean",
+						description:
+							"Fetch native Claude binary and extract clean JS to versions_clean/<version>/cli.js",
+					})
+					.option("native-pull-output-dir", {
+						type: "string",
+						description:
+							"Output root for --native-pull (default: versions_clean)",
+					})
+					.option("native-unpack", {
+						type: "boolean",
+						description:
+							"Shortcut for native unpack using positional args: <target> <output_js>",
+					})
+					.option("native-repack", {
+						type: "boolean",
+						description:
+							"Shortcut for native repack using positional args: <target> <input_js> [output]",
+					})
 					.option("native-platform", {
 						type: "string",
 						description:
@@ -221,6 +246,29 @@ async function main() {
 		.parse();
 
 	const opts = argv as any;
+	const positionalArgs = ((opts._ as unknown[]) ?? [])
+		.map((value) => String(value))
+		.filter((value) => value !== "$0");
+
+	if (opts.nativeUnpack) {
+		if (positionalArgs.length !== 2) {
+			throw new Error(
+				"--native-unpack requires exactly two positional paths: <target> <output_js>",
+			);
+		}
+		opts.target = positionalArgs[0];
+		opts.unpack = positionalArgs[1];
+	}
+	if (opts.nativeRepack) {
+		if (positionalArgs.length < 2 || positionalArgs.length > 3) {
+			throw new Error(
+				"--native-repack requires positional paths: <target> <input_js> [output]",
+			);
+		}
+		opts.target = positionalArgs[0];
+		opts.repack = positionalArgs[1];
+		if (positionalArgs[2]) opts.output = positionalArgs[2];
+	}
 	if (opts.verifyAnchors) {
 		const positionalArgs = ((opts._ as unknown[]) ?? [])
 			.map((value) => String(value))
@@ -376,16 +424,40 @@ async function main() {
 		}
 	}
 
-	const nativeFetchSpec =
+	const acceptsPositionalSpec =
+		opts.update ||
+		opts.nativeFetchOnly ||
+		opts.nativeFetchPatch ||
+		opts.nativePull;
+	if (acceptsPositionalSpec && positionalArgs.length > 1) {
+		throw new Error(
+			"Expected at most one positional native version spec for this command.",
+		);
+	}
+	const nativeFetchSpecOption =
 		typeof opts.nativeFetch === "string" ? opts.nativeFetch.trim() : "";
-	const hasNativeFetch = nativeFetchSpec.length > 0;
+	const positionalNativeFetchSpec =
+		acceptsPositionalSpec && positionalArgs[0] ? positionalArgs[0].trim() : "";
+	if (
+		nativeFetchSpecOption &&
+		positionalNativeFetchSpec &&
+		nativeFetchSpecOption !== positionalNativeFetchSpec
+	) {
+		throw new Error(
+			"Provide the native version spec either positionally or with --native-fetch, not both.",
+		);
+	}
+	const nativeFetchSpec =
+		nativeFetchSpecOption || positionalNativeFetchSpec || "";
+	const hasNativeFetch =
+		nativeFetchSpec.length > 0 ||
+		opts.nativeFetchOnly ||
+		opts.nativeFetchPatch ||
+		opts.nativePull;
 	const hasTargetOption = typeof opts.target === "string";
 	const usesAutoTarget = opts.target === "auto";
 	if (opts.detectTarget && hasTargetOption && !usesAutoTarget) {
 		throw new Error("Use either --target or --detect-target, not both.");
-	}
-	if (opts.nativeFetchOnly && !hasNativeFetch) {
-		throw new Error("--native-fetch-only requires --native-fetch.");
 	}
 	if (hasNativeFetch && hasTargetOption && !usesAutoTarget) {
 		throw new Error("Use either --native-fetch or --target, not both.");
@@ -393,6 +465,17 @@ async function main() {
 	if (hasNativeFetch && (opts.detectTarget || usesAutoTarget)) {
 		throw new Error(
 			"Use either --native-fetch or --detect-target/--target auto, not both.",
+		);
+	}
+	if (
+		opts.nativePull &&
+		(opts.update ||
+			opts.nativeFetchOnly ||
+			opts.nativeFetchPatch ||
+			!!nativeFetchSpecOption)
+	) {
+		throw new Error(
+			"--native-pull cannot be combined with --update, --native-fetch, --native-fetch-only, or --native-fetch-patch.",
 		);
 	}
 	const operationModeCount = [
@@ -437,7 +520,9 @@ async function main() {
 			const result = Manager.rollback({
 				target: opts.rollbackTarget
 					? path.resolve(opts.rollbackTarget)
-					: undefined,
+					: positionalArgs[0]
+						? path.resolve(positionalArgs[0])
+						: undefined,
 				skipSmokeTest: opts.skipSmokeTest,
 			});
 			printRollbackResult(result);
@@ -454,6 +539,35 @@ async function main() {
 				skipSmokeTest: opts.skipSmokeTest,
 			});
 			printPromoteResult(result);
+		} catch (e) {
+			console.error(e);
+			process.exit(1);
+		}
+		return;
+	}
+
+	if (opts.nativePull) {
+		try {
+			const manager = new Manager({
+				nativeCacheDir: opts.nativeCacheDir
+					? path.resolve(opts.nativeCacheDir)
+					: undefined,
+			});
+			const result = await manager.pullNativeCleanJs(
+				nativeFetchSpec || "latest",
+				{
+					platform:
+						typeof opts.nativePlatform === "string"
+							? opts.nativePlatform
+							: undefined,
+					forceDownload: !!opts.nativeForceDownload,
+					outputRoot:
+						typeof opts.nativePullOutputDir === "string"
+							? path.resolve(opts.nativePullOutputDir)
+							: undefined,
+				},
+			);
+			printNativePullResult(result);
 		} catch (e) {
 			console.error(e);
 			process.exit(1);
@@ -567,13 +681,16 @@ async function main() {
 					? path.resolve(opts.nativeCacheDir)
 					: undefined,
 			});
-			const fetched = await fetchManager.fetchNativeTarget(nativeFetchSpec, {
-				platform:
-					typeof opts.nativePlatform === "string"
-						? opts.nativePlatform
-						: undefined,
-				forceDownload: !!opts.nativeForceDownload,
-			});
+			const fetched = await fetchManager.fetchNativeTarget(
+				nativeFetchSpec || "latest",
+				{
+					platform:
+						typeof opts.nativePlatform === "string"
+							? opts.nativePlatform
+							: undefined,
+					forceDownload: !!opts.nativeForceDownload,
+				},
+			);
 			fetchedNativeInfo = {
 				spec: fetched.spec,
 				version: fetched.version,
@@ -654,7 +771,11 @@ async function main() {
 			}
 			const result = await manager.backupTarget(
 				resolvedTargetPath,
-				opts.backupPath ? path.resolve(opts.backupPath) : undefined,
+				opts.backupPath
+					? path.resolve(opts.backupPath)
+					: positionalArgs[0]
+						? path.resolve(positionalArgs[0])
+						: undefined,
 			);
 			console.log(
 				chalk.green(
@@ -672,7 +793,11 @@ async function main() {
 			}
 			const result = await manager.restoreTarget(
 				resolvedTargetPath,
-				opts.backupPath ? path.resolve(opts.backupPath) : undefined,
+				opts.backupPath
+					? path.resolve(opts.backupPath)
+					: positionalArgs[0]
+						? path.resolve(positionalArgs[0])
+						: undefined,
 			);
 			console.log(
 				chalk.green(
@@ -844,6 +969,19 @@ function printUpdateResult(result: {
 		return;
 	}
 	printPromoteResult(result.promoteResult);
+}
+
+function printNativePullResult(result: {
+	fetchResult: { version: string; platform: string; fromCache: boolean };
+	outputJsPath: string;
+}): void {
+	const fr = result.fetchResult;
+	console.log(chalk.green("\nClean native JS extracted:"));
+	console.log(
+		`  Fetched: ${fr.version}/${fr.platform} (${fr.fromCache ? "cache" : "download"})`,
+	);
+	console.log(`  Output:  ${result.outputJsPath}`);
+	console.log("");
 }
 
 main();
