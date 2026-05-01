@@ -54,9 +54,32 @@ test("sys-prompt-file injects auto-append guard ahead of append file branch", as
 		output.includes("M.appendSystemPromptFile = resolvedSystemPromptFile"),
 		true,
 	);
+	assert.equal(output.includes("M.systemPromptFile === void 0"), true);
+	assert.equal(output.includes("M.systemPrompt === void 0"), true);
 	assert.equal(output.includes("existsSync"), true);
 	assert.equal(systemPromptFile.verify(output, ast), true);
 	assert.equal(systemPromptFile.verify(output), true);
+});
+
+test("sys-prompt-file verify rejects auto-append guard outside sibling position", () => {
+	const misplacedGuard = `
+function unrelated(M) {
+  if (M.systemPromptFile === void 0 && M.systemPrompt === void 0 && M.appendSystemPromptFile === void 0 && M.appendSystemPrompt === void 0) {
+    let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";
+    try {
+      let resolvedSystemPromptFile = path.resolve(configuredSystemPromptFilePath);
+      if (fs.existsSync(resolvedSystemPromptFile)) {
+        M.appendSystemPromptFile = resolvedSystemPromptFile;
+      }
+    } catch (err) {}
+  }
+}
+${SYS_PROMPT_FILE_FIXTURE}
+`;
+	const ast = parse(misplacedGuard);
+	const result = systemPromptFile.verify(misplacedGuard, ast);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("immediately before"), true);
 });
 
 test("sys-prompt-file is idempotent when auto-append guard already exists", async () => {

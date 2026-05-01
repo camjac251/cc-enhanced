@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { builtInAgentPrompt } from "./built-in-agent-prompt.js";
+import {
+	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
+	MODERN_CODE_SEARCH_POLICY,
+	MODERN_STDOUT_CAP,
+	MODERN_TOOL_PREFERENCE,
+} from "./prompt-policy.js";
 
 const EXPLORE_FIXTURE = `
 const whenToUse = 'Fast read-only search agent for locating code. Use it to find files by pattern (eg. "src/components/**/*.tsx"), grep for symbols or keywords (eg. "API endpoints"), or answer "where is X defined / which files reference Y." Do NOT use it for code review, design-doc auditing, cross-file consistency checks, or open-ended analysis — it reads excerpts rather than whole files and will miss content past its read window. When calling, specify search breadth: "quick" for a single targeted lookup, "medium" for moderate exploration, or "very thorough" to search across multiple locations and naming conventions.';
@@ -86,6 +92,33 @@ return \`3. **Inspect the Existing Architecture**:
    - NEVER use \${FD} for: \${YO() ? "mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install" : "New-Item, Remove-Item, Copy-Item, Move-Item, git add, git commit, npm install, pip install"}, or any file creation/modification\`;
 `;
 
+const GENERAL_FIXTURE = `
+function Zc1() {
+	return \`\${"You are an agent for Claude Code, Anthropic's official CLI for Claude. Given the user's message, you should use the tools available to complete the task. Complete the task fully\\u2014don't gold-plate, but don't leave it half-done."} When you complete the task, respond with a concise report covering what was done and any key findings \\u2014 the caller will relay this to the user, so it only needs the essentials.
+
+\${\`Your strengths:
+- Searching for code, configurations, and patterns across large codebases
+- Analyzing multiple files to understand system architecture
+- Investigating complex questions that require exploring many files
+- Performing multi-step research tasks
+
+Guidelines:
+- For file searches: search broadly when you don't know where something lives. Use Read when you know the specific file path.
+- For analysis: Start broad and narrow down. Use multiple search strategies if the first doesn't yield results.
+- Be thorough: Check multiple locations, consider different naming conventions, look for related files.
+- NEVER create files unless they're absolutely necessary for achieving your goal. ALWAYS prefer editing an existing file to creating a new one.
+- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested.\`}\`;
+}
+`;
+
+function patchedCombinedAgentFixture(): string {
+	return [
+		builtInAgentPrompt.string?.(EXPLORE_FIXTURE) ?? EXPLORE_FIXTURE,
+		builtInAgentPrompt.string?.(PLAN_FIXTURE) ?? PLAN_FIXTURE,
+		builtInAgentPrompt.string?.(GENERAL_FIXTURE) ?? GENERAL_FIXTURE,
+	].join("\n");
+}
+
 test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
 	const output =
 		builtInAgentPrompt.string?.(EXPLORE_FIXTURE) ?? EXPLORE_FIXTURE;
@@ -103,12 +136,7 @@ test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
 		),
 		true,
 	);
-	assert.equal(
-		output.includes(
-			"Start with semantic or focused structural search, then escalate to deeper codebase research only for multi-file architecture questions",
-		),
-		true,
-	);
+	assert.equal(output.includes(MODERN_CODE_SEARCH_POLICY), true);
 	assert.equal(
 		output.includes(
 			"Entry points: exact file:line references where the relevant functionality starts",
@@ -127,9 +155,12 @@ test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
 		),
 		true,
 	);
+	for (const line of MODERN_CODE_SEARCH_DECISION_TREE_LINES) {
+		assert.equal(output.includes(line), true);
+	}
 	assert.equal(
 		output.includes(
-			"prefer ast-grep or other syntax-aware code search over broad text matching",
+			"Before using Read, Bash text search, or generic edits on a code file",
 		),
 		true,
 	);
@@ -139,14 +170,9 @@ test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
 		),
 		true,
 	);
-	assert.equal(
-		output.includes(
-			"Cap stdout with max_output, output_tail: true, rg -m N, or fd --max-results; NEVER pipe to | head -N or | tail -N",
-		),
-		true,
-	);
+	assert.equal(output.includes(MODERN_STDOUT_CAP), true);
 	assert.equal(output.includes("Complete the user's research request"), true);
-	assert.equal(builtInAgentPrompt.verify(output), true);
+	assert.equal(builtInAgentPrompt.verify(patchedCombinedAgentFixture()), true);
 });
 
 test("built-in-agent-prompt rewrites Plan prompt and whenToUse", () => {
@@ -184,12 +210,7 @@ test("built-in-agent-prompt rewrites Plan prompt and whenToUse", () => {
 		),
 		true,
 	);
-	assert.equal(
-		output.includes(
-			"Cap stdout with max_output, output_tail: true, rg -m N, or fd --max-results; NEVER pipe to | head -N or | tail -N",
-		),
-		true,
-	);
+	assert.equal(output.includes(MODERN_STDOUT_CAP), true);
 	assert.equal(
 		output.includes("Deliver a concrete implementation blueprint with:"),
 		true,
@@ -211,7 +232,65 @@ test("built-in-agent-prompt rewrites Plan prompt and whenToUse", () => {
 		output.includes("test engineer should shape the verification plan"),
 		true,
 	);
-	assert.equal(builtInAgentPrompt.verify(output), true);
+	assert.equal(builtInAgentPrompt.verify(patchedCombinedAgentFixture()), true);
+});
+
+test("built-in-agent-prompt rewrites general-purpose strengths and guidelines", () => {
+	const output =
+		builtInAgentPrompt.string?.(GENERAL_FIXTURE) ?? GENERAL_FIXTURE;
+	assert.equal(
+		output.includes(
+			"- Searching for code, configurations, and patterns across large codebases",
+		),
+		false,
+	);
+	assert.equal(
+		output.includes(
+			"- For file searches: search broadly when you don't know where something lives",
+		),
+		false,
+	);
+	assert.equal(
+		output.includes(
+			"- Tracing execution paths and dependencies across many files",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"- Choosing the right code-search tool by intent rather than running broad text searches by default",
+		),
+		true,
+	);
+	assert.equal(output.includes(MODERN_CODE_SEARCH_POLICY), true);
+	for (const line of MODERN_CODE_SEARCH_DECISION_TREE_LINES) {
+		assert.equal(output.includes(line), true);
+	}
+	assert.equal(
+		output.includes(
+			"- Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+		),
+		true,
+	);
+	assert.equal(output.includes(MODERN_TOOL_PREFERENCE), true);
+	assert.equal(output.includes(MODERN_STDOUT_CAP), true);
+	assert.equal(
+		output.includes("- NEVER use Bash for: mkdir, touch, rm, cp, mv, git add"),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"- NEVER create files unless they're absolutely necessary for achieving your goal.",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"- NEVER proactively create documentation files (*.md) or README files.",
+		),
+		true,
+	);
+	assert.equal(builtInAgentPrompt.verify(patchedCombinedAgentFixture()), true);
 });
 
 test("built-in-agent-prompt rewrites placeholder-backed read-only bash guidance", () => {
@@ -226,12 +305,7 @@ test("built-in-agent-prompt rewrites placeholder-backed read-only bash guidance"
 		),
 		true,
 	);
-	assert.equal(
-		output.includes(
-			"Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail",
-		),
-		true,
-	);
+	assert.equal(output.includes(MODERN_TOOL_PREFERENCE), true);
 	assert.equal(
 		output.includes(
 			"- Use Read when you know the specific file path you need to read",
@@ -251,12 +325,7 @@ test("built-in-agent-prompt rewrites indented helper-backed plan bash guidance",
 		),
 		true,
 	);
-	assert.equal(
-		output.includes(
-			"   - Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail",
-		),
-		true,
-	);
+	assert.equal(output.includes(`   - ${MODERN_TOOL_PREFERENCE}`), true);
 	assert.equal(
 		output.includes(
 			"   - NEVER use Bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification",
@@ -281,14 +350,15 @@ test("built-in-agent-prompt verify rejects unpatched built-in prompt text", () =
 });
 
 test("built-in-agent-prompt verify ignores unrelated legacy guidance elsewhere in bundle", () => {
-	const output =
-		builtInAgentPrompt.string?.(EXPLORE_FIXTURE) ?? EXPLORE_FIXTURE;
+	const output = patchedCombinedAgentFixture();
 	const withUnrelatedLegacyText = `${output}\nconst unrelated = "Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find${'${conditional(", grep" | "")}'} , cat, head, tail)";`;
 	assert.equal(builtInAgentPrompt.verify(withUnrelatedLegacyText), true);
 });
 
-test("built-in-agent-prompt verify tolerates missing agent prompt section", () => {
-	assert.equal(builtInAgentPrompt.verify("const noop = true;"), true);
+test("built-in-agent-prompt verify rejects missing agent prompt sections", () => {
+	const result = builtInAgentPrompt.verify("const noop = true;");
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("Unable to extract Explore"), true);
 });
 
 const CORPUS_EXAMPLE_FIXTURE = `

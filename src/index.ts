@@ -92,6 +92,25 @@ async function main() {
 						description:
 							"Verify exported live prompt surfaces using positional arg: <export_dir>",
 					})
+					.option("verify-prompt-drift", {
+						type: "boolean",
+						description:
+							"Verify watched exported prompt surfaces against a path-hash baseline using positional arg: <export_dir>",
+					})
+					.option("prompt-drift-baseline", {
+						type: "string",
+						description: "Baseline JSON path for --verify-prompt-drift",
+					})
+					.option("write-prompt-drift-baseline", {
+						type: "string",
+						description:
+							"Write watched prompt-surface drift baseline JSON to this path using positional arg: <export_dir>",
+					})
+					.option("prompt-drift-version", {
+						type: "string",
+						description:
+							"Version label embedded when writing a prompt drift baseline",
+					})
 					.option("summary-path", {
 						type: "string",
 						description: "Write JSON summary to file",
@@ -280,6 +299,78 @@ async function main() {
 			console.error(
 				chalk.red(`Prompt surface verification failed: ${message}`),
 			);
+			process.exit(1);
+			return;
+		}
+	}
+	if (
+		opts.verifyPromptDrift ||
+		typeof opts.writePromptDriftBaseline === "string"
+	) {
+		const positionalArgs = ((opts._ as unknown[]) ?? [])
+			.map((value) => String(value))
+			.filter((value) => value !== "$0");
+		if (positionalArgs.length !== 1) {
+			console.error(
+				chalk.red(
+					"--verify-prompt-drift/--write-prompt-drift-baseline requires exactly one positional path: <export_dir>",
+				),
+			);
+			process.exit(1);
+			return;
+		}
+		try {
+			const exportDir = path.resolve(positionalArgs[0]);
+			const {
+				createPromptSurfaceDriftBaseline,
+				verifyPromptSurfaceDrift,
+				writePromptSurfaceDriftBaseline,
+			} = await import("./verification/prompt-surface-drift.js");
+
+			if (typeof opts.writePromptDriftBaseline === "string") {
+				const baselinePath = path.resolve(opts.writePromptDriftBaseline);
+				const baseline = await createPromptSurfaceDriftBaseline({
+					exportDir,
+					version:
+						typeof opts.promptDriftVersion === "string"
+							? opts.promptDriftVersion
+							: null,
+				});
+				await writePromptSurfaceDriftBaseline(baselinePath, baseline);
+				console.log(`Prompt drift baseline written to ${baselinePath}`);
+				return;
+			}
+
+			if (typeof opts.promptDriftBaseline !== "string") {
+				console.error(
+					chalk.red(
+						"--verify-prompt-drift requires --prompt-drift-baseline <baseline.json>",
+					),
+				);
+				process.exit(1);
+				return;
+			}
+
+			const result = await verifyPromptSurfaceDrift({
+				exportDir,
+				baselinePath: path.resolve(opts.promptDriftBaseline),
+			});
+			if (!result.ok) {
+				for (const failure of result.failures) {
+					console.error(
+						chalk.red(
+							`FAIL [prompt-drift] ${failure.file} ${failure.id}: ${failure.reason}`,
+						),
+					);
+				}
+				process.exit(1);
+				return;
+			}
+			console.log("Prompt drift checks passed.");
+			return;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(chalk.red(`Prompt drift verification failed: ${message}`));
 			process.exit(1);
 			return;
 		}

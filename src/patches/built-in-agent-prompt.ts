@@ -1,10 +1,13 @@
 import type { Patch } from "../types.js";
 import {
 	buildModernReadonlyReplacement,
+	MODERN_CODE_SEARCH_POLICY,
+	MODERN_CODE_TOOL_SELF_CHECK,
 	MODERN_READONLY_OPS,
 	MODERN_STDOUT_CAP,
 	MODERN_TOOL_PREFERENCE,
-} from "./modern-cli.js";
+	PROHIBITED_BASH_OPS,
+} from "./prompt-policy.js";
 
 const EXPLORE_WHEN_TO_USE_SOURCE =
 	'Fast read-only search agent for locating code. Use it to find files by pattern (eg. "src/components/**/*.tsx"), grep for symbols or keywords (eg. "API endpoints"), or answer "where is X defined / which files reference Y." Do NOT use it for code review, design-doc auditing, cross-file consistency checks, or open-ended analysis — it reads excerpts rather than whole files and will miss content past its read window. When calling, specify search breadth: "quick" for a single targeted lookup, "medium" for moderate exploration, or "very thorough" to search across multiple locations and naming conventions.';
@@ -29,6 +32,37 @@ const PLAN_PROMPT_SOURCE =
 
 const PLAN_PROMPT_REPLACEMENT =
 	"You are a senior software architect for Claude Code. Your role is to turn codebase research into a concrete implementation blueprint that fits the existing architecture.";
+
+const GENERAL_STRENGTHS_AND_GUIDELINES_SOURCE = `Your strengths:
+- Searching for code, configurations, and patterns across large codebases
+- Analyzing multiple files to understand system architecture
+- Investigating complex questions that require exploring many files
+- Performing multi-step research tasks
+
+Guidelines:
+- For file searches: search broadly when you don't know where something lives. Use Read when you know the specific file path.
+- For analysis: Start broad and narrow down. Use multiple search strategies if the first doesn't yield results.
+- Be thorough: Check multiple locations, consider different naming conventions, look for related files.
+- NEVER create files unless they're absolutely necessary for achieving your goal. ALWAYS prefer editing an existing file to creating a new one.
+- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested.`;
+
+const GENERAL_STRENGTHS_AND_GUIDELINES_REPLACEMENT = `Your strengths:
+- Tracing execution paths and dependencies across many files
+- Investigating architecture and surfacing patterns the user can build on
+- Executing multi-step research and bounded implementation tasks
+- Choosing the right code-search tool by intent rather than running broad text searches by default
+
+Guidelines:
+- ${MODERN_CODE_TOOL_SELF_CHECK}
+${MODERN_CODE_SEARCH_POLICY}
+- For analysis: start broad to map the area, then narrow to the highest-signal files. Use multiple search strategies if the first does not yield results.
+- Be thorough: check multiple locations, consider different naming conventions, look for related files.
+- Use Bash ${MODERN_READONLY_OPS}
+- ${MODERN_TOOL_PREFERENCE}
+- ${MODERN_STDOUT_CAP}
+- ${PROHIBITED_BASH_OPS.replace("%TOOL%", "Bash")}
+- NEVER create files unless they're absolutely necessary for achieving your goal. ALWAYS prefer editing an existing file to creating a new one.
+- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested.`;
 
 const EXPLORE_SECTION_REPLACEMENTS: Array<[string, string]> = [
 	[
@@ -71,7 +105,7 @@ Analysis methodology:
 4. Implementation details: note edge cases, performance considerations, and technical debt.
 
 Efficiency rules:
-- Start with semantic or focused structural search, then escalate to deeper codebase research only for multi-file architecture questions
+- ${MODERN_CODE_SEARCH_POLICY}
 - Make efficient use of the tools that you have at your disposal: search broadly only when needed, then read selectively
 - Wherever possible you should try to spawn multiple parallel tool calls for searching and reading files`,
 	],
@@ -180,6 +214,13 @@ End your response with:`,
 	],
 ];
 
+const GENERAL_PURPOSE_SECTION_REPLACEMENTS: Array<[string, string]> = [
+	[
+		GENERAL_STRENGTHS_AND_GUIDELINES_SOURCE,
+		GENERAL_STRENGTHS_AND_GUIDELINES_REPLACEMENT,
+	],
+];
+
 const CORPUS_EXAMPLE_REPLACEMENTS: Array<[string, string]> = [
 	[
 		'grep -rn "<narrow term>" ${$}/ --include="*.jsonl" | tail -50',
@@ -191,6 +232,22 @@ const CORPUS_EXAMPLE_REPLACEMENTS: Array<[string, string]> = [
 	],
 ];
 
+const GENERAL_SOURCE_SIGNALS = [
+	"Your strengths:\n- Searching for code, configurations, and patterns across large codebases",
+];
+
+const GENERAL_PATCHED_SIGNALS = [
+	"Your strengths:\n- Tracing execution paths and dependencies across many files",
+	"Choosing the right code-search tool by intent rather than running broad text searches by default",
+	MODERN_CODE_SEARCH_POLICY,
+	"For analysis: start broad to map the area, then narrow to the highest-signal files.",
+	`Use Bash ${MODERN_READONLY_OPS}`,
+];
+
+const GENERAL_SCOPE_END_SIGNALS = [
+	"Only create documentation files if explicitly requested.",
+];
+
 const EXPLORE_SOURCE_SIGNALS = [EXPLORE_PROMPT_SOURCE];
 
 const EXPLORE_PATCHED_SIGNALS = [
@@ -198,7 +255,7 @@ const EXPLORE_PATCHED_SIGNALS = [
 	"Mapping entry points, dependencies, and data flow across multiple files",
 	"Analysis methodology:",
 	"Feature discovery: find entry points, core implementation files, feature boundaries, and relevant configuration.",
-	"Start with semantic or focused structural search, then escalate to deeper codebase research only for multi-file architecture questions",
+	MODERN_CODE_SEARCH_POLICY,
 	"Entry points: exact file:line references where the relevant functionality starts",
 	'Before recommending code changes, answer: "What specific defect or gap does this address?"',
 	"Security-sensitive findings, trust-boundary questions, or auth concerns -> recommend security-reviewer",
@@ -349,6 +406,9 @@ export const builtInAgentPrompt: Patch = {
 		for (const [source, replacement] of PLAN_SECTION_REPLACEMENTS) {
 			result = result.replaceAll(source, replacement);
 		}
+		for (const [source, replacement] of GENERAL_PURPOSE_SECTION_REPLACEMENTS) {
+			result = result.replaceAll(source, replacement);
+		}
 		for (const [source, replacement] of CORPUS_EXAMPLE_REPLACEMENTS) {
 			result = result.replaceAll(source, replacement);
 		}
@@ -419,6 +479,18 @@ export const builtInAgentPrompt: Patch = {
 		);
 		if (planWhenToUseResult !== true) return planWhenToUseResult;
 
+		for (const [source, replacement] of CORPUS_EXAMPLE_REPLACEMENTS) {
+			const hasSource = code.includes(source);
+			const hasReplacement = code.includes(replacement);
+			if (!hasSource && !hasReplacement) continue;
+			if (hasSource) {
+				return `Unpatched corpus example remains: ${source}`;
+			}
+			if (!hasReplacement) {
+				return `Missing rewritten corpus example: ${replacement}`;
+			}
+		}
+
 		const exploreScope = extractPromptSlice(
 			code,
 			[EXPLORE_PROMPT_SOURCE, EXPLORE_PROMPT_REPLACEMENT],
@@ -429,6 +501,23 @@ export const builtInAgentPrompt: Patch = {
 			[PLAN_PROMPT_SOURCE, PLAN_PROMPT_REPLACEMENT],
 			PLAN_SCOPE_END_SIGNALS,
 		);
+		const generalScope = extractPromptSlice(
+			code,
+			[
+				...GENERAL_SOURCE_SIGNALS,
+				"Your strengths:\n- Tracing execution paths and dependencies across many files",
+			],
+			GENERAL_SCOPE_END_SIGNALS,
+		);
+		if (exploreScope == null) {
+			return "Unable to extract Explore built-in agent prompt scope";
+		}
+		if (planScope == null) {
+			return "Unable to extract Plan built-in agent prompt scope";
+		}
+		if (generalScope == null) {
+			return "Unable to extract general-purpose built-in agent prompt scope";
+		}
 
 		const exploreResult = verifySection(
 			exploreScope,
@@ -453,24 +542,15 @@ export const builtInAgentPrompt: Patch = {
 			"Plan agent prompt required-output section",
 		);
 		if (planOptionalResult !== true) return planOptionalResult;
-		for (const [source, replacement] of CORPUS_EXAMPLE_REPLACEMENTS) {
-			const hasSource = code.includes(source);
-			const hasReplacement = code.includes(replacement);
-			if (!hasSource && !hasReplacement) continue;
-			if (hasSource) {
-				return `Unpatched corpus example remains: ${source}`;
-			}
-			if (!hasReplacement) {
-				return `Missing rewritten corpus example: ${replacement}`;
-			}
-		}
-		const scopedPrompts = [exploreScope, planScope].filter(
-			(scope): scope is string => scope != null,
+
+		const generalResult = verifySection(
+			generalScope,
+			GENERAL_SOURCE_SIGNALS,
+			GENERAL_PATCHED_SIGNALS,
+			"general-purpose agent prompt",
 		);
-		const hasAnyBuiltInAgentPromptSignal = scopedPrompts.length > 0;
-		if (!hasAnyBuiltInAgentPromptSignal) {
-			return true;
-		}
+		if (generalResult !== true) return generalResult;
+		const scopedPrompts = [exploreScope, planScope, generalScope];
 		if (!scopedPrompts.some((scope) => scope.includes(MODERN_READONLY_OPS))) {
 			return "Missing modern read-only operations guidance in built-in agent prompts";
 		}

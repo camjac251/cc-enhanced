@@ -8,6 +8,7 @@ import type {
 	VerifyCliAnchorsInput,
 	VerifyCliAnchorsResult,
 } from "./anchor-types.js";
+import { verifyPromptPolicyContract } from "./prompt-policy-contract.js";
 
 type AnchorRule = { id: string; needle: string; reason: string };
 type RegexRule = { id: string; pattern: RegExp; reason: string };
@@ -44,6 +45,22 @@ const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 		id: "sys-prompt-env",
 		needle: "CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE",
 		reason: "Missing system prompt env override",
+	},
+	{
+		id: "sys-prompt-replacement-guard",
+		needle: "systemPromptFile === void 0",
+		reason: "Missing replacement-mode guard for auto-append system prompt file",
+	},
+	{
+		id: "subagent-system-prompt-fallback",
+		needle: "appendSubagentSystemPrompt ??",
+		reason:
+			"Missing fallback from subagent-specific system prompt append to main append prompt",
+	},
+	{
+		id: "bash-token-warning",
+		needle: "Do not pipe through head, tail, or grep just to cap output.",
+		reason: "Missing modern oversized-output warning",
 	},
 	{
 		id: "session-mem-env",
@@ -91,17 +108,6 @@ const REQUIRED_REGEX_PATCHED: RegexRule[] = [
 		id: "policy-gh-api",
 		pattern: /Always use .*gh api.*for GitHub URLs, not web fetching tools\./,
 		reason: "Missing enforced gh api policy",
-	},
-	{
-		id: "policy-bat",
-		pattern: /Always use .*bat.*to view files, not cat\/head\/tail\./,
-		reason: "Missing enforced bat policy",
-	},
-	{
-		id: "policy-sg-rg",
-		pattern:
-			/Always use .*sg.*for code search, .*rg.*only for text\/logs\/config\. Prefer sg over rg\./,
-		reason: "Missing enforced sg/rg policy",
 	},
 	{
 		id: "hook-matcher-agent",
@@ -253,6 +259,17 @@ function checkClaudeMdMarkers(
 		);
 	}
 	return 1;
+}
+
+function checkPromptPolicyContract(
+	patchedCode: string,
+	failures: AnchorFailure[],
+): number {
+	const result = verifyPromptPolicyContract(patchedCode);
+	for (const failure of result.failures) {
+		pushFailure(failures, "patched", failure.id, failure.reason);
+	}
+	return result.checksRun;
 }
 
 function checkSignatureParity(
@@ -466,6 +483,7 @@ export async function verifyCliAnchors(
 	checksRun += checkForbiddenRegex(patchedCode, "patched", failures);
 	checksRun += checkReadRangeMarker(patchedCode, failures);
 	checksRun += checkClaudeMdMarkers(patchedCode, failures);
+	checksRun += checkPromptPolicyContract(patchedCode, failures);
 	if (!input.skipPatchVerifiers) {
 		checksRun += runPatchVerifiers(patchedCode, failures);
 	}

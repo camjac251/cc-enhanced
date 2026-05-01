@@ -11,6 +11,7 @@ import {
 	isMemberPropertyName,
 	resolveStringValue,
 } from "./ast-helpers.js";
+import { MODERN_READ_CODE_FILE_CAVEAT } from "./prompt-policy.js";
 
 /**
  * Modify Read tool to use bat for text files.
@@ -47,14 +48,15 @@ If a file does not exist, the read will return an error.
 
 Usage:
 - The file_path parameter must be an absolute path, not a relative path
-- For text/code files, specify an optional range for partial reads
+- ${MODERN_READ_CODE_FILE_CAVEAT}
+- For text files or narrow known code ranges, specify an optional range for partial reads
 - You can read multiple files in parallel when needed
 - If the user provides a screenshot path, use this tool to view it
 - This tool can only read files, not directories. Use Bash for directory listings.
 - If a file exists but is empty, the tool may return a warning placeholder instead of file contents.
 
 Supported file types:
-- Text/code files: Returns content with line numbers (uses bat internally)
+- Text files and narrow code ranges: Returns content with line numbers (uses bat internally)
 - Images (PNG, JPG, GIF, WebP): Returns base64 image data with dimensions
 - PDFs: Processed page by page with text and visual content
 - Jupyter notebooks (.ipynb): Returns notebook cells with outputs
@@ -273,6 +275,9 @@ function ${READ_PROMPT_PATCH_HELPER}(prompt) {
   }
   if (!updated.includes("does not exist")) {
     missingNotes.push(${JSON.stringify("- If a file does not exist, the read will return an error.")});
+  }
+  if (!updated.includes(${JSON.stringify(MODERN_READ_CODE_FILE_CAVEAT)})) {
+    missingNotes.push(${JSON.stringify(`- ${MODERN_READ_CODE_FILE_CAVEAT}`)});
   }
   if (missingNotes.length > 0) {
     updated += (updated.endsWith("\\n") ? "\\n" : "\\n\\n") + missingNotes.join("\\n");
@@ -1041,6 +1046,9 @@ function verifyReadSchemaAndPrompt(ctx: ReadVerifyContext): string | null {
 	}
 	if (!hasMissingFileNote(promptSurface)) {
 		return "Missing non-existent file behavior note in Read prompt";
+	}
+	if (!promptSurface.includes(MODERN_READ_CODE_FILE_CAVEAT)) {
+		return "Missing code-file tool-choice caveat in Read prompt";
 	}
 	if (!schemaFieldHasMethodCall(schemaObject, "range", "string")) {
 		return "Missing range parameter in schema";

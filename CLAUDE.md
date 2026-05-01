@@ -11,17 +11,19 @@ AST-based patcher for customizing the Claude Code CLI. Patches a ~16MB minified 
 
 **AST-Pass-First Patching**: all logic/structure changes use Babel AST traversal via a unified combined-pass engine (`discover` -> `mutate` -> `finalize`). String patches are only acceptable for replacing prompt text where AST adds no value. Each patch includes a co-located `verify` function. See `src/types.ts` for the `Patch` interface.
 
-28 active patches grouped in `src/patch-metadata.ts`. Run `bun run cli --list` to see them.
+31 active patches grouped in `src/patch-metadata.ts`. Run `bun run cli --list` to see them.
 
 ## Commands
 
 No build step. Project TypeScript runs directly via Bun. Babel AST + generator over the 16 MB cli.js is heavy but JSC sizes its heap dynamically, so no explicit heap flag is required.
 
-Standard workflow: `mise run native:update` (fetch + patch + promote). `mise run patch` deliberately fails as a safety guard; always use `native:update`. See `mise.toml` for all tasks, `bun run cli --help` for all CLI options.
+Standard workflow: `mise run native:update` (fetch + patch + promote). `mise run patch` deliberately fails as a safety guard; always use `native:update`. `mise.toml` is a task index; non-trivial verification logic belongs in TypeScript scripts such as `scripts/verify-patches.ts`. See `mise.toml` for all task aliases and `bun run cli --help` for all CLI options.
 
 Key env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS`, `CLAUDE_PATCHER_CACHE_KEEP`, `CLAUDE_PATCHER_REVISION`.
 
 Prompt export workflow: `mise run prompts:export` exports the promoted binary, or pass a clean version/path. Use `--output-dir <dir>` for scratch exports and `--max-uncategorized <n>` to fail when uncategorized prompt-corpus entries exceed a budget. The current-binary exporter uses an OS temp directory and must never write into `versions_clean/<label>`.
+
+Prompt comparison workflow: `bun run prompts:compare <vanilla-export> <patched-export> /etc/claude-code` generates a human triage report. Use `--output <file>` for a saved Markdown/JSON artifact and `--json` for machine-readable output. This is review-only: it compares file inventory, manifest count drift, review prompt-surface status, exact-line overlap from `/etc/claude-code`, and policy-term presence, but it does not replace `verify:prompt-surfaces` or `verify:prompt-drift`.
 
 ## Runtime
 
@@ -40,7 +42,7 @@ Look at an existing patch for the pattern. Use the `/new-patch` skill to scaffol
 - **Never hardcode minified variable names**. They change between versions. Find by structure (string literals, property names).
 - **AST passes for all logic**. Use `astPasses` for any structural/behavioral change. String patches for prompt text only.
 - **Co-locate verification**. Each patch verifies its own success. Prefer AST-based verification. Use `getVerifyAst()` from `ast-helpers.ts`.
-- **Prompt policy lives outside patches**. Global policy belongs in `/etc/claude-code/CLAUDE.md` and `/etc/claude-code/system-prompt.md`.
+- **Prompt policy is layered**. Detailed global behavior belongs in `/etc/claude-code/CLAUDE.md`, `/etc/claude-code/.claude/rules/*.md`, and `/etc/claude-code/system-prompt.md`. Short bundle-level routing language shared by prompt patches belongs in `src/patches/prompt-policy.ts`. Do not copy the `/etc` files verbatim into bundle patches.
 - **Future-forward only**. Target latest upstream, no backward-compatibility fallbacks.
 - **Abstract over upstream internals**. Comments, docs, and logs should describe behavior and purpose, not reproduce upstream code or reference its internal identifiers. Keep the surface area of exposed internals minimal.
 
@@ -96,7 +98,13 @@ Use `bun run diff -- ast <original> <patched>` only for the legacy clean-vs-patc
 
 Prompt artifacts are generated from native-extracted or legacy npm package `cli.js` bundles. Artifact paths must be unique, and duplicate writes should fail instead of overwriting and duplicating manifest entries.
 
-Prompt-surface verification is intentionally strict for curated live surfaces. Dynamic markers and unresolved helper placeholders (`${value_...}`, `${conditional(...)`, `${...spread}`) are verifier failures unless the surface explicitly allows a literal placeholder example. If a clean upstream export still has unresolved runtime placeholders in broad corpus outputs, track that through `quality.uncategorizedCount` and use `--max-uncategorized` only where a budget is meaningful.
+Prompt-surface verification is intentionally strict for curated live surfaces. Dynamic markers and unresolved helper placeholders (`${value_...}`, `${conditional(...)`, `${...spread}`) are verifier failures unless the surface explicitly allows synthetic runtime placeholders. If a clean upstream export still has unresolved runtime placeholders in broad corpus outputs, track that through `quality.uncategorizedCount` and use `--max-uncategorized` only where a budget is meaningful.
+
+`verify:prompt-drift` is the pass/fail guard for watched prompt surfaces expected to exist in patched exports. Its drift list, broader review list, optional-surface markers, and required/forbidden needles live in `src/verification/prompt-surface-rules.ts`; refresh the baseline only after reviewing a known-good patched export. The baseline hashes normalized Markdown paths so minifier placeholder churn should not create noisy failures.
+
+`prompts:compare` is the broader review report. It should normally show optional tool/agent surfaces as removed when `tools-off` / `agents-off` filtered them, and zero exact-line overlap from `/etc/claude-code` into the patched export because `/etc/claude-code/system-prompt.md`, `CLAUDE.md`, and `.claude/rules/*.md` are runtime policy/context layers, not bundle prompt text. If overlap rises unexpectedly, check whether a patch copied managed policy verbatim instead of using distilled bundle wording.
+
+Prompt patches must update both their own verifier and `src/verification/prompt-surface-rules.ts` when they affect exported live guidance. The current curated surfaces include Bash/Read/REPL/tool-search, Explore/Plan, remote-planning reminders, `system/sections/session-specific-guidance.md`, and the dream-memory consolidation/pruning sections. Run an actual patched export plus `bun run verify:prompt-surfaces <export-dir>` for prompt-only changes; `bun run verify:patches` covers this through the native path.
 
 ## Feature Flags
 

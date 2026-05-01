@@ -144,6 +144,57 @@ const AGENT_TOOL_TEXT_REWRITES: Array<{
 	},
 ];
 
+const REPL_PROMPT_REWRITES: Array<{ pattern: RegExp; replacement: string }> = [
+	{
+		pattern:
+			/const \{ filenames \} = await Glob\(\{ pattern: 'src\/\*\*\/\*\.ts' \}\)/g,
+		replacement:
+			"const { stdout } = await ${q}({ command: 'fd -e ts src' })\nconst filenames = stdout.trim().split('\\\\n').filter(Boolean)",
+	},
+	{
+		pattern:
+			/All tools work as async functions: (?:\\?`Read\\?`, \\?`Write\\?`, \\?`Edit\\?`, \\?`Glob\\?`, \\?`Grep\\?`, \\?`\$\{q\}\\?`, etc\.)/g,
+		replacement:
+			"All enabled tools work as async functions: \\`Read\\`, \\`Write\\`, \\`Edit\\`, \\`${q}\\`, etc.",
+	},
+	{
+		pattern:
+			/const \{ filenames \} = await Glob\(\{ pattern: '\*\.ts' \}\)\nconst \{ file \} = await Read\(\{ file_path: 'config\.json' \}\)/g,
+		replacement:
+			"const { stdout } = await ${q}({ command: 'fd -e ts . --max-results 20' })\nconst { file } = await Read({ file_path: 'config.json' })",
+	},
+	{
+		pattern:
+			/For filesystem access use \\?`Read\\?`\/\\?`Write\\?`\/\\?`Glob\\?`; for shell use \\?`\$\{q\}\\?`\./g,
+		replacement:
+			"For filesystem access use \\`Read\\`/\\`Write\\`/\\`Edit\\`; for file discovery use \\`${q}\\` with \\`fd\\`, and for source code search prefer MCP code-search tools or \\`sg\\` through \\`${q}\\` before broad Read loops.",
+	},
+];
+
+const TOOLSEARCH_PROMPT_REWRITES: Array<{
+	pattern: RegExp;
+	replacement: string;
+}> = [
+	{
+		pattern:
+			/"select:Read,Edit,Grep" (?:—|\\u2014) fetch these exact tools by name/g,
+		replacement:
+			'"select:Read,Edit,Bash" \\u2014 fetch these exact tools by name',
+	},
+];
+
+const REMOTE_PLANNING_PROMPT_REWRITES: Array<{
+	pattern: RegExp;
+	replacement: string;
+}> = [
+	{
+		pattern:
+			/Explore the codebase directly with Glob, Grep, and Read\. Read the relevant code, understand how the pieces fit, look for existing functions and patterns you can reuse instead of proposing new ones, and shape an approach grounded in what's actually there\./g,
+		replacement:
+			"Explore the codebase directly with available read-only tools. Prefer symbol, semantic, and structural search when available; otherwise use focused file discovery, content search, and Read. Read the relevant code, understand how the pieces fit, look for existing functions and patterns you can reuse instead of proposing new ones, and shape an approach grounded in what's actually there.",
+	},
+];
+
 const GUIDE_REWRITES: Array<{ pattern: RegExp; replacement: string }> = [
 	{
 		pattern: new RegExp(
@@ -172,6 +223,31 @@ const PROMPT_REWRITE_PATCHED_SIGNALS = [
 	"available code/file search tooling for focused discovery",
 	"available content-search tooling for targeted discovery",
 ];
+
+const DISABLED_TOOL_PROMPT_LEAKS = [
+	{
+		needle: "const { filenames } = await Glob({ pattern: 'src/**/*.ts' })",
+		reason: "REPL prompt still demonstrates disabled Glob",
+	},
+	{
+		needle:
+			"All tools work as async functions: `Read`, `Write`, `Edit`, `Glob`, `Grep`",
+		reason: "REPL prompt still lists disabled Glob/Grep",
+	},
+	{
+		needle: "For filesystem access use `Read`/`Write`/`Glob`",
+		reason: "REPL prompt still routes file discovery through disabled Glob",
+	},
+	{
+		needle: '"select:Read,Edit,Grep" — fetch these exact tools by name',
+		reason: "ToolSearch prompt still demonstrates disabled Grep",
+	},
+	{
+		needle: "Explore the codebase directly with Glob, Grep, and Read.",
+		reason:
+			"Remote planning prompt still routes exploration through disabled Glob/Grep",
+	},
+] as const;
 
 // ---------------------------------------------------------------------------
 // Skill allowed-tools and doc table cleanup
@@ -450,6 +526,15 @@ export const disableTools: Patch = {
 		for (const { pattern, replacement } of AGENT_TOOL_TEXT_REWRITES) {
 			result = result.replace(pattern, replacement);
 		}
+		for (const { pattern, replacement } of REPL_PROMPT_REWRITES) {
+			result = result.replace(pattern, replacement);
+		}
+		for (const { pattern, replacement } of TOOLSEARCH_PROMPT_REWRITES) {
+			result = result.replace(pattern, replacement);
+		}
+		for (const { pattern, replacement } of REMOTE_PLANNING_PROMPT_REWRITES) {
+			result = result.replace(pattern, replacement);
+		}
 		for (const { pattern, replacement } of GUIDE_REWRITES) {
 			result = result.replace(pattern, replacement);
 		}
@@ -593,6 +678,11 @@ function verifyPromptRewrite(code: string): true | string {
 		)
 	) {
 		return "Legacy Task-tool subagent description still present";
+	}
+	for (const leak of DISABLED_TOOL_PROMPT_LEAKS) {
+		if (code.includes(leak.needle)) {
+			return leak.reason;
+		}
 	}
 	if (PROMPT_REWRITE_SOURCE_SIGNALS.some((s) => code.includes(s))) {
 		if (!PROMPT_REWRITE_PATCHED_SIGNALS.every((s) => code.includes(s))) {

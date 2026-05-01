@@ -14,15 +14,18 @@ export { getLimitsChanged, limits } from "./limits.js";
 export { lspMultiServer } from "./lsp-multi-server.js";
 export { lspWorkspaceSymbol } from "./lsp-workspace-symbol.js";
 export { mcpServerName } from "./mcp-server-name.js";
+export { memoryPromptSoften } from "./memory-prompt-soften.js";
 export { disableAutoupdater } from "./no-autoupdate.js";
 export { noCollapse } from "./no-collapse.js";
 export { planDiffUi } from "./plan-diff-ui.js";
 export { readWithBat } from "./read-bat.js";
+export { sessionGuidance } from "./session-guidance.js";
 export { sessionMemory } from "./session-mem.js";
 export { shellQuoteFix } from "./shell-quote-fix.js";
 export { signature } from "./signature.js";
 export { skillListingUi } from "./skill-listing-ui.js";
 export { subagentModelTag } from "./subagent-model-tag.js";
+export { subagentSystemPrompt } from "./subagent-system-prompt.js";
 export { systemPromptFile } from "./sys-prompt-file.js";
 export { taskOutputExt } from "./taskout-ext.js";
 export { todo } from "./todo-use.js";
@@ -45,15 +48,18 @@ import { limits } from "./limits.js";
 import { lspMultiServer } from "./lsp-multi-server.js";
 import { lspWorkspaceSymbol } from "./lsp-workspace-symbol.js";
 import { mcpServerName } from "./mcp-server-name.js";
+import { memoryPromptSoften } from "./memory-prompt-soften.js";
 import { disableAutoupdater } from "./no-autoupdate.js";
 import { noCollapse } from "./no-collapse.js";
 import { planDiffUi } from "./plan-diff-ui.js";
 import { readWithBat } from "./read-bat.js";
+import { sessionGuidance } from "./session-guidance.js";
 import { sessionMemory } from "./session-mem.js";
 import { shellQuoteFix } from "./shell-quote-fix.js";
 import { signature } from "./signature.js";
 import { skillListingUi } from "./skill-listing-ui.js";
 import { subagentModelTag } from "./subagent-model-tag.js";
+import { subagentSystemPrompt } from "./subagent-system-prompt.js";
 import { systemPromptFile } from "./sys-prompt-file.js";
 import { taskOutputExt } from "./taskout-ext.js";
 import { todo } from "./todo-use.js";
@@ -76,7 +82,9 @@ const basePatches: Patch[] = [
 	bashPrompt,
 	builtInAgentPrompt,
 	claudeMdSystemPrompt,
+	memoryPromptSoften,
 	mcpServerName,
+	sessionGuidance,
 	todo,
 	// AST-based patches
 	bashOutputTail,
@@ -95,6 +103,7 @@ const basePatches: Patch[] = [
 	lspWorkspaceSymbol,
 	noCollapse,
 	skillListingUi,
+	subagentSystemPrompt,
 	subagentModelTag,
 	sessionMemory,
 	systemPromptFile,

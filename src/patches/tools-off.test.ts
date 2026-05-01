@@ -138,6 +138,49 @@ test("tools-off updates legacy Task-tool subagent description", () => {
 	assert.equal(output.includes("invoked via the Agent tool"), true);
 });
 
+test("tools-off rewrites REPL disabled-tool examples", () => {
+	const input = [
+		"const prompt = `",
+		"const { filenames } = await Glob({ pattern: 'src/**/*.ts' })",
+		"All tools work as async functions: \\`Read\\`, \\`Write\\`, \\`Edit\\`, \\`Glob\\`, \\`Grep\\`, \\`${q}\\`, etc.",
+		"const { filenames } = await Glob({ pattern: '*.ts' })",
+		"const { file } = await Read({ file_path: 'config.json' })",
+		"For filesystem access use \\`Read\\`/\\`Write\\`/\\`Glob\\`; for shell use \\`${q}\\`.",
+		"`;",
+	].join("\n");
+
+	const output = disableTools.string?.(input) ?? input;
+	assert.equal(output.includes("Glob"), false);
+	assert.equal(output.includes("Grep"), false);
+	assert.equal(output.includes("fd -e ts src"), true);
+	assert.equal(output.includes("split('\\\\n')"), true);
+	assert.equal(output.includes("fd -e ts . --max-results 20"), true);
+	assert.equal(
+		output.includes("prefer MCP code-search tools or \\`sg\\`"),
+		true,
+	);
+});
+
+test("tools-off rewrites ToolSearch disabled-tool example", () => {
+	const input =
+		'Query forms:\n- "select:Read,Edit,Grep" — fetch these exact tools by name';
+	const output = disableTools.string?.(input) ?? input;
+	assert.equal(output.includes("select:Read,Edit,Grep"), false);
+	assert.equal(output.includes("select:Read,Edit,Bash"), true);
+});
+
+test("tools-off rewrites remote planning disabled-tool guidance", () => {
+	const input =
+		"Explore the codebase directly with Glob, Grep, and Read. Read the relevant code, understand how the pieces fit, look for existing functions and patterns you can reuse instead of proposing new ones, and shape an approach grounded in what's actually there.";
+	const output = disableTools.string?.(input) ?? input;
+	assert.equal(output.includes("Glob, Grep, and Read"), false);
+	assert.equal(output.includes("available read-only tools"), true);
+	assert.equal(
+		output.includes("symbol, semantic, and structural search"),
+		true,
+	);
+});
+
 // ---------------------------------------------------------------------------
 // Skill tools tests
 // ---------------------------------------------------------------------------

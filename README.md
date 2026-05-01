@@ -7,13 +7,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
-  <img src="https://img.shields.io/badge/Patches-28-orange.svg" alt="28 Patches">
+  <img src="https://img.shields.io/badge/Patches-31-orange.svg" alt="31 Patches">
   <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.126-8A2BE2.svg" alt="Tested against Claude Code 2.1.126">
 </p>
 
 ---
 
-cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 28 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 31 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
 
 Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting, LSP fan-out, worktree permissions), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read, batched `edits[]` on Edit, output tails on Bash), and replace prompt fragments that steer the model toward better shell tooling.
 
@@ -118,7 +118,7 @@ Runtime behavior, caching, memory, and configuration.
 | [`no-autoupdate`](src/patches/no-autoupdate.ts) | Forces the autoupdater guard to a safe stub so the patched binary is not replaced in the background. Marketplace plugin autoupdates continue to work through the same guard path. |
 | [`limits`](src/patches/limits.ts) | Read keeps larger files inline. Byte ceiling 256K -> 1M, token budget 25K -> 50K (still overridable via `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`), persistence threshold 50K -> 120K chars, per-tool result cap 100K -> 250K chars. |
 | [`session-mem`](src/patches/session-mem.ts) | Session memory is controllable via `ENABLE_SESSION_MEMORY`, `ENABLE_SESSION_MEMORY_PAST`, `CC_SM_PER_SECTION_TOKENS` (default 2000), `CC_SM_TOTAL_FILE_LIMIT` (default 12000), `CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT`, `CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE`, and `CC_SM_TOOL_CALLS_BETWEEN_UPDATES`. |
-| [`sys-prompt-file`](src/patches/sys-prompt-file.ts) | Every conversation auto-appends a system prompt file when `appendSystemPrompt` is not explicitly set. Source is `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE`, falling back to `/etc/claude-code/system-prompt.md`. |
+| [`sys-prompt-file`](src/patches/sys-prompt-file.ts) | Every conversation auto-appends a system prompt file when no append or replacement system prompt is explicitly set. Source is `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE`, falling back to `/etc/claude-code/system-prompt.md`. Replacement-mode launches via `--system-prompt` or `--system-prompt-file` skip the auto-append layer. |
 | [`worktree-perms`](src/patches/worktree-perms.ts) | Agent worktrees are added to the session's allowed edit surface on spawn and on resume, so Edit and Write inside a worktree do not fall back to per-file permission prompts. |
 
 ### Prompt
@@ -127,9 +127,12 @@ Prompt text sent to the model.
 
 | Patch | Effect |
 |-------|--------|
-| [`bash-prompt`](src/patches/bash-prompt.ts) | Bash tool guidance points at modern CLI (`fd`, `eza`, `rg`, `sg`, `bat`, `sd`) and enables the code path that hides legacy `find`/`grep` from the tool list. |
-| [`built-in-agent-prompt`](src/patches/built-in-agent-prompt.ts) | Explore is reframed as a deep codebase research agent (execution-path tracing, `file:line` citations, reuse candidates). Plan is reframed as a blueprint-producing architect with concrete sequencing and trade-offs. |
+| [`bash-prompt`](src/patches/bash-prompt.ts) | Bash tool guidance points at modern CLI (`fd`, `eza`, `rg`, `sg`, `bat`, `sd`) and routes source-code discovery toward Serena/LSP, ChunkHound, Probe, and ast-grep MCP/sg before Bash text search. It also enables the code path that hides legacy `find`/`grep` from the tool list. |
+| [`built-in-agent-prompt`](src/patches/built-in-agent-prompt.ts) | Explore is reframed as a deep codebase research agent (execution-path tracing, `file:line` citations, reuse candidates) with the same source-code tool routing. Plan is reframed as a blueprint-producing architect with concrete sequencing and trade-offs. |
 | [`claudemd-strong`](src/patches/claudemd-strong.ts) | CLAUDE.md wrapper text treats project instructions as mandatory when they apply, instead of advisory context, and pins a small always-applied baseline. |
+| [`memory-prompt-soften`](src/patches/memory-prompt-soften.ts) | Memory/init and dream-memory prompt text stops presenting `ls`, `find`, `grep`, `cat`, `head`, and `tail` as the canonical inspection set. Memory consolidation/pruning examples now use `eza`, `fd`, and `rg -m 50` instead. |
+| [`session-guidance`](src/patches/session-guidance.ts) | Session-specific exploration guidance no longer renders fallback `find`/`grep` helper text. Broad exploration falls back through the same intent order as the rest of the prompt stack: Serena, ChunkHound, Probe, ast-grep MCP/sg, then `rg` only for non-code text. |
+| [`subagent-system-prompt`](src/patches/subagent-system-prompt.ts) | Agent-tool subagents inherit the normal appended system prompt as a fallback when no subagent-specific append prompt is set, so `/etc/claude-code/system-prompt.md` policy reaches standard non-forked subagents too. |
 | [`todo-use`](src/patches/todo-use.ts) | Todo guidance is compressed to a short, high-signal set of bullets. |
 
 ### Agent
@@ -199,12 +202,16 @@ mise run status                                   # Show current, previous, cach
 mise run native:pull <version>                    # Fetch upstream + extract clean JS to versions_clean/<version>/cli.js
 mise run native:unpack-current <out>              # Extract patched JS from the currently-promoted binary (auto-detects via PATH)
 mise run native:unpack <bin> <out>                # Extract embedded JS from any native binary
-mise run verify:patches                           # Typecheck + lint + dry-run on native target
+bun run verify:patches                            # Typecheck + lint + dry-run on native target
+mise run verify:patches                           # Thin task-runner wrapper around bun run verify:patches
 scripts/verify-patches-matrix.sh                  # Dry-run patches against latest clean cli.js
 VERIFY_PATCHES_MATRIX_SCOPE=all scripts/verify-patches-matrix.sh
 mise run verify:anchors                           # Diff clean vs patched anchors
+mise run verify:prompt-drift <export-dir> <baseline.json>
 mise run prompts:export                           # Export prompt artifacts from promoted binary
 mise run prompts:export 2.1.126 --output-dir /tmp/prompts-2.1.126
+mise run prompts:drift-baseline <export-dir> <baseline.json> --version 2.1.126
+bun run prompts:compare <vanilla-export> <patched-export> /etc/claude-code
 bun run inspect search versions_clean/2.1.126/cli.js "Read" --field string --object
 bun run inspect prompts versions_clean/2.1.126/cli.js "Command sandbox"
 bun run diff -- versions_clean/2.1.124/cli.js versions_clean/2.1.126/cli.js
@@ -213,7 +220,7 @@ bun run cli --list                                   # List available patches
 bun run test                                         # Run the test suite (pinned to --parallel=1)
 ```
 
-`mise run patch` is intentionally disabled; it exists only to redirect to `native:update`. See `mise.toml` for the full task list and `bun run cli --help` for CLI flags.
+`mise run patch` is intentionally disabled; it exists only to redirect to `native:update`. `mise.toml` is kept as a task index; non-trivial verification logic lives in TypeScript, especially [`scripts/verify-patches.ts`](scripts/verify-patches.ts). See `mise.toml` for the full task list and `bun run cli --help` for CLI flags.
 
 ## Prompt Artifacts and Inspection
 
@@ -234,7 +241,30 @@ Useful outputs:
 | `corpus-categorized.json` | Prompt-corpus entries grouped by category. |
 | `tools/builtin/*.md`, `agents/*.md`, `system/sections/*.md` | Human-reviewable live prompt surfaces. |
 
-`verify:prompt-surfaces` checks the curated patched surfaces and fails on dynamic prompt markers or unresolved helper placeholders such as `${value_...}`, `${conditional(...)`, and `${...spread}`. Broad corpus exports may still contain runtime-only placeholders; track those with `manifest.quality.uncategorizedCount` and use `--max-uncategorized` only when you want a hard drift budget.
+`verify:prompt-surfaces` checks the curated patched surfaces and fails on dynamic prompt markers or unresolved helper placeholders such as `${value_...}`, `${conditional(...)`, and `${...spread}` unless that specific surface allows synthetic runtime placeholders. Broad corpus exports may still contain runtime-only placeholders; track those with `manifest.quality.uncategorizedCount` and use `--max-uncategorized` only when you want a hard drift budget.
+
+`verify:prompt-drift` adds a path-based drift guard for the surfaces this patcher cares about most. Generate or refresh a baseline from a known-good patched export:
+
+```bash
+mise run prompts:drift-baseline exported-prompts/2.1.126_patched prompt-surface-baseline.json --version 2.1.126
+```
+
+Then compare future exports against it:
+
+```bash
+mise run verify:prompt-drift exported-prompts/2.1.127_patched prompt-surface-baseline.json
+PROMPT_DRIFT_BASELINE=prompt-surface-baseline.json mise run verify:patches
+```
+
+The baseline hashes normalized Markdown by exported path, not by content-derived prompt id. The drift watch list in [`src/verification/prompt-surface-rules.ts`](src/verification/prompt-surface-rules.ts) is authoritative for surfaces expected to exist in patched exports; optional surfaces removed by `tools-off` / `agents-off` stay in the broader review list but are not baseline requirements. If a new watched surface is added but the baseline has not been refreshed, `verify:prompt-drift` fails with `baseline-missing-surface`. That keeps drift control explicit. Edit the same file to choose which surfaces are watched, which optional surfaces are review-only, and which required/forbidden needles are enforced. Normalization ignores generated `source_symbol` values and renumbers synthetic `${value_...}` / `${expr_...}` placeholders so minifier churn does not create noisy drift.
+
+`prompts:compare` is a human review report for comparing a vanilla prompt export, a patched prompt export, and the runtime `/etc/claude-code` policy layer. It reports file inventory deltas, manifest count changes, review prompt-surface status (including optional surfaces intentionally removed by patching), exact-line overlap from `/etc` into the patched bundle export, and policy-term presence across both layers.
+
+```bash
+bun run prompts:compare exported-prompts/2.1.126 exported-prompts/2.1.126_patched /etc/claude-code
+bun run prompts:compare exported-prompts/2.1.126 exported-prompts/2.1.126_patched /etc/claude-code -- --json
+bun run prompts:compare exported-prompts/2.1.126 exported-prompts/2.1.126_patched /etc/claude-code -- --output /tmp/prompt-comparison.md
+```
 
 The inspector parses a bundle once per invocation and can run multiple search queries:
 
@@ -337,6 +367,10 @@ Principles baked into the codebase:
 - Verifiers target behavior and invariants, not expression shape.
 - Target only the latest upstream. No backward-compatibility fallbacks.
 
+Prompt policy is centralized in [`src/patches/prompt-policy.ts`](src/patches/prompt-policy.ts). Surface-specific patches still own their upstream anchors (`bash-prompt`, `built-in-agent-prompt`, `claudemd-strong`, `memory-prompt-soften`, `session-guidance`), but shared wording for Serena/LSP/ChunkHound/Probe/ast-grep routing lives in one module. Prompt-surface checks and drift watch paths are centralized in [`src/verification/prompt-surface-rules.ts`](src/verification/prompt-surface-rules.ts), and tests build fixtures from those rules instead of duplicating long prompt text. Drift checks use fixed needles in [`src/verification/prompt-policy-contract.ts`](src/verification/prompt-policy-contract.ts) rather than importing the same generated strings, so accidental weakening of the shared policy still fails verification.
+
+When a prompt patch changes live guidance, update both the patch verifier and the exported-surface rules. Current required live surfaces include the Bash/Read/REPL/tool-search surfaces, Explore/Plan agents, remote-planning reminders, `system/sections/session-specific-guidance.md`, and the dream-memory consolidation/pruning sections. Verify by exporting a patched bundle and running `bun run verify:prompt-surfaces <export-dir>`; `bun run verify:patches` does this for the native build path.
+
 ## Compatibility
 
 Current target: **Claude Code 2.1.126**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
@@ -344,12 +378,52 @@ Current target: **Claude Code 2.1.126**. Tracks the latest upstream release and 
 ## Requirements
 
 - **bun 1.3+** (managed via `mise`)
+- **mise** for task-runner aliases; build and verification logic lives in Bun/TypeScript scripts
 - **Linux x86_64** (native ELF support is built in; other platforms require `node-lief`)
 - A working **Claude Code** installation
+- A local Claude Code policy file at `/etc/claude-code/system-prompt.md`, or set `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE` to the file you want auto-appended
 
 Babel AST + generator over the 16 MB bundle is the heaviest part of the patcher. JSC (Bun's engine) sizes its heap dynamically, so no explicit flag is required; both direct `bun src/index.ts ...` and `mise` task invocations work.
 
 The test suite uses `bun test` against the `node:test` API shim and is pinned to `--parallel=1` because bun's shim mishandles concurrent file loads. Use `bun run test` (which already pins the flag) rather than raw `bun test src/`.
+
+### Runtime Tooling Assumptions
+
+Several prompt patches intentionally route Claude Code away from the stock `find`/`grep`/`cat`/`head`/`tail` workflow. For the patched guidance to be useful, keep these command-line tools on `PATH`:
+
+| Tool | Why it matters |
+|------|----------------|
+| `bat` | File viewing and Read-style range examples use `bat -r START:END`. |
+| `fd` | File discovery replaces `find`. |
+| `eza` | Directory listing replaces routine `ls`. |
+| `rg` | Exact search in non-code text, logs, config, comments, and prompt artifacts. |
+| `sg` / `ast-grep` | Structural code search and AST-aware rewrites. |
+| `sd` | Literal shell-native replacement for non-code files. |
+| `gh` | GitHub URL and API workflows are expected to use `gh api`. |
+
+Recommended supporting tools for local development and verification:
+
+| Tool | Used for |
+|------|----------|
+| `jq` / `yq` | JSON and YAML inspection in exported prompt artifacts and settings. |
+| `biome` | Formatting checks through the installed npm dependency. |
+| `tsc` | Typechecking through the installed npm dependency. |
+
+### MCP Tooling Assumptions
+
+The prompt patches use "available" deliberately. The patched CLI should still run without every MCP below, but the strongest behavior assumes these servers are configured where you expect code work to happen:
+
+| MCP / integration | Expected role |
+|-------------------|---------------|
+| Serena | Primary symbol navigation and symbol-safe edits. Prefer it over raw LSP for named symbols. |
+| Raw LSP | Fallback for direct coordinate lookups when Serena is unavailable or does not fit. |
+| ChunkHound | Conceptual and architectural codebase search. Use semantic search for "where/how does this work" questions. |
+| Probe | Known-symbol, known-phrase, and boolean code search, especially when ChunkHound is unavailable or too broad. |
+| ast-grep MCP | Multi-rule or structural AST search from MCP. The `sg` CLI remains the local fallback. |
+| Context7, docfork, ref | Library and framework documentation lookup when built-in web tools are disabled. |
+| Perplexity, Exa, Firecrawl, Nia | Web research, code examples, scraping, package/repo indexing, and persistent knowledge workflows. |
+
+`tools-off` disables Claude Code's built-in `Glob`, `Grep`, `WebSearch`, `WebFetch`, and `NotebookEdit` surfaces. That is intentional. Keep the modern CLI tools and MCP replacements available, or exclude `tools-off` for a build that needs the stock tools.
 
 ## Disclaimer
 

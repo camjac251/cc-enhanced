@@ -52,6 +52,13 @@ function isUndefinedCheckForOptionProp(
 	);
 }
 
+function flattenLogicalAnd(node: t.Node): t.Node[] {
+	if (t.isLogicalExpression(node, { operator: "&&" })) {
+		return [...flattenLogicalAnd(node.left), ...flattenLogicalAnd(node.right)];
+	}
+	return [node];
+}
+
 function findPathHelpers(
 	appendIf: t.IfStatement,
 	optionsName: string,
@@ -189,12 +196,23 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 	hasDefaultPath: boolean;
 	hasAppendAssignment: boolean;
 	hasExistsSync: boolean;
+	guardsReplacementPrompt: boolean;
 } | null {
-	if (!t.isLogicalExpression(path.node.test, { operator: "&&" })) return null;
-	const { left, right } = path.node.test;
-	if (!isUndefinedCheckForOptionProp(left, "appendSystemPromptFile"))
-		return null;
-	if (!isUndefinedCheckForOptionProp(right, "appendSystemPrompt")) return null;
+	const guardedProps = new Set<string>();
+	for (const part of flattenLogicalAnd(path.node.test)) {
+		for (const propName of [
+			"appendSystemPromptFile",
+			"appendSystemPrompt",
+			"systemPromptFile",
+			"systemPrompt",
+		]) {
+			if (isUndefinedCheckForOptionProp(part, propName)) {
+				guardedProps.add(propName);
+			}
+		}
+	}
+	if (!guardedProps.has("appendSystemPromptFile")) return null;
+	if (!guardedProps.has("appendSystemPrompt")) return null;
 
 	let hasEnvOverride = false;
 	let hasDefaultPath = false;
@@ -244,27 +262,44 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 		hasDefaultPath,
 		hasAppendAssignment,
 		hasExistsSync,
+		guardsReplacementPrompt:
+			guardedProps.has("systemPromptFile") && guardedProps.has("systemPrompt"),
 	};
 }
 
-function findAutoAppendGuard(ast: t.File): {
+function findAutoAppendGuardBeforeAppendBranch(ast: t.File): {
 	hasEnvOverride: boolean;
 	hasDefaultPath: boolean;
 	hasAppendAssignment: boolean;
 	hasExistsSync: boolean;
+	guardsReplacementPrompt: boolean;
 } | null {
 	let found: {
 		hasEnvOverride: boolean;
 		hasDefaultPath: boolean;
 		hasAppendAssignment: boolean;
 		hasExistsSync: boolean;
+		guardsReplacementPrompt: boolean;
 	} | null = null;
 
 	traverse(ast, {
 		IfStatement(path) {
-			const inspected = inspectAutoAppendGuard(path);
-			if (!inspected) return;
-			found = inspected;
+			if (found) return;
+			if (!isAppendSystemPromptFileBranch(path)) return;
+
+			const statementPath = path.getStatementParent();
+			if (!statementPath) return;
+			const parentPath = statementPath.parentPath;
+			if (!parentPath?.isBlockStatement()) return;
+
+			const siblingIndex = parentPath.node.body.indexOf(statementPath.node);
+			if (siblingIndex <= 0) return;
+			const previousSibling = statementPath.getSibling(
+				siblingIndex - 1,
+			) as NodePath<t.Statement>;
+			if (!previousSibling.isIfStatement()) return;
+
+			found = inspectAutoAppendGuard(previousSibling);
 			path.stop();
 		},
 	});
@@ -304,9 +339,9 @@ export const systemPromptFile: Patch = {
 		if (!verifyAst)
 			return "Unable to parse AST during sys-prompt-file verification";
 
-		const autoAppendGuard = findAutoAppendGuard(verifyAst);
+		const autoAppendGuard = findAutoAppendGuardBeforeAppendBranch(verifyAst);
 		if (!autoAppendGuard) {
-			return "Missing auto-append guard for appendSystemPromptFile/appendSystemPrompt";
+			return "Missing auto-append guard immediately before appendSystemPromptFile branch";
 		}
 		if (!autoAppendGuard.hasEnvOverride) {
 			return "Missing CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE override";
@@ -319,6 +354,9 @@ export const systemPromptFile: Patch = {
 		}
 		if (!autoAppendGuard.hasExistsSync) {
 			return "Missing existsSync call within auto-append guard body";
+		}
+		if (!autoAppendGuard.guardsReplacementPrompt) {
+			return "Auto-append guard must skip replacement-mode systemPrompt/systemPromptFile";
 		}
 
 		return true;
@@ -356,9 +394,9 @@ function createSystemPromptFileMutator(): Visitor {
 
 			const [autoAppendIf] = template.statements(
 				`
-				if (OPTIONS.appendSystemPromptFile === void 0 && OPTIONS.appendSystemPrompt === void 0) {
-					let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";
-					try {
+                if (OPTIONS.systemPromptFile === void 0 && OPTIONS.systemPrompt === void 0 && OPTIONS.appendSystemPromptFile === void 0 && OPTIONS.appendSystemPrompt === void 0) {
+                    let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";
+                    try {
 						let resolvedSystemPromptFile = RESOLVE(configuredSystemPromptFilePath);
 						if (EXISTS(resolvedSystemPromptFile)) {
 							OPTIONS.appendSystemPromptFile = resolvedSystemPromptFile;

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
+import { MODERN_READ_CODE_FILE_CAVEAT } from "./prompt-policy.js";
 import { readWithBat } from "./read-bat.js";
 
 // Bun snapshots PATH at process startup and ignores later mutations of
@@ -377,6 +378,7 @@ test("read-bat migrates schema and prompt from offset/limit to range/show_whites
 		output.includes("Line range using supported bat-style forms"),
 		true,
 	);
+	assert.equal(output.includes(MODERN_READ_CODE_FILE_CAVEAT), true);
 	assert.equal(output.includes("show_whitespace: true"), true);
 	assert.equal(output.includes("offset and limit parameters"), false);
 	assert.equal(output.includes("range: z.string().optional()"), true);
@@ -493,6 +495,21 @@ test("read-bat verify fails when changed-snippet cap is altered", async () => {
 		String(result).includes(
 			"changed-file watcher snippet cap is not tuned to 8000 chars",
 		),
+		true,
+	);
+});
+
+test("read-bat verify fails when code-file tool caveat is removed", async () => {
+	const output = await getPatchedDelegationOutput();
+	const mutated = output
+		.split(MODERN_READ_CODE_FILE_CAVEAT)
+		.join("For code files, read the file directly.");
+	assert.notEqual(mutated, output);
+
+	const result = readWithBat.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("Missing code-file tool-choice caveat"),
 		true,
 	);
 });

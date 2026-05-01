@@ -293,6 +293,23 @@ description = "Verify exported live prompt surfaces in tools/agents/system markd
 usage = 'arg "<export_dir>" help="Path to exported-prompts/<label> directory"'
 run = "bun run verify:prompt-surfaces ${usage_export_dir?}"
 
+[tasks."verify:prompt-drift"]
+description = "Verify watched exported prompt surfaces against a path-hash baseline"
+usage = '''
+arg "<export_dir>" help="Path to exported-prompts/<label> directory"
+arg "<baseline>" help="Prompt surface drift baseline JSON"
+'''
+run = "bun run verify:prompt-drift ${usage_export_dir?} --prompt-drift-baseline ${usage_baseline?}"
+
+[tasks."prompts:drift-baseline"]
+description = "Write a watched prompt-surface path-hash baseline from an export"
+usage = '''
+arg "<export_dir>" help="Path to exported-prompts/<label> directory"
+arg "<baseline>" help="Output baseline JSON path"
+flag "--version <version>" help="Version label to embed in the baseline"
+'''
+run = "bun run prompt-drift:baseline ${usage_baseline?} ${usage_export_dir?} ${usage_version:+--prompt-drift-version ${usage_version}}"
+
 [tasks."verify:cache"]
 description = "Run live cache efficiency benchmark (baseline vs patched policy) when ANTHROPIC_API_KEY is set"
 usage = '''
@@ -412,103 +429,4 @@ run = "bunx biome format --write src/"
 
 [tasks."verify:patches"]
 description = "Verify patcher health and dry-run patch application for native target (cli.js optional)"
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-
-NATIVE_TARGET="${NATIVE_TARGET:-}"
-CLI_TARGET="${CLI_TARGET:-}"
-TMP_VERIFY_DIR="${TMP_VERIFY_DIR:-}"
-OWN_TMP_VERIFY_DIR="false"
-if [[ -z "$TMP_VERIFY_DIR" ]]; then
-  TMP_VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cc-verify-patches.XXXXXX")"
-  OWN_TMP_VERIFY_DIR="true"
-else
-  mkdir -p "$TMP_VERIFY_DIR"
-fi
-
-CLI_SUMMARY="${CLI_SUMMARY:-$TMP_VERIFY_DIR/cc-cli-dryrun-summary.json}"
-NATIVE_SUMMARY="${NATIVE_SUMMARY:-$TMP_VERIFY_DIR/cc-native-dryrun-summary.json}"
-CLI_PATCHED_FOR_ANCHORS="${CLI_PATCHED_FOR_ANCHORS:-$TMP_VERIFY_DIR/cc-cli-patched-for-anchors.js}"
-NATIVE_PATCHED_FOR_PROMPTS="${NATIVE_PATCHED_FOR_PROMPTS:-$TMP_VERIFY_DIR/cc-native-patched}"
-NATIVE_PATCHED_JS_DIR="${NATIVE_PATCHED_JS_DIR:-$TMP_VERIFY_DIR/native-prompt-export}"
-NATIVE_PATCHED_JS="${NATIVE_PATCHED_JS:-$NATIVE_PATCHED_JS_DIR/cli.js}"
-NATIVE_PROMPT_EXPORT_LABEL="$(basename "$NATIVE_PATCHED_JS_DIR")"
-NATIVE_PROMPT_EXPORT_DIR="${NATIVE_PROMPT_EXPORT_DIR:-$(pwd)/exported-prompts/$NATIVE_PROMPT_EXPORT_LABEL}"
-
-if [[ "$OWN_TMP_VERIFY_DIR" == "true" ]]; then
-  trap 'rm -rf "$TMP_VERIFY_DIR" "$NATIVE_PROMPT_EXPORT_DIR"' EXIT
-fi
-
-rm -rf "$NATIVE_PATCHED_JS_DIR" "$NATIVE_PROMPT_EXPORT_DIR"
-mkdir -p "$NATIVE_PATCHED_JS_DIR"
-
-assert_clean_summary() {
-  local summary_path="$1"
-  local label="$2"
-
-  if ! jq -e '.result and (.result.failedTags | type == "array") and (.result.appliedTags | type == "array")' "$summary_path" >/dev/null; then
-    echo "Invalid dry-run summary schema for ${label}: $summary_path" >&2
-    return 1
-  fi
-
-  if ! jq -e '.error == null' "$summary_path" >/dev/null; then
-    echo "Dry-run summary reports top-level error for ${label}: $summary_path" >&2
-    jq -r '.error' "$summary_path" >&2
-    return 1
-  fi
-
-  if ! jq -e '.result.failedTags | length == 0' "$summary_path" >/dev/null; then
-    echo "Dry-run summary contains failed tags for ${label}: $summary_path" >&2
-    jq -r '.result.verifications[] | select(.passed == false) | "  - " + .tag + ": " + (.reason // "unknown")' "$summary_path" >&2
-    return 1
-  fi
-}
-
-bun run typecheck
-bunx biome check src/index.ts src/manager.ts src/patch-runner.ts src/patches/index.ts src/patches/edit-extended.ts src/templates/edit_hook.js
-
-if [[ -n "$CLI_TARGET" && -f "$CLI_TARGET" ]]; then
-  bun run cli --target "$CLI_TARGET" --dry-run --summary-path "$CLI_SUMMARY"
-  assert_clean_summary "$CLI_SUMMARY" "cli.js"
-else
-  echo "Skipping cli.js dry-run (set CLI_TARGET to enable)"
-fi
-
-# Auto-detect native target from promoted binary if not set
-if [[ -z "$NATIVE_TARGET" ]]; then
-  CURRENT_LINK="$HOME/.local/share/claude/versions/current"
-  if [[ -L "$CURRENT_LINK" ]]; then
-    PROMOTED_BIN="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
-    if [[ -n "$PROMOTED_BIN" && -f "$PROMOTED_BIN" ]]; then
-      # Walk up from builds/<ts>-claude to <platform>/claude (original binary)
-      BUILDS_DIR="$(dirname "$PROMOTED_BIN")"
-      if [[ "$(basename "$BUILDS_DIR")" == "builds" ]]; then
-        PLATFORM_DIR="$(dirname "$BUILDS_DIR")"
-        SOURCE_BIN="$PLATFORM_DIR/claude"
-        [[ -f "$SOURCE_BIN" ]] && NATIVE_TARGET="$SOURCE_BIN"
-      fi
-    fi
-  fi
-fi
-
-if [[ -n "$NATIVE_TARGET" && -f "$NATIVE_TARGET" ]]; then
-  bun run cli --target "$NATIVE_TARGET" --dry-run --summary-path "$NATIVE_SUMMARY"
-  assert_clean_summary "$NATIVE_SUMMARY" "native"
-  bun run cli --target "$NATIVE_TARGET" --output "$NATIVE_PATCHED_FOR_PROMPTS"
-  bun run cli --target "$NATIVE_PATCHED_FOR_PROMPTS" --unpack "$NATIVE_PATCHED_JS"
-  EXPORT_ARGS=("$NATIVE_PATCHED_JS" --label "$NATIVE_PROMPT_EXPORT_LABEL" --output-dir "$NATIVE_PROMPT_EXPORT_DIR")
-  bun scripts/export-prompts.ts "${EXPORT_ARGS[@]}"
-  bun run verify:prompt-surfaces "$NATIVE_PROMPT_EXPORT_DIR"
-else
-  echo "Skipping native dry-run (no NATIVE_TARGET and no promoted binary found)"
-fi
-
-if [[ -n "$CLI_TARGET" && -f "$CLI_TARGET" ]]; then
-  cp "$CLI_TARGET" "$CLI_PATCHED_FOR_ANCHORS"
-  bun run cli --target "$CLI_PATCHED_FOR_ANCHORS"
-  bun run verify:anchors "$CLI_PATCHED_FOR_ANCHORS" "$CLI_TARGET"
-else
-  echo "Skipping anchor checks (set CLI_TARGET to enable)"
-fi
-"""
+run = "bun run verify:patches"

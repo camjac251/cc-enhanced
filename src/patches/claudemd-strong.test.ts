@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
 	claudeMdSystemPrompt,
-	STRONG_DISCLAIMER_INVARIANTS,
+	STRONG_DISCLAIMER_LINES,
 } from "./claudemd-strong.js";
 
 const WEAK =
@@ -29,36 +29,22 @@ test("claudemd-strong verify fails when weak disclaimer is absent but strong mar
 	const result = claudeMdSystemPrompt.verify(input);
 	assert.equal(typeof result, "string");
 	assert.equal(
-		String(result).includes(
-			"Strong CLAUDE.md disclaimer invariants are missing",
-		),
+		String(result).includes("Strong CLAUDE.md disclaimer lines are missing"),
 		true,
 	);
 });
 
-test("claudemd-strong verify accepts equivalent strong content when all strong markers are present", () => {
-	const input = [
-		"The instructions above are mandatory whenever they apply to the current task.",
-		"Follow them exactly as written.",
-		"Always use gh api for GitHub URLs instead of web fetching tools.",
-		"Always use bat to view files rather than cat/head/tail.",
-		"Always use sg for code search, with rg only for text/logs/config.",
-		"Never use cat/echo/printf for file writes; use Write or Edit tools.",
-		"Never use grep/find/ls/sed - use rg/fd/eza/sd instead.",
-	].join("\n");
+test("claudemd-strong verify accepts the exact shared strong disclaimer lines", () => {
+	const input = STRONG_DISCLAIMER_LINES.join("\n");
 	assert.equal(claudeMdSystemPrompt.verify(input), true);
 });
 
-test("claudemd-strong invariants still reject incomplete strong wrapper text", () => {
-	const input = STRONG_DISCLAIMER_INVARIANTS.slice(0, 4)
-		.map(({ id }) => id)
-		.join("\n");
+test("claudemd-strong line checks reject incomplete strong wrapper text", () => {
+	const input = STRONG_DISCLAIMER_LINES.slice(0, 5).join("\n");
 	const result = claudeMdSystemPrompt.verify(input);
 	assert.equal(typeof result, "string");
 	assert.equal(
-		String(result).includes(
-			"Strong CLAUDE.md disclaimer invariants are missing",
-		),
+		String(result).includes("Strong CLAUDE.md disclaimer lines are missing"),
 		true,
 	);
 });

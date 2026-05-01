@@ -2,7 +2,10 @@ import * as t from "@babel/types";
 import { type NodePath, traverse } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getVerifyAst } from "./ast-helpers.js";
-import { MODERN_FINDING_TOOLS } from "./modern-cli.js";
+import {
+	MODERN_BASH_SEARCH_GUIDANCE,
+	MODERN_FINDING_TOOLS,
+} from "./prompt-policy.js";
 
 // Functions containing these anchors have an EMBEDDED_SEARCH_TOOLS gate (Yz()
 // or equivalent) as the init of their first VariableDeclarator.  Since tools-off
@@ -23,11 +26,14 @@ const SEARCH_GUIDANCE_FRAGMENTS = [
 	"`rg` for text",
 	"shell-native file discovery",
 	"Content search: Use `rg`",
+	"Serena",
+	"raw LSP",
+	"ChunkHound",
 	"`fd`, `rg`, `sg`, `eza`, and `bat`",
 ];
 
 const MODERN_BASH_IMPORTANT_LINE =
-	"IMPORTANT: Prefer dedicated tools and modern CLI utilities whenever possible. Recommended defaults:";
+	"IMPORTANT: Prefer dedicated symbol/semantic tools and modern CLI utilities whenever possible. Recommended defaults:";
 
 const MODERN_GUIDE_FINDING_TOOLS = MODERN_FINDING_TOOLS;
 
@@ -387,9 +393,7 @@ function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 					return;
 				case "To search the content of files, use ${} instead of grep or rg":
 					templatePath.replaceWith(
-						t.stringLiteral(
-							"For text search use `rg`; use `sg` for structural code search when available.",
-						),
+						t.stringLiteral(MODERN_BASH_SEARCH_GUIDANCE),
 					);
 					return;
 				case "Read files: Use ${} (NOT cat/head/tail)":
@@ -428,9 +432,7 @@ function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 					return;
 				case "Content search: Use ${} (NOT grep or rg)":
 					templatePath.replaceWith(
-						t.stringLiteral(
-							"For text search use `rg`; use `sg` for structural code search when available.",
-						),
+						t.stringLiteral(MODERN_BASH_SEARCH_GUIDANCE),
 					);
 					return;
 			}
@@ -463,7 +465,7 @@ function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 			if (!firstEl || !t.isStringLiteral(firstEl)) return;
 			if (
 				!firstEl.value.startsWith("For shell-native") &&
-				!firstEl.value.startsWith("For text search")
+				!firstEl.value.startsWith("For source code")
 			)
 				return;
 			if (!t.isSpreadElement(conditionalPath.parent)) return;
@@ -505,6 +507,12 @@ const isForcedTrue = (node: t.Expression | null | undefined) =>
 	node.operator === "!" &&
 	t.isNumericLiteral(node.argument) &&
 	node.argument.value === 0;
+
+function sourceIncludesPromptText(code: string, text: string): boolean {
+	return (
+		code.includes(text) || code.includes(JSON.stringify(text).slice(1, -1))
+	);
+}
 
 export const bashPrompt: Patch = {
 	tag: "bash-prompt",
@@ -549,9 +557,7 @@ export const bashPrompt: Patch = {
 		if (
 			!code.includes(MODERN_BASH_IMPORTANT_LINE) ||
 			!code.includes("For shell-native file discovery use `fd` and `eza`.") ||
-			!code.includes(
-				"For text search use `rg`; use `sg` for structural code search when available.",
-			)
+			!sourceIncludesPromptText(code, MODERN_BASH_SEARCH_GUIDANCE)
 		) {
 			return "Expected modern CLI Bash guidance missing";
 		}

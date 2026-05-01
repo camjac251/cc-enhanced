@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { bashOutputTail } from "./bash-tail.js";
+import { MODERN_OUTPUT_LIMIT_WARNING } from "./prompt-policy.js";
 
 async function applyBashTailPatch(source: string): Promise<string> {
 	const stringPatched = bashOutputTail.string?.(source) ?? source;
@@ -135,6 +136,10 @@ function renderBashMessage(input, { verbose, theme }) {
   }
   return command;
 }
+
+const oversizedOutputWarning = "Pipe output through head, tail, or grep to reduce result size. Avoid cat on large files — use Read with offset/limit instead.";
+const escapedOversizedOutputWarning = "Pipe output through head, tail, or grep to reduce result size. Avoid cat on large files \\u2014 use Read with offset/limit instead.";
+const powershellOversizedOutputWarning = "Pipe output through Select-Object -First/-Last or Select-String to reduce result size. Avoid Get-Content on large files \\u2014 use Read with offset/limit instead.";
 `;
 
 test("bash-tail verify rejects the unpatched fixture", () => {
@@ -156,6 +161,15 @@ test("bash-tail patches schema, prompt, persistence, and preview surfaces", asyn
 	assert.equal(output.includes("build commands"), true);
 	assert.equal(output.includes("maxOutput > 0"), true);
 	assert.equal(output.includes("**NEVER** pipe to `| head -N`"), true);
+	assert.equal(
+		output.includes("Pipe output through head, tail, or grep"),
+		false,
+	);
+	assert.equal(
+		output.includes("Pipe output through Select-Object -First/-Last"),
+		false,
+	);
+	assert.equal(output.includes(MODERN_OUTPUT_LIMIT_WARNING), true);
 });
 
 test("bash-tail runtime keeps tail content, fixes preview, and honors max_output persistence override", async () => {

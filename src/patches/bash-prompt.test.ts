@@ -108,7 +108,7 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 	assert.equal(output.includes("keepMe()"), true);
 	assert.equal(
 		output.includes(
-			"IMPORTANT: Prefer dedicated tools and modern CLI utilities whenever possible. Recommended defaults:",
+			"IMPORTANT: Prefer dedicated symbol/semantic tools and modern CLI utilities whenever possible. Recommended defaults:",
 		),
 		true,
 	);
@@ -120,6 +120,11 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 	assert.equal(output.includes("eza"), true);
 	assert.equal(output.includes("rg"), true);
 	assert.equal(output.includes("sg"), true);
+	assert.equal(output.includes("Serena"), true);
+	assert.equal(output.includes("raw LSP"), true);
+	assert.equal(output.includes("ChunkHound"), true);
+	assert.equal(output.includes("Probe"), true);
+	assert.equal(output.includes("mcp__ast-grep__find_code"), true);
 	assert.equal(
 		output.includes(
 			"file discovery rather than crafting legacy shell search expressions",
@@ -206,7 +211,7 @@ function nl1() {
 	assert.equal(output.includes("H = !0"), true);
 	assert.equal(
 		output.includes(
-			"IMPORTANT: Prefer dedicated tools and modern CLI utilities whenever possible. Recommended defaults:",
+			"IMPORTANT: Prefer dedicated symbol/semantic tools and modern CLI utilities whenever possible. Recommended defaults:",
 		),
 		true,
 	);

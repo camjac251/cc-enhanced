@@ -4,6 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { allPatches } from "../patches/index.js";
+import {
+	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
+	STRONG_CLAUDEMD_DISCLAIMER_LINES,
+} from "../patches/prompt-policy.js";
 import { verifyCliAnchors } from "./verify-cli-anchors.js";
 
 test("verifyCliAnchors reports input failures for unreadable files", async () => {
@@ -92,10 +96,8 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 		.sort();
 	const signature = `(Claude Code; patched: ${selectedTags.join(", ")})`;
 	const patchedFixture = [
-		"Always use gh api for GitHub URLs, not web fetching tools.",
-		"Always use bat to view files, not cat/head/tail.",
-		"Always use sg for code search, rg only for text/logs/config. Prefer sg over rg.",
-		"Never use cat/echo/printf for file writes - use Write or Edit tools.",
+		...STRONG_CLAUDEMD_DISCLAIMER_LINES,
+		...MODERN_CODE_SEARCH_DECISION_TREE_LINES,
 		'allowedTools: ["Read", "Bash"]',
 		"**Common tool matchers:** `Bash`, `Write`, `Edit`, `Read`, `Agent`",
 		"Line range using supported bat-style forms",
@@ -103,9 +105,11 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 		'args.push("-r", normalizedRange)',
 		"[TRUNCATED - changed-file diff head+tail summary]",
 		"The instructions above are MANDATORY when they apply to your current task. Follow them exactly as written.",
-		"Never use grep/find/ls/sed - use rg/fd/eza/sd instead.",
 		"Server name can only contain letters, numbers, hyphens, underscores, colons, dots, and slashes",
 		"CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE",
+		"systemPromptFile === void 0",
+		"appendSubagentSystemPrompt ??",
+		"Do not pipe through head, tail, or grep just to cap output.",
 		"ENABLE_SESSION_MEMORY",
 		'return "patched";',
 		"if (A.offset !== void 0 || A.limit !== void 0 || A.range !== void 0) return null;",

@@ -1,5 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import {
+	PROMPT_SURFACE_RULES,
+	type PromptSurfaceRule,
+} from "./prompt-surface-rules.js";
 
 export interface PromptSurfaceFailure {
 	file: string;
@@ -17,13 +21,8 @@ export interface VerifyPromptSurfacesResult {
 	failures: PromptSurfaceFailure[];
 }
 
-type PromptSurfaceRule = {
-	file: string;
-	required?: Array<{ id: string; needle: string; reason: string }>;
-	forbidden?: Array<{ id: string; needle: string; reason: string }>;
-};
-
 const PLAN_LITERAL_PLACEHOLDER = /^\$\{[A-Z][A-Z0-9_]*\}$/;
+const AGENT_REFERENCE_PLACEHOLDER = /^\$\{agent\.[A-Za-z0-9_.]+\}$/;
 const DYNAMIC_PROMPT_MARKER =
 	"(Dynamic prompt: not statically resolved from cli.js AST.)";
 
@@ -56,10 +55,11 @@ function verifyPlanSurface(content: string): PromptSurfaceFailure[] {
 }
 
 function verifyResolvedSurface(
-	file: string,
+	rule: PromptSurfaceRule,
 	content: string,
 ): PromptSurfaceFailure[] {
 	const failures: PromptSurfaceFailure[] = [];
+	const file = rule.file;
 	const pushOnce = (id: string, reason: string): void => {
 		if (failures.some((failure) => failure.id === id)) return;
 		failures.push({ file, id, reason });
@@ -82,10 +82,17 @@ function verifyResolvedSurface(
 			continue;
 		}
 		if (placeholder.startsWith("${value_")) {
+			if (rule.allowSyntheticPlaceholders) continue;
 			pushOnce(
 				"surface-unresolved-value",
 				"Surface still contains an unresolved synthetic value placeholder",
 			);
+			continue;
+		}
+		if (
+			rule.allowSyntheticPlaceholders &&
+			AGENT_REFERENCE_PLACEHOLDER.test(placeholder)
+		) {
 			continue;
 		}
 		if (placeholder.includes("conditional(")) {
@@ -104,156 +111,22 @@ function verifyResolvedSurface(
 	return failures;
 }
 
-const SURFACE_RULES: PromptSurfaceRule[] = [
-	{
-		file: "tools/builtin/read.md",
-		required: [
-			{
-				id: "read-range",
-				needle:
-					"Range parameter (for text files only, supported bat-style forms):",
-				reason: "Read surface missing bat-style range guidance",
-			},
-			{
-				id: "read-whitespace",
-				needle: "`show_whitespace: true`",
-				reason: "Read surface missing show_whitespace guidance",
-			},
-		],
-		forbidden: [
-			{
-				id: "read-offset-limit",
-				needle: "line offset and limit",
-				reason: "Read surface still references offset/limit guidance",
-			},
-			{
-				id: "read-cat-n",
-				needle: "cat -n format",
-				reason: "Read surface still references cat -n output",
-			},
-		],
-	},
-	{
-		file: "tools/builtin/edit.md",
-		required: [
-			{
-				id: "edit-regex-bash-guidance",
-				needle:
-					"For regex/pattern replacement, use Bash: `sd 'pattern' 'replacement' file.ts`",
-				reason: "Edit surface missing regex replacement Bash guidance",
-			},
-		],
-	},
-	{
-		file: "agents/explore.md",
-		required: [
-			{
-				id: "explore-modern-bash",
-				needle:
-					"Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
-				reason: "Explore surface missing modern read-only bash guidance",
-			},
-			{
-				id: "explore-sg-policy",
-				needle:
-					"Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail",
-				reason: "Explore surface missing sg/fd/bat policy guidance",
-			},
-		],
-		forbidden: [
-			{
-				id: "explore-placeholder",
-				needle: "${",
-				reason:
-					"Explore surface still contains unresolved placeholder interpolation",
-			},
-			{
-				id: "explore-stray-command",
-				needle: "npm view ",
-				reason: "Explore surface still contains stray helper command text",
-			},
-			{
-				id: "explore-legacy-grep-find-cat",
-				needle:
-					'Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find${conditional(", grep" | "")}, cat, head, tail)',
-				reason:
-					"Explore surface still references legacy find/grep/cat guidance",
-			},
-			{
-				id: "explore-legacy-grepping",
-				needle:
-					"spawn multiple parallel tool calls for grepping and reading files",
-				reason: "Explore surface still uses legacy grepping wording",
-			},
-		],
-	},
-	{
-		file: "agents/plan.md",
-		forbidden: [
-			{
-				id: "plan-broken-helper-render",
-				needle: "${conditional(",
-				reason:
-					"Plan surface still contains broken helper-rendered interpolation",
-			},
-		],
-	},
-	{
-		file: "system/sections/using-your-tools.md",
-		forbidden: [
-			{
-				id: "using-tools-glob",
-				needle: "To search for files use Glob instead of find or ls",
-				reason: "Using-your-tools surface still references Glob",
-			},
-			{
-				id: "using-tools-grep",
-				needle:
-					"To search the content of files, use Grep instead of grep or rg",
-				reason: "Using-your-tools surface still references Grep",
-			},
-		],
-	},
-	{
-		file: "agents/claude-code-guide.md",
-		required: [
-			{
-				id: "guide-mcp-doc-tools",
-				needle:
-					"Fetch the appropriate docs map URL using MCP doc tools (context7, docfork, or ref)",
-				reason: "Guide surface missing MCP doc tools rewrite",
-			},
-			{
-				id: "guide-perplexity-fallback",
-				needle:
-					"Use MCP search (perplexity) if official docs don't cover the topic",
-				reason: "Guide surface missing MCP search fallback rewrite",
-			},
-		],
-		forbidden: [
-			{
-				id: "guide-webfetch",
-				needle: "Use WebFetch to fetch the appropriate docs map",
-				reason: "Guide surface still references WebFetch",
-			},
-			{
-				id: "guide-websearch",
-				needle: "Use WebSearch if docs don't cover the topic",
-				reason: "Guide surface still references WebSearch",
-			},
-		],
-	},
-];
-
 async function readSurfaceFile(
 	exportDir: string,
-	relativePath: string,
+	rule: PromptSurfaceRule,
 	failures: PromptSurfaceFailure[],
 ): Promise<string | null> {
+	const relativePath = rule.file;
 	const fullPath = path.join(exportDir, relativePath);
 	try {
 		return await fs.readFile(fullPath, "utf8");
 	} catch (error) {
+		if (
+			rule.presence === "optional" &&
+			(error as NodeJS.ErrnoException).code === "ENOENT"
+		) {
+			return null;
+		}
 		const reason = error instanceof Error ? error.message : String(error);
 		failures.push({
 			file: relativePath,
@@ -270,8 +143,8 @@ export async function verifyPromptSurfaces(
 	const failures: PromptSurfaceFailure[] = [];
 	let checksRun = 0;
 
-	for (const rule of SURFACE_RULES) {
-		const content = await readSurfaceFile(input.exportDir, rule.file, failures);
+	for (const rule of PROMPT_SURFACE_RULES) {
+		const content = await readSurfaceFile(input.exportDir, rule, failures);
 		checksRun++;
 		if (content == null) continue;
 
@@ -297,7 +170,7 @@ export async function verifyPromptSurfaces(
 			}
 		}
 
-		const resolvedSurfaceFailures = verifyResolvedSurface(rule.file, content);
+		const resolvedSurfaceFailures = verifyResolvedSurface(rule, content);
 		checksRun +=
 			resolvedSurfaceFailures.length > 0 ? resolvedSurfaceFailures.length : 1;
 		failures.push(...resolvedSurfaceFailures);

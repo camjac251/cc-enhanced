@@ -3,6 +3,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
+import {
+	PROMPT_SURFACE_RULES,
+	type PromptSurfaceRule,
+} from "./prompt-surface-rules.js";
 import { verifyPromptSurfaces } from "./verify-prompt-surfaces.js";
 
 async function writeSurface(
@@ -16,45 +20,40 @@ async function writeSurface(
 }
 
 async function createValidSurfaceFixture(root: string): Promise<void> {
-	await writeSurface(
-		root,
-		"tools/builtin/read.md",
-		[
-			"Range parameter (for text files only, supported bat-style forms):",
-			"`show_whitespace: true`",
-		].join("\n"),
+	for (const rule of PROMPT_SURFACE_RULES) {
+		await writeSurface(root, rule.file, validContentForRule(rule));
+	}
+}
+
+async function createValidRequiredSurfaceFixture(root: string): Promise<void> {
+	for (const rule of PROMPT_SURFACE_RULES) {
+		if (rule.presence === "optional") continue;
+		await writeSurface(root, rule.file, validContentForRule(rule));
+	}
+}
+
+function validContentForRule(rule: PromptSurfaceRule): string {
+	return [
+		`# Fixture for ${rule.file}`,
+		"Resolved prompt content.",
+		...(rule.required ?? []).map((required) => required.needle),
+	].join("\n");
+}
+
+function ruleFor(file: string): PromptSurfaceRule {
+	const rule = PROMPT_SURFACE_RULES.find(
+		(candidate) => candidate.file === file,
 	);
-	await writeSurface(
-		root,
-		"tools/builtin/edit.md",
-		"For regex/pattern replacement, use Bash: `sd 'pattern' 'replacement' file.ts`",
-	);
-	await writeSurface(
-		root,
-		"agents/explore.md",
-		[
-			"Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
-			"Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail",
-		].join("\n"),
-	);
-	await writeSurface(
-		root,
-		"agents/plan.md",
-		"Concrete plan guidance only. Literal template examples like ${PLAN_NAME} are allowed when rendered intentionally.",
-	);
-	await writeSurface(
-		root,
-		"system/sections/using-your-tools.md",
-		"Neutral using-your-tools guidance that does not reference Glob or Grep.",
-	);
-	await writeSurface(
-		root,
-		"agents/claude-code-guide.md",
-		[
-			"Fetch the appropriate docs map URL using MCP doc tools (context7, docfork, or ref)",
-			"Use MCP search (perplexity) if official docs don't cover the topic",
-		].join("\n"),
-	);
+	assert.ok(rule, `missing prompt surface rule for ${file}`);
+	return rule;
+}
+
+function contentWithForbiddenNeedles(file: string): string {
+	const rule = ruleFor(file);
+	return [
+		validContentForRule(rule),
+		...(rule.forbidden ?? []).map((forbidden) => forbidden.needle),
+	].join("\n");
 }
 
 test("verifyPromptSurfaces reports unreadable surface files", async () => {
@@ -102,6 +101,30 @@ test("verifyPromptSurfaces passes for patched live prompt surfaces", async () =>
 	);
 	try {
 		await createValidSurfaceFixture(tempDir);
+		await writeSurface(
+			tempDir,
+			"system/sections/session-specific-guidance.md",
+			[
+				validContentForRule(
+					ruleFor("system/sections/session-specific-guidance.md"),
+				),
+				"spawn Agent with subagent_type=${agent.explore.agentType}",
+			].join("\n"),
+		);
+		const result = await verifyPromptSurfaces({ exportDir: tempDir });
+		assert.equal(result.ok, true);
+		assert.deepEqual(result.failures, []);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("verifyPromptSurfaces allows intentionally disabled optional surfaces to be absent", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "verify-prompt-surfaces-optional-absent-"),
+	);
+	try {
+		await createValidRequiredSurfaceFixture(tempDir);
 		const result = await verifyPromptSurfaces({ exportDir: tempDir });
 		assert.equal(result.ok, true);
 		assert.deepEqual(result.failures, []);
@@ -120,8 +143,7 @@ test("verifyPromptSurfaces rejects legacy live prompt guidance", async () => {
 			tempDir,
 			"tools/builtin/read.md",
 			[
-				"Range parameter (for text files only, supported bat-style forms):",
-				"`show_whitespace: true`",
+				validContentForRule(ruleFor("tools/builtin/read.md")),
 				"You can optionally specify a line offset and limit",
 				"Results are returned using cat -n format",
 			].join("\n"),
@@ -129,17 +151,13 @@ test("verifyPromptSurfaces rejects legacy live prompt guidance", async () => {
 		await writeSurface(
 			tempDir,
 			"agents/claude-code-guide.md",
-			[
-				"Fetch the appropriate docs map URL using MCP doc tools (context7, docfork, or ref)",
-				"Use WebFetch to fetch the appropriate docs map",
-			].join("\n"),
+			contentWithForbiddenNeedles("agents/claude-code-guide.md"),
 		);
 		await writeSurface(
 			tempDir,
 			"agents/explore.md",
 			[
-				"Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
-				"Prefer sg for structural code search, rg only for exact text/config/logs, fd over find, eza over ls, and bat over cat/head/tail",
+				contentWithForbiddenNeedles("agents/explore.md"),
 				"${value_22}",
 				"${...conditional(array(2) | array(0))}",
 				"npm view ${object.PACKAGE_URL}@${value_1} version",
@@ -149,9 +167,46 @@ test("verifyPromptSurfaces rejects legacy live prompt guidance", async () => {
 			tempDir,
 			"agents/plan.md",
 			[
+				validContentForRule(ruleFor("agents/plan.md")),
 				"Find existing patterns using ${conditional(template | template)}",
 				"Then inspect ${value_22} for drift",
 			].join("\n"),
+		);
+		await writeSurface(
+			tempDir,
+			"tools/builtin/repl.md",
+			contentWithForbiddenNeedles("tools/builtin/repl.md"),
+		);
+		await writeSurface(
+			tempDir,
+			"tools/builtin/toolsearch.md",
+			contentWithForbiddenNeedles("tools/builtin/toolsearch.md"),
+		);
+		await writeSurface(
+			tempDir,
+			"system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge.md",
+			contentWithForbiddenNeedles(
+				"system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge.md",
+			),
+		);
+		await writeSurface(
+			tempDir,
+			"system/sections/session-specific-guidance.md",
+			contentWithForbiddenNeedles(
+				"system/sections/session-specific-guidance.md",
+			),
+		);
+		await writeSurface(
+			tempDir,
+			"system/sections/dream-memory-consolidation.md",
+			contentWithForbiddenNeedles(
+				"system/sections/dream-memory-consolidation.md",
+			),
+		);
+		await writeSurface(
+			tempDir,
+			"system/sections/dream-memory-pruning.md",
+			contentWithForbiddenNeedles("system/sections/dream-memory-pruning.md"),
 		);
 
 		const result = await verifyPromptSurfaces({ exportDir: tempDir });
@@ -188,6 +243,32 @@ test("verifyPromptSurfaces rejects legacy live prompt guidance", async () => {
 			result.failures.some(
 				(failure) => failure.id === "plan-unresolved-placeholder",
 			),
+		);
+		assert.ok(
+			result.failures.some((failure) => failure.id === "repl-glob-example"),
+		);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "toolsearch-grep-select-example",
+			),
+		);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "remote-planning-glob-grep-read",
+			),
+		);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "session-find-grep-helper",
+			),
+		);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "dream-memory-grep-transcripts",
+			),
+		);
+		assert.ok(
+			result.failures.some((failure) => failure.id === "dream-memory-find-md"),
 		);
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });

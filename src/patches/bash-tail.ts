@@ -8,6 +8,7 @@ import {
 	isMemberPropertyName,
 	objectPatternHasKey,
 } from "./ast-helpers.js";
+import { MODERN_OUTPUT_LIMIT_WARNING } from "./prompt-policy.js";
 
 /**
  * Add output_tail and max_output options to Bash tool.
@@ -30,7 +31,13 @@ const PROMPT_ADDITION = `\
   - Use \`max_output: N\` to keep outputs inline up to N characters, preventing disk saves. Set 100000-500000 for commands you expect to have large output (bat, git diff, git log, build output you want to analyze). This avoids the round-trip of reading a saved file.
   - Use \`output_tail: true\` for commands where errors/results appear at the end: build commands (npm/pnpm/yarn build, cargo build, make, go build), test runners (pytest, jest, vitest, cargo test, go test), Docker builds, and log viewing. When truncation occurs, keeps the LAST N characters instead of first.
   - For long builds/tests, combine \`run_in_background: true\` with \`output_tail: true\` to get the final errors when checking results later.
-  - **NEVER** pipe to \`| head -N\` or \`| tail -N\` to cap output. Use \`max_output: N\`, \`output_tail: true\`, \`rg -m N\`, \`fd --max-results N\`, or \`bat -r START:END\` instead. Streaming \`tail -f\` / \`tail -F\` through the Monitor tool is fine.`;
+  - **NEVER** pipe to \`| head -N\`, \`| tail -N\`, or \`grep\` just to cap output. Use \`max_output: N\`, \`output_tail: true\`, \`rg -m N\` for non-code text, \`fd --max-results N\`, or \`bat -r START:END\` instead. Streaming \`tail -f\` / \`tail -F\` through the Monitor tool is fine.`;
+
+const LEGACY_TOKEN_WARNING_RE =
+	/Pipe output through head, tail, or grep to reduce result size\. Avoid cat on large files (?:—|\\u2014) use Read with offset\/limit instead\./g;
+
+const LEGACY_POWERSHELL_TOKEN_WARNING_RE =
+	/Pipe output through Select-Object -First\/-Last or Select-String to reduce result size\. Avoid Get-Content on large files (?:—|\\u2014) use Read with offset\/limit instead\./g;
 
 // --- Helpers ---
 
@@ -664,6 +671,10 @@ export const bashOutputTail: Patch = {
 	tag: "bash-tail",
 
 	string: (code) => {
+		code = code
+			.replace(LEGACY_TOKEN_WARNING_RE, MODERN_OUTPUT_LIMIT_WARNING)
+			.replace(LEGACY_POWERSHELL_TOKEN_WARNING_RE, MODERN_OUTPUT_LIMIT_WARNING);
+
 		// Insert disk persistence / output_tail guidance into the Bash prompt.
 		// The current prompt builder emits an array of strings (one per bullet).
 		// Inject new items before "When issuing multiple commands:".
@@ -865,6 +876,15 @@ export const bashOutputTail: Patch = {
 			return "Missing max_output guidance in prompt";
 		if (!code.includes("NEVER** pipe to `| head -N`"))
 			return "Missing pipe-head/tail prohibition in prompt";
+		if (code.includes("Pipe output through head, tail, or grep")) {
+			return "Legacy oversized-output warning still recommends head/tail/grep";
+		}
+		if (code.includes("Pipe output through Select-Object -First/-Last")) {
+			return "Legacy oversized-output warning still recommends PowerShell truncation pipes";
+		}
+		if (!code.includes(MODERN_OUTPUT_LIMIT_WARNING)) {
+			return "Missing modern oversized-output warning guidance";
+		}
 
 		return true;
 	},

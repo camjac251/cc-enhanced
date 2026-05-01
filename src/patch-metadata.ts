@@ -36,6 +36,16 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "CLAUDE.md system prompt",
 		group: "Prompt",
 	},
+	"memory-prompt-soften": {
+		tag: "memory-prompt-soften",
+		label: "Memory prompt",
+		group: "Prompt",
+	},
+	"session-guidance": {
+		tag: "session-guidance",
+		label: "Session guidance",
+		group: "Prompt",
+	},
 	"mcp-server-name": {
 		tag: "mcp-server-name",
 		label: "MCP server name validation",
@@ -105,6 +115,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		tag: "subagent-model-tag",
 		label: "Subagent model tag",
 		group: "UX",
+	},
+	"subagent-system-prompt": {
+		tag: "subagent-system-prompt",
+		label: "Subagent system prompt",
+		group: "Prompt",
 	},
 	"skill-listing-ui": {
 		tag: "skill-listing-ui",
