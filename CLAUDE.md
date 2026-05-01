@@ -73,6 +73,25 @@ Two extraction paths, depending on what you want to inspect:
 
 `bun run inspect search <cli.js> <query...>` parses the bundle once and can run multiple queries. Results are ranked so exact strings and durable object keys beat incidental minified identifier substrings. Add `--field string|template|identifier|key`, `--regex`, `--ignore-case`, `--object`, `--json`, `--scope`, `--children`, or `--breadcrumb-depth <n>` as needed. Use `bun run inspect prompts <cli.js> [query]` to list prompt-like string/template nodes.
 
+## Bundle Diff Triage
+
+Use `bun run diff -- <old-cli.js> <new-cli.js>` for upstream-to-upstream release review. It compares stable bundle surfaces instead of raw minified text and is the preferred way to find new commands, flags, env vars, routes, prompt-like strings, subsystem renames, and patch-risk anchors between clean builds.
+
+Common focused passes:
+- `--focus commands` for command-like additions/removals and nearby flags.
+- `--focus env` for environment-variable and traffic-control changes.
+- `--focus settings` for settings/config write additions, removals, and count changes.
+- `--focus rewrites` for prefix/text rewrites such as subsystem renames.
+- `--focus prompts --prompt-export <dir>` to review prompt text and `<system-reminder>` changes, then cross-check added prompt-like surfaces against exported prompt artifacts.
+- `--focus patches` to review local patch anchors affected by removed or rewritten surfaces.
+- `--cache` for repeated work on the same bundles.
+
+Use `bun run diff -- matrix <old> <mid> <new>` when comparing adjacent builds. Matrix mode shows per-step counts and latest-only additions so release triage does not depend on a single pairwise report.
+
+Keep bundle-diff config generic: `ignoreTokens`, `ignorePrefixes`, and `highSignalTokens` should describe local triage noise or durable public-facing surfaces, not upstream source-file names, module names, or reconstructed internals. Older source trees can guide heuristics, but do not encode or reveal source-specific assumptions in this repository. The output should describe product behavior and bundle-visible surfaces only.
+
+Use `bun run diff -- ast <original> <patched>` only for the legacy clean-vs-patched AST-node comparison.
+
 ## Prompt Artifacts
 
 Prompt artifacts are generated from native-extracted or legacy npm package `cli.js` bundles. Artifact paths must be unique, and duplicate writes should fail instead of overwriting and duplicating manifest entries.
