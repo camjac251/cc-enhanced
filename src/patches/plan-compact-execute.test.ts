@@ -231,12 +231,14 @@ test("plan-compact-execute adds non-bypass compact options and handler", async (
 	);
 	assert.equal(output.includes(`value: "${COMPACT_ACCEPT_FOR_TEST}"`), true);
 	assert.equal(output.includes("yes-compact-bypass"), false);
+	assert.match(output, /Yes, compact context[^"`]*and use auto mode/);
+	assert.match(output, /Yes, compact context[^"`]*and auto-accept edits/);
 	assert.equal(output.includes("compactContext"), true);
 	assert.equal(output.includes("plan-compact-execute-failed"), true);
 	assert.equal(output.includes("__ccEnhancedPlanCompactCommand"), true);
 	assert.equal(output.includes("compactionResult"), true);
 	assert.equal(output.includes("messagesToKeep ?? []"), true);
-	assert.equal(output.includes("visibleOptionCount: N.length"), true);
+	assert.match(output, /visibleOptionCount:\s*\w+\.length/);
 	assert.equal(output.includes("clearContext: !0"), false);
 
 	assert.equal(planCompactExecute.verify(output), true);
