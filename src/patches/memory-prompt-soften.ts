@@ -21,7 +21,7 @@ const LEGACY_DREAM_FIND_MEMORY_FILES_RE =
 	/1\. \\`find (\$\{[^}]+\}) -name '\*\.md'\\` to enumerate every memory file \(including any \\`team\/\\` subdirectory\)\./g;
 
 const MODERN_PATH_SCOPED_MEMORY_READONLY =
-	"Only read-only shell commands and $1 with all paths inside $2 are permitted in this context. Prefer modern read-only inspection commands such as fd, eza, sg, rg for non-code text, bat ranges, git status/log/diff, stat, and wc when needed. Do not use cat/head/tail/grep as generic viewing or truncation tools.";
+	"Only read-only shell commands and $1 with all paths inside $2 are permitted in this context. Prefer modern read-only inspection commands such as fd, eza, sg, rg for non-code text, bat ranges, git status/log/diff, stat, and wc when needed. Do not use legacy Unix viewing or truncation utilities as generic inspection tools.";
 const MODERN_DREAM_TRANSCRIPTS =
 	"Session transcripts: $1 (large JSONL files. Use \\`rg -m 50\\` narrowly; don't read whole files)";
 const MODERN_DREAM_TEAM_LIST_TEMPLATE =

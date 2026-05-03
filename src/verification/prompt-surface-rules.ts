@@ -153,7 +153,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "explore-sg-policy",
 				needle:
-					"Prefer fd over find, eza over ls, bat over cat/head/tail, and rg only for non-code text/logs/config/comments",
+					"Prefer fd for file discovery, eza for directory listings, bat ranges for file viewing, and rg only for non-code text/logs/config/comments",
 				reason: "Explore surface missing sg/fd/bat policy guidance",
 			},
 		],

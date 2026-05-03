@@ -60,6 +60,16 @@ export const FORBIDDEN_LEGACY_PROMPT_NEEDLES: readonly PromptPolicyNeedle[] = [
 		reason: "Legacy POSIX oversized-output warning still present",
 	},
 	{
+		id: "copyable-pipe-head",
+		needle: "`| head",
+		reason: "Prompt still contains copyable pipe-head syntax",
+	},
+	{
+		id: "copyable-pipe-tail",
+		needle: "`| tail",
+		reason: "Prompt still contains copyable pipe-tail syntax",
+	},
+	{
 		id: "legacy-bash-token-warning-powershell",
 		needle: "Pipe output through Select-Object -First/-Last",
 		reason: "Legacy PowerShell oversized-output warning still present",

@@ -59,8 +59,13 @@ const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 	},
 	{
 		id: "bash-token-warning",
-		needle: "Do not pipe through head, tail, or grep just to cap output.",
+		needle: "Do not add shell pipeline truncation just to shorten output.",
 		reason: "Missing modern oversized-output warning",
+	},
+	{
+		id: "bash-output-cap-pipeline-guard",
+		needle: "shell pipeline truncation used only to shorten output",
+		reason: "Missing Bash validateInput output-cap pipeline guard",
 	},
 	{
 		id: "session-mem-env",

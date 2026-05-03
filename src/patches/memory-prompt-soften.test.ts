@@ -38,6 +38,7 @@ test("memory-prompt-soften rewrites path-scoped legacy read-only shell list", ()
 		memoryPromptSoften.string?.(VANILLA_FIXTURE) ?? VANILLA_FIXTURE;
 
 	assert.equal(output.includes("ls, find, grep, cat"), false);
+	assert.equal(output.includes("cat/head/tail/grep"), false);
 	assert.equal(output.includes("with all paths inside ${root}"), true);
 	assert.equal(output.includes("bat ranges"), true);
 	assert.equal(memoryPromptSoften.verify(output), true);

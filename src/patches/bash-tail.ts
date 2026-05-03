@@ -31,7 +31,7 @@ const PROMPT_ADDITION = `\
   - Use \`max_output: N\` to keep outputs inline up to N characters, preventing disk saves. Set 100000-500000 for commands you expect to have large output (bat, git diff, git log, build output you want to analyze). This avoids the round-trip of reading a saved file.
   - Use \`output_tail: true\` for commands where errors/results appear at the end: build commands (npm/pnpm/yarn build, cargo build, make, go build), test runners (pytest, jest, vitest, cargo test, go test), Docker builds, and log viewing. When truncation occurs, keeps the LAST N characters instead of first.
   - For long builds/tests, combine \`run_in_background: true\` with \`output_tail: true\` to get the final errors when checking results later.
-  - **NEVER** pipe to \`| head -N\`, \`| tail -N\`, or \`grep\` just to cap output. Use \`max_output: N\`, \`output_tail: true\`, \`rg -m N\` for non-code text, \`fd --max-results N\`, or \`bat -r START:END\` instead. Streaming \`tail -f\` / \`tail -F\` through the Monitor tool is fine.`;
+  - **IMPORTANT**: Do not add shell pipeline truncation just to shorten output. Use \`max_output: N\`, \`output_tail: true\`, \`rg -m N\` for non-code text, \`fd --max-results N\`, or \`bat -r START:END\` instead.`;
 
 const LEGACY_TOKEN_WARNING_RE =
 	/Pipe output through head, tail, or grep to reduce result size\. Avoid cat on large files (?:—|\\u2014) use Read with offset\/limit instead\./g;
@@ -40,6 +40,13 @@ const LEGACY_POWERSHELL_TOKEN_WARNING_RE =
 	/Pipe output through Select-Object -First\/-Last or Select-String to reduce result size\. Avoid Get-Content on large files (?:—|\\u2014) use Read with offset\/limit instead\./g;
 
 // --- Helpers ---
+
+function hasCopyableOutputCapPipeText(value: string, command: "head" | "tail") {
+	return (
+		value.includes(`\`| ${command}`) ||
+		new RegExp(`(^|[^\\w-])\\|\\s*${command}\\s+-\\d`).test(value)
+	);
+}
 
 function findZodVariable(path: any): string | null {
 	let zodVar: string | null = null;
@@ -81,6 +88,41 @@ function buildConditionalProperty(key: string, inputVar: string): t.Expression {
 		t.memberExpression(t.identifier(inputVar), t.identifier(key)),
 		t.unaryExpression("void", t.numericLiteral(0)),
 	);
+}
+
+function objectMethodHasLocalFunction(
+	node: t.ObjectMethod,
+	name: string,
+): boolean {
+	return node.body.body.some(
+		(stmt) =>
+			t.isFunctionDeclaration(stmt) && t.isIdentifier(stmt.id, { name }),
+	);
+}
+
+function buildOutputCapPipelineValidation(inputName: string): t.Statement[] {
+	return template.statements(`
+		function __ccEnhancedHasOutputCapPipeline(command) {
+			if (typeof command !== "string" || command.indexOf("|") === -1) {
+				return false;
+			}
+			return command.split("|").slice(1).some(function (segment) {
+				var trimmed = segment.trim();
+				if (!trimmed) return false;
+				var commandName = trimmed.split(/\\s+/)[0];
+				if (commandName === "head") return true;
+				if (commandName !== "tail") return false;
+				return !/\\s-(?:f|F)\\b/.test(" " + trimmed);
+			});
+		}
+		if (__ccEnhancedHasOutputCapPipeline(INPUT.command)) {
+			return {
+				result: false,
+				message: "Blocked: shell pipeline truncation used only to shorten output. Use max_output, output_tail: true, rg -m N for non-code text, fd --max-results N, or bat -r START:END.",
+				errorCode: 10,
+			};
+		}
+	`)({ INPUT: t.identifier(inputName) });
 }
 
 function findThresholdCallName(body: t.Statement[]): string | null {
@@ -484,6 +526,23 @@ function createBashOutputTailMutator(): Visitor {
 
 		// 6. Destructuring + 7. Preview fix
 		ObjectMethod(path) {
+			if (getObjectKeyName(path.node.key) === "validateInput") {
+				const firstParam = path.node.params[0];
+				if (!t.isIdentifier(firstParam)) return;
+				if (
+					objectMethodHasLocalFunction(
+						path.node,
+						"__ccEnhancedHasOutputCapPipeline",
+					)
+				) {
+					return;
+				}
+				path.node.body.body.unshift(
+					...buildOutputCapPipelineValidation(firstParam.name),
+				);
+				return;
+			}
+
 			if (
 				getObjectKeyName(path.node.key) !==
 				"mapToolResultToToolResultBlockParam"
@@ -717,8 +776,32 @@ export const bashOutputTail: Patch = {
 		let hasRenderOptsFunction = false;
 		let hasRenderOptsHelper = false;
 		let hasRenderOptsWrappedReturns = false;
+		let hasOutputCapPipelineGuard = false;
+		let hasOutputCapPipelineMessage = false;
+		let hasCopyablePipeHeadText = false;
+		let hasCopyablePipeTailText = false;
 
 		traverse(verifyAst, {
+			StringLiteral(path) {
+				const value = path.node.value;
+				if (hasCopyableOutputCapPipeText(value, "head")) {
+					hasCopyablePipeHeadText = true;
+				}
+				if (hasCopyableOutputCapPipeText(value, "tail")) {
+					hasCopyablePipeTailText = true;
+				}
+			},
+
+			TemplateElement(path) {
+				const value = path.node.value.cooked ?? path.node.value.raw;
+				if (hasCopyableOutputCapPipeText(value, "head")) {
+					hasCopyablePipeHeadText = true;
+				}
+				if (hasCopyableOutputCapPipeText(value, "tail")) {
+					hasCopyablePipeTailText = true;
+				}
+			},
+
 			// Schema check
 			ObjectExpression(path) {
 				const keyNames = new Set<string>();
@@ -807,6 +890,30 @@ export const bashOutputTail: Patch = {
 
 			// Destructuring check
 			ObjectMethod(path) {
+				if (getObjectKeyName(path.node.key) === "validateInput") {
+					if (
+						objectMethodHasLocalFunction(
+							path.node,
+							"__ccEnhancedHasOutputCapPipeline",
+						)
+					) {
+						hasOutputCapPipelineGuard = true;
+					}
+					path.traverse({
+						StringLiteral(innerPath) {
+							if (
+								innerPath.node.value.includes(
+									"shell pipeline truncation used only to shorten output",
+								)
+							) {
+								hasOutputCapPipelineMessage = true;
+								innerPath.stop();
+							}
+						},
+					});
+					return;
+				}
+
 				if (
 					getObjectKeyName(path.node.key) !==
 					"mapToolResultToToolResultBlockParam"
@@ -866,6 +973,10 @@ export const bashOutputTail: Patch = {
 			return "Missing _bashAppendOpts helper in renderToolUseMessage";
 		if (!hasRenderOptsWrappedReturns)
 			return "Bash renderToolUseMessage returns are not all wrapped with _bashAppendOpts";
+		if (!hasOutputCapPipelineGuard)
+			return "Missing Bash validateInput output-cap pipeline guard";
+		if (!hasOutputCapPipelineMessage)
+			return "Missing Bash output-cap pipeline validation message";
 
 		// Prompt checks
 		if (!code.includes("Disk persistence"))
@@ -874,8 +985,18 @@ export const bashOutputTail: Patch = {
 			return "Missing output_tail guidance in prompt";
 		if (!code.includes("preventing disk saves"))
 			return "Missing max_output guidance in prompt";
-		if (!code.includes("NEVER** pipe to `| head -N`"))
-			return "Missing pipe-head/tail prohibition in prompt";
+		if (
+			!code.includes(
+				"Do not add shell pipeline truncation just to shorten output",
+			)
+		)
+			return "Missing shell pipeline truncation prohibition in prompt";
+		if (hasCopyablePipeHeadText) {
+			return "Prompt still contains copyable pipe-head syntax";
+		}
+		if (hasCopyablePipeTailText) {
+			return "Prompt still contains copyable pipe-tail syntax";
+		}
 		if (code.includes("Pipe output through head, tail, or grep")) {
 			return "Legacy oversized-output warning still recommends head/tail/grep";
 		}

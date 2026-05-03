@@ -15,7 +15,7 @@ export const MODERN_READONLY_OPS =
 
 /** Tool preference line shared by Bash, Explore, and Plan prompts. */
 export const MODERN_TOOL_PREFERENCE =
-	"Prefer fd over find, eza over ls, bat over cat/head/tail, and rg only for non-code text/logs/config/comments";
+	"Prefer fd for file discovery, eza for directory listings, bat ranges for file viewing, and rg only for non-code text/logs/config/comments";
 
 /** Source-code tool-choice self-check shared by prompt surfaces. */
 export const MODERN_CODE_TOOL_SELF_CHECK =
@@ -43,12 +43,12 @@ export const MODERN_CODE_SEARCH_POLICY = MODERN_CODE_SEARCH_DECISION_TREE;
 /** Bash-specific code/text search fallback guidance. */
 export const MODERN_BASH_SEARCH_GUIDANCE = MODERN_CODE_SEARCH_DECISION_TREE;
 
-/** Stdout caps line: forbid pipe-to-head/tail in favor of tool-level limits. */
+/** Stdout caps line: prefer tool-level limits over shell pipeline truncation. */
 export const MODERN_STDOUT_CAP =
-	"Cap stdout with max_output, output_tail: true, rg -m N for non-code text, fd --max-results, or bat -r START:END; NEVER pipe to | head -N, | tail -N, or grep just to reduce output (streaming tail -f/-F through Monitor is fine)";
+	"Cap stdout with tool-level or producer-native limits: max_output, output_tail: true, rg -m N for non-code text, fd --max-results, or bat -r START:END. Do not add shell pipeline truncation just to shorten output.";
 
 export const MODERN_OUTPUT_LIMIT_WARNING =
-	"Use max_output, output_tail: true, rg -m N for non-code text, fd --max-results N, or bat -r START:END to reduce result size. Do not pipe through head, tail, or grep just to cap output.";
+	"Use max_output, output_tail: true, rg -m N for non-code text, fd --max-results N, or bat -r START:END to reduce result size. Do not add shell pipeline truncation just to shorten output.";
 
 /** Prohibited operations line shared across prompts. */
 export const PROHIBITED_BASH_OPS =

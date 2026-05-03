@@ -85,6 +85,9 @@ const BashTool = {
     run_in_background: z.boolean().optional().describe("Run the command asynchronously"),
     dangerouslyDisableSandbox: z.boolean().optional().describe("Disable the sandbox"),
   }),
+  async validateInput(input) {
+    return { result: true };
+  },
   async call(input, ctx) {
     return {
       type: "tool_result",
@@ -160,7 +163,17 @@ test("bash-tail patches schema, prompt, persistence, and preview surfaces", asyn
 	assert.equal(output.includes("Disk persistence"), true);
 	assert.equal(output.includes("build commands"), true);
 	assert.equal(output.includes("maxOutput > 0"), true);
-	assert.equal(output.includes("**NEVER** pipe to `| head -N`"), true);
+	assert.equal(
+		output.includes(
+			"Do not add shell pipeline truncation just to shorten output",
+		),
+		true,
+	);
+	assert.equal(output.includes("`| head"), false);
+	assert.equal(output.includes("| head -"), false);
+	assert.equal(output.includes("`| tail"), false);
+	assert.equal(output.includes("| tail -"), false);
+	assert.equal(output.includes("__ccEnhancedHasOutputCapPipeline"), true);
 	assert.equal(
 		output.includes("Pipe output through head, tail, or grep"),
 		false,
@@ -221,6 +234,29 @@ test("bash-tail runtime keeps tail content, fixes preview, and honors max_output
 		assert.equal(
 			mod.renderBashMessage({ rerun: "foo", output_tail: true }, ctx),
 			"rerun foo · tail",
+		);
+		assert.deepEqual(
+			await mod.BashTool.validateInput({ command: "printf hi" }),
+			{
+				result: true,
+			},
+		);
+		assert.deepEqual(
+			await mod.BashTool.validateInput({ command: "printf hi | head -40" }),
+			{
+				result: false,
+				message:
+					"Blocked: shell pipeline truncation used only to shorten output. Use max_output, output_tail: true, rg -m N for non-code text, fd --max-results N, or bat -r START:END.",
+				errorCode: 10,
+			},
+		);
+		assert.deepEqual(
+			await mod.BashTool.validateInput({
+				command: "tail -F app.log | rg error",
+			}),
+			{
+				result: true,
+			},
 		);
 		const longCmd = "x".repeat(200);
 		const el = mod.renderBashMessage(
