@@ -7,13 +7,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
-  <img src="https://img.shields.io/badge/Patches-31-orange.svg" alt="31 Patches">
+  <img src="https://img.shields.io/badge/Patches-32-orange.svg" alt="32 Patches">
   <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.126-8A2BE2.svg" alt="Tested against Claude Code 2.1.126">
 </p>
 
 ---
 
-cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 31 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 32 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
 
 Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting, LSP fan-out, worktree permissions), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read, batched `edits[]` on Edit, output tails on Bash), and replace prompt fragments that steer the model toward better shell tooling.
 
@@ -151,6 +151,7 @@ Terminal interface polish.
 | Patch | Effect |
 |-------|--------|
 | [`plan-diff-ui`](src/patches/plan-diff-ui.ts) | Plan mode shows the real diff for plan-backed Edit and Write instead of "Updated plan" / "Reading Plan" placeholders, and stops hiding the preview hint or the tool-use row for plan-backed file writes. |
+| [`plan-compact-execute`](src/patches/plan-compact-execute.ts) | Plan approval adds a non-bypass "compact context and execute" path that summarizes the current conversation before submitting the approved implementation prompt. The approval selector expands to the option count when space allows, so the extra choice does not hide normal actions. |
 | [`no-collapse`](src/patches/no-collapse.ts) | Read, Search, and Grep results stay expanded in the transcript. Memory-file writes render with full path and diff instead of a generic collapsed summary. |
 | [`skill-listing-ui`](src/patches/skill-listing-ui.ts) | The "Saved N skills" notification previews the first few activated skill names inline instead of showing only a count badge. |
 | [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | When `CLAUDE_CODE_SUBAGENT_MODEL` is set globally, Task rows omit the redundant dimmed `model: ...` label that would otherwise appear on every subagent. |

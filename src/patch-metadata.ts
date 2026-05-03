@@ -81,6 +81,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Plan diff UI",
 		group: "UX",
 	},
+	"plan-compact-execute": {
+		tag: "plan-compact-execute",
+		label: "Plan compact execute",
+		group: "UX",
+	},
 	"tools-off": {
 		tag: "tools-off",
 		label: "Disable tools",

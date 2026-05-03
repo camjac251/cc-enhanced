@@ -19,5 +19,4 @@ hardening.
 | Extraction thresholds | fixed `10000/5000/3` | `CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT`, `CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE`, `CC_SM_TOOL_CALLS_BETWEEN_UPDATES` |
 
 Notes:
-- Compaction toggle remains upstream-native (`ENABLE_CLAUDE_CODE_SM_COMPACT` / `DISABLE_CLAUDE_CODE_SM_COMPACT`).
 - `session-mem` verification is AST-based and covered by `src/patches/session-mem.test.ts`.
