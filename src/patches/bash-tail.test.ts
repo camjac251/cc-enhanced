@@ -68,6 +68,14 @@ function buildPreview(stdout, limit) {
   return { preview: stdout.slice(0, limit), hasMore: stdout.length > limit };
 }
 
+function detectSimulatedEdit(command) {
+  return command === "sed-edit" ? { filePath: "/tmp/edited.txt" } : null;
+}
+
+function formatPath(filePath) {
+  return "short:" + filePath;
+}
+
 async function storeBlocks(blocks, result, limit) {
   return { blocks, result, limit };
 }
@@ -132,8 +140,10 @@ function truncateOutput(text) {
 }
 
 function renderBashMessage(input, { verbose, theme }) {
-  let { command, rerun } = input;
-  if (!command) return rerun ? \`rerun \${rerun}\` : null;
+  let { command } = input;
+  if (!command) return null;
+  let edit = detectSimulatedEdit(command);
+  if (edit) return verbose ? edit.filePath : formatPath(edit.filePath);
   if (command.length > 100) {
     return { type: "Text", props: { children: [command.slice(0, 100), "\\u2026"] } };
   }
@@ -217,6 +227,14 @@ test("bash-tail runtime keeps tail content, fixes preview, and honors max_output
 		assert.equal(mod.renderBashMessage({ command: "ls" }, ctx), "ls");
 		assert.equal(mod.renderBashMessage({}, ctx), null);
 		assert.equal(
+			mod.renderBashMessage({ command: "sed-edit" }, ctx),
+			"short:/tmp/edited.txt",
+		);
+		assert.equal(
+			mod.renderBashMessage({ command: "sed-edit", output_tail: true }, ctx),
+			"short:/tmp/edited.txt · tail",
+		);
+		assert.equal(
 			mod.renderBashMessage({ command: "ls", output_tail: true }, ctx),
 			"ls · tail",
 		);
@@ -230,10 +248,6 @@ test("bash-tail runtime keeps tail content, fixes preview, and honors max_output
 		assert.equal(
 			mod.renderBashMessage({ command: "ls", max_output: 0 }, ctx),
 			"ls",
-		);
-		assert.equal(
-			mod.renderBashMessage({ rerun: "foo", output_tail: true }, ctx),
-			"rerun foo · tail",
 		);
 		assert.deepEqual(
 			await mod.BashTool.validateInput({ command: "printf hi" }),

@@ -265,6 +265,6 @@ Domain rules in `.claude/rules/` (auto-surface on relevant file paths):
 
 - `bun-binary-format.md`: Bun 1.3+ ELF format and the in-place repack strategy.
 - `read-token-pipeline.md`: Read tool gates and how `limits` and `read-bat` interact.
-- `session-memory.md`: `session-mem` env overrides and AST-verified guard hardening.
+- `session-memory.md`: `session-mem` past-context env override and AST-verified guard hardening.
 - `prompt-extraction.md`: prompt export structure and resolution techniques.
 - `verification.md`: pre-commit cadence (typecheck, lint, test, then `mise run verify:patches`). Surfaces when patches or verifiers are edited.

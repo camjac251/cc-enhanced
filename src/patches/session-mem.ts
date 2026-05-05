@@ -1,28 +1,10 @@
 import * as t from "@babel/types";
 import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
-import {
-	getMemberPropertyName,
-	getObjectKeyName,
-	getVerifyAst,
-} from "./ast-helpers.js";
+import { getMemberPropertyName, getVerifyAst } from "./ast-helpers.js";
 
 /**
- * Expand session memory controls with env overrides.
- *
- * Session memory maintains a structured summary.md file with:
- * - Current state, task spec, files, workflow
- * - Errors & corrections, learnings, worklog
- *
- * Key behaviors:
- * 1. Extraction (creating/updating summary.md) - controlled by tengu_session_memory
- * 2. Past-session retrieval prompt - controlled by tengu_coral_fern
- * This patch adds:
- * - ENABLE_SESSION_MEMORY: extraction override (OR with the built-in flag)
- * - ENABLE_SESSION_MEMORY_PAST: past-session retrieval override
- * - CC_SM_PER_SECTION_TOKENS / CC_SM_TOTAL_FILE_LIMIT: section/total memory limits
- * - CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT / CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE /
- *   CC_SM_TOOL_CALLS_BETWEEN_UPDATES: update thresholds
+ * Add an explicit env override for the past-context memory search prompt.
  */
 
 function isProcessReference(node: t.Expression): boolean {
@@ -113,34 +95,6 @@ function envMember(name: string): t.MemberExpression {
 	);
 }
 
-function numberFromEnv(
-	primaryEnv: string,
-	defaultValue: number,
-	fallbackEnv?: string,
-): t.CallExpression {
-	let fallbackExpr: t.Expression = t.numericLiteral(defaultValue);
-	if (fallbackEnv) {
-		fallbackExpr = t.logicalExpression(
-			"??",
-			envMember(fallbackEnv),
-			fallbackExpr,
-		);
-	}
-	return t.callExpression(
-		t.memberExpression(t.identifier("Math"), t.identifier("max")),
-		[
-			t.numericLiteral(1),
-			t.logicalExpression(
-				"||",
-				t.callExpression(t.identifier("Number"), [
-					t.logicalExpression("??", envMember(primaryEnv), fallbackExpr),
-				]),
-				t.numericLiteral(defaultValue),
-			),
-		],
-	);
-}
-
 function isNullOrEmptyArrayReturn(node: t.Statement): boolean {
 	if (t.isReturnStatement(node)) {
 		if (t.isNullLiteral(node.argument)) return true;
@@ -179,19 +133,6 @@ function nodeContainsFlagCall(node: t.Node, flagName: string): boolean {
 	return visit(node);
 }
 
-function isProcessEnvMember(
-	node: t.Node | null | undefined,
-	envName: string,
-): boolean {
-	if (!node || !t.isMemberExpression(node)) return false;
-	if (getMemberPropertyName(node) !== envName) return false;
-	if (!t.isMemberExpression(node.object)) return false;
-	const envObject = node.object;
-	if (getMemberPropertyName(envObject) !== "env") return false;
-	if (!t.isExpression(envObject.object)) return false;
-	return isProcessReference(envObject.object);
-}
-
 function nodeContainsEnvRef(node: t.Node, envName: string): boolean {
 	const visit = (value: unknown): boolean => {
 		if (!value) return false;
@@ -209,56 +150,8 @@ function nodeContainsEnvRef(node: t.Node, envName: string): boolean {
 }
 
 function createSessionMemoryMutator(truthyFn: string): Visitor {
-	let patchedExtraction = false;
 	let patchedPastSessions = false;
-	let patchedSectionLimits = false;
-	let patchedThresholds = false;
 	return {
-		Function(path: any) {
-			if (patchedExtraction) return;
-			if (!t.isBlockStatement(path.node.body)) return;
-			const body = path.node.body.body;
-			// Must be a single return statement
-			if (body.length !== 1 || !t.isReturnStatement(body[0])) return;
-
-			const returnArg = body[0].argument;
-			if (!t.isCallExpression(returnArg)) return;
-
-			// Check for xK("tengu_session_memory", ...)
-			const callee = returnArg.callee;
-			if (!t.isIdentifier(callee)) return;
-
-			const args = returnArg.arguments;
-			if (args.length < 1) return;
-			if (
-				!t.isStringLiteral(args[0]) ||
-				args[0].value !== "tengu_session_memory"
-			)
-				return;
-
-			// Check if already patched - parent would be LogicalExpression
-			const returnStmt = body[0];
-			if (
-				t.isReturnStatement(returnStmt) &&
-				t.isLogicalExpression(returnStmt.argument)
-			) {
-				patchedExtraction = true;
-				return;
-			}
-
-			// Build: truthyFn(process.env.ENABLE_SESSION_MEMORY)
-			const envCheck = t.callExpression(t.identifier(truthyFn), [
-				t.memberExpression(
-					t.memberExpression(t.identifier("process"), t.identifier("env")),
-					t.identifier("ENABLE_SESSION_MEMORY"),
-				),
-			]);
-
-			// Replace return with: return truthyFn(process.env.ENABLE_SESSION_MEMORY) || xK(...)
-			body[0].argument = t.logicalExpression("||", envCheck, returnArg);
-			patchedExtraction = true;
-			console.log(`Patched session memory with truthy fn: ${truthyFn}`);
-		},
 		IfStatement(path) {
 			const test = path.node.test;
 
@@ -275,7 +168,6 @@ function createSessionMemoryMutator(truthyFn: string): Visitor {
 				envMember("ENABLE_SESSION_MEMORY_PAST"),
 			]);
 
-			// Pattern 1 (old): if (!flagCall("tengu_coral_fern", ...)) return null|[];
 			if (
 				t.isUnaryExpression(test, { operator: "!" }) &&
 				isFlagCall(test.argument, "tengu_coral_fern") &&
@@ -289,98 +181,12 @@ function createSessionMemoryMutator(truthyFn: string): Visitor {
 				patchedPastSessions = true;
 				return;
 			}
-
-			// Pattern 2 (new): if (flagCall("tengu_coral_fern", ...)) { ... }
-			if (isFlagCall(test, "tengu_coral_fern")) {
-				path.node.test = t.logicalExpression("||", envPastCheck, test);
-				patchedPastSessions = true;
-			}
-		},
-		VariableDeclaration(path) {
-			const decls = path.node.declarations;
-			const hasSessionTitleTemplate = decls.some(
-				(d) =>
-					t.isVariableDeclarator(d) &&
-					t.isTemplateLiteral(d.init) &&
-					d.init.quasis.some((q) => q.value.raw.includes("# Session Title")),
-			);
-			if (!hasSessionTitleTemplate) return;
-
-			let touched = false;
-			for (const decl of decls) {
-				if (!t.isVariableDeclarator(decl) || !t.isNumericLiteral(decl.init))
-					continue;
-				if (decl.init.value === 2000) {
-					decl.init = numberFromEnv("CC_SM_PER_SECTION_TOKENS", 2000);
-					touched = true;
-				} else if (decl.init.value === 12000) {
-					decl.init = numberFromEnv(
-						"CC_SM_TOTAL_FILE_LIMIT",
-						12000,
-						"CM_SM_TOTAL_FILE_LIMIT",
-					);
-					touched = true;
-				}
-			}
-			if (touched) patchedSectionLimits = true;
-		},
-		ObjectExpression(path) {
-			const props = path.node.properties.filter((p): p is t.ObjectProperty =>
-				t.isObjectProperty(p),
-			);
-			const getProp = (name: string) =>
-				props.find(
-					(p) =>
-						getObjectKeyName(p.key) === name && t.isNumericLiteral(p.value),
-				);
-
-			const minInit = getProp("minimumMessageTokensToInit");
-			const minBetween = getProp("minimumTokensBetweenUpdate");
-			const toolCalls = getProp("toolCallsBetweenUpdates");
-			if (!minInit || !minBetween || !toolCalls) return;
-
-			if (
-				!(t.isNumericLiteral(minInit.value) && minInit.value.value === 10000) ||
-				!(
-					t.isNumericLiteral(minBetween.value) &&
-					minBetween.value.value === 5000
-				) ||
-				!(t.isNumericLiteral(toolCalls.value) && toolCalls.value.value === 3)
-			) {
-				return;
-			}
-
-			minInit.value = numberFromEnv(
-				"CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT",
-				10000,
-			);
-			minBetween.value = numberFromEnv(
-				"CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE",
-				5000,
-			);
-			toolCalls.value = numberFromEnv("CC_SM_TOOL_CALLS_BETWEEN_UPDATES", 3);
-			patchedThresholds = true;
 		},
 		Program: {
 			exit() {
-				if (!patchedExtraction) {
-					console.warn(
-						"Session memory: Could not find tengu_session_memory function",
-					);
-				}
 				if (!patchedPastSessions) {
 					console.warn(
 						"Session memory: Could not find tengu_coral_fern past-session gate",
-					);
-				}
-				if (!patchedSectionLimits) {
-					console.warn(
-						"Session memory: Could not find session section/total token limits",
-					);
-				}
-				if (!patchedThresholds) {
-					console.warn(
-						"Session memory: Could not find session update threshold defaults",
 					);
 				}
 			},
@@ -411,56 +217,11 @@ export const sessionMemory: Patch = {
 			return "Unable to parse AST during session-memory verification";
 		}
 
-		let hasSessionMemoryInLogicalOr = false;
 		let hasCoralFernCall = false;
 		let hasOldCoralFernGuard = false;
-		let hasPastSessionsEnv = false;
-
-		// Env vars that must appear as arguments to call expressions
-		const callScopedEnvVars = new Set([
-			"CC_SM_PER_SECTION_TOKENS",
-			"CC_SM_TOTAL_FILE_LIMIT",
-			"CC_SM_MINIMUM_MESSAGE_TOKENS_TO_INIT",
-			"CC_SM_MINIMUM_TOKENS_BETWEEN_UPDATE",
-			"CC_SM_TOOL_CALLS_BETWEEN_UPDATES",
-		]);
-		const seenCallScopedEnv = new Set<string>();
+		let hasPatchedPastSessionsGate = false;
 
 		traverse(verifyAst, {
-			MemberExpression(path) {
-				// ENABLE_SESSION_MEMORY must be in a LogicalExpression(||)
-				if (isProcessEnvMember(path.node, "ENABLE_SESSION_MEMORY")) {
-					const logicalParent = path.findParent((p) =>
-						p.isLogicalExpression({ operator: "||" }),
-					);
-					if (logicalParent) {
-						// The other side of the || should contain a tengu_session_memory call
-						const logicalNode = logicalParent.node as t.LogicalExpression;
-						if (
-							nodeContainsEnvRef(logicalNode, "ENABLE_SESSION_MEMORY") &&
-							(isFlagCall(logicalNode.left, "tengu_session_memory") ||
-								isFlagCall(logicalNode.right, "tengu_session_memory") ||
-								nodeContainsFlagCall(logicalNode, "tengu_session_memory"))
-						) {
-							hasSessionMemoryInLogicalOr = true;
-						}
-					}
-				}
-
-				if (isProcessEnvMember(path.node, "ENABLE_SESSION_MEMORY_PAST")) {
-					hasPastSessionsEnv = true;
-				}
-
-				// CC_SM_* vars must appear inside a CallExpression
-				for (const envName of callScopedEnvVars) {
-					if (isProcessEnvMember(path.node, envName)) {
-						const callParent = path.findParent((p) => p.isCallExpression());
-						if (callParent) {
-							seenCallScopedEnv.add(envName);
-						}
-					}
-				}
-			},
 			CallExpression(path) {
 				if (isFlagCall(path.node, "tengu_coral_fern")) {
 					hasCoralFernCall = true;
@@ -475,22 +236,23 @@ export const sessionMemory: Patch = {
 				) {
 					hasOldCoralFernGuard = true;
 				}
+				if (
+					nodeContainsFlagCall(test, "tengu_coral_fern") &&
+					nodeContainsEnvRef(test, "ENABLE_SESSION_MEMORY_PAST")
+				) {
+					hasPatchedPastSessionsGate = true;
+				}
 			},
 		});
 
-		if (!hasSessionMemoryInLogicalOr) {
-			return "ENABLE_SESSION_MEMORY must be in a || expression with tengu_session_memory flag call";
-		}
-		if (hasCoralFernCall && !hasPastSessionsEnv) {
-			return "Missing ENABLE_SESSION_MEMORY_PAST env var check";
-		}
-		for (const envName of callScopedEnvVars) {
-			if (!seenCallScopedEnv.has(envName)) {
-				return `${envName} must appear as an argument to a call expression`;
-			}
+		if (!hasCoralFernCall) {
+			return "Missing tengu_coral_fern past-session gate";
 		}
 		if (hasOldCoralFernGuard) {
 			return "Old tengu_coral_fern gate still present";
+		}
+		if (!hasPatchedPastSessionsGate) {
+			return "Missing ENABLE_SESSION_MEMORY_PAST env var check";
 		}
 		return true;
 	},

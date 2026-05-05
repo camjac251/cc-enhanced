@@ -166,21 +166,24 @@ function getBashRenderInputName(node: t.FunctionDeclaration): string | null {
 	if (!objectPatternHasKey(secondParam, "verbose")) return null;
 	if (!objectPatternHasKey(secondParam, "theme")) return null;
 
+	let destructuresCommand = false;
 	for (const stmt of node.body.body) {
 		if (!t.isVariableDeclaration(stmt)) continue;
 		for (const decl of stmt.declarations) {
 			if (!t.isObjectPattern(decl.id)) continue;
 			if (!t.isIdentifier(decl.init, { name: firstParam.name })) continue;
-			if (
-				objectPatternHasKey(decl.id, "command") &&
-				objectPatternHasKey(decl.id, "rerun")
-			) {
-				return firstParam.name;
+			if (objectPatternHasKey(decl.id, "command")) {
+				destructuresCommand = true;
+				break;
 			}
 		}
+		if (destructuresCommand) break;
 	}
 
-	return null;
+	if (!destructuresCommand) return null;
+	if (!nodeContainsPropertyName(node.body, "filePath")) return null;
+
+	return firstParam.name;
 }
 
 function functionBodyHasDeclaration(
@@ -222,6 +225,28 @@ function hasOnlyWrappedTopLevelReturns(path: any, helperName: string): boolean {
 	});
 
 	return wrappedReturns > 0 && !unwrappedReturn;
+}
+
+function nodeContainsPropertyName(node: t.Node, propertyName: string): boolean {
+	const visit = (value: unknown): boolean => {
+		if (!value) return false;
+		if (Array.isArray(value)) return value.some((item) => visit(item));
+		if (typeof value !== "object") return false;
+		const maybeNode = value as t.Node;
+		if (typeof (maybeNode as { type?: unknown }).type !== "string")
+			return false;
+		if (
+			(t.isMemberExpression(maybeNode) ||
+				t.isOptionalMemberExpression(maybeNode)) &&
+			isMemberPropertyName(maybeNode, propertyName)
+		) {
+			return true;
+		}
+		return Object.values(maybeNode as unknown as Record<string, unknown>).some(
+			(child) => visit(child),
+		);
+	};
+	return visit(node);
 }
 
 function findIsImageCallName(
@@ -631,45 +656,8 @@ function createBashOutputTailMutator(): Visitor {
 		FunctionDeclaration(path) {
 			if (renderPatched) return;
 			const node = path.node;
-			if (node.params.length !== 2) return;
-			const firstParam = node.params[0];
-			const secondParam = node.params[1];
-			if (!t.isIdentifier(firstParam)) return;
-			if (!t.isObjectPattern(secondParam)) return;
-
-			const secondKeys = new Set<string>();
-			for (const prop of secondParam.properties) {
-				if (!t.isObjectProperty(prop)) continue;
-				const keyName = getObjectKeyName(prop.key);
-				if (keyName) secondKeys.add(keyName);
-			}
-			if (!secondKeys.has("verbose") || !secondKeys.has("theme")) return;
-
-			if (!t.isBlockStatement(node.body)) return;
-			let commandDestructureFound = false;
-			for (const stmt of node.body.body) {
-				if (!t.isVariableDeclaration(stmt)) continue;
-				for (const decl of stmt.declarations) {
-					if (!t.isObjectPattern(decl.id)) continue;
-					if (
-						!decl.init ||
-						!t.isIdentifier(decl.init, { name: firstParam.name })
-					)
-						continue;
-					const keys = new Set<string>();
-					for (const p of decl.id.properties) {
-						if (!t.isObjectProperty(p)) continue;
-						const keyName = getObjectKeyName(p.key);
-						if (keyName) keys.add(keyName);
-					}
-					if (keys.has("command") && keys.has("rerun")) {
-						commandDestructureFound = true;
-						break;
-					}
-				}
-				if (commandDestructureFound) break;
-			}
-			if (!commandDestructureFound) return;
+			const inputName = getBashRenderInputName(node);
+			if (!inputName) return;
 
 			path.traverse({
 				Function(innerPath) {
@@ -716,7 +704,7 @@ function createBashOutputTailMutator(): Visitor {
 					}
 					return _bashResult;
 				}
-			`)({ INPUT: t.identifier(firstParam.name) });
+			`)({ INPUT: t.identifier(inputName) });
 
 			node.body.body.unshift(...injected);
 			renderPatched = true;
