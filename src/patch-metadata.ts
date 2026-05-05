@@ -131,6 +131,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Skill listing UI",
 		group: "UX",
 	},
+	"tab-queue": {
+		tag: "tab-queue",
+		label: "Tab queue",
+		group: "UX",
+	},
 	"session-mem": {
 		tag: "session-mem",
 		label: "Session memory",

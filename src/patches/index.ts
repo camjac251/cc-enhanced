@@ -28,6 +28,7 @@ export { skillListingUi } from "./skill-listing-ui.js";
 export { subagentModelTag } from "./subagent-model-tag.js";
 export { subagentSystemPrompt } from "./subagent-system-prompt.js";
 export { systemPromptFile } from "./sys-prompt-file.js";
+export { tabQueue } from "./tab-queue.js";
 export { taskOutputExt } from "./taskout-ext.js";
 export { todo } from "./todo-use.js";
 export { disableTools } from "./tools-off.js";
@@ -63,6 +64,7 @@ import { skillListingUi } from "./skill-listing-ui.js";
 import { subagentModelTag } from "./subagent-model-tag.js";
 import { subagentSystemPrompt } from "./subagent-system-prompt.js";
 import { systemPromptFile } from "./sys-prompt-file.js";
+import { tabQueue } from "./tab-queue.js";
 import { taskOutputExt } from "./taskout-ext.js";
 import { todo } from "./todo-use.js";
 import { disableTools } from "./tools-off.js";
@@ -108,6 +110,7 @@ const basePatches: Patch[] = [
 	skillListingUi,
 	subagentSystemPrompt,
 	subagentModelTag,
+	tabQueue,
 	sessionMemory,
 	systemPromptFile,
 	worktreePerms,
