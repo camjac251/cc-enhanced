@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
   <img src="https://img.shields.io/badge/Patches-33-orange.svg" alt="33 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.128-8A2BE2.svg" alt="Tested against Claude Code 2.1.128">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.129-8A2BE2.svg" alt="Tested against Claude Code 2.1.129">
 </p>
 
 ---
@@ -59,7 +59,7 @@ bun install
 mise run native:update
 
 claude --version
-# 2.1.128 (Claude Code; patched: shell-quote-fix, bash-prompt, ..., signature)
+# 2.1.129 (Claude Code; patched: shell-quote-fix, bash-prompt, ..., signature)
 
 mise run status
 # Shows current, previous, and cached versions.
@@ -71,8 +71,8 @@ Rollback is a symlink swap, not a reinstall. `mise run native:rollback` exchange
 flowchart LR
     Launcher["~/.local/bin/claude"] --> Current["versions/current"]
     Previous["versions/previous"]
-    Current --> NewBuild[["build N<br/>patched 2.1.128"]]
-    Previous --> OldBuild[["build N-1<br/>patched 2.1.124"]]
+    Current --> NewBuild[["build N<br/>patched 2.1.129"]]
+    Previous --> OldBuild[["build N-1<br/>patched previous"]]
     NewBuild <-. swap .-> OldBuild
 
     classDef sym fill:#0b2545,stroke:#0b2545,color:#fff
@@ -189,7 +189,7 @@ Do not set `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Th
 
 ```bash
 mise run native:update                            # Fetch + patch + promote (standard workflow)
-mise run native:update -- <version>               # Pin a specific version (e.g. 2.1.128)
+mise run native:update -- <version>               # Pin a specific version (e.g. 2.1.129)
 mise run native:update -- --dry-run               # Preview without promoting
 mise run native:fetch-patch -- <version> --dry-run
 mise run native:promote -- <build-path>           # Promote an already-patched cached build
@@ -369,7 +369,7 @@ When a prompt patch changes live guidance, update both the patch verifier and th
 
 ## Compatibility
 
-Current target: **Claude Code 2.1.128**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
+Current target: **Claude Code 2.1.129**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
 
 ## Requirements
 
