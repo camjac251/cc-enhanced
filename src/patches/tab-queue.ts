@@ -39,6 +39,7 @@ interface EndTurnDrainTarget {
 	functionPath: NodePath<FunctionLike>;
 	drainBlock: NodePath<t.BlockStatement>;
 	enqueue: t.Expression;
+	turnAborted: t.Expression;
 }
 
 interface HintFactories {
@@ -1370,6 +1371,45 @@ function getEnqueueCallFromConcurrentBranch(
 	return enqueue;
 }
 
+function isSignalAbortedMember(node: t.Node | null | undefined): boolean {
+	if (!t.isMemberExpression(node)) return false;
+	if (getMemberName(node) !== "aborted") return false;
+	const signal = node.object;
+	return t.isMemberExpression(signal) && getMemberName(signal) === "signal";
+}
+
+function hasNegatedSignalAborted(node: t.Node | null | undefined): boolean {
+	if (!node) return false;
+	if (
+		t.isUnaryExpression(node, { operator: "!" }) &&
+		isSignalAbortedMember(node.argument)
+	) {
+		return true;
+	}
+	if (t.isLogicalExpression(node)) {
+		return (
+			hasNegatedSignalAborted(node.left) || hasNegatedSignalAborted(node.right)
+		);
+	}
+	return false;
+}
+
+function getTurnAbortedExpression(
+	blockPath: NodePath<t.BlockStatement>,
+): t.Expression | null {
+	let aborted: t.Expression | null = null;
+	blockPath.traverse({
+		Function(path) {
+			path.skip();
+		},
+		MemberExpression(path) {
+			if (aborted || !isSignalAbortedMember(path.node)) return;
+			aborted = path.node;
+		},
+	});
+	return aborted;
+}
+
 function getEndTurnDrainTarget(
 	path: NodePath<FunctionLike>,
 ): EndTurnDrainTarget | null {
@@ -1377,18 +1417,57 @@ function getEndTurnDrainTarget(
 	if (!drainBlock) return null;
 	const enqueue = getEnqueueCallFromConcurrentBranch(path);
 	if (!enqueue) return null;
+	const turnAborted = getTurnAbortedExpression(drainBlock);
+	if (!turnAborted) return null;
 
-	return { functionPath: path, drainBlock, enqueue };
+	return { functionPath: path, drainBlock, enqueue, turnAborted };
 }
 
 function hasEndTurnDrain(target: EndTurnDrainTarget): boolean {
-	return nodeContains(
-		target.drainBlock.node,
-		(node) =>
-			t.isMemberExpression(node) &&
-			t.isIdentifier(node.object, { name: "globalThis" }) &&
-			getMemberName(node) === TAB_QUEUE_GLOBAL,
-	);
+	let found = false;
+	target.drainBlock.traverse({
+		BlockStatement(path) {
+			if (found || path.node === target.drainBlock.node) return;
+			if (
+				!nodeContains(
+					path.node,
+					(node) =>
+						t.isMemberExpression(node) &&
+						t.isIdentifier(node.object, { name: "globalThis" }) &&
+						getMemberName(node) === TAB_QUEUE_GLOBAL,
+				)
+			) {
+				return;
+			}
+			for (const statement of path.node.body) {
+				if (
+					t.isIfStatement(statement) &&
+					hasNegatedSignalAborted(statement.test) &&
+					nodeContains(
+						statement.consequent,
+						(node) =>
+							t.isCallExpression(node) &&
+							t.isMemberExpression(node.callee) &&
+							getMemberName(node.callee) === "shift",
+					) &&
+					nodeContains(statement.consequent, (node) => {
+						if (!t.isObjectExpression(node)) return false;
+						const mode = getObjectPropertyValue(node, "mode");
+						const priority = getObjectPropertyValue(node, "priority");
+						return (
+							t.isStringLiteral(mode, { value: "prompt" }) &&
+							t.isStringLiteral(priority, { value: "later" })
+						);
+					})
+				) {
+					found = true;
+					path.skip();
+					return;
+				}
+			}
+		},
+	});
+	return found;
 }
 
 function buildEndTurnDrainStatement(
@@ -1404,14 +1483,18 @@ function buildEndTurnDrainStatement(
 		t.ifStatement(
 			t.logicalExpression(
 				"&&",
-				t.callExpression(
-					t.memberExpression(t.identifier("Array"), t.identifier("isArray")),
-					[t.cloneNode(queueId)],
-				),
-				t.binaryExpression(
-					">",
-					t.memberExpression(t.cloneNode(queueId), t.identifier("length")),
-					t.numericLiteral(0),
+				t.unaryExpression("!", t.cloneNode(target.turnAborted, true)),
+				t.logicalExpression(
+					"&&",
+					t.callExpression(
+						t.memberExpression(t.identifier("Array"), t.identifier("isArray")),
+						[t.cloneNode(queueId)],
+					),
+					t.binaryExpression(
+						">",
+						t.memberExpression(t.cloneNode(queueId), t.identifier("length")),
+						t.numericLiteral(0),
+					),
 				),
 			),
 			t.blockStatement([
@@ -1449,6 +1532,10 @@ function buildEndTurnDrainStatement(
 									t.objectProperty(
 										t.identifier("mode"),
 										t.stringLiteral("prompt"),
+									),
+									t.objectProperty(
+										t.identifier("priority"),
+										t.stringLiteral("later"),
 									),
 								]),
 							]),

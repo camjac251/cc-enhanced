@@ -154,6 +154,10 @@ async function runPrompt(newMessages, abortController) {
       resetLoadingState();
       await onTurnComplete(messagesRef.current);
       sendBridgeResultRef.current();
+      const turnDurationMs = Date.now() - loadingStartTimeRef.current;
+      if (turnDurationMs > 30000 && !abortController.signal.aborted) {
+        setMessages(prev => [...prev, createTurnDurationMessage(turnDurationMs)]);
+      }
       setAbortController(null);
     }
   }
@@ -187,7 +191,11 @@ test("tab-queue adds busy-only Tab queue handler, preview, cancel, and footer hi
 	assert.match(output, /submit\(input, "__cc_enhanced_tab_queue"\)/);
 	assert.match(output, /deferUntilTurnEnd: true/);
 	assert.match(output, /globalThis\.__ccEnhancedTabQueue/);
-	assert.match(output, /enqueue\({ value: __ccQueuedInput, mode: "prompt" }\)/);
+	assert.match(output, /!abortController\.signal\.aborted/);
+	assert.match(
+		output,
+		/enqueue\({ value: __ccQueuedInput, mode: "prompt", priority: "later" }\)/,
+	);
 	assert.match(output, /key: "tab-queue-status"/);
 	assert.match(output, /Queued follow-up/);
 	assert.match(output, /Tab to cancel/);
@@ -297,6 +305,21 @@ test("tab-queue verify fails when the prompt bar preview is removed", async () =
 	const result = tabQueue.verify(mutated);
 	assert.equal(typeof result, "string");
 	assert.equal(String(result).includes("prompt bar preview not found"), true);
+});
+
+test("tab-queue verify fails when the end-turn abort guard is removed", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	const mutated = output.replace(
+		/if \(!abortController\.signal\.aborted && Array\.isArray\(__ccTabQueue\)/,
+		"if (Array.isArray(__ccTabQueue)",
+	);
+	assert.notEqual(mutated, output);
+
+	const result = tabQueue.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("end-turn drain not found"), true);
 });
 
 test("tab-queue fails closed when draft key targets are ambiguous", async () => {
