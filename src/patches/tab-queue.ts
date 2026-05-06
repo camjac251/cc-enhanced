@@ -17,11 +17,13 @@ const TAB_QUEUE_GLOBAL = "__ccEnhancedTabQueue";
 const DEFER_UNTIL_TURN_END_OPTION = "deferUntilTurnEnd";
 
 interface DraftQueueTarget {
+	ownerFunction: NodePath<FunctionLike>;
 	handler: NodePath<FunctionLike>;
 	keyParam: t.Identifier;
 	input: t.Expression;
 	loading: t.Expression;
 	submit: t.Expression;
+	pastedSetter: t.Expression;
 }
 
 interface DeferredSubmitReceiverTarget {
@@ -54,6 +56,16 @@ interface FooterHintTarget {
 	isLoading: t.Identifier;
 	factories: HintFactories;
 	pushIf: NodePath<t.IfStatement>;
+}
+
+interface PromptBarPreviewTarget {
+	functionPath: NodePath<FunctionLike>;
+	textInputDeclaration: NodePath<t.VariableDeclarator>;
+	textInputId: t.Identifier;
+	react: t.Expression;
+	box: t.Expression;
+	text: t.Expression;
+	loading: t.Expression;
 }
 
 function nodeContains(
@@ -169,6 +181,15 @@ function globalQueueMember(): t.MemberExpression {
 	);
 }
 
+function isGlobalQueueMember(node: t.Node | null | undefined): boolean {
+	return (
+		!!node &&
+		t.isMemberExpression(node) &&
+		t.isIdentifier(node.object, { name: "globalThis" }) &&
+		getMemberName(node) === TAB_QUEUE_GLOBAL
+	);
+}
+
 function buildTrimCall(input: t.Expression): t.CallExpression {
 	return t.callExpression(
 		t.memberExpression(t.cloneNode(input, true), t.identifier("trim")),
@@ -182,6 +203,52 @@ function buildGlobalQueueRead(): t.LogicalExpression {
 		globalQueueMember(),
 		t.assignmentExpression("=", globalQueueMember(), t.arrayExpression([])),
 	);
+}
+
+function buildGlobalQueueLength(): t.MemberExpression {
+	return t.memberExpression(globalQueueMember(), t.identifier("length"));
+}
+
+function buildQueueHasItems(): t.LogicalExpression {
+	return t.logicalExpression(
+		"&&",
+		t.callExpression(
+			t.memberExpression(t.identifier("Array"), t.identifier("isArray")),
+			[globalQueueMember()],
+		),
+		t.binaryExpression(">", buildGlobalQueueLength(), t.numericLiteral(0)),
+	);
+}
+
+function buildAnd(expressions: t.Expression[]): t.Expression {
+	if (expressions.length === 0) return t.booleanLiteral(true);
+	let expression = expressions[0];
+	for (const next of expressions.slice(1)) {
+		expression = t.logicalExpression("&&", expression, next);
+	}
+	return expression;
+}
+
+function buildTabKeyTest(key: t.Identifier): t.Expression {
+	return buildAnd([
+		t.binaryExpression(
+			"===",
+			t.memberExpression(t.cloneNode(key), t.identifier("name")),
+			t.stringLiteral("tab"),
+		),
+		t.unaryExpression(
+			"!",
+			t.memberExpression(t.cloneNode(key), t.identifier("shift")),
+		),
+		t.unaryExpression(
+			"!",
+			t.memberExpression(t.cloneNode(key), t.identifier("ctrl")),
+		),
+		t.unaryExpression(
+			"!",
+			t.memberExpression(t.cloneNode(key), t.identifier("meta")),
+		),
+	]);
 }
 
 function expressionHasBooleanProp(
@@ -333,6 +400,12 @@ function getDraftQueueTarget(
 	const ownerFunction = findNearestFunction(path);
 	if (!ownerFunction) return null;
 
+	const pattern = getFunctionObjectParam(ownerFunction);
+	const pastedSetter = pattern
+		? getLocalObjectPatternName(pattern, "setPastedContents")
+		: null;
+	if (!pastedSetter) return null;
+
 	const draftState = findDraftState(ownerFunction.node);
 	if (!draftState) return null;
 
@@ -342,11 +415,13 @@ function getDraftQueueTarget(
 	if (!keyParam) return null;
 
 	return {
+		ownerFunction,
 		handler,
 		keyParam,
 		input: draftState.input,
 		loading: draftState.loading,
 		submit: submitExpr,
+		pastedSetter,
 	};
 }
 
@@ -446,6 +521,86 @@ function hasTabQueueGuard(target: DraftQueueTarget): boolean {
 	});
 }
 
+function hasTabCancelGuard(target: DraftQueueTarget): boolean {
+	const { handler, keyParam, input, loading, pastedSetter } = target;
+	if (!t.isBlockStatement(handler.node.body)) return false;
+
+	return handler.node.body.body.some((stmt) => {
+		if (!t.isIfStatement(stmt)) return false;
+		const test = stmt.test;
+		const hasTabCheck = nodeContains(
+			test,
+			(node) =>
+				t.isBinaryExpression(node, { operator: "===" }) &&
+				isMemberAccess(node.left, keyParam.name, "name") &&
+				t.isStringLiteral(node.right, { value: "tab" }),
+		);
+		if (!hasTabCheck) return false;
+
+		const blocksModifiedTab = ["shift", "ctrl", "meta"].every((prop) =>
+			nodeContains(
+				test,
+				(node) =>
+					t.isUnaryExpression(node, { operator: "!" }) &&
+					isMemberAccess(node.argument, keyParam.name, prop),
+			),
+		);
+		if (!blocksModifiedTab) return false;
+
+		if (
+			!nodeContains(test, (node) =>
+				expressionMatches(node as t.Expression, loading),
+			)
+		) {
+			return false;
+		}
+		const checksEmptyInput = nodeContains(
+			test,
+			(node) =>
+				t.isBinaryExpression(node, { operator: "===" }) &&
+				t.isStringLiteral(node.right, { value: "" }) &&
+				t.isCallExpression(node.left) &&
+				t.isMemberExpression(node.left.callee) &&
+				getMemberName(node.left.callee) === "trim" &&
+				t.isExpression(node.left.callee.object) &&
+				expressionMatches(node.left.callee.object, input),
+		);
+		if (!checksEmptyInput) return false;
+
+		const checksQueue = nodeContains(
+			test,
+			(node) =>
+				t.isCallExpression(node) &&
+				t.isMemberExpression(node.callee) &&
+				t.isIdentifier(node.callee.object, { name: "Array" }) &&
+				getMemberName(node.callee) === "isArray" &&
+				node.arguments.some((arg) => isGlobalQueueMember(arg as t.Node)),
+		);
+		if (!checksQueue) return false;
+
+		return (
+			nodeContains(stmt.consequent, (node) =>
+				isCallToMember(node, keyParam.name, "preventDefault"),
+			) &&
+			nodeContains(
+				stmt.consequent,
+				(node) =>
+					t.isCallExpression(node) &&
+					t.isMemberExpression(node.callee) &&
+					getMemberName(node.callee) === "pop" &&
+					isGlobalQueueMember(node.callee.object),
+			) &&
+			nodeContains(
+				stmt.consequent,
+				(node) =>
+					t.isCallExpression(node) &&
+					t.isExpression(node.callee) &&
+					expressionMatches(node.callee, pastedSetter),
+			)
+		);
+	});
+}
+
 function buildTabQueueGuard(target: DraftQueueTarget): t.IfStatement {
 	const key = t.identifier(target.keyParam.name);
 	const input = t.cloneNode(target.input, true);
@@ -453,44 +608,15 @@ function buildTabQueueGuard(target: DraftQueueTarget): t.IfStatement {
 	const submit = t.cloneNode(target.submit, true);
 
 	return t.ifStatement(
-		t.logicalExpression(
-			"&&",
-			t.logicalExpression(
-				"&&",
-				t.logicalExpression(
-					"&&",
-					t.logicalExpression(
-						"&&",
-						t.logicalExpression(
-							"&&",
-							t.binaryExpression(
-								"===",
-								t.memberExpression(t.cloneNode(key), t.identifier("name")),
-								t.stringLiteral("tab"),
-							),
-							t.unaryExpression(
-								"!",
-								t.memberExpression(t.cloneNode(key), t.identifier("shift")),
-							),
-						),
-						t.unaryExpression(
-							"!",
-							t.memberExpression(t.cloneNode(key), t.identifier("ctrl")),
-						),
-					),
-					t.unaryExpression(
-						"!",
-						t.memberExpression(t.cloneNode(key), t.identifier("meta")),
-					),
-				),
-				loading,
-			),
+		buildAnd([
+			buildTabKeyTest(key),
+			loading,
 			t.binaryExpression(
 				"!==",
 				t.callExpression(t.memberExpression(input, t.identifier("trim")), []),
 				t.stringLiteral(""),
 			),
-		),
+		]),
 		t.blockStatement([
 			t.expressionStatement(
 				t.callExpression(
@@ -509,8 +635,53 @@ function buildTabQueueGuard(target: DraftQueueTarget): t.IfStatement {
 	);
 }
 
+function buildTabCancelGuard(target: DraftQueueTarget): t.IfStatement {
+	const key = t.identifier(target.keyParam.name);
+	const input = t.cloneNode(target.input, true);
+	const loading = t.cloneNode(target.loading, true);
+	const pastedSetter = t.cloneNode(target.pastedSetter, true);
+	const previousPastedContents = t.identifier("__ccPastedContents");
+
+	return t.ifStatement(
+		buildAnd([
+			buildTabKeyTest(key),
+			loading,
+			t.binaryExpression(
+				"===",
+				t.callExpression(t.memberExpression(input, t.identifier("trim")), []),
+				t.stringLiteral(""),
+			),
+			buildQueueHasItems(),
+		]),
+		t.blockStatement([
+			t.expressionStatement(
+				t.callExpression(
+					t.memberExpression(t.cloneNode(key), t.identifier("preventDefault")),
+					[],
+				),
+			),
+			t.expressionStatement(
+				t.callExpression(
+					t.memberExpression(globalQueueMember(), t.identifier("pop")),
+					[],
+				),
+			),
+			t.expressionStatement(
+				t.callExpression(pastedSetter, [
+					t.arrowFunctionExpression(
+						[previousPastedContents],
+						t.objectExpression([
+							t.spreadElement(t.cloneNode(previousPastedContents)),
+						]),
+					),
+				]),
+			),
+			t.returnStatement(),
+		]),
+	);
+}
+
 function patchTabQueueTarget(target: DraftQueueTarget): boolean {
-	if (hasTabQueueGuard(target)) return true;
 	if (!t.isBlockStatement(target.handler.node.body)) return false;
 
 	const insertionIndex = findInsertionIndex(
@@ -519,11 +690,12 @@ function patchTabQueueTarget(target: DraftQueueTarget): boolean {
 	);
 	if (insertionIndex === -1) return false;
 
-	target.handler.node.body.body.splice(
-		insertionIndex + 1,
-		0,
-		buildTabQueueGuard(target),
-	);
+	const statements: t.Statement[] = [];
+	if (!hasTabCancelGuard(target)) statements.push(buildTabCancelGuard(target));
+	if (!hasTabQueueGuard(target)) statements.push(buildTabQueueGuard(target));
+	if (statements.length === 0) return true;
+
+	target.handler.node.body.body.splice(insertionIndex + 1, 0, ...statements);
 	return true;
 }
 
@@ -612,6 +784,350 @@ function patchSubmitForward(target: DraftQueueTarget): boolean {
 		},
 	});
 	return patched;
+}
+
+function getCreateElementFactory(node: t.CallExpression): t.Expression | null {
+	if (!isCreateElementCall(node) || !t.isMemberExpression(node.callee)) {
+		return null;
+	}
+	return t.isExpression(node.callee.object) ? node.callee.object : null;
+}
+
+function getCreateElementComponent(
+	node: t.CallExpression,
+): t.Expression | null {
+	const component = node.arguments[0];
+	return t.isExpression(component) ? component : null;
+}
+
+function getCreateElementProps(
+	node: t.CallExpression,
+): t.ObjectExpression | null {
+	const props = node.arguments[1];
+	return t.isObjectExpression(props) ? props : null;
+}
+
+function isTextInputChoice(node: t.Node | null | undefined): boolean {
+	if (!t.isConditionalExpression(node)) return false;
+	return [node.consequent, node.alternate].every((branch) => {
+		if (!isCreateElementCall(branch)) return false;
+		const props = getCreateElementProps(branch);
+		return !!props && props.properties.some((prop) => t.isSpreadElement(prop));
+	});
+}
+
+function findPromptBarBoxComponent(
+	functionNode: FunctionLike,
+	textInputId: t.Identifier,
+): t.Expression | null {
+	let component: t.Expression | null = null;
+
+	traverse(
+		functionNode,
+		{
+			noScope: true,
+			Function(path) {
+				if (path.node !== functionNode) path.skip();
+			},
+			CallExpression(path) {
+				if (component || !isCreateElementCall(path.node)) return;
+				const props = getCreateElementProps(path.node);
+				if (
+					!props ||
+					!hasObjectProperty(props, "flexGrow") ||
+					!hasObjectProperty(props, "flexShrink")
+				) {
+					return;
+				}
+				if (
+					!path.node.arguments
+						.slice(2)
+						.some((arg) => t.isIdentifier(arg, { name: textInputId.name }))
+				) {
+					return;
+				}
+				component = getCreateElementComponent(path.node);
+			},
+		},
+		undefined,
+		undefined,
+	);
+
+	return component;
+}
+
+function findPromptBarTextComponent(
+	functionNode: FunctionLike,
+): t.Expression | null {
+	let component: t.Expression | null = null;
+
+	traverse(
+		functionNode,
+		{
+			noScope: true,
+			Function(path) {
+				if (path.node !== functionNode) path.skip();
+			},
+			CallExpression(path) {
+				if (component || !isCreateElementCall(path.node)) return;
+				const props = getCreateElementProps(path.node);
+				if (!props || !hasObjectProperty(props, "dimColor")) return;
+				if (
+					!path.node.arguments.slice(2).some((arg) => t.isStringLiteral(arg))
+				) {
+					return;
+				}
+				component = getCreateElementComponent(path.node);
+			},
+		},
+		undefined,
+		undefined,
+	);
+
+	return component;
+}
+
+function hasPromptBarPreview(functionNode: FunctionLike): boolean {
+	return (
+		nodeContains(
+			functionNode,
+			(node) =>
+				t.isObjectProperty(node) &&
+				getObjectKeyName(node.key) === "key" &&
+				t.isStringLiteral(node.value, { value: "tab-queue-status" }),
+		) &&
+		nodeContains(
+			functionNode,
+			(node) =>
+				t.isObjectProperty(node) &&
+				getObjectKeyName(node.key) === "key" &&
+				t.isStringLiteral(node.value, { value: "tab-queue-draft" }),
+		) &&
+		nodeContains(functionNode, isGlobalQueueMember)
+	);
+}
+
+function getPromptBarPreviewTarget(
+	target: DraftQueueTarget,
+): PromptBarPreviewTarget | null {
+	const functionPath = target.ownerFunction;
+	const textInputDeclarations: NodePath<t.VariableDeclarator>[] = [];
+
+	functionPath.traverse({
+		Function(path) {
+			if (path.node !== functionPath.node) path.skip();
+		},
+		VariableDeclarator(path) {
+			if (!t.isIdentifier(path.node.id)) return;
+			if (!isTextInputChoice(path.node.init)) return;
+			textInputDeclarations.push(path);
+		},
+	});
+	if (textInputDeclarations.length !== 1) return null;
+	const textInputDeclaration = textInputDeclarations[0];
+
+	const textInputId = textInputDeclaration.node.id;
+	if (!t.isIdentifier(textInputId)) return null;
+
+	const init = textInputDeclaration.node.init;
+	if (
+		!t.isConditionalExpression(init) ||
+		!isCreateElementCall(init.alternate)
+	) {
+		return null;
+	}
+	const react = getCreateElementFactory(init.alternate);
+	const box = findPromptBarBoxComponent(functionPath.node, textInputId);
+	const text = findPromptBarTextComponent(functionPath.node);
+	if (!react || !box || !text) return null;
+
+	return {
+		functionPath,
+		textInputDeclaration,
+		textInputId,
+		react,
+		box,
+		text,
+		loading: target.loading,
+	};
+}
+
+function buildReactElementCall(
+	react: t.Expression,
+	component: t.Expression,
+	props: t.Expression | null,
+	children: t.Expression[],
+): t.CallExpression {
+	return t.callExpression(
+		t.memberExpression(t.cloneNode(react, true), t.identifier("createElement")),
+		[t.cloneNode(component, true), props ?? t.nullLiteral(), ...children],
+	);
+}
+
+function buildPromptBarPreviewDeclarations(
+	target: PromptBarPreviewTarget,
+): t.VariableDeclaration[] {
+	const queuedDrafts = t.identifier("__ccTabQueuedDrafts");
+	const queuedDraft = t.identifier("__ccTabQueuedDraft");
+	const queuedPreview = t.identifier("__ccTabQueuedPreview");
+	const lastIndex = t.binaryExpression(
+		"-",
+		t.memberExpression(t.cloneNode(queuedDrafts), t.identifier("length")),
+		t.numericLiteral(1),
+	);
+	const countSuffix = t.conditionalExpression(
+		t.binaryExpression(
+			">",
+			t.memberExpression(t.cloneNode(queuedDrafts), t.identifier("length")),
+			t.numericLiteral(1),
+		),
+		t.binaryExpression(
+			"+",
+			t.binaryExpression(
+				"+",
+				t.stringLiteral(" ("),
+				t.memberExpression(t.cloneNode(queuedDrafts), t.identifier("length")),
+			),
+			t.stringLiteral(")"),
+		),
+		t.stringLiteral(""),
+	);
+
+	return [
+		t.variableDeclaration("let", [
+			t.variableDeclarator(queuedDrafts, globalQueueMember()),
+		]),
+		t.variableDeclaration("let", [
+			t.variableDeclarator(
+				queuedDraft,
+				t.conditionalExpression(
+					buildAnd([
+						t.cloneNode(target.loading, true),
+						t.callExpression(
+							t.memberExpression(
+								t.identifier("Array"),
+								t.identifier("isArray"),
+							),
+							[t.cloneNode(queuedDrafts)],
+						),
+						t.binaryExpression(
+							">",
+							t.memberExpression(
+								t.cloneNode(queuedDrafts),
+								t.identifier("length"),
+							),
+							t.numericLiteral(0),
+						),
+					]),
+					t.memberExpression(t.cloneNode(queuedDrafts), lastIndex, true),
+					t.stringLiteral(""),
+				),
+			),
+		]),
+		t.variableDeclaration("let", [
+			t.variableDeclarator(
+				queuedPreview,
+				t.conditionalExpression(
+					t.cloneNode(queuedDraft),
+					buildReactElementCall(
+						target.react,
+						target.box,
+						t.objectExpression([
+							t.objectProperty(
+								t.identifier("flexDirection"),
+								t.stringLiteral("column"),
+							),
+							t.objectProperty(t.identifier("width"), t.stringLiteral("100%")),
+						]),
+						[
+							buildReactElementCall(
+								target.react,
+								target.text,
+								t.objectExpression([
+									t.objectProperty(
+										t.identifier("color"),
+										t.stringLiteral("warning"),
+									),
+									t.objectProperty(
+										t.identifier("key"),
+										t.stringLiteral("tab-queue-status"),
+									),
+									t.objectProperty(
+										t.identifier("wrap"),
+										t.stringLiteral("truncate"),
+									),
+								]),
+								[
+									t.stringLiteral("Queued follow-up"),
+									countSuffix,
+									t.stringLiteral(" | Tab to cancel"),
+								],
+							),
+							buildReactElementCall(
+								target.react,
+								target.text,
+								t.objectExpression([
+									t.objectProperty(
+										t.identifier("dimColor"),
+										t.booleanLiteral(true),
+									),
+									t.objectProperty(
+										t.identifier("italic"),
+										t.booleanLiteral(true),
+									),
+									t.objectProperty(
+										t.identifier("key"),
+										t.stringLiteral("tab-queue-draft"),
+									),
+									t.objectProperty(
+										t.identifier("wrap"),
+										t.stringLiteral("truncate"),
+									),
+								]),
+								[t.stringLiteral("> "), t.cloneNode(queuedDraft)],
+							),
+						],
+					),
+					t.nullLiteral(),
+				),
+			),
+		]),
+	];
+}
+
+function buildWrappedTextInputElement(
+	target: PromptBarPreviewTarget,
+	originalInit: t.Expression,
+): t.CallExpression {
+	return buildReactElementCall(
+		target.react,
+		target.box,
+		t.objectExpression([
+			t.objectProperty(
+				t.identifier("flexDirection"),
+				t.stringLiteral("column"),
+			),
+			t.objectProperty(t.identifier("width"), t.stringLiteral("100%")),
+		]),
+		[t.identifier("__ccTabQueuedPreview"), originalInit],
+	);
+}
+
+function patchPromptBarPreviewTarget(target: DraftQueueTarget): boolean {
+	if (hasPromptBarPreview(target.ownerFunction.node)) return true;
+	const previewTarget = getPromptBarPreviewTarget(target);
+	if (!previewTarget) return false;
+	const originalInit = previewTarget.textInputDeclaration.node.init;
+	if (!t.isExpression(originalInit)) return false;
+	const declaration = previewTarget.textInputDeclaration.parentPath;
+	if (!declaration.isVariableDeclaration()) return false;
+
+	declaration.insertBefore(buildPromptBarPreviewDeclarations(previewTarget));
+	previewTarget.textInputDeclaration.node.init = buildWrappedTextInputElement(
+		previewTarget,
+		originalInit,
+	);
+	return true;
 }
 
 function isDeferredSubmitReceiverConfig(object: t.ObjectExpression): boolean {
@@ -1126,6 +1642,20 @@ function hasQueueHint(target: FooterHintTarget): boolean {
 	);
 }
 
+function hasCancelHint(target: FooterHintTarget): boolean {
+	return nodeContains(
+		target.functionPath.node,
+		(node) =>
+			t.isCallExpression(node) &&
+			t.isMemberExpression(node.callee) &&
+			t.isIdentifier(node.callee.object, { name: target.queueParts.name }) &&
+			getMemberName(node.callee) === "unshift" &&
+			expressionHasStringProp(node, "key", "cancel-queued-draft") &&
+			expressionHasStringProp(node, "chord", "tab") &&
+			expressionHasStringProp(node, "action", "cancel queued"),
+	);
+}
+
 function hasQueuePartsLengthFallback(target: FooterHintTarget): boolean {
 	return nodeContains(
 		target.pushIf.node.test,
@@ -1138,7 +1668,11 @@ function hasQueuePartsLengthFallback(target: FooterHintTarget): boolean {
 	);
 }
 
-function buildQueueHintElement(target: FooterHintTarget): t.CallExpression {
+function buildShortcutHintElement(
+	target: FooterHintTarget,
+	key: string,
+	action: string,
+): t.CallExpression {
 	const react = t.cloneNode(target.factories.react, true);
 	const text = t.cloneNode(target.factories.text, true);
 	const shortcut = t.cloneNode(target.factories.shortcut, true);
@@ -1149,7 +1683,7 @@ function buildQueueHintElement(target: FooterHintTarget): t.CallExpression {
 			text,
 			t.objectExpression([
 				t.objectProperty(t.identifier("dimColor"), t.booleanLiteral(true)),
-				t.objectProperty(t.identifier("key"), t.stringLiteral("queue-draft")),
+				t.objectProperty(t.identifier("key"), t.stringLiteral(key)),
 			]),
 			t.callExpression(
 				t.memberExpression(
@@ -1160,7 +1694,7 @@ function buildQueueHintElement(target: FooterHintTarget): t.CallExpression {
 					shortcut,
 					t.objectExpression([
 						t.objectProperty(t.identifier("chord"), t.stringLiteral("tab")),
-						t.objectProperty(t.identifier("action"), t.stringLiteral("queue")),
+						t.objectProperty(t.identifier("action"), t.stringLiteral(action)),
 						t.objectProperty(
 							t.identifier("format"),
 							t.objectExpression([
@@ -1174,6 +1708,18 @@ function buildQueueHintElement(target: FooterHintTarget): t.CallExpression {
 				],
 			),
 		],
+	);
+}
+
+function buildQueueHintElement(target: FooterHintTarget): t.CallExpression {
+	return buildShortcutHintElement(target, "queue-draft", "queue");
+}
+
+function buildCancelHintElement(target: FooterHintTarget): t.CallExpression {
+	return buildShortcutHintElement(
+		target,
+		"cancel-queued-draft",
+		"cancel queued",
 	);
 }
 
@@ -1192,6 +1738,27 @@ function buildQueueHintStatement(target: FooterHintTarget): t.IfStatement {
 						t.identifier("unshift"),
 					),
 					[buildQueueHintElement(target)],
+				),
+			),
+		]),
+	);
+}
+
+function buildCancelHintStatement(target: FooterHintTarget): t.IfStatement {
+	return t.ifStatement(
+		buildAnd([
+			t.identifier(target.isLoading.name),
+			t.identifier(target.isInputEmpty.name),
+			buildQueueHasItems(),
+		]),
+		t.blockStatement([
+			t.expressionStatement(
+				t.callExpression(
+					t.memberExpression(
+						t.identifier(target.queueParts.name),
+						t.identifier("unshift"),
+					),
+					[buildCancelHintElement(target)],
 				),
 			),
 		]),
@@ -1229,9 +1796,13 @@ function patchPushCondition(target: FooterHintTarget): boolean {
 }
 
 function patchFooterHintTarget(target: FooterHintTarget): boolean {
-	const hintReady = hasQueueHint(target);
-	if (!hintReady) {
+	const queueHintReady = hasQueueHint(target);
+	const cancelHintReady = hasCancelHint(target);
+	if (!queueHintReady) {
 		target.queuePartsDeclaration.insertAfter(buildQueueHintStatement(target));
+	}
+	if (!cancelHintReady) {
+		target.queuePartsDeclaration.insertAfter(buildCancelHintStatement(target));
 	}
 	return patchPushCondition(target);
 }
@@ -1243,6 +1814,7 @@ function createTabQueuePasses(): PatchAstPass[] {
 	const footerTargets: FooterHintTarget[] = [];
 	let patchedDraft = false;
 	let patchedSubmitForward = false;
+	let patchedPromptBar = false;
 	let patchedReceiver = false;
 	let patchedDrain = false;
 	let patchedFooter = false;
@@ -1289,6 +1861,9 @@ function createTabQueuePasses(): PatchAstPass[] {
 						if (uniqueDraftTargets.length === 1) {
 							patchedDraft = patchTabQueueTarget(uniqueDraftTargets[0]);
 							patchedSubmitForward = patchSubmitForward(uniqueDraftTargets[0]);
+							patchedPromptBar = patchPromptBarPreviewTarget(
+								uniqueDraftTargets[0],
+							);
 						}
 						if (uniqueReceiverTargets.length === 1) {
 							patchedReceiver = patchDeferredSubmitReceiver(
@@ -1317,7 +1892,8 @@ function createTabQueuePasses(): PatchAstPass[] {
 						if (
 							uniqueDraftTargets.length !== 1 ||
 							!patchedDraft ||
-							!patchedSubmitForward
+							!patchedSubmitForward ||
+							!patchedPromptBar
 						) {
 							console.warn(
 								`Tab queue: expected one draft key handler target, found ${uniqueDraftTargets.length}`,
@@ -1362,6 +1938,28 @@ function countVerifiedDraftTargets(ast: t.File): number {
 	return count;
 }
 
+function countVerifiedTabCancelTargets(ast: t.File): number {
+	let count = 0;
+	traverse(ast, {
+		ObjectExpression(path) {
+			const target = getDraftQueueTarget(path);
+			if (target && hasTabCancelGuard(target)) count++;
+		},
+	});
+	return count;
+}
+
+function countVerifiedPromptBarPreviewTargets(ast: t.File): number {
+	let count = 0;
+	traverse(ast, {
+		ObjectExpression(path) {
+			const target = getDraftQueueTarget(path);
+			if (target && hasPromptBarPreview(target.ownerFunction.node)) count++;
+		},
+	});
+	return count;
+}
+
 function countVerifiedDeferredSubmitReceivers(ast: t.File): number {
 	let count = 0;
 	traverse(ast, {
@@ -1400,6 +1998,7 @@ function countVerifiedFooterTargets(ast: t.File): number {
 			if (
 				target &&
 				hasQueueHint(target) &&
+				hasCancelHint(target) &&
 				hasQueuePartsLengthFallback(target)
 			) {
 				count++;
@@ -1410,6 +2009,7 @@ function countVerifiedFooterTargets(ast: t.File): number {
 			if (
 				target &&
 				hasQueueHint(target) &&
+				hasCancelHint(target) &&
 				hasQueuePartsLengthFallback(target)
 			) {
 				count++;
@@ -1420,6 +2020,7 @@ function countVerifiedFooterTargets(ast: t.File): number {
 			if (
 				target &&
 				hasQueueHint(target) &&
+				hasCancelHint(target) &&
 				hasQueuePartsLengthFallback(target)
 			) {
 				count++;
@@ -1444,6 +2045,23 @@ export const tabQueue: Patch = {
 		}
 		if (draftTargetCount > 1) {
 			return `Draft Tab queue key handler is ambiguous (${draftTargetCount} handlers found)`;
+		}
+
+		const cancelTargetCount = countVerifiedTabCancelTargets(verifyAst);
+		if (cancelTargetCount === 0) {
+			return "Draft Tab queue cancel handler not found";
+		}
+		if (cancelTargetCount > 1) {
+			return `Draft Tab queue cancel handler is ambiguous (${cancelTargetCount} handlers found)`;
+		}
+
+		const promptBarPreviewCount =
+			countVerifiedPromptBarPreviewTargets(verifyAst);
+		if (promptBarPreviewCount === 0) {
+			return "Draft Tab queue prompt bar preview not found";
+		}
+		if (promptBarPreviewCount > 1) {
+			return `Draft Tab queue prompt bar preview is ambiguous (${promptBarPreviewCount} previews found)`;
 		}
 
 		const receiverTargetCount = countVerifiedDeferredSubmitReceivers(verifyAst);

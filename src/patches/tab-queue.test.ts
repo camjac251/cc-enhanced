@@ -22,7 +22,7 @@ function countOccurrences(value: string, needle: RegExp): number {
 }
 
 const TAB_QUEUE_FIXTURE = `
-function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt }) {
+function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, setPastedContents }) {
   function submit(value, isSubmittingSlashCommand = false) {
     return submitPrompt(value, {
       setCursorOffset,
@@ -73,10 +73,24 @@ function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt }) 
     inlineGhostText: undefined,
     inputFilter: filterInput,
   };
-  return React.createElement(Footer, {
-    suppressHint: input.length > 0,
-    isLoading,
-  }, React.createElement(TextInput, inputProps));
+  if (isExternalEditorActive) {
+    return React.createElement(Box, { flexDirection: "row", borderStyle: "round" },
+      React.createElement(Text, { dimColor: true, italic: true }, "Save and close editor to continue...")
+    );
+  }
+  let textInputElement = isVimModeEnabled()
+    ? React.createElement(VimTextInput, { ...inputProps, initialMode: vimMode, onModeChange: setVimMode })
+    : React.createElement(TextInput, { ...inputProps });
+  return React.createElement(Box, { flexDirection: "column" },
+    React.createElement(Box, { borderColor: "promptBorder", borderStyle: "round", width: "100%" },
+      React.createElement(ModeIndicator, { mode: "prompt", isLoading }),
+      React.createElement(Box, { flexGrow: 1, flexShrink: 1, onClick: handleInputClick }, textInputElement)
+    ),
+    React.createElement(Footer, {
+      suppressHint: input.length > 0,
+      isLoading,
+    })
+  );
 }
 
 function renderFooterLeft({ showHint, isInputEmpty, isLoading, leftArrowPending }) {
@@ -154,7 +168,7 @@ test("verify rejects unpatched code", () => {
 	assert.equal(typeof result, "string");
 });
 
-test("tab-queue adds busy-only Tab queue handler and footer hint", async () => {
+test("tab-queue adds busy-only Tab queue handler, preview, cancel, and footer hint", async () => {
 	const ast = parse(TAB_QUEUE_FIXTURE);
 	await runTabQueueViaPasses(ast);
 	const output = print(ast);
@@ -164,15 +178,26 @@ test("tab-queue adds busy-only Tab queue handler and footer hint", async () => {
 	assert.match(output, /!event\.ctrl/);
 	assert.match(output, /!event\.meta/);
 	assert.match(output, /&&\s+isLoading/);
+	assert.match(output, /input\.trim\(\) === ""/);
 	assert.match(output, /input\.trim\(\) !== ""/);
 	assert.match(output, /event\.preventDefault\(\)/);
+	assert.match(output, /globalThis\.__ccEnhancedTabQueue\.pop\(\)/);
+	assert.match(output, /setPastedContents/);
+	assert.match(output, /\.\.\.__ccPastedContents/);
 	assert.match(output, /submit\(input, "__cc_enhanced_tab_queue"\)/);
 	assert.match(output, /deferUntilTurnEnd: true/);
 	assert.match(output, /globalThis\.__ccEnhancedTabQueue/);
 	assert.match(output, /enqueue\({ value: __ccQueuedInput, mode: "prompt" }\)/);
+	assert.match(output, /key: "tab-queue-status"/);
+	assert.match(output, /Queued follow-up/);
+	assert.match(output, /Tab to cancel/);
+	assert.match(output, /key: "tab-queue-draft"/);
+	assert.match(output, /> /);
 	assert.match(output, /key: "queue-draft"/);
 	assert.match(output, /chord: "tab"/);
 	assert.match(output, /action: "queue"/);
+	assert.match(output, /key: "cancel-queued-draft"/);
+	assert.match(output, /action: "cancel queued"/);
 	assert.match(output, /showHint \|\| hintParts\.length > 0/);
 	assert.equal(tabQueue.verify(output, ast), true);
 });
@@ -202,13 +227,18 @@ test("tab-queue is idempotent", async () => {
 	assert.equal(countOccurrences(secondOutput, /"__cc_enhanced_tab_queue"/g), 2);
 	assert.equal(countOccurrences(firstOutput, /key: "queue-draft"/g), 1);
 	assert.equal(countOccurrences(secondOutput, /key: "queue-draft"/g), 1);
+	assert.equal(countOccurrences(firstOutput, /key: "cancel-queued-draft"/g), 1);
+	assert.equal(
+		countOccurrences(secondOutput, /key: "cancel-queued-draft"/g),
+		1,
+	);
+	assert.equal(countOccurrences(firstOutput, /key: "tab-queue-status"/g), 1);
+	assert.equal(countOccurrences(secondOutput, /key: "tab-queue-status"/g), 1);
+	assert.equal(countOccurrences(firstOutput, /key: "tab-queue-draft"/g), 1);
+	assert.equal(countOccurrences(secondOutput, /key: "tab-queue-draft"/g), 1);
 	assert.equal(
 		countOccurrences(firstOutput, /globalThis\.__ccEnhancedTabQueue/g),
-		3,
-	);
-	assert.equal(
 		countOccurrences(secondOutput, /globalThis\.__ccEnhancedTabQueue/g),
-		3,
 	);
 	assert.equal(countOccurrences(firstOutput, /hintParts\.length > 0/g), 1);
 	assert.equal(countOccurrences(secondOutput, /hintParts\.length > 0/g), 1);
@@ -219,7 +249,7 @@ test("tab-queue verify fails when the loading gate is removed", async () => {
 	const ast = parse(TAB_QUEUE_FIXTURE);
 	await runTabQueueViaPasses(ast);
 	const output = print(ast);
-	const mutated = output.replace(/&&\s+isLoading/, "&& true");
+	const mutated = output.replace(/&&\s+isLoading/g, "&& true");
 	assert.notEqual(mutated, output);
 
 	const result = tabQueue.verify(mutated);
@@ -239,9 +269,39 @@ test("tab-queue verify fails when the non-empty draft gate is removed", async ()
 	assert.equal(String(result).includes("key handler not found"), true);
 });
 
+test("tab-queue verify fails when the cancel path is removed", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	const mutated = output.replace(
+		/globalThis\.__ccEnhancedTabQueue\.pop\(\);/,
+		"",
+	);
+	assert.notEqual(mutated, output);
+
+	const result = tabQueue.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("cancel handler not found"), true);
+});
+
+test("tab-queue verify fails when the prompt bar preview is removed", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	const mutated = output.replace(
+		/key: "tab-queue-status"/,
+		'key: "tab-queue-missing"',
+	);
+	assert.notEqual(mutated, output);
+
+	const result = tabQueue.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("prompt bar preview not found"), true);
+});
+
 test("tab-queue fails closed when draft key targets are ambiguous", async () => {
 	const input = `${TAB_QUEUE_FIXTURE}
-function renderSecondInput({ input, isLoading }) {
+function renderSecondInput({ input, isLoading, setPastedContents }) {
   function submit(value) {
     return send(value);
   }
