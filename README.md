@@ -155,7 +155,7 @@ Terminal interface polish.
 | [`no-collapse`](src/patches/no-collapse.ts) | Read, Search, and Grep results stay expanded in the transcript. Memory-file writes render with full path and diff instead of a generic collapsed summary. |
 | [`skill-listing-ui`](src/patches/skill-listing-ui.ts) | The "Saved N skills" notification previews the first few activated skill names inline instead of showing only a count badge. |
 | [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | When `CLAUDE_CODE_SUBAGENT_MODEL` is set globally, Task rows omit the redundant dimmed `model: ...` label that would otherwise appear on every subagent. |
-| [`tab-queue`](src/patches/tab-queue.ts) | While Claude is responding, plain Tab defers the current draft until the active response finishes and shows a `tab` to `queue` footer hint. Idle Tab behavior and autocomplete completion stay unchanged. |
+| [`tab-queue`](src/patches/tab-queue.ts) | While Claude is responding, plain Tab queues the current draft as a follow-up shown inside the prompt bar. Press Tab again on an empty busy prompt to cancel the latest queued draft. Follow-ups drain only after a non-aborted turn and behind pending task notifications, so background-task summaries stay ahead of deferred drafts. Idle Tab behavior and autocomplete completion stay unchanged. |
 
 ### Metadata
 
