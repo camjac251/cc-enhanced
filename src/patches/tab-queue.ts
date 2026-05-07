@@ -71,6 +71,10 @@ interface PromptBarPreviewTarget {
 	loading: t.Expression;
 }
 
+interface TypeaheadThinkingHintTarget {
+	hintIf: NodePath<t.IfStatement>;
+}
+
 function nodeContains(
 	node: t.Node | null | undefined,
 	predicate: (value: t.Node) => boolean,
@@ -1200,6 +1204,63 @@ function patchPromptBarPreviewTarget(target: DraftQueueTarget): boolean {
 	return true;
 }
 
+function hasThinkingToggleHint(node: t.Node | null | undefined): boolean {
+	return nodeContains(
+		node,
+		(candidate) =>
+			t.isObjectProperty(candidate) &&
+			getObjectKeyName(candidate.key) === "key" &&
+			t.isStringLiteral(candidate.value, { value: "thinking-toggle-hint" }),
+	);
+}
+
+function hasPreventDefaultCall(node: t.Node | null | undefined): boolean {
+	return nodeContains(
+		node,
+		(candidate) =>
+			t.isCallExpression(candidate) &&
+			t.isMemberExpression(candidate.callee) &&
+			getMemberName(candidate.callee) === "preventDefault",
+	);
+}
+
+function hasTrimmedEmptyInputTest(node: t.Node | null | undefined): boolean {
+	return nodeContains(
+		node,
+		(candidate) =>
+			t.isBinaryExpression(candidate, { operator: "===" }) &&
+			t.isStringLiteral(candidate.right, { value: "" }) &&
+			t.isCallExpression(candidate.left) &&
+			t.isMemberExpression(candidate.left.callee) &&
+			getMemberName(candidate.left.callee) === "trim",
+	);
+}
+
+function getTypeaheadThinkingHintTarget(
+	path: NodePath<t.IfStatement>,
+): TypeaheadThinkingHintTarget | null {
+	if (!hasTrimmedEmptyInputTest(path.node.test)) return null;
+	if (!hasThinkingToggleHint(path.node.consequent)) return null;
+	if (!hasPreventDefaultCall(path.node.consequent)) return null;
+	return { hintIf: path };
+}
+
+function hasTypeaheadQueueBypass(target: TypeaheadThinkingHintTarget): boolean {
+	return nodeContains(target.hintIf.node.test, isGlobalQueueMember);
+}
+
+function patchTypeaheadThinkingHintTarget(
+	target: TypeaheadThinkingHintTarget,
+): boolean {
+	if (hasTypeaheadQueueBypass(target)) return true;
+	target.hintIf.node.test = t.logicalExpression(
+		"&&",
+		t.cloneNode(target.hintIf.node.test, true),
+		t.unaryExpression("!", buildQueueHasItems()),
+	);
+	return true;
+}
+
 function isDeferredSubmitReceiverConfig(object: t.ObjectExpression): boolean {
 	return (
 		hasObjectProperty(object, "input") &&
@@ -1960,17 +2021,23 @@ function createTabQueuePasses(): PatchAstPass[] {
 	const receiverTargets: DeferredSubmitReceiverTarget[] = [];
 	const drainTargets: EndTurnDrainTarget[] = [];
 	const footerTargets: FooterHintTarget[] = [];
+	const typeaheadTargets: TypeaheadThinkingHintTarget[] = [];
 	let patchedDraft = false;
 	let patchedSubmitForward = false;
 	let patchedPromptBar = false;
 	let patchedReceiver = false;
 	let patchedDrain = false;
 	let patchedFooter = false;
+	let patchedTypeahead = false;
 
 	return [
 		{
 			pass: "discover",
 			visitor: {
+				IfStatement(path) {
+					const target = getTypeaheadThinkingHintTarget(path);
+					if (target) typeaheadTargets.push(target);
+				},
 				ObjectExpression(path) {
 					const target = getDraftQueueTarget(path);
 					if (target) draftTargets.push(target);
@@ -2006,6 +2073,9 @@ function createTabQueuePasses(): PatchAstPass[] {
 						const uniqueReceiverTargets = Array.from(new Set(receiverTargets));
 						const uniqueDrainTargets = Array.from(new Set(drainTargets));
 						const uniqueFooterTargets = Array.from(new Set(footerTargets));
+						const uniqueTypeaheadTargets = Array.from(
+							new Set(typeaheadTargets),
+						);
 						if (uniqueDraftTargets.length === 1) {
 							patchedDraft = patchTabQueueTarget(uniqueDraftTargets[0]);
 							patchedSubmitForward = patchSubmitForward(uniqueDraftTargets[0]);
@@ -2024,6 +2094,11 @@ function createTabQueuePasses(): PatchAstPass[] {
 						if (uniqueFooterTargets.length === 1) {
 							patchedFooter = patchFooterHintTarget(uniqueFooterTargets[0]);
 						}
+						if (uniqueTypeaheadTargets.length === 1) {
+							patchedTypeahead = patchTypeaheadThinkingHintTarget(
+								uniqueTypeaheadTargets[0],
+							);
+						}
 					},
 				},
 			},
@@ -2037,6 +2112,9 @@ function createTabQueuePasses(): PatchAstPass[] {
 						const uniqueReceiverTargets = Array.from(new Set(receiverTargets));
 						const uniqueDrainTargets = Array.from(new Set(drainTargets));
 						const uniqueFooterTargets = Array.from(new Set(footerTargets));
+						const uniqueTypeaheadTargets = Array.from(
+							new Set(typeaheadTargets),
+						);
 						if (
 							uniqueDraftTargets.length !== 1 ||
 							!patchedDraft ||
@@ -2060,6 +2138,11 @@ function createTabQueuePasses(): PatchAstPass[] {
 						if (uniqueFooterTargets.length !== 1 || !patchedFooter) {
 							console.warn(
 								`Tab queue: expected one footer hint target, found ${uniqueFooterTargets.length}`,
+							);
+						}
+						if (uniqueTypeaheadTargets.length !== 1 || !patchedTypeahead) {
+							console.warn(
+								`Tab queue: expected one typeahead thinking hint target, found ${uniqueTypeaheadTargets.length}`,
 							);
 						}
 					},
@@ -2103,6 +2186,17 @@ function countVerifiedPromptBarPreviewTargets(ast: t.File): number {
 		ObjectExpression(path) {
 			const target = getDraftQueueTarget(path);
 			if (target && hasPromptBarPreview(target.ownerFunction.node)) count++;
+		},
+	});
+	return count;
+}
+
+function countVerifiedTypeaheadTargets(ast: t.File): number {
+	let count = 0;
+	traverse(ast, {
+		IfStatement(path) {
+			const target = getTypeaheadThinkingHintTarget(path);
+			if (target && hasTypeaheadQueueBypass(target)) count++;
 		},
 	});
 	return count;
@@ -2210,6 +2304,14 @@ export const tabQueue: Patch = {
 		}
 		if (promptBarPreviewCount > 1) {
 			return `Draft Tab queue prompt bar preview is ambiguous (${promptBarPreviewCount} previews found)`;
+		}
+
+		const typeaheadTargetCount = countVerifiedTypeaheadTargets(verifyAst);
+		if (typeaheadTargetCount === 0) {
+			return "Draft Tab queue typeahead bypass not found";
+		}
+		if (typeaheadTargetCount > 1) {
+			return `Draft Tab queue typeahead bypass is ambiguous (${typeaheadTargetCount} bypasses found)`;
 		}
 
 		const receiverTargetCount = countVerifiedDeferredSubmitReceivers(verifyAst);

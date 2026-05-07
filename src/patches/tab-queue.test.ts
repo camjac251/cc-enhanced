@@ -37,6 +37,19 @@ function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, se
     if (suggestions.length > 0 && event.name === "tab") {
       event.preventDefault();
     }
+    if (event.name === "tab" && !event.shift) {
+      if (suggestions.length > 0) return;
+      if (input.trim() === "") {
+        event.preventDefault();
+        addNotification({
+          key: "thinking-toggle-hint",
+          jsx: React.createElement(Text, { dimColor: true }, "Use ctrl+t to toggle thinking"),
+          priority: "immediate",
+          timeoutMs: 3000,
+        });
+      }
+      return;
+    }
   }
   function beforeKey(event) {
     if (helpOpen) return;
@@ -205,6 +218,11 @@ test("tab-queue adds busy-only Tab queue handler, preview, edit, and footer hint
 	assert.match(output, /key: "tab-queue-draft"/);
 	assert.match(output, /> /);
 	assert.match(output, /let textInputElement = __ccTabQueuedPreview \?/);
+	assert.match(output, /key: "thinking-toggle-hint"/);
+	assert.match(
+		output,
+		/input\.trim\(\) === "" && !\(Array\.isArray\(globalThis\.__ccEnhancedTabQueue\) && globalThis\.__ccEnhancedTabQueue\.length > 0\)/,
+	);
 	assert.doesNotMatch(
 		output,
 		/__ccTabQueuedDraft = isLoading && Array\.isArray\(__ccTabQueuedDrafts\)/,
@@ -228,6 +246,27 @@ test("tab-queue keeps autocomplete ahead of queue handling", async () => {
 	assert.notEqual(typeaheadGuardIndex, -1);
 	assert.notEqual(queueGuardIndex, -1);
 	assert.equal(typeaheadGuardIndex < queueGuardIndex, true);
+});
+
+test("tab-queue lets queued draft edit bypass the thinking hint", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+
+	const thinkingHintIndex = output.indexOf('key: "thinking-toggle-hint"');
+	const queueBypassIndex = output.indexOf(
+		"Array.isArray(globalThis.__ccEnhancedTabQueue)",
+		thinkingHintIndex - 240,
+	);
+	const editGuardIndex = output.indexOf(
+		"globalThis.__ccEnhancedTabQueue.pop()",
+	);
+	assert.notEqual(thinkingHintIndex, -1);
+	assert.notEqual(queueBypassIndex, -1);
+	assert.notEqual(editGuardIndex, -1);
+	assert.equal(queueBypassIndex < thinkingHintIndex, true);
+	assert.equal(thinkingHintIndex < editGuardIndex, true);
+	assert.equal(tabQueue.verify(output, ast), true);
 });
 
 test("tab-queue is idempotent", async () => {
@@ -299,7 +338,7 @@ test("tab-queue verify fails when the edit queue-length gate is removed", async 
 	await runTabQueueViaPasses(ast);
 	const output = print(ast);
 	const mutated = output.replace(
-		/&&\s+globalThis\.__ccEnhancedTabQueue\.length > 0/,
+		/&&\s+Array\.isArray\(globalThis\.__ccEnhancedTabQueue\) &&\s+globalThis\.__ccEnhancedTabQueue\.length > 0/,
 		"",
 	);
 	assert.notEqual(mutated, output);
@@ -322,6 +361,21 @@ test("tab-queue verify fails when the prompt bar preview is removed", async () =
 	const result = tabQueue.verify(mutated);
 	assert.equal(typeof result, "string");
 	assert.equal(String(result).includes("prompt bar preview not found"), true);
+});
+
+test("tab-queue verify fails when the typeahead bypass is removed", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	const mutated = output.replace(
+		/ && !\(Array\.isArray\(globalThis\.__ccEnhancedTabQueue\) && globalThis\.__ccEnhancedTabQueue\.length > 0\)/,
+		"",
+	);
+	assert.notEqual(mutated, output);
+
+	const result = tabQueue.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("typeahead bypass not found"), true);
 });
 
 test("tab-queue verify fails when the end-turn abort guard is removed", async () => {
