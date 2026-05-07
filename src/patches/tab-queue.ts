@@ -23,6 +23,8 @@ interface DraftQueueTarget {
 	input: t.Expression;
 	loading: t.Expression;
 	submit: t.Expression;
+	inputSetter: t.Expression;
+	cursorSetter: t.Expression;
 	pastedSetter: t.Expression;
 }
 
@@ -396,7 +398,19 @@ function getDraftQueueTarget(
 
 	const handlerExpr = getObjectPropertyValue(path.node, "onKeyDownBefore");
 	const submitExpr = getObjectPropertyValue(path.node, "onSubmit");
-	if (!t.isIdentifier(handlerExpr) || !submitExpr) return null;
+	const inputSetter = getObjectPropertyValue(path.node, "onChange");
+	const cursorSetter = getObjectPropertyValue(
+		path.node,
+		"onChangeCursorOffset",
+	);
+	if (
+		!t.isIdentifier(handlerExpr) ||
+		!submitExpr ||
+		!inputSetter ||
+		!cursorSetter
+	) {
+		return null;
+	}
 
 	const ownerFunction = findNearestFunction(path);
 	if (!ownerFunction) return null;
@@ -422,6 +436,8 @@ function getDraftQueueTarget(
 		input: draftState.input,
 		loading: draftState.loading,
 		submit: submitExpr,
+		inputSetter,
+		cursorSetter,
 		pastedSetter,
 	};
 }
@@ -522,8 +538,16 @@ function hasTabQueueGuard(target: DraftQueueTarget): boolean {
 	});
 }
 
-function hasTabCancelGuard(target: DraftQueueTarget): boolean {
-	const { handler, keyParam, input, loading, pastedSetter } = target;
+function hasTabEditGuard(target: DraftQueueTarget): boolean {
+	const {
+		handler,
+		keyParam,
+		input,
+		loading,
+		inputSetter,
+		cursorSetter,
+		pastedSetter,
+	} = target;
 	if (!t.isBlockStatement(handler.node.body)) return false;
 
 	return handler.node.body.body.some((stmt) => {
@@ -549,7 +573,7 @@ function hasTabCancelGuard(target: DraftQueueTarget): boolean {
 		if (!blocksModifiedTab) return false;
 
 		if (
-			!nodeContains(test, (node) =>
+			nodeContains(test, (node) =>
 				expressionMatches(node as t.Expression, loading),
 			)
 		) {
@@ -578,6 +602,16 @@ function hasTabCancelGuard(target: DraftQueueTarget): boolean {
 				node.arguments.some((arg) => isGlobalQueueMember(arg as t.Node)),
 		);
 		if (!checksQueue) return false;
+		const checksQueueLength = nodeContains(
+			test,
+			(node) =>
+				t.isBinaryExpression(node, { operator: ">" }) &&
+				t.isNumericLiteral(node.right, { value: 0 }) &&
+				t.isMemberExpression(node.left) &&
+				getMemberName(node.left) === "length" &&
+				isGlobalQueueMember(node.left.object),
+		);
+		if (!checksQueueLength) return false;
 
 		return (
 			nodeContains(stmt.consequent, (node) =>
@@ -590,6 +624,20 @@ function hasTabCancelGuard(target: DraftQueueTarget): boolean {
 					t.isMemberExpression(node.callee) &&
 					getMemberName(node.callee) === "pop" &&
 					isGlobalQueueMember(node.callee.object),
+			) &&
+			nodeContains(
+				stmt.consequent,
+				(node) =>
+					t.isCallExpression(node) &&
+					t.isExpression(node.callee) &&
+					expressionMatches(node.callee, inputSetter),
+			) &&
+			nodeContains(
+				stmt.consequent,
+				(node) =>
+					t.isCallExpression(node) &&
+					t.isExpression(node.callee) &&
+					expressionMatches(node.callee, cursorSetter),
 			) &&
 			nodeContains(
 				stmt.consequent,
@@ -636,17 +684,17 @@ function buildTabQueueGuard(target: DraftQueueTarget): t.IfStatement {
 	);
 }
 
-function buildTabCancelGuard(target: DraftQueueTarget): t.IfStatement {
+function buildTabEditGuard(target: DraftQueueTarget): t.IfStatement {
 	const key = t.identifier(target.keyParam.name);
 	const input = t.cloneNode(target.input, true);
-	const loading = t.cloneNode(target.loading, true);
+	const inputSetter = t.cloneNode(target.inputSetter, true);
+	const cursorSetter = t.cloneNode(target.cursorSetter, true);
 	const pastedSetter = t.cloneNode(target.pastedSetter, true);
-	const previousPastedContents = t.identifier("__ccPastedContents");
+	const queuedDraft = t.identifier("__ccQueuedDraft");
 
 	return t.ifStatement(
 		buildAnd([
 			buildTabKeyTest(key),
-			loading,
 			t.binaryExpression(
 				"===",
 				t.callExpression(t.memberExpression(input, t.identifier("trim")), []),
@@ -661,19 +709,35 @@ function buildTabCancelGuard(target: DraftQueueTarget): t.IfStatement {
 					[],
 				),
 			),
-			t.expressionStatement(
-				t.callExpression(
-					t.memberExpression(globalQueueMember(), t.identifier("pop")),
-					[],
+			t.variableDeclaration("let", [
+				t.variableDeclarator(
+					queuedDraft,
+					t.callExpression(
+						t.memberExpression(globalQueueMember(), t.identifier("pop")),
+						[],
+					),
 				),
-			),
-			t.expressionStatement(
-				t.callExpression(pastedSetter, [
-					t.arrowFunctionExpression(
-						[previousPastedContents],
-						t.objectExpression([
-							t.spreadElement(t.cloneNode(previousPastedContents)),
+			]),
+			t.ifStatement(
+				t.binaryExpression(
+					"===",
+					t.unaryExpression("typeof", t.cloneNode(queuedDraft)),
+					t.stringLiteral("string"),
+				),
+				t.blockStatement([
+					t.expressionStatement(
+						t.callExpression(inputSetter, [t.cloneNode(queuedDraft)]),
+					),
+					t.expressionStatement(
+						t.callExpression(cursorSetter, [
+							t.memberExpression(
+								t.cloneNode(queuedDraft),
+								t.identifier("length"),
+							),
 						]),
+					),
+					t.expressionStatement(
+						t.callExpression(pastedSetter, [t.objectExpression([])]),
 					),
 				]),
 			),
@@ -692,7 +756,7 @@ function patchTabQueueTarget(target: DraftQueueTarget): boolean {
 	if (insertionIndex === -1) return false;
 
 	const statements: t.Statement[] = [];
-	if (!hasTabCancelGuard(target)) statements.push(buildTabCancelGuard(target));
+	if (!hasTabEditGuard(target)) statements.push(buildTabEditGuard(target));
 	if (!hasTabQueueGuard(target)) statements.push(buildTabQueueGuard(target));
 	if (statements.length === 0) return true;
 
@@ -1003,7 +1067,6 @@ function buildPromptBarPreviewDeclarations(
 				queuedDraft,
 				t.conditionalExpression(
 					buildAnd([
-						t.cloneNode(target.loading, true),
 						t.callExpression(
 							t.memberExpression(
 								t.identifier("Array"),
@@ -1061,7 +1124,7 @@ function buildPromptBarPreviewDeclarations(
 								[
 									t.stringLiteral("Queued follow-up"),
 									countSuffix,
-									t.stringLiteral(" | Tab to cancel"),
+									t.stringLiteral(" | Tab to edit"),
 								],
 							),
 							buildReactElementCall(
@@ -1099,8 +1162,8 @@ function buildPromptBarPreviewDeclarations(
 function buildWrappedTextInputElement(
 	target: PromptBarPreviewTarget,
 	originalInit: t.Expression,
-): t.CallExpression {
-	return buildReactElementCall(
+): t.ConditionalExpression {
+	const wrappedInput = buildReactElementCall(
 		target.react,
 		target.box,
 		t.objectExpression([
@@ -1110,7 +1173,13 @@ function buildWrappedTextInputElement(
 			),
 			t.objectProperty(t.identifier("width"), t.stringLiteral("100%")),
 		]),
-		[t.identifier("__ccTabQueuedPreview"), originalInit],
+		[t.identifier("__ccTabQueuedPreview"), t.cloneNode(originalInit, true)],
+	);
+
+	return t.conditionalExpression(
+		t.identifier("__ccTabQueuedPreview"),
+		wrappedInput,
+		originalInit,
 	);
 }
 
@@ -1729,7 +1798,7 @@ function hasQueueHint(target: FooterHintTarget): boolean {
 	);
 }
 
-function hasCancelHint(target: FooterHintTarget): boolean {
+function hasEditHint(target: FooterHintTarget): boolean {
 	return nodeContains(
 		target.functionPath.node,
 		(node) =>
@@ -1737,9 +1806,9 @@ function hasCancelHint(target: FooterHintTarget): boolean {
 			t.isMemberExpression(node.callee) &&
 			t.isIdentifier(node.callee.object, { name: target.queueParts.name }) &&
 			getMemberName(node.callee) === "unshift" &&
-			expressionHasStringProp(node, "key", "cancel-queued-draft") &&
+			expressionHasStringProp(node, "key", "edit-queued-draft") &&
 			expressionHasStringProp(node, "chord", "tab") &&
-			expressionHasStringProp(node, "action", "cancel queued"),
+			expressionHasStringProp(node, "action", "edit queued"),
 	);
 }
 
@@ -1802,12 +1871,8 @@ function buildQueueHintElement(target: FooterHintTarget): t.CallExpression {
 	return buildShortcutHintElement(target, "queue-draft", "queue");
 }
 
-function buildCancelHintElement(target: FooterHintTarget): t.CallExpression {
-	return buildShortcutHintElement(
-		target,
-		"cancel-queued-draft",
-		"cancel queued",
-	);
+function buildEditHintElement(target: FooterHintTarget): t.CallExpression {
+	return buildShortcutHintElement(target, "edit-queued-draft", "edit queued");
 }
 
 function buildQueueHintStatement(target: FooterHintTarget): t.IfStatement {
@@ -1831,13 +1896,9 @@ function buildQueueHintStatement(target: FooterHintTarget): t.IfStatement {
 	);
 }
 
-function buildCancelHintStatement(target: FooterHintTarget): t.IfStatement {
+function buildEditHintStatement(target: FooterHintTarget): t.IfStatement {
 	return t.ifStatement(
-		buildAnd([
-			t.identifier(target.isLoading.name),
-			t.identifier(target.isInputEmpty.name),
-			buildQueueHasItems(),
-		]),
+		buildAnd([t.identifier(target.isInputEmpty.name), buildQueueHasItems()]),
 		t.blockStatement([
 			t.expressionStatement(
 				t.callExpression(
@@ -1845,7 +1906,7 @@ function buildCancelHintStatement(target: FooterHintTarget): t.IfStatement {
 						t.identifier(target.queueParts.name),
 						t.identifier("unshift"),
 					),
-					[buildCancelHintElement(target)],
+					[buildEditHintElement(target)],
 				),
 			),
 		]),
@@ -1884,12 +1945,12 @@ function patchPushCondition(target: FooterHintTarget): boolean {
 
 function patchFooterHintTarget(target: FooterHintTarget): boolean {
 	const queueHintReady = hasQueueHint(target);
-	const cancelHintReady = hasCancelHint(target);
+	const editHintReady = hasEditHint(target);
 	if (!queueHintReady) {
 		target.queuePartsDeclaration.insertAfter(buildQueueHintStatement(target));
 	}
-	if (!cancelHintReady) {
-		target.queuePartsDeclaration.insertAfter(buildCancelHintStatement(target));
+	if (!editHintReady) {
+		target.queuePartsDeclaration.insertAfter(buildEditHintStatement(target));
 	}
 	return patchPushCondition(target);
 }
@@ -2025,12 +2086,12 @@ function countVerifiedDraftTargets(ast: t.File): number {
 	return count;
 }
 
-function countVerifiedTabCancelTargets(ast: t.File): number {
+function countVerifiedTabEditTargets(ast: t.File): number {
 	let count = 0;
 	traverse(ast, {
 		ObjectExpression(path) {
 			const target = getDraftQueueTarget(path);
-			if (target && hasTabCancelGuard(target)) count++;
+			if (target && hasTabEditGuard(target)) count++;
 		},
 	});
 	return count;
@@ -2085,7 +2146,7 @@ function countVerifiedFooterTargets(ast: t.File): number {
 			if (
 				target &&
 				hasQueueHint(target) &&
-				hasCancelHint(target) &&
+				hasEditHint(target) &&
 				hasQueuePartsLengthFallback(target)
 			) {
 				count++;
@@ -2096,7 +2157,7 @@ function countVerifiedFooterTargets(ast: t.File): number {
 			if (
 				target &&
 				hasQueueHint(target) &&
-				hasCancelHint(target) &&
+				hasEditHint(target) &&
 				hasQueuePartsLengthFallback(target)
 			) {
 				count++;
@@ -2107,7 +2168,7 @@ function countVerifiedFooterTargets(ast: t.File): number {
 			if (
 				target &&
 				hasQueueHint(target) &&
-				hasCancelHint(target) &&
+				hasEditHint(target) &&
 				hasQueuePartsLengthFallback(target)
 			) {
 				count++;
@@ -2134,12 +2195,12 @@ export const tabQueue: Patch = {
 			return `Draft Tab queue key handler is ambiguous (${draftTargetCount} handlers found)`;
 		}
 
-		const cancelTargetCount = countVerifiedTabCancelTargets(verifyAst);
-		if (cancelTargetCount === 0) {
-			return "Draft Tab queue cancel handler not found";
+		const editTargetCount = countVerifiedTabEditTargets(verifyAst);
+		if (editTargetCount === 0) {
+			return "Draft Tab queue edit handler not found";
 		}
-		if (cancelTargetCount > 1) {
-			return `Draft Tab queue cancel handler is ambiguous (${cancelTargetCount} handlers found)`;
+		if (editTargetCount > 1) {
+			return `Draft Tab queue edit handler is ambiguous (${editTargetCount} handlers found)`;
 		}
 
 		const promptBarPreviewCount =

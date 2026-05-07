@@ -172,7 +172,7 @@ test("verify rejects unpatched code", () => {
 	assert.equal(typeof result, "string");
 });
 
-test("tab-queue adds busy-only Tab queue handler, preview, cancel, and footer hint", async () => {
+test("tab-queue adds busy-only Tab queue handler, preview, edit, and footer hint", async () => {
 	const ast = parse(TAB_QUEUE_FIXTURE);
 	await runTabQueueViaPasses(ast);
 	const output = print(ast);
@@ -186,8 +186,11 @@ test("tab-queue adds busy-only Tab queue handler, preview, cancel, and footer hi
 	assert.match(output, /input\.trim\(\) !== ""/);
 	assert.match(output, /event\.preventDefault\(\)/);
 	assert.match(output, /globalThis\.__ccEnhancedTabQueue\.pop\(\)/);
+	assert.match(output, /typeof __ccQueuedDraft === "string"/);
+	assert.match(output, /change\(__ccQueuedDraft\)/);
+	assert.match(output, /setCursorOffset\(__ccQueuedDraft\.length\)/);
 	assert.match(output, /setPastedContents/);
-	assert.match(output, /\.\.\.__ccPastedContents/);
+	assert.match(output, /setPastedContents\({}\)/);
 	assert.match(output, /submit\(input, "__cc_enhanced_tab_queue"\)/);
 	assert.match(output, /deferUntilTurnEnd: true/);
 	assert.match(output, /globalThis\.__ccEnhancedTabQueue/);
@@ -198,14 +201,19 @@ test("tab-queue adds busy-only Tab queue handler, preview, cancel, and footer hi
 	);
 	assert.match(output, /key: "tab-queue-status"/);
 	assert.match(output, /Queued follow-up/);
-	assert.match(output, /Tab to cancel/);
+	assert.match(output, /Tab to edit/);
 	assert.match(output, /key: "tab-queue-draft"/);
 	assert.match(output, /> /);
+	assert.match(output, /let textInputElement = __ccTabQueuedPreview \?/);
+	assert.doesNotMatch(
+		output,
+		/__ccTabQueuedDraft = isLoading && Array\.isArray\(__ccTabQueuedDrafts\)/,
+	);
 	assert.match(output, /key: "queue-draft"/);
 	assert.match(output, /chord: "tab"/);
 	assert.match(output, /action: "queue"/);
-	assert.match(output, /key: "cancel-queued-draft"/);
-	assert.match(output, /action: "cancel queued"/);
+	assert.match(output, /key: "edit-queued-draft"/);
+	assert.match(output, /action: "edit queued"/);
 	assert.match(output, /showHint \|\| hintParts\.length > 0/);
 	assert.equal(tabQueue.verify(output, ast), true);
 });
@@ -235,11 +243,8 @@ test("tab-queue is idempotent", async () => {
 	assert.equal(countOccurrences(secondOutput, /"__cc_enhanced_tab_queue"/g), 2);
 	assert.equal(countOccurrences(firstOutput, /key: "queue-draft"/g), 1);
 	assert.equal(countOccurrences(secondOutput, /key: "queue-draft"/g), 1);
-	assert.equal(countOccurrences(firstOutput, /key: "cancel-queued-draft"/g), 1);
-	assert.equal(
-		countOccurrences(secondOutput, /key: "cancel-queued-draft"/g),
-		1,
-	);
+	assert.equal(countOccurrences(firstOutput, /key: "edit-queued-draft"/g), 1);
+	assert.equal(countOccurrences(secondOutput, /key: "edit-queued-draft"/g), 1);
 	assert.equal(countOccurrences(firstOutput, /key: "tab-queue-status"/g), 1);
 	assert.equal(countOccurrences(secondOutput, /key: "tab-queue-status"/g), 1);
 	assert.equal(countOccurrences(firstOutput, /key: "tab-queue-draft"/g), 1);
@@ -277,19 +282,31 @@ test("tab-queue verify fails when the non-empty draft gate is removed", async ()
 	assert.equal(String(result).includes("key handler not found"), true);
 });
 
-test("tab-queue verify fails when the cancel path is removed", async () => {
+test("tab-queue verify fails when the edit path is removed", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	const mutated = output.replace(/change\(__ccQueuedDraft\);/, "");
+	assert.notEqual(mutated, output);
+
+	const result = tabQueue.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("edit handler not found"), true);
+});
+
+test("tab-queue verify fails when the edit queue-length gate is removed", async () => {
 	const ast = parse(TAB_QUEUE_FIXTURE);
 	await runTabQueueViaPasses(ast);
 	const output = print(ast);
 	const mutated = output.replace(
-		/globalThis\.__ccEnhancedTabQueue\.pop\(\);/,
+		/&&\s+globalThis\.__ccEnhancedTabQueue\.length > 0/,
 		"",
 	);
 	assert.notEqual(mutated, output);
 
 	const result = tabQueue.verify(mutated);
 	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("cancel handler not found"), true);
+	assert.equal(String(result).includes("edit handler not found"), true);
 });
 
 test("tab-queue verify fails when the prompt bar preview is removed", async () => {
@@ -341,6 +358,7 @@ function renderSecondInput({ input, isLoading, setPastedContents }) {
     onSubmit: submit,
     onChange: change,
     value: input,
+    onChangeCursorOffset: setCursorOffset,
     disableEscapeDoublePress: false,
     inputFilter: filterInput,
   };
