@@ -183,7 +183,7 @@ test("bash-tail patches schema, prompt, persistence, and preview surfaces", asyn
 	assert.equal(output.includes("| head -"), false);
 	assert.equal(output.includes("`| tail"), false);
 	assert.equal(output.includes("| tail -"), false);
-	assert.equal(output.includes("__ccEnhancedHasOutputCapPipeline"), true);
+	assert.equal(output.includes("__ccEnhancedHasOutputCapPipeline"), false);
 	assert.equal(
 		output.includes("Pipe output through head, tail, or grep"),
 		false,
@@ -258,10 +258,7 @@ test("bash-tail runtime keeps tail content, fixes preview, and honors max_output
 		assert.deepEqual(
 			await mod.BashTool.validateInput({ command: "printf hi | head -40" }),
 			{
-				result: false,
-				message:
-					"Blocked: shell pipeline truncation used only to shorten output. Use max_output, output_tail: true, rg -m N for non-code text, fd --max-results N, or bat -r START:END.",
-				errorCode: 10,
+				result: true,
 			},
 		);
 		assert.deepEqual(

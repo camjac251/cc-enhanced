@@ -63,11 +63,6 @@ const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 		reason: "Missing modern oversized-output warning",
 	},
 	{
-		id: "bash-output-cap-pipeline-guard",
-		needle: "shell pipeline truncation used only to shorten output",
-		reason: "Missing Bash validateInput output-cap pipeline guard",
-	},
-	{
 		id: "session-mem-env",
 		needle: "ENABLE_SESSION_MEMORY_PAST",
 		reason: "Missing past-context memory env override",

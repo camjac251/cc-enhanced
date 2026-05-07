@@ -90,41 +90,6 @@ function buildConditionalProperty(key: string, inputVar: string): t.Expression {
 	);
 }
 
-function objectMethodHasLocalFunction(
-	node: t.ObjectMethod,
-	name: string,
-): boolean {
-	return node.body.body.some(
-		(stmt) =>
-			t.isFunctionDeclaration(stmt) && t.isIdentifier(stmt.id, { name }),
-	);
-}
-
-function buildOutputCapPipelineValidation(inputName: string): t.Statement[] {
-	return template.statements(`
-		function __ccEnhancedHasOutputCapPipeline(command) {
-			if (typeof command !== "string" || command.indexOf("|") === -1) {
-				return false;
-			}
-			return command.split("|").slice(1).some(function (segment) {
-				var trimmed = segment.trim();
-				if (!trimmed) return false;
-				var commandName = trimmed.split(/\\s+/)[0];
-				if (commandName === "head") return true;
-				if (commandName !== "tail") return false;
-				return !/\\s-(?:f|F)\\b/.test(" " + trimmed);
-			});
-		}
-		if (__ccEnhancedHasOutputCapPipeline(INPUT.command)) {
-			return {
-				result: false,
-				message: "Blocked: shell pipeline truncation used only to shorten output. Use max_output, output_tail: true, rg -m N for non-code text, fd --max-results N, or bat -r START:END.",
-				errorCode: 10,
-			};
-		}
-	`)({ INPUT: t.identifier(inputName) });
-}
-
 function findThresholdCallName(body: t.Statement[]): string | null {
 	for (const stmt of body) {
 		if (!t.isVariableDeclaration(stmt)) continue;
@@ -551,23 +516,6 @@ function createBashOutputTailMutator(): Visitor {
 
 		// 6. Destructuring + 7. Preview fix
 		ObjectMethod(path) {
-			if (getObjectKeyName(path.node.key) === "validateInput") {
-				const firstParam = path.node.params[0];
-				if (!t.isIdentifier(firstParam)) return;
-				if (
-					objectMethodHasLocalFunction(
-						path.node,
-						"__ccEnhancedHasOutputCapPipeline",
-					)
-				) {
-					return;
-				}
-				path.node.body.body.unshift(
-					...buildOutputCapPipelineValidation(firstParam.name),
-				);
-				return;
-			}
-
 			if (
 				getObjectKeyName(path.node.key) !==
 				"mapToolResultToToolResultBlockParam"
@@ -764,8 +712,6 @@ export const bashOutputTail: Patch = {
 		let hasRenderOptsFunction = false;
 		let hasRenderOptsHelper = false;
 		let hasRenderOptsWrappedReturns = false;
-		let hasOutputCapPipelineGuard = false;
-		let hasOutputCapPipelineMessage = false;
 		let hasCopyablePipeHeadText = false;
 		let hasCopyablePipeTailText = false;
 
@@ -878,30 +824,6 @@ export const bashOutputTail: Patch = {
 
 			// Destructuring check
 			ObjectMethod(path) {
-				if (getObjectKeyName(path.node.key) === "validateInput") {
-					if (
-						objectMethodHasLocalFunction(
-							path.node,
-							"__ccEnhancedHasOutputCapPipeline",
-						)
-					) {
-						hasOutputCapPipelineGuard = true;
-					}
-					path.traverse({
-						StringLiteral(innerPath) {
-							if (
-								innerPath.node.value.includes(
-									"shell pipeline truncation used only to shorten output",
-								)
-							) {
-								hasOutputCapPipelineMessage = true;
-								innerPath.stop();
-							}
-						},
-					});
-					return;
-				}
-
 				if (
 					getObjectKeyName(path.node.key) !==
 					"mapToolResultToToolResultBlockParam"
@@ -961,11 +883,6 @@ export const bashOutputTail: Patch = {
 			return "Missing _bashAppendOpts helper in renderToolUseMessage";
 		if (!hasRenderOptsWrappedReturns)
 			return "Bash renderToolUseMessage returns are not all wrapped with _bashAppendOpts";
-		if (!hasOutputCapPipelineGuard)
-			return "Missing Bash validateInput output-cap pipeline guard";
-		if (!hasOutputCapPipelineMessage)
-			return "Missing Bash output-cap pipeline validation message";
-
 		// Prompt checks
 		if (!code.includes("Disk persistence"))
 			return "Missing disk persistence guidance in prompt";
