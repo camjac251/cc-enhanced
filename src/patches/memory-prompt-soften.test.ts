@@ -61,6 +61,12 @@ test("memory-prompt-soften rewrites dream memory command guidance", () => {
 		true,
 	);
 	assert.equal(
+		output.includes(
+			"Use \\`eza team/\\` if a \\`team/\\` subdirectory is present",
+		),
+		true,
+	);
+	assert.equal(
 		output.includes("Use \\`fd -t f . logs/\\` to list recent activity logs"),
 		true,
 	);
@@ -86,4 +92,18 @@ test("memory-prompt-soften verify rejects missing modern guidance", () => {
 	const result = memoryPromptSoften.verify("const noop = true;");
 	assert.equal(typeof result, "string");
 	assert.equal(String(result).includes("missing modern read-only"), true);
+});
+
+test("memory-prompt-soften verify requires team subdirectory guidance", () => {
+	const output =
+		memoryPromptSoften.string?.(VANILLA_FIXTURE) ?? VANILLA_FIXTURE;
+	const withoutTeamSubdir = output.replace(
+		"- Use \\`eza team/\\` if a \\`team/\\` subdirectory is present, and skim it alongside your personal files",
+		"",
+	);
+
+	const result = memoryPromptSoften.verify(withoutTeamSubdir);
+
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("Use \\`eza team/\\` if"), true);
 });

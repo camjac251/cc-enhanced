@@ -254,6 +254,12 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				reason: "Dream memory consolidation still lacks eza team listing",
 			},
 			{
+				id: "dream-memory-eza-team-subdir",
+				needle: "Use `eza team/` if a `team/` subdirectory is present",
+				reason:
+					"Dream memory consolidation still lacks conditional eza team directory guidance",
+			},
+			{
 				id: "dream-memory-eza",
 				needle: "Use `eza` to list the memory directory",
 				reason: "Dream memory consolidation still lacks eza directory listing",

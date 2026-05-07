@@ -29,7 +29,7 @@ const MODERN_DREAM_TEAM_LIST_TEMPLATE =
 const MODERN_DREAM_TEAM_LIST_TEXT =
 	"- **Phase 1:** Use `eza team/` and skim it alongside your personal files. A teammate may have already captured something you'd otherwise duplicate.";
 const MODERN_DREAM_LIST_MEMORY =
-	"- Use \\`eza\\` to list the memory directory and see what already exists";
+	"- Use \\`eza\\` to list the memory directory and see what already exists\n- Use \\`eza team/\\` if a \\`team/\\` subdirectory is present, and skim it alongside your personal files";
 const MODERN_DREAM_LIST_LOGS =
 	"- Use \\`fd -t f . logs/\\` to list recent activity logs (one file per session under \\`YYYY/MM/DD/\\`). If a \\`sessions/\\` subdirectory also exists, review recent entries there too";
 const MODERN_DREAM_TRANSCRIPT_SEARCH_LABEL =
@@ -54,6 +54,7 @@ const LEGACY_DREAM_TEXTS = [
 ] as const;
 const MODERN_DREAM_TEXTS = [
 	"Use \\`eza\\` to list the memory directory",
+	"Use \\`eza team/\\` if a \\`team/\\` subdirectory is present",
 	"Use \\`fd -t f . logs/\\` to list recent activity logs",
 	"use \\`rg -m 50\\` on the JSONL transcripts",
 	"Use \\`fd -e md -t f .\\` against the memory directory shown above",

@@ -19,62 +19,62 @@ exit 1
 [tasks."patch:target"]
 description = "Patch an explicit target path"
 usage = 'arg "[args]..." help="Arguments passed to bun run patch:target"'
-run = "bun run patch:target"
+run = 'eval "set -- ${usage_args-}"; bun run patch:target "$@"'
 
 [tasks."native:backup"]
 description = "Create a backup for an explicit native target"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:backup"'
-run = "bun run native:backup"
+run = 'eval "set -- ${usage_args-}"; bun run native:backup "$@"'
 
 [tasks."native:restore"]
 description = "Restore an explicit native target from backup"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:restore"'
-run = "bun run native:restore"
+run = 'eval "set -- ${usage_args-}"; bun run native:restore "$@"'
 
 [tasks."native:unpack"]
 description = "Extract embedded JS from a native target"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:unpack"'
-run = "bun run native:unpack"
+run = 'eval "set -- ${usage_args-}"; bun run native:unpack "$@"'
 
 [tasks."native:unpack-current"]
 description = "Extract embedded JS from the currently-promoted patched binary"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:unpack-current"'
-run = "bun run native:unpack-current"
+run = 'eval "set -- ${usage_args-}"; bun run native:unpack-current "$@"'
 
 [tasks."native:repack"]
 description = "Repack JS file back into a native target"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:repack"'
-run = "bun run native:repack"
+run = 'eval "set -- ${usage_args-}"; bun run native:repack "$@"'
 
 [tasks."native:pull"]
 description = "Fetch native binary and extract clean formatted JS"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:pull"'
-run = "bun run native:pull"
+run = 'eval "set -- ${usage_args-}"; bun run native:pull "$@"'
 
 [tasks."native:fetch"]
 description = "Fetch official native Claude binary into local cache"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:fetch"'
-run = "bun run native:fetch"
+run = 'eval "set -- ${usage_args-}"; bun run native:fetch "$@"'
 
 [tasks."native:fetch-patch"]
 description = "Fetch native Claude binary and patch it"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:fetch-patch"'
-run = "bun run native:fetch-patch"
+run = 'eval "set -- ${usage_args-}"; bun run native:fetch-patch "$@"'
 
 [tasks."native:update"]
 description = "Fetch, patch, and promote latest Claude binary"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:update"'
-run = "bun run native:update"
+run = 'eval "set -- ${usage_args-}"; bun run native:update "$@"'
 
 [tasks."native:promote"]
 description = "Promote a patched native binary to active launcher"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:promote"'
-run = "bun run native:promote"
+run = 'eval "set -- ${usage_args-}"; bun run native:promote "$@"'
 
 [tasks."native:rollback"]
 description = "Roll back to previous promoted binary"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:rollback"'
-run = "bun run native:rollback"
+run = 'eval "set -- ${usage_args-}"; bun run native:rollback "$@"'
 
 [tasks.status]
 description = "Show current/previous/cached version status"
@@ -87,22 +87,22 @@ run = "bun run list"
 [tasks.inspect]
 description = "AST search tool with breadcrumbs, byte spans, JSON, and context"
 usage = 'arg "[args]..." help="Arguments passed to bun run inspect"'
-run = "bun run inspect"
+run = 'eval "set -- ${usage_args-}"; bun run inspect "$@"'
 
 [tasks."inspect:prompts"]
 description = "List prompt-like string/template nodes from a JS bundle"
 usage = 'arg "[args]..." help="Arguments passed to bun run inspect -- prompts"'
-run = "bun run inspect -- prompts"
+run = 'eval "set -- ${usage_args-}"; bun run inspect -- prompts "$@"'
 
 [tasks."inspect:view"]
 description = "View lines from a JS file"
 usage = 'arg "[args]..." help="Arguments passed to bun run inspect -- view"'
-run = "bun run inspect -- view"
+run = 'eval "set -- ${usage_args-}"; bun run inspect -- view "$@"'
 
 [tasks.diff]
 description = "Structural bundle diff between JS files"
 usage = 'arg "[args]..." help="Arguments passed to bun run diff"'
-run = "bun run diff"
+run = 'eval "set -- ${usage_args-}"; bun run diff "$@"'
 
 [tasks."lint:fix"]
 description = "Auto-fix lint and format issues"
@@ -111,42 +111,47 @@ run = "bun run lint:fix"
 [tasks."verify:anchors"]
 description = "Compare patched and clean cli.js anchors"
 usage = 'arg "[args]..." help="Arguments passed to bun run verify:anchors"'
-run = "bun run verify:anchors"
+run = 'eval "set -- ${usage_args-}"; bun run verify:anchors "$@"'
 
 [tasks."verify:prompt-surfaces"]
 description = "Verify exported live prompt surfaces"
 usage = 'arg "[args]..." help="Arguments passed to bun run verify:prompt-surfaces"'
-run = "bun run verify:prompt-surfaces"
+run = 'eval "set -- ${usage_args-}"; bun run verify:prompt-surfaces "$@"'
 
 [tasks."verify:prompt-drift"]
 description = "Verify watched exported prompt surfaces"
 usage = 'arg "[args]..." help="Arguments passed to bun run verify:prompt-drift"'
-run = "bun run verify:prompt-drift"
+run = 'eval "set -- ${usage_args-}"; bun run verify:prompt-drift "$@"'
 
 [tasks."prompts:drift-baseline"]
 description = "Write a watched prompt-surface path-hash baseline from an export"
 usage = 'arg "[args]..." help="Arguments passed to bun run prompts:drift-baseline"'
-run = "bun run prompts:drift-baseline"
+run = 'eval "set -- ${usage_args-}"; bun run prompts:drift-baseline "$@"'
 
 [tasks."verify:cache"]
 description = "Run live cache efficiency benchmark when ANTHROPIC_API_KEY is set"
 usage = 'arg "[args]..." help="Arguments passed to bun run verify:cache"'
-run = "bun run verify:cache"
+run = 'eval "set -- ${usage_args-}"; bun run verify:cache "$@"'
 
 [tasks."verify:cache:agent"]
 description = "Run the cache efficiency benchmark with the agent workload preset"
 usage = 'arg "[args]..." help="Arguments passed to bun run verify:cache:agent"'
-run = "bun run verify:cache:agent"
+run = 'eval "set -- ${usage_args-}"; bun run verify:cache:agent "$@"'
 
 [tasks."prompts:export"]
 description = "Extract prompt artifacts from promoted binary or clean version"
 usage = 'arg "[args]..." help="Arguments passed to bun run prompts:export"'
-run = "bun run prompts:export"
+run = 'eval "set -- ${usage_args-}"; bun run prompts:export "$@"'
 
 [tasks."prompts:bundle"]
 description = "Export prompts to a self-contained navigable bundle"
 usage = 'arg "[args]..." help="Arguments passed to bun run prompts:bundle"'
-run = "bun run prompts:bundle"
+run = 'eval "set -- ${usage_args-}"; bun run prompts:bundle "$@"'
+
+[tasks."prompts:compare"]
+description = "Compare vanilla and patched prompt exports"
+usage = 'arg "[args]..." help="Arguments passed to bun run prompts:compare"'
+run = 'eval "set -- ${usage_args-}"; bun run prompts:compare "$@"'
 
 [tasks.clean]
 description = "Remove output directories"
@@ -164,6 +169,10 @@ run = "bun run lint"
 description = "Format project files"
 run = "bun run format"
 
+[tasks.test]
+description = "Run the test suite"
+run = "bun run test"
+
 [tasks."verify:patches"]
 description = "Verify patcher health and dry-run patch application for native target"
 run = "bun run verify:patches"
@@ -171,3 +180,8 @@ run = "bun run verify:patches"
 [tasks."verify:patches:matrix"]
 description = "Dry-run patches against selected clean cli.js versions"
 run = "bun run verify:patches:matrix"
+
+[tasks."prompt-drift:baseline"]
+description = "Write a watched prompt-surface path-hash baseline"
+usage = 'arg "[args]..." help="Arguments passed to bun run prompt-drift:baseline"'
+run = 'eval "set -- ${usage_args-}"; bun run prompt-drift:baseline "$@"'
