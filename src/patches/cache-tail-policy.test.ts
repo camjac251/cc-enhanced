@@ -32,19 +32,45 @@ async function runCacheTailViaPasses(
 
 // Minimal fixture that mirrors the real cache breakpoint function structure:
 // - A function body containing the "tengu_api_cache_breakpoints" marker call
-// - A .map() callback with a variable assigned from `=== arr.length - 1`
+// - A Set of message indexes whose size is reported as markerCount
+// - A .map() callback with a variable assigned from `markerIndexes.has(index)`
 // - A return statement calling a builder function with (item, tailVar)
 // - A second return in an if-branch calling a "user" builder (should be skipped)
 const CACHE_TAIL_FIXTURE = `
-function buildCacheBreakpoints(messages) {
-  var marker = gate("tengu_api_cache_breakpoints", !1);
-  var arr = messages.filter(function(m) { return m.role; });
-  return arr.map(function(item, idx, list) {
-    var isTail = idx === list.length - 1;
-    if (item.role === "user") {
-      return buildUser(item, isTail);
+function buildCacheBreakpoints(messages, cachingEnabled, ttl, includeEdits = false, editBlock, pinnedEdits, skipCacheWrite = false, forkPointId) {
+  let findCacheableIndex = (startIndex) => {
+    let candidate = startIndex;
+    while (candidate >= 0 && messages[candidate].type === "api_system") candidate--;
+    return candidate;
+  };
+  let tailIndex = findCacheableIndex(messages.length - 1);
+  if (skipCacheWrite) tailIndex = findCacheableIndex(tailIndex - 1);
+  let markerIndexes = new Set();
+  if (tailIndex >= 0) markerIndexes.add(tailIndex);
+  let forkPointPinned = false;
+  if (multiCacheEnabled()) {
+    if (forkPointId) {
+      let forkIndex = messages.findLastIndex((message) => message.uuid === forkPointId);
+      if (forkIndex >= 0 && forkIndex <= tailIndex) (markerIndexes.add(forkIndex), (forkPointPinned = true));
+    } else if (!skipCacheWrite) {
+      let previousIndex = findCacheableIndex(tailIndex - 1);
+      if (previousIndex >= 0) (markerIndexes.add(previousIndex), (forkPointPinned = true));
     }
-    return buildAssistant(item, isTail);
+  }
+  gate("tengu_api_cache_breakpoints", {
+    totalMessageCount: messages.length,
+    cachingEnabled,
+    skipCacheWrite,
+    forkPointPinned,
+    markerCount: markerIndexes.size,
+  });
+  return messages.map(function(message, index) {
+    let shouldCache = markerIndexes.has(index);
+    if (message.type === "user") {
+      return buildUser(message, shouldCache, cachingEnabled, ttl);
+    }
+    if (message.type === "api_system") return { role: "system", content: message.message.content };
+    return buildAssistant(message, shouldCache, cachingEnabled, ttl);
   });
 }
 `;
@@ -58,15 +84,22 @@ test("cache-tail-policy applies declarations, window gate, and user-only conditi
 	assert.equal(output.includes("var cacheTailWindow = 2;"), true);
 	assert.equal(output.includes("var cacheUserOnly = true;"), true);
 
-	// The === operator was replaced with >
-	assert.equal(output.includes("=== list.length - 1"), false);
-	assert.equal(output.includes("> list.length - (cacheTailWindow + 1)"), true);
+	// The Set-based tail window loop was inserted before the marker report.
+	assert.equal(
+		output.includes("var cacheTailCount = tailIndex >= 0 ? 1 : 0;"),
+		true,
+	);
+	assert.equal(output.includes("cacheTailCount < cacheTailWindow"), true);
+	assert.equal(output.includes("markerIndexes.add(cacheTailIndex)"), true);
 
 	// The assistant return got the cacheUserOnly conditional
-	assert.equal(output.includes("cacheUserOnly ? false : isTail"), true);
+	assert.equal(output.includes("cacheUserOnly ? false : shouldCache"), true);
 
 	// The user return was NOT wrapped (buildUser is the userFnName)
-	assert.equal(output.includes("buildUser(item, isTail)"), true);
+	assert.equal(
+		output.includes("buildUser(message, shouldCache, cachingEnabled, ttl)"),
+		true,
+	);
 });
 
 test("cache-tail-policy verify rejects unpatched full fixture", () => {
@@ -84,17 +117,15 @@ test("cache-tail-policy verify rejects unpatched full fixture", () => {
 	);
 });
 
-test("cache-tail-policy verify detects === operator regression", async () => {
+test("cache-tail-policy verify detects cache tail window regression", async () => {
 	const ast = parse(FULL_VERIFY_FIXTURE);
 	await runCacheTailViaPasses(ast);
 	const output = print(ast);
 
-	// Revert the > operator back to === to simulate regression.
-	// The verifier expects `> length - (cacheTailWindow + 1)`, so reverting
-	// to === means it no longer finds the patched `>` gate form.
+	// Regress the loop condition so it no longer references cacheTailWindow.
 	const regressed = output.replace(
-		"> list.length - (cacheTailWindow + 1)",
-		"=== list.length - (cacheTailWindow + 1)",
+		"cacheTailCount < cacheTailWindow",
+		"cacheTailCount < 1",
 	);
 	assert.notEqual(regressed, output);
 
@@ -108,13 +139,12 @@ test("cache-tail-policy verify detects === operator regression", async () => {
 	);
 });
 
-test("cache-tail-policy verify detects legacy === length - 1 gate", () => {
+test("cache-tail-policy verify rejects unpatched Set-based tail gate", () => {
 	const ast = parse(FULL_VERIFY_FIXTURE);
 	const result = cacheTailPolicy.verify(FULL_VERIFY_FIXTURE, ast);
 	assert.equal(typeof result, "string");
 	assert.equal(
-		String(result).includes("Legacy tail cache gate") ||
-			String(result).includes("Missing") ||
+		String(result).includes("Missing") ||
 			String(result).includes("not patched"),
 		true,
 		`Expected a meaningful rejection, got: ${result}`,
@@ -134,10 +164,20 @@ test("cache-tail-policy verify rejects code without cache anchor", () => {
 // Fixture with a ternary return structure (user vs assistant in one return)
 const TERNARY_FIXTURE = `
 function buildCacheBreakpoints(messages) {
-  var marker = gate("tengu_api_cache_breakpoints", !1);
-  var arr = messages.filter(function(m) { return m.role; });
-  return arr.map(function(item, idx, list) {
-    var isTail = idx === list.length - 1;
+  let findCacheableIndex = (startIndex) => {
+    let candidate = startIndex;
+    while (candidate >= 0 && messages[candidate].type === "api_system") candidate--;
+    return candidate;
+  };
+  let tailIndex = findCacheableIndex(messages.length - 1);
+  let markerIndexes = new Set();
+  if (tailIndex >= 0) markerIndexes.add(tailIndex);
+  gate("tengu_api_cache_breakpoints", {
+    totalMessageCount: messages.length,
+    markerCount: markerIndexes.size,
+  });
+  return messages.map(function(item, idx) {
+    var isTail = markerIndexes.has(idx);
     return item.role === "user" ? buildUser(item, isTail) : buildAssistant(item, isTail);
   });
 }
@@ -152,9 +192,8 @@ test("cache-tail-policy handles ternary return pattern", async () => {
 	assert.equal(output.includes("var cacheTailWindow = 2;"), true);
 	assert.equal(output.includes("var cacheUserOnly = true;"), true);
 
-	// Gate was patched in ternary branches
-	assert.equal(output.includes("=== list.length - 1"), false);
-	assert.equal(output.includes("> list.length - (cacheTailWindow + 1)"), true);
+	// Gate was patched before the marker report.
+	assert.equal(output.includes("cacheTailCount < cacheTailWindow"), true);
 
 	// The assistant branch got the user-only conditional
 	assert.equal(output.includes("cacheUserOnly ? false :"), true);
@@ -424,11 +463,21 @@ const FULL_VERIFY_FIXTURE =
 const PARTIAL_DECL_FIXTURE =
 	`
 function buildCacheBreakpoints(messages) {
-  var marker = gate("tengu_api_cache_breakpoints", !1);
   var cacheUserOnly = true;
-  var arr = messages.filter(function(m) { return m.role; });
-  return arr.map(function(item, idx, list) {
-    var isTail = idx === list.length - 1;
+  let findCacheableIndex = (startIndex) => {
+    let candidate = startIndex;
+    while (candidate >= 0 && messages[candidate].type === "api_system") candidate--;
+    return candidate;
+  };
+  let tailIndex = findCacheableIndex(messages.length - 1);
+  let markerIndexes = new Set();
+  if (tailIndex >= 0) markerIndexes.add(tailIndex);
+  gate("tengu_api_cache_breakpoints", {
+    totalMessageCount: messages.length,
+    markerCount: markerIndexes.size,
+  });
+  return messages.map(function(item, idx) {
+    var isTail = markerIndexes.has(idx);
     return buildAssistant(item, isTail);
   });
 }
@@ -475,9 +524,16 @@ function outer() {
   function nested() {
     gate("tengu_api_cache_breakpoints", !1);
   }
-  var marker = gate("tengu_api_cache_breakpoints", !1);
-  return [1, 2, 3].map(function(item, idx, list) {
-    var isTail = idx === list.length - 1;
+  let findCacheableIndex = (startIndex) => startIndex;
+  let tailIndex = findCacheableIndex(2);
+  let markerIndexes = new Set();
+  if (tailIndex >= 0) markerIndexes.add(tailIndex);
+  gate("tengu_api_cache_breakpoints", {
+    totalMessageCount: 3,
+    markerCount: markerIndexes.size,
+  });
+  return [1, 2, 3].map(function(item, idx) {
+    var isTail = markerIndexes.has(idx);
     return buildAssistant(item, isTail);
   });
 }

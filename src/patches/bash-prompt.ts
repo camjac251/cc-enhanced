@@ -17,6 +17,11 @@ const EMBEDDED_SEARCH_GATE_ANCHORS = [
 	"# Using your tools", // System prompt tool-guidance section
 ];
 
+const PROMPT_TEXT_ANCHORS = [
+	"Executes a bash command", // Short Bash prompt surface
+	...EMBEDDED_SEARCH_GATE_ANCHORS,
+];
+
 const SEARCH_GUIDANCE_FRAGMENTS = [
 	"find or ls",
 	"grep or rg",
@@ -99,7 +104,7 @@ function containsAnchor(path: NodePath<t.Function>): boolean {
 	let found = false;
 	path.traverse({
 		StringLiteral(inner) {
-			for (const anchor of EMBEDDED_SEARCH_GATE_ANCHORS) {
+			for (const anchor of PROMPT_TEXT_ANCHORS) {
 				if (inner.node.value.startsWith(anchor)) {
 					found = true;
 					inner.stop();
@@ -110,7 +115,7 @@ function containsAnchor(path: NodePath<t.Function>): boolean {
 		TemplateLiteral(inner) {
 			for (const quasi of inner.node.quasis) {
 				const text = quasi.value.cooked ?? quasi.value.raw;
-				for (const anchor of EMBEDDED_SEARCH_GATE_ANCHORS) {
+				for (const anchor of PROMPT_TEXT_ANCHORS) {
 					if (text.includes(anchor)) {
 						found = true;
 						inner.stop();
@@ -354,6 +359,11 @@ function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 		TemplateLiteral(templatePath) {
 			const pattern = templatePattern(templatePath.node);
 			switch (pattern) {
+				case "- IMPORTANT: Avoid using this tool to run ${} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.":
+					templatePath.replaceWith(
+						t.stringLiteral(`- ${MODERN_BASH_IMPORTANT_LINE}`),
+					);
+					return;
 				case "IMPORTANT: Avoid using this tool to run ${} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:":
 					templatePath.replaceWith(t.stringLiteral(MODERN_BASH_IMPORTANT_LINE));
 					return;

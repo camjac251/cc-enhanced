@@ -18,6 +18,17 @@ async function runBashPromptViaPasses(ast: any): Promise<void> {
 }
 
 const BASH_PROMPT_FIXTURE = `
+function ws_() {
+  let K = TM()
+    ? "\`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`"
+    : "\`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`";
+  return [
+    "Executes a bash command and returns its output.",
+    "",
+    \`- IMPORTANT: Avoid using this tool to run \${K} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.\`,
+  ].join("\\n");
+}
+
 function A4D() {
   let unrelated = shouldStay(),
     H = HO(),
@@ -109,6 +120,12 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 	assert.equal(
 		output.includes(
 			"IMPORTANT: Prefer dedicated symbol/semantic tools and modern CLI utilities whenever possible. Recommended defaults:",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"- IMPORTANT: Prefer dedicated symbol/semantic tools and modern CLI utilities whenever possible. Recommended defaults:",
 		),
 		true,
 	);

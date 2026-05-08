@@ -67,82 +67,225 @@ function forEachMapCallback(
 	walk(node);
 }
 
-function isTailWindowPlusOneExpression(node: t.Node): boolean {
-	return (
-		t.isBinaryExpression(node, { operator: "+" }) &&
-		t.isIdentifier(node.left, { name: "cacheTailWindow" }) &&
-		t.isNumericLiteral(node.right, { value: 1 })
-	);
-}
-
-function isLengthMinusOneExpression(node: t.Node): boolean {
-	return (
-		t.isBinaryExpression(node, { operator: "-" }) &&
-		t.isMemberExpression(node.left) &&
-		isMemberPropertyName(node.left, "length") &&
-		t.isNumericLiteral(node.right, { value: 1 })
-	);
-}
-
-function isLengthMinusTailWindowPlusOneExpression(node: t.Node): boolean {
-	return (
-		t.isBinaryExpression(node, { operator: "-" }) &&
-		t.isMemberExpression(node.left) &&
-		isMemberPropertyName(node.left, "length") &&
-		isTailWindowPlusOneExpression(node.right)
-	);
-}
-
-function isTailIndexMinusWindowExpression(node: t.Node): boolean {
-	return (
-		t.isBinaryExpression(node, { operator: "-" }) &&
-		t.isIdentifier(node.left) &&
-		t.isIdentifier(node.right, { name: "cacheTailWindow" })
-	);
-}
-
-function patchTailGateExpression(node: t.Expression): boolean {
+function getMarkerCountSetName(stmt: t.Statement): string | null {
+	if (!t.isExpressionStatement(stmt)) return null;
+	const expr = stmt.expression;
+	if (!t.isCallExpression(expr)) return null;
 	if (
-		t.isBinaryExpression(node) &&
-		(node.operator === ">" || node.operator === "===")
+		!expr.arguments.some((arg) =>
+			t.isStringLiteral(arg, { value: "tengu_api_cache_breakpoints" }),
+		)
 	) {
-		if (!t.isBinaryExpression(node.right, { operator: "-" })) return false;
-		if (!t.isMemberExpression(node.right.left)) return false;
-		if (!isMemberPropertyName(node.right.left, "length")) return false;
-		if (isTailWindowPlusOneExpression(node.right.right)) {
-			if (node.operator === "===") {
-				node.operator = ">";
-			}
-			return true;
-		}
-		if (!t.isNumericLiteral(node.right.right)) return false;
-		if (node.operator === "===") {
-			node.operator = ">";
-		}
-		node.right.right = t.binaryExpression(
-			"+",
-			t.identifier("cacheTailWindow"),
-			t.numericLiteral(1),
-		);
-		return true;
+		return null;
+	}
+	const payload = expr.arguments.find((arg): arg is t.ObjectExpression =>
+		t.isObjectExpression(arg),
+	);
+	if (!payload) return null;
+
+	for (const prop of payload.properties) {
+		if (!t.isObjectProperty(prop)) continue;
+		if (getObjectKeyName(prop.key) !== "markerCount") continue;
+		if (!t.isMemberExpression(prop.value)) continue;
+		if (!isMemberPropertyName(prop.value, "size")) continue;
+		if (!t.isIdentifier(prop.value.object)) return null;
+		return prop.value.object.name;
 	}
 
-	if (t.isLogicalExpression(node)) {
+	return null;
+}
+
+function nodeContainsSetAdd(
+	node: t.Node | null | undefined,
+	setName: string,
+	argumentName?: string,
+): boolean {
+	if (!node) return false;
+	return nodeContains(node, (candidate) => {
+		if (!t.isCallExpression(candidate)) return false;
+		if (!t.isMemberExpression(candidate.callee)) return false;
+		if (!t.isIdentifier(candidate.callee.object, { name: setName })) {
+			return false;
+		}
+		if (!isMemberPropertyName(candidate.callee, "add")) return false;
+		if (argumentName === undefined) return true;
 		return (
-			(t.isExpression(node.left) && patchTailGateExpression(node.left)) ||
-			(t.isExpression(node.right) && patchTailGateExpression(node.right))
+			candidate.arguments.length >= 1 &&
+			t.isIdentifier(candidate.arguments[0], { name: argumentName })
 		);
+	});
+}
+
+function nodeContainsSetHas(
+	node: t.Node | null | undefined,
+	setName: string,
+	argumentName?: string,
+): boolean {
+	if (!node) return false;
+	return nodeContains(node, (candidate) => {
+		if (!t.isCallExpression(candidate)) return false;
+		if (!t.isMemberExpression(candidate.callee)) return false;
+		if (!t.isIdentifier(candidate.callee.object, { name: setName })) {
+			return false;
+		}
+		if (!isMemberPropertyName(candidate.callee, "has")) return false;
+		if (argumentName === undefined) return true;
+		return (
+			candidate.arguments.length >= 1 &&
+			t.isIdentifier(candidate.arguments[0], { name: argumentName })
+		);
+	});
+}
+
+function getVariableDeclarator(
+	body: t.Statement[],
+	name: string,
+): t.VariableDeclarator | null {
+	for (const stmt of body) {
+		if (!t.isVariableDeclaration(stmt)) continue;
+		for (const decl of stmt.declarations) {
+			if (t.isIdentifier(decl.id, { name })) return decl;
+		}
+	}
+	return null;
+}
+
+function findPrimaryTailSetAdd(
+	body: t.Statement[],
+	markerStmtIndex: number,
+	setName: string,
+): { indexName: string; helperName: string } | null {
+	for (let index = 0; index < markerStmtIndex; index++) {
+		const stmt = body[index];
+		let addName: string | null = null;
+
+		nodeContains(stmt, (candidate) => {
+			if (addName) return false;
+			if (!t.isCallExpression(candidate)) return false;
+			if (!t.isMemberExpression(candidate.callee)) return false;
+			if (!t.isIdentifier(candidate.callee.object, { name: setName })) {
+				return false;
+			}
+			if (!isMemberPropertyName(candidate.callee, "add")) return false;
+			const arg = candidate.arguments[0];
+			if (!t.isIdentifier(arg)) return false;
+			addName = arg.name;
+			return false;
+		});
+
+		if (!addName) continue;
+		const decl = getVariableDeclarator(body, addName);
+		if (!decl?.init || !t.isCallExpression(decl.init)) continue;
+		if (!t.isIdentifier(decl.init.callee)) continue;
+		return { indexName: addName, helperName: decl.init.callee.name };
 	}
 
-	if (t.isUnaryExpression(node) && t.isExpression(node.argument)) {
-		return patchTailGateExpression(node.argument);
-	}
+	return null;
+}
 
-	if (t.isParenthesizedExpression(node) && t.isExpression(node.expression)) {
-		return patchTailGateExpression(node.expression);
-	}
+function hasCacheTailWindowLoop(
+	body: t.Statement[],
+	setName?: string,
+): boolean {
+	return body.some((stmt) => {
+		if (!t.isForStatement(stmt)) return false;
+		if (
+			!t.isLogicalExpression(stmt.test, { operator: "&&" }) ||
+			!t.isBinaryExpression(stmt.test.right, { operator: "<" }) ||
+			!t.isIdentifier(stmt.test.right.left, { name: "cacheTailCount" }) ||
+			!t.isIdentifier(stmt.test.right.right, { name: "cacheTailWindow" })
+		) {
+			return false;
+		}
+		if (setName && !nodeContainsSetAdd(stmt, setName, "cacheTailIndex")) {
+			return false;
+		}
+		return true;
+	});
+}
 
-	return false;
+function createCacheTailWindowStatements(
+	setName: string,
+	indexName: string,
+	helperName: string,
+): t.Statement[] {
+	const setId = t.identifier(setName);
+	const indexId = t.identifier(indexName);
+	const helperId = t.identifier(helperName);
+	const tailIndexId = t.identifier("cacheTailIndex");
+	const tailCountId = t.identifier("cacheTailCount");
+
+	return [
+		t.variableDeclaration("var", [
+			t.variableDeclarator(
+				t.cloneNode(tailCountId),
+				t.conditionalExpression(
+					t.binaryExpression(">=", t.cloneNode(indexId), t.numericLiteral(0)),
+					t.numericLiteral(1),
+					t.numericLiteral(0),
+				),
+			),
+		]),
+		t.forStatement(
+			t.variableDeclaration("var", [
+				t.variableDeclarator(
+					t.cloneNode(tailIndexId),
+					t.callExpression(t.cloneNode(helperId), [
+						t.binaryExpression("-", t.cloneNode(indexId), t.numericLiteral(1)),
+					]),
+				),
+			]),
+			t.logicalExpression(
+				"&&",
+				t.binaryExpression(">=", t.cloneNode(tailIndexId), t.numericLiteral(0)),
+				t.binaryExpression(
+					"<",
+					t.cloneNode(tailCountId),
+					t.identifier("cacheTailWindow"),
+				),
+			),
+			t.assignmentExpression(
+				"=",
+				t.cloneNode(tailIndexId),
+				t.callExpression(t.cloneNode(helperId), [
+					t.binaryExpression(
+						"-",
+						t.cloneNode(tailIndexId),
+						t.numericLiteral(1),
+					),
+				]),
+			),
+			t.blockStatement([
+				t.ifStatement(
+					t.unaryExpression(
+						"!",
+						t.callExpression(
+							t.memberExpression(t.cloneNode(setId), t.identifier("has")),
+							[t.cloneNode(tailIndexId)],
+						),
+					),
+					t.expressionStatement(
+						t.callExpression(
+							t.memberExpression(t.cloneNode(setId), t.identifier("add")),
+							[t.cloneNode(tailIndexId)],
+						),
+					),
+				),
+				t.expressionStatement(
+					t.updateExpression("++", t.cloneNode(tailCountId)),
+				),
+			]),
+		),
+	];
+}
+
+function isSetHasTailVar(
+	node: t.Node,
+	setName: string | null,
+	indexParamName: string | null,
+): boolean {
+	if (!setName || !indexParamName) return false;
+	return nodeContainsSetHas(node, setName, indexParamName);
 }
 
 function ensureTailPolicyDeclarations(body: t.Statement[]): {
@@ -253,15 +396,43 @@ function createCacheTailPolicyMutator(): Visitor {
 			if (done) return;
 			if (!t.isBlockStatement(path.node.body)) return;
 			const body = path.node.body.body;
-			const markerStmtIndex = body.findIndex((stmt) =>
-				nodeContainsMarkerOutsideNestedFunctions(stmt),
+			const markerStmtIndex = body.findIndex(
+				(stmt) =>
+					!t.isFunctionDeclaration(stmt) &&
+					nodeContainsMarkerOutsideNestedFunctions(stmt),
 			);
 			if (markerStmtIndex < 0) return;
+			const markerSetName = getMarkerCountSetName(body[markerStmtIndex]);
+			if (!markerSetName) return;
 
 			const { missingDeclarations } = ensureTailPolicyDeclarations(body);
 			if (missingDeclarations.length > 0) {
 				body.splice(markerStmtIndex, 0, ...missingDeclarations);
 				patchedDecls = true;
+			}
+			const updatedMarkerStmtIndex =
+				markerStmtIndex + missingDeclarations.length;
+
+			if (hasCacheTailWindowLoop(body, markerSetName)) {
+				patchedWindow = true;
+			} else {
+				const primaryAdd = findPrimaryTailSetAdd(
+					body,
+					updatedMarkerStmtIndex,
+					markerSetName,
+				);
+				if (primaryAdd) {
+					body.splice(
+						updatedMarkerStmtIndex,
+						0,
+						...createCacheTailWindowStatements(
+							markerSetName,
+							primaryAdd.indexName,
+							primaryAdd.helperName,
+						),
+					);
+					patchedWindow = true;
+				}
 			}
 
 			const patchMapCallback = (
@@ -281,49 +452,8 @@ function createCacheTailPolicyMutator(): Visitor {
 					for (const cbDecl of cbStmt.declarations) {
 						if (!t.isIdentifier(cbDecl.id)) continue;
 						if (!cbDecl.init || !t.isExpression(cbDecl.init)) continue;
-						if (!patchTailGateExpression(cbDecl.init)) continue;
-						tailVars.add(cbDecl.id.name);
-						patchedWindow = true;
-					}
-				}
-
-				if (indexParamName) {
-					for (const cbStmt of callback.body.body) {
-						if (!t.isVariableDeclaration(cbStmt)) continue;
-						for (const cbDecl of cbStmt.declarations) {
-							if (
-								!t.isIdentifier(cbDecl.id) ||
-								tailVars.has(cbDecl.id.name) ||
-								!cbDecl.init ||
-								!t.isBinaryExpression(cbDecl.init, { operator: "===" }) ||
-								!t.isIdentifier(cbDecl.init.left, {
-									name: indexParamName,
-								}) ||
-								!t.isIdentifier(cbDecl.init.right)
-							) {
-								continue;
-							}
-
-							const tailIndexId = cbDecl.init.right;
-							cbDecl.init = t.logicalExpression(
-								"&&",
-								t.binaryExpression(
-									"<=",
-									t.identifier(indexParamName),
-									t.cloneNode(tailIndexId),
-								),
-								t.binaryExpression(
-									">",
-									t.identifier(indexParamName),
-									t.binaryExpression(
-										"-",
-										t.cloneNode(tailIndexId),
-										t.identifier("cacheTailWindow"),
-									),
-								),
-							);
+						if (isSetHasTailVar(cbDecl.init, markerSetName, indexParamName)) {
 							tailVars.add(cbDecl.id.name);
-							patchedWindow = true;
 						}
 					}
 				}
@@ -389,13 +519,6 @@ function createCacheTailPolicyMutator(): Visitor {
 						continue;
 					}
 					if (
-						userCall.arguments.length >= 2 &&
-						t.isExpression(userCall.arguments[1]) &&
-						patchTailGateExpression(userCall.arguments[1])
-					) {
-						patchedWindow = true;
-					}
-					if (
 						assistantCall.arguments.length < 2 ||
 						!t.isExpression(assistantCall.arguments[1])
 					) {
@@ -415,10 +538,12 @@ function createCacheTailPolicyMutator(): Visitor {
 						patchedUserOnly = true;
 						continue;
 					}
+					if (!t.isIdentifier(assistantArg)) continue;
+					if (!tailVars.has(assistantArg.name)) continue;
 					assistantCall.arguments[1] = t.conditionalExpression(
 						t.identifier("cacheUserOnly"),
 						t.booleanLiteral(false),
-						t.cloneNode(assistantArg),
+						t.identifier(assistantArg.name),
 					);
 					patchedUserOnly = true;
 				}
@@ -1258,15 +1383,21 @@ function verifyTailWindowPolicy(ast: t.File): true | string {
 	let hasUserOnlyReassign = false;
 	let hasTailWindowGate = false;
 	let hasUserOnlyConditional = false;
-	let hasLegacyTailEqualityGate = false;
 
 	traverse(ast, {
 		Function(path) {
 			if (foundMarkerFunction) return;
 			if (!t.isBlockStatement(path.node.body)) return;
-			if (!path.node.body.body.some((stmt) => nodeContainsMarker(stmt))) return;
+			const markerStmt = path.node.body.body.find(
+				(stmt) => !t.isFunctionDeclaration(stmt) && nodeContainsMarker(stmt),
+			);
+			if (!markerStmt) return;
+			const markerSetName = getMarkerCountSetName(markerStmt);
 
 			foundMarkerFunction = true;
+			hasTailWindowGate = markerSetName
+				? hasCacheTailWindowLoop(path.node.body.body, markerSetName)
+				: false;
 
 			path.traverse({
 				VariableDeclarator(varPath) {
@@ -1316,22 +1447,6 @@ function verifyTailWindowPolicy(ast: t.File): true | string {
 						hasUserOnlyReassign = true;
 					}
 				},
-				BinaryExpression(binaryPath) {
-					const node = binaryPath.node;
-					if (
-						node.operator === ">" &&
-						(isLengthMinusTailWindowPlusOneExpression(node.right) ||
-							isTailIndexMinusWindowExpression(node.right))
-					) {
-						hasTailWindowGate = true;
-					}
-					if (
-						node.operator === "===" &&
-						isLengthMinusOneExpression(node.right)
-					) {
-						hasLegacyTailEqualityGate = true;
-					}
-				},
 				ConditionalExpression(condPath) {
 					if (
 						t.isIdentifier(condPath.node.test, {
@@ -1374,9 +1489,6 @@ function verifyTailWindowPolicy(ast: t.File): true | string {
 	}
 	if (!hasUserOnlyConditional) {
 		return "Assistant cache tail gating was not patched to user-only";
-	}
-	if (hasLegacyTailEqualityGate) {
-		return "Legacy tail cache gate (=== length - 1) still present in cache breakpoint function";
 	}
 	return true;
 }
