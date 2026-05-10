@@ -62,7 +62,7 @@ usage = 'arg "[args]..." help="Arguments passed to bun run native:fetch-patch"'
 run = 'eval "set -- ${usage_args-}"; bun run native:fetch-patch "$@"'
 
 [tasks."native:update"]
-description = "Fetch, patch, and promote latest Claude binary"
+description = "Fetch, patch, promote, and verify latest Claude binary"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:update"'
 run = 'eval "set -- ${usage_args-}"; bun run native:update "$@"'
 

@@ -200,6 +200,12 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 		allowSyntheticPlaceholders: true,
 		forbidden: [
 			{
+				id: "using-tools-empty-dedicated-list",
+				needle: "when one fits ()",
+				reason:
+					"Using-your-tools surface rendered an empty dedicated-tools list",
+			},
+			{
 				id: "using-tools-glob",
 				needle: "To search for files use Glob instead of find or ls",
 				reason: "Using-your-tools surface still references Glob",

@@ -33,4 +33,8 @@ If the tag is missing, ask the user for: tag, one-line purpose, and group.
 Tell the user the four files are created. Do not implement the visitor or verifier; that is the user's design step. Then remind them to follow CLAUDE.md > Adding Patches:
 
 - **Step 5**: if the patch changes exported live prompt guidance, update `src/verification/prompt-surface-rules.ts` (and `src/verification/prompt-policy-contract.ts` for shared policy).
+- For prompt guidance changes, later validate a patched export with
+  `mise run verify:prompt-surfaces -- <export-dir>`, review
+  `prompts:compare`, and run `verify:prompt-drift` against a reviewed baseline
+  before calling drift corrected.
 - **Step 6**: keep the patch count in sync across `CLAUDE.md` intro, `README.md` intro and badge, and the GitHub repo description (`gh api -X PATCH repos/camjac251/cc-enhanced -f description="..."`). Confirm the new total against `bun run cli --list` before pushing.

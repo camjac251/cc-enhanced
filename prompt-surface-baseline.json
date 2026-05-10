@@ -1,0 +1,15 @@
+{
+  "version": "2.1.136",
+  "algorithm": "sha256",
+  "normalization": "prompt-surface-v1",
+  "surfaces": {
+    "agents/explore.md": "8b1f7d17ff5ade9f28b5679a741bb33045372615a52e500d86a49a28dd2a65e0",
+    "agents/plan.md": "c3f45f72f5451723a4f52634a3c919fe3b18f743311089540da9e63d38f9bf3a",
+    "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge-2.md": "39d5ac91362a22dd96f78e3938f9a8470156ffd70c41c98e032799d76cc9cab3",
+    "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge.md": "931aea562e7efacf59c7bb508e7cceb093795dc83f78a7ad7e0e225274ef92a0",
+    "system/sections/dream-memory-consolidation.md": "14e94930f1f6d170941a52cea117a1a0e40c301d7f9f8dc9bec25d3baaa4cb39",
+    "system/sections/dream-memory-pruning.md": "61ea71a0ab5ea2bda7c8e1a49fe9b7c7f27c31170b43e46938c1b0e44c5e04c7",
+    "system/sections/session-specific-guidance.md": "3eae97bdcc8ef43b86a3632936c123febf52de142cd8e175159da9c48b8ad283",
+    "system/sections/using-your-tools.md": "f6d76e89c2df2dd83f2d0e244e2a07e7d6aa6dac069eef43d8da2e38423c5995"
+  }
+}

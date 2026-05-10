@@ -188,7 +188,7 @@ Do not set `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Th
 ## CLI Reference
 
 ```bash
-mise run native:update                            # Fetch + patch + promote (standard workflow)
+mise run native:update                            # Fetch + patch + promote + verify
 mise run native:update -- <version>               # Pin a specific version (e.g. 2.1.133)
 mise run native:update -- --dry-run               # Preview without promoting
 mise run native:fetch-patch -- <version> --dry-run
@@ -198,10 +198,11 @@ mise run status                                   # Show current, previous, cach
 mise run native:pull -- <version>                 # Fetch upstream + extract clean JS to versions_clean/<version>/cli.js
 mise run native:unpack-current -- <out>           # Extract patched JS from the currently-promoted binary (auto-detects via PATH)
 mise run native:unpack -- <bin> <out>             # Extract embedded JS from any native binary
-mise run verify:patches                           # Typecheck + lint + dry-run on native target
+mise run verify:patches                           # Typecheck + lint + native dry-run + prompt drift
 mise run verify:patches:matrix                    # Dry-run patches against latest clean cli.js
 VERIFY_PATCHES_MATRIX_SCOPE=all mise run verify:patches:matrix
 mise run verify:anchors -- <patched-cli> <clean-cli>
+mise run verify:prompt-surfaces -- <export-dir>
 mise run verify:prompt-drift -- <export-dir> --prompt-drift-baseline <baseline.json>
 mise run prompts:export                           # Export prompt artifacts from promoted binary
 mise run prompts:export -- <version> --output-dir /tmp/prompts-<version>
@@ -239,7 +240,7 @@ Useful outputs:
 
 `verify:prompt-surfaces` checks the curated patched surfaces and fails on dynamic prompt markers or unresolved helper placeholders such as `${value_...}`, `${conditional(...)`, and `${...spread}` unless that specific surface allows synthetic runtime placeholders. Broad corpus exports may still contain runtime-only placeholders; track those with `manifest.quality.uncategorizedCount` and use `--max-uncategorized` only when you want a hard drift budget.
 
-`verify:prompt-drift` adds a path-based drift guard for the surfaces this patcher cares about most. Generate or refresh a baseline from a known-good patched export:
+`verify:prompt-drift` adds a path-based drift guard for the surfaces this patcher cares about most. `prompt-surface-baseline.json` is checked in and used by `mise run verify:patches` by default. Generate or refresh it only from a reviewed known-good patched export:
 
 ```bash
 mise run prompts:drift-baseline -- prompt-surface-baseline.json exported-prompts/<version>_patched --prompt-drift-version <version>
@@ -249,10 +250,10 @@ Then compare future exports against it:
 
 ```bash
 mise run verify:prompt-drift -- exported-prompts/<new-version>_patched --prompt-drift-baseline prompt-surface-baseline.json
-PROMPT_DRIFT_BASELINE=prompt-surface-baseline.json mise run verify:patches
+mise run verify:patches
 ```
 
-The baseline hashes normalized Markdown by exported path, not by content-derived prompt id. The drift watch list in [`src/verification/prompt-surface-rules.ts`](src/verification/prompt-surface-rules.ts) is authoritative for surfaces expected to exist in patched exports; optional surfaces removed by `tools-off` / `agents-off` stay in the broader review list but are not baseline requirements. If a new watched surface is added but the baseline has not been refreshed, `verify:prompt-drift` fails with `baseline-missing-surface`. That keeps drift control explicit. Edit the same file to choose which surfaces are watched, which optional surfaces are review-only, and which required/forbidden needles are enforced. Normalization ignores generated `source_symbol` values and renumbers synthetic `${value_...}` / `${expr_...}` placeholders so minifier churn does not create noisy drift.
+The baseline hashes normalized Markdown by exported path, not by content-derived prompt id. The drift watch list in [`src/verification/prompt-surface-rules.ts`](src/verification/prompt-surface-rules.ts) is authoritative for surfaces expected to exist in patched exports; optional surfaces removed by `tools-off` / `agents-off` stay in the broader review list but are not baseline requirements. If a new watched surface is added but the baseline has not been refreshed, `verify:prompt-drift` fails with `baseline-missing-surface`. If a watched hash changes, the update is not complete until the patch/exporter/rules are corrected or the baseline is refreshed after reviewing the new export as known-good. Edit the same file to choose which surfaces are watched, which optional surfaces are review-only, and which required/forbidden needles are enforced. Normalization ignores generated `source_symbol` values and renumbers synthetic `${value_...}` / `${expr_...}` placeholders so minifier churn does not create noisy drift.
 
 `prompts:compare` is a human review report for comparing a vanilla prompt export, a patched prompt export, and the runtime `/etc/claude-code` policy layer. It reports file inventory deltas, manifest count changes, review prompt-surface status (including optional surfaces intentionally removed by patching), exact-line overlap from `/etc` into the patched bundle export, and policy-term presence across both layers.
 

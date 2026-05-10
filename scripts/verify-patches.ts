@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
+const defaultPromptDriftBaseline = path.join(
+	repoRoot,
+	"prompt-surface-baseline.json",
+);
 
 interface DryRunSummary {
 	error?: unknown;
@@ -55,6 +59,19 @@ function fileExists(filePath: string | undefined): filePath is string {
 	} catch {
 		return false;
 	}
+}
+
+function promptDriftBaselinePath(): string {
+	const configured = envValue("PROMPT_DRIFT_BASELINE");
+	const baseline = configured
+		? resolvePath(configured)
+		: defaultPromptDriftBaseline;
+	if (!fileExists(baseline)) {
+		throw new Error(
+			`Prompt drift baseline not found: ${baseline}. Run prompts:compare, review the patched export, then refresh the baseline with prompts:drift-baseline.`,
+		);
+	}
+	return baseline;
 }
 
 function formatCommand(command: string, args: readonly string[]): string {
@@ -264,20 +281,13 @@ function verifyNativeTarget(nativeTarget: string, paths: VerifyPaths): void {
 		paths.nativePromptExportDir,
 	]);
 
-	const driftBaseline = envValue("PROMPT_DRIFT_BASELINE");
-	if (driftBaseline) {
-		runBun([
-			"src/index.ts",
-			"--verify-prompt-drift",
-			paths.nativePromptExportDir,
-			"--prompt-drift-baseline",
-			resolvePath(driftBaseline),
-		]);
-	} else {
-		console.log(
-			"Skipping prompt drift check (set PROMPT_DRIFT_BASELINE to enable)",
-		);
-	}
+	runBun([
+		"src/index.ts",
+		"--verify-prompt-drift",
+		paths.nativePromptExportDir,
+		"--prompt-drift-baseline",
+		promptDriftBaselinePath(),
+	]);
 }
 
 function verifyAnchors(cliTarget: string, paths: VerifyPaths): void {
@@ -429,7 +439,7 @@ Options:
 Environment:
   CLI_TARGET                   Optional clean cli.js target for default verification.
   NATIVE_TARGET                Optional native binary target for default verification.
-  PROMPT_DRIFT_BASELINE        Optional prompt drift baseline for default verification.
+  PROMPT_DRIFT_BASELINE        Optional prompt drift baseline override. Defaults to prompt-surface-baseline.json.
   SELECTED_VERSION             Version used by --matrix.
   VERIFY_PATCHES_MATRIX_SCOPE  Set to "all" to verify every versions_clean/<version>/cli.js.
 `);

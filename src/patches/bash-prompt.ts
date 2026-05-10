@@ -72,6 +72,29 @@ function createSingleExpressionTemplate(
 	);
 }
 
+function createTwoExpressionTemplate(
+	first: t.Expression | t.TSType,
+	second: t.Expression | t.TSType,
+	before: string,
+	between: string,
+	after: string,
+): t.TemplateLiteral {
+	return t.templateLiteral(
+		[
+			t.templateElement(
+				{ raw: escapeTemplateRaw(before), cooked: before },
+				false,
+			),
+			t.templateElement(
+				{ raw: escapeTemplateRaw(between), cooked: between },
+				false,
+			),
+			t.templateElement({ raw: escapeTemplateRaw(after), cooked: after }, true),
+		],
+		[first, second],
+	);
+}
+
 function rewriteLegacyText(text: string): string {
 	let next = text
 		.replace(
@@ -445,6 +468,17 @@ function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 						t.stringLiteral(MODERN_BASH_SEARCH_GUIDANCE),
 					);
 					return;
+				case "Prefer dedicated tools over ${} when one fits (${}) — reserve ${} for shell-only operations.":
+					templatePath.replaceWith(
+						createTwoExpressionTemplate(
+							templatePath.node.expressions[0],
+							templatePath.node.expressions[2],
+							"Prefer dedicated tools over ",
+							" when one fits — reserve ",
+							" for shell-only operations.",
+						),
+					);
+					return;
 			}
 
 			for (const quasi of templatePath.node.quasis) {
@@ -559,7 +593,8 @@ export const bashPrompt: Patch = {
 			code.includes("(NOT echo >/cat <<EOF)") ||
 			code.includes("find -regex") ||
 			code.includes("run `ls` to verify") ||
-			code.includes("appropriate dedicated tool")
+			code.includes("appropriate dedicated tool") ||
+			code.includes("when one fits (")
 		) {
 			return "Legacy Bash prompt guidance still present";
 		}

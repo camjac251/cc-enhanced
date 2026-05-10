@@ -112,7 +112,7 @@ No build step. TypeScript runs directly via Bun. Babel + generator over the 16 M
 
 Use this command map instead of opening task files for orientation:
 
-- `native:update`: standard fetch, patch, and promote flow through `src/index.ts --update`. Accepts a positional version (`latest`, `stable`, or `X.Y.Z`).
+- `native:update`: standard fetch, patch, promote, and `verify:patches` flow through `src/index.ts --update`. Accepts a positional version (`latest`, `stable`, or `X.Y.Z`).
 - `native:fetch`, `native:fetch-patch`, `native:pull`, `native:promote`, `native:rollback`, `native:backup`, `native:restore`, `native:unpack`, `native:unpack-current`, `native:repack`, `status`, `list`: native binary/cache operations. `native:pull` writes clean JS to `versions_clean/<version>/cli.js`. `native:unpack-current` auto-detects the active binary via PATH.
 - `inspect`, `inspect:prompts`, `inspect:view`: bundle inspection through `src/inspector.ts`.
 - `diff`: release-to-release bundle drift through `src/diff.ts`. Run before changing patch anchors after an upstream release.
@@ -215,7 +215,12 @@ Best release-drift workflow:
 2. `mise run diff -- matrix versions_clean/<old>/cli.js versions_clean/<mid>/cli.js versions_clean/<new>/cli.js --cache` to see which step introduced new commands, flags, env vars, prompts, or patch-risk anchors.
 3. Re-run focused diffs on the adjacent pair that changed.
 4. `SELECTED_VERSION=<new> mise run verify:patches:matrix` to dry-run patches against the new clean bundle, or `VERIFY_PATCHES_MATRIX_SCOPE=all` to sweep every pulled clean version.
-5. For prompt drift: export clean and patched prompt artifacts for the new release, run `bun run prompts:compare`, then `mise run verify:prompt-drift -- <patched-export> --prompt-drift-baseline <baseline.json>` if curated surfaces changed.
+5. For prompt drift: export clean and patched prompt artifacts for the new
+   release, run `mise run verify:prompt-surfaces -- <patched-export>`, run
+   `bun run prompts:compare`, then fix patch/exporter/rule drift or refresh
+   `prompt-surface-baseline.json` only after the new patched export has been
+   reviewed as known-good. `mise run verify:patches` always runs
+   `verify:prompt-drift` against that baseline.
 
 Keep `bundle-diff.config.json` (`ignoreTokens`, `ignorePrefixes`, `highSignalTokens`) describing local triage noise or durable public-facing surfaces, never upstream source-file names, module names, or reconstructed internals.
 
@@ -231,9 +236,27 @@ Prompt artifacts come from native-extracted or legacy npm-package `cli.js` bundl
 
 `verify:prompt-surfaces` is intentionally strict for curated live surfaces. Dynamic markers and unresolved helper placeholders (`${value_...}`, `${conditional(...)`, `${...spread}`) fail verification unless the surface explicitly sets `allowSyntheticPlaceholders`. If a clean upstream export still has unresolved runtime placeholders in broad corpus outputs, track that through `quality.uncategorizedCount` and use `--max-uncategorized` only where a budget is meaningful.
 
-`verify:prompt-drift` is the pass/fail guard for watched prompt surfaces expected to exist in patched exports. The watched list, broader review list, optional-surface markers, and required/forbidden needles live in `src/verification/prompt-surface-rules.ts`. Refresh the baseline only after reviewing a known-good patched export. The baseline hashes normalized Markdown paths so minifier placeholder churn should not create noisy failures.
+`verify:prompt-drift` is the pass/fail guard for watched prompt surfaces expected to exist in patched exports. The watched list, broader review list, optional-surface markers, and required/forbidden needles live in `src/verification/prompt-surface-rules.ts`. `prompt-surface-baseline.json` is the default baseline for `mise run verify:patches`. Refresh it only after reviewing a known-good patched export. The baseline hashes normalized Markdown paths so minifier placeholder churn should not create noisy failures.
 
 Run an actual patched export plus `mise run verify:prompt-surfaces -- <export-dir>` for prompt-only changes. `mise run verify:patches` covers this through the native path automatically.
+
+When asked to check prompt drift after an update, report three separate states:
+
+- **Patch verification**: whether `mise run native:update`,
+  `claude --version`, `mise run status`, and `mise run verify:patches` passed.
+- **Prompt-surface validity**: whether
+  `mise run verify:prompt-surfaces -- <patched-export>` passed.
+- **Prompt drift**: whether watched prompt hashes match
+  `prompt-surface-baseline.json` (or the explicit `PROMPT_DRIFT_BASELINE`
+  override). If the command fails, drift was detected, not corrected. Inspect
+  the changed exported Markdown and the `prompts:compare` report, then fix the
+  patch/exporter/rules or refresh the baseline only after the new export is
+  reviewed as known-good.
+
+Do not say prompt drift was corrected just because the binary promoted, prompt
+surfaces passed, or a comparison report was generated. "Corrected" means a
+source change removed unintended drift, or a reviewed baseline was
+intentionally refreshed and the new `verify:prompt-drift` run passes.
 
 ## Feature Flags
 
@@ -257,7 +280,10 @@ Lefthook (`lefthook.yml`) gates pre-commit on Biome format, Biome lint, and `bun
 Local slash skills (`disable-model-invocation: true`, recommend by name when context matches):
 
 - `/new-patch <tag>`: scaffolds `src/patches/<tag>.ts`, the test file, the export barrel entry, and the `BY_TAG` metadata record. Scaffold-only; the rest of the procedure lives in "Adding Patches" above.
-- `/update [version]`: runs the standard `mise run native:update` lifecycle with pre-flight status, post-update verification, optional parallel patch-verifier subagents, and optional prompt export.
+- `/update [version]`: runs the standard `mise run native:update` lifecycle
+  with pre-flight status, mandatory post-update verification, mandatory prompt
+  drift checking, and optional parallel patch-verifier subagents for anchor
+  review.
 
 Local subagent (`.claude/agents/patch-verifier.md`): adversarial verification of patch anchors against a clean upstream `cli.js`. Read-only (Write and Edit are denied). Returns per-patch OK / DRIFT / BROKEN status with line numbers. Never runs the patcher itself. Useful after an upstream release to confirm anchors before promoting.
 

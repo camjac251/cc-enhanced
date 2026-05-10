@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
@@ -12,6 +14,9 @@ import type {
 	RollbackResult,
 	StatusInfo,
 } from "./promote.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const repoRoot = path.resolve(path.dirname(__filename), "..");
 
 function stringifySummary(report: unknown): string {
 	const seen = new WeakSet<object>();
@@ -51,6 +56,22 @@ function stringifySummary(report: unknown): string {
 			},
 			null,
 			2,
+		);
+	}
+}
+
+function runPostUpdateVerification(): void {
+	console.log(chalk.bold("\nPost-update verification"));
+	console.log("$ bun scripts/verify-patches.ts");
+	const result = spawnSync(process.execPath, ["scripts/verify-patches.ts"], {
+		cwd: repoRoot,
+		env: process.env,
+		stdio: "inherit",
+	});
+	if (result.error) throw result.error;
+	if (result.status !== 0) {
+		throw new Error(
+			`Post-update verification failed with exit code ${result.status ?? 1}`,
 		);
 	}
 }
@@ -605,6 +626,7 @@ async function main() {
 				console.log(`Summary written to ${p}`);
 			}
 			printUpdateResult(result);
+			if (!result.dryRun) runPostUpdateVerification();
 		} catch (e) {
 			console.error(e);
 			process.exit(1);
