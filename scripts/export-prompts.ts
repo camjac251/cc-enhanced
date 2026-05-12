@@ -20,7 +20,11 @@ import * as t from "@babel/types";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { type NodePath, traverse } from "../src/babel.js";
-import { extractClaudeJsFromNativeBinary } from "../src/native.js";
+import {
+	extractClaudeJsFromNativeBinary,
+	unwrapBunCjsModule,
+} from "../src/native.js";
+import { normalize } from "../src/normalizer.js";
 import { status } from "../src/promote.js";
 import {
 	buildPromptCorpusDebug,
@@ -234,7 +238,9 @@ function compareSemverLike(a: string, b: string): number {
 	return 0;
 }
 
-function resolveCurrentInput(labelOverride?: string): ResolvedInput {
+async function resolveCurrentInput(
+	labelOverride?: string,
+): Promise<ResolvedInput> {
 	const info = status();
 	if (!info.current) {
 		throw new Error(
@@ -255,7 +261,12 @@ function resolveCurrentInput(labelOverride?: string): ResolvedInput {
 		path.join(os.tmpdir(), "cc-prompts-current-"),
 	);
 	const cliPath = path.join(cleanupDir, "cli.js");
-	fs.writeFileSync(cliPath, extractClaudeJsFromNativeBinary(binaryPath));
+	const extracted = extractClaudeJsFromNativeBinary(binaryPath).toString("utf-8");
+	const wrapper = unwrapBunCjsModule(extracted);
+	const formatted = await normalize(wrapper ? wrapper.body : extracted, {
+		filepath: cliPath,
+	});
+	fs.writeFileSync(cliPath, formatted);
 
 	console.log(`Promoted binary: ${binaryPath}`);
 	console.log(`Version: ${versionInfo.version} -> ${labelOverride ?? label}`);
@@ -318,7 +329,10 @@ function parseOptions(): PromptExportOptions {
 	};
 }
 
-function resolveInput(rawArg?: string, labelOverride?: string): ResolvedInput {
+async function resolveInput(
+	rawArg?: string,
+	labelOverride?: string,
+): Promise<ResolvedInput> {
 	if (!rawArg || rawArg === "current") {
 		return resolveCurrentInput(labelOverride);
 	}
@@ -3027,11 +3041,11 @@ function writeBundleIndex(outputDir: string, label: string): void {
 	console.log(`Index: ${path.relative(repoRoot, indexPath)}`);
 }
 
-function main(): void {
+async function main(): Promise<void> {
 	let cleanupDir: string | undefined;
 	try {
 		const options = parseOptions();
-		const resolved = resolveInput(options.inputArg, options.label);
+		const resolved = await resolveInput(options.inputArg, options.label);
 		cleanupDir = resolved.cleanupDir;
 		const code = fs.readFileSync(resolved.cliPath, "utf-8");
 		const outputDir = options.outputDir
@@ -3635,4 +3649,4 @@ function main(): void {
 	}
 }
 
-main();
+await main();
