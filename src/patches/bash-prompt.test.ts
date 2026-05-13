@@ -131,7 +131,12 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 	);
 	assert.equal(output.includes("shell-native viewing use"), true);
 	assert.equal(output.includes("bat"), true);
-	assert.equal(output.includes("shell-native replacement use"), true);
+	assert.equal(output.includes("code rewrites use"), true);
+	assert.equal(
+		output.includes("use `sd` only for non-code text") ||
+			output.includes("use \\`sd\\` only for non-code text"),
+		true,
+	);
 	assert.equal(output.includes("sd"), true);
 	assert.equal(output.includes("fd"), true);
 	assert.equal(output.includes("eza"), true);

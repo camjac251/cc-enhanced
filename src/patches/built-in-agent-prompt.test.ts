@@ -160,7 +160,7 @@ test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
 	}
 	assert.equal(
 		output.includes(
-			"Before using Read, Bash text search, or generic edits on a code file",
+			"Before using Read, Bash text search, sd, or generic edits on a code file",
 		),
 		true,
 	);

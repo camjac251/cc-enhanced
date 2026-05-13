@@ -33,7 +33,7 @@ test("session-guidance rewrites helper and Otherwise-clause to modern search rou
 	);
 	assert.equal(
 		output.includes(
-			"Otherwise choose by intent: Serena for known symbols, ChunkHound for conceptual search, Probe for known terms, ast-grep MCP/sg for structural patterns, and \\`rg\\` only for non-code text directly.",
+			"Otherwise choose by intent: Serena for known symbols, ChunkHound for conceptual search, Probe for known terms, ast-grep MCP/sg for structural patterns and code rewrites, and \\`rg\\` only for non-code text directly.",
 		),
 		true,
 	);

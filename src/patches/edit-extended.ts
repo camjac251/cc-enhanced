@@ -1328,8 +1328,8 @@ Usage:
 - Use for related changes that should be atomic (renames, refactors)
 - Prefer one batch call over multiple separate Edit calls
 
-For regex/pattern replacement, use Bash: \`sd 'pattern' 'replacement' file.ts\`
-For structural code transforms, use Bash: \`sg -p 'old($A)' -r 'new($A)' -U src/\`
+For structural code search or rewrites, use Bash: \`sg -p 'old($A)' -r 'new($A)' src/\` to preview, then add \`-U\` after checking the diff
+For non-code text replacement, use Bash: \`sd 'pattern' 'replacement' file.md -p\` to preview, then rerun without \`-p\`
 For large multi-file refactoring, use Bash with sg rules or jscodeshift
 
 Examples:
@@ -1542,7 +1542,11 @@ function verifyEditPromptAndHook(ctx: EditVerifyContext): string | null {
 		return "Preview block does not use unified normalize+apply pipeline";
 	}
 	if (
-		!hasEscapedOrLiteralSnippet(code, "sd 'pattern' 'replacement'") ||
+		!hasEscapedOrLiteralSnippet(
+			code,
+			"sd 'pattern' 'replacement' file.md -p",
+		) ||
+		!code.includes("structural code search or rewrites") ||
 		!code.includes("sg -p")
 	) {
 		return "Missing Bash alternative guidance for regex/structural transforms";

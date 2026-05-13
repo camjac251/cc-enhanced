@@ -10,7 +10,7 @@ const MODERN_FIND_GREP_TOOL =
 	"`code-search routing (Serena, ChunkHound, Probe, ast-grep MCP/sg) or \\`rg\\` for non-code text via the $1 tool`";
 
 const MODERN_BROAD_EXPLORATION =
-	"For broad codebase exploration or research that'll take more than $1 queries, spawn $2 with subagent_type=$3. Otherwise choose by intent: Serena for known symbols, ChunkHound for conceptual search, Probe for known terms, ast-grep MCP/sg for structural patterns, and \\`rg\\` only for non-code text directly.";
+	"For broad codebase exploration or research that'll take more than $1 queries, spawn $2 with subagent_type=$3. Otherwise choose by intent: Serena for known symbols, ChunkHound for conceptual search, Probe for known terms, ast-grep MCP/sg for structural patterns and code rewrites, and \\`rg\\` only for non-code text directly.";
 
 const LEGACY_BROAD_EXPLORATION_SIGNAL =
 	"For broad codebase exploration or research that'll take more than";
@@ -19,7 +19,7 @@ const LEGACY_FIND_GREP_TOOL_SIGNAL_RE =
 	/\\`find\\` or \\`grep\\` via the \$\{[^}]+\} tool/;
 
 const MODERN_BROAD_EXPLORATION_SIGNAL =
-	"Otherwise choose by intent: Serena for known symbols, ChunkHound for conceptual search, Probe for known terms, ast-grep MCP/sg for structural patterns, and \\`rg\\` only for non-code text directly.";
+	"Otherwise choose by intent: Serena for known symbols, ChunkHound for conceptual search, Probe for known terms, ast-grep MCP/sg for structural patterns and code rewrites, and \\`rg\\` only for non-code text directly.";
 const MODERN_FIND_GREP_TOOL_SIGNAL =
 	"code-search routing (Serena, ChunkHound, Probe, ast-grep MCP/sg)";
 

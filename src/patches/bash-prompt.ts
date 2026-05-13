@@ -404,7 +404,7 @@ function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 						createSingleExpressionTemplate(
 							templatePath.node.expressions[0],
 							"To edit files use ",
-							"; for shell-native replacement use `sd`.",
+							"; for code rewrites use `sg`; use `sd` only for non-code text.",
 						),
 					);
 					return;
@@ -443,7 +443,7 @@ function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 						createSingleExpressionTemplate(
 							templatePath.node.expressions[0],
 							"Edit files: Use ",
-							" or `sd` for lightweight replacement",
+							" or `sg` for structural code rewrites; use `sd` only for non-code text",
 						),
 					);
 					return;

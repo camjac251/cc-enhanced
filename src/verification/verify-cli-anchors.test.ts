@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { allPatches } from "../patches/index.js";
 import {
 	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
+	MODERN_STDOUT_CAP,
 	STRONG_CLAUDEMD_DISCLAIMER_LINES,
 } from "../patches/prompt-policy.js";
 import { verifyCliAnchors } from "./verify-cli-anchors.js";
@@ -109,7 +110,7 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 		"CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE",
 		"systemPromptFile === void 0",
 		"appendSubagentSystemPrompt ??",
-		"Do not add shell pipeline truncation just to shorten output.",
+		MODERN_STDOUT_CAP,
 		"ENABLE_SESSION_MEMORY_PAST",
 		'return "patched";',
 		"if (A.offset !== void 0 || A.limit !== void 0 || A.range !== void 0) return null;",

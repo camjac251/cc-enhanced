@@ -247,7 +247,8 @@ test("edit-extended injects unified preview via normalize+apply pipeline", async
 		output.includes("Edit files using string replace or batch"),
 		true,
 	);
-	assert.equal(output.includes("sd 'pattern' 'replacement'"), true);
+	assert.equal(output.includes("structural code search or rewrites"), true);
+	assert.equal(output.includes("sd 'pattern' 'replacement' file.md -p"), true);
 });
 
 test("edit-extended verify accepts escaped Bash guidance in emitted prompt strings", async () => {
@@ -255,8 +256,8 @@ test("edit-extended verify accepts escaped Bash guidance in emitted prompt strin
 	await runEditToolViaPasses(ast);
 	const output = print(ast);
 	const escaped = output.replace(
-		"sd 'pattern' 'replacement'",
-		"sd \\'pattern\\' \\'replacement\\'",
+		"sd 'pattern' 'replacement' file.md -p",
+		"sd \\'pattern\\' \\'replacement\\' file.md -p",
 	);
 
 	assert.notEqual(escaped, output);

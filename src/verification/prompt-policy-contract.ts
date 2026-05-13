@@ -36,20 +36,30 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 	{
 		id: "prompt-policy-probe-known",
 		needle:
-			"Known terms, phrases, or boolean/symbol-precise search: use Probe.",
+			"Known terms, phrases, or boolean/symbol-precise search: use Probe before rg.",
 		reason: "Missing Probe known-symbol/boolean-search routing",
 	},
 	{
 		id: "prompt-policy-ast-grep-structural",
 		needle:
-			"Syntax or structural pattern: use mcp__ast-grep__find_code MCP or sg CLI.",
+			"Syntax or structural pattern, or code rewrite: use mcp__ast-grep__find_code MCP or sg CLI.",
 		reason: "Missing ast-grep MCP/sg structural-search routing",
+	},
+	{
+		id: "prompt-policy-sg-rewrite-preview",
+		needle: "For rewrites, preview with sg before applying.",
+		reason: "Missing ast-grep rewrite preview guidance",
 	},
 	{
 		id: "prompt-policy-code-self-check",
 		needle:
-			"Before using Read, Bash text search, or generic edits on a code file",
+			"Before using Read, Bash text search, sd, or generic edits on a code file",
 		reason: "Missing code-file tool-choice self-check",
+	},
+	{
+		id: "prompt-policy-head-tail-cap",
+		needle: "Never add a head or tail pipeline as an output cap.",
+		reason: "Missing explicit head/tail pipeline cap prohibition",
 	},
 ];
 
@@ -110,6 +120,12 @@ export const FORBIDDEN_LEGACY_PROMPT_NEEDLES: readonly PromptPolicyNeedle[] = [
 			"Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find",
 		reason: "Legacy agent read-only Bash list still present",
 	},
+	{
+		id: "legacy-sd-code-file-example",
+		needle: "sd 'pattern' 'replacement' file.ts",
+		reason:
+			"Edit prompt still routes regex replacement through sd on code files",
+	},
 ];
 
 export const EXPLORE_PROMPT_POLICY_REQUIRED_NEEDLES: readonly PromptPolicyNeedle[] =
@@ -117,7 +133,7 @@ export const EXPLORE_PROMPT_POLICY_REQUIRED_NEEDLES: readonly PromptPolicyNeedle
 		{
 			id: "explore-code-tool-self-check",
 			needle:
-				"Before using Read, Bash text search, or generic edits on a code file",
+				"Before using Read, Bash text search, sd, or generic edits on a code file",
 			reason: "Explore surface missing code-file tool self-check",
 		},
 		{

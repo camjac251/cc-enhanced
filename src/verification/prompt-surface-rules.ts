@@ -135,8 +135,21 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "edit-regex-bash-guidance",
 				needle:
-					"For regex/pattern replacement, use Bash: `sd 'pattern' 'replacement' file.ts`",
-				reason: "Edit surface missing regex replacement Bash guidance",
+					"For structural code search or rewrites, use Bash: `sg -p 'old($A)' -r 'new($A)' src/` to preview",
+				reason: "Edit surface missing structural sg rewrite guidance",
+			},
+			{
+				id: "edit-sd-non-code-guidance",
+				needle:
+					"For non-code text replacement, use Bash: `sd 'pattern' 'replacement' file.md -p` to preview",
+				reason: "Edit surface missing non-code sd replacement guardrail",
+			},
+		],
+		forbidden: [
+			{
+				id: "edit-sd-code-file",
+				needle: "sd 'pattern' 'replacement' file.ts",
+				reason: "Edit surface still routes sd at a code file",
 			},
 		],
 	},
@@ -153,7 +166,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "explore-sg-policy",
 				needle:
-					"Prefer fd for file discovery, eza for directory listings, bat ranges for file viewing, and rg only for non-code text/logs/config/comments",
+					"Prefer fd for file discovery, eza for directory listings, bat ranges for file viewing, sg for structural code search/rewrites, and rg only for non-code text/logs/config/comments",
 				reason: "Explore surface missing sg/fd/bat policy guidance",
 			},
 		],
@@ -231,7 +244,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "session-otherwise-routing",
 				needle:
-					"Otherwise choose by intent: Serena for known symbols, ChunkHound for conceptual search, Probe for known terms, ast-grep MCP/sg for structural patterns, and `rg` only for non-code text directly.",
+					"Otherwise choose by intent: Serena for known symbols, ChunkHound for conceptual search, Probe for known terms, ast-grep MCP/sg for structural patterns and code rewrites, and `rg` only for non-code text directly.",
 				reason: "Session guidance missing modern exploration fallback",
 			},
 		],
