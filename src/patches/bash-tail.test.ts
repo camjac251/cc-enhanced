@@ -36,7 +36,7 @@ async function loadPatchedBashTailRuntimeModule() {
 	await fs.writeFile(
 		modulePath,
 		`${output}
-export { BashTool, persistBlocks, truncateOutput, renderBashMessage };`,
+export { BashTool, persistBlocks, truncateOutput, renderBashMessage, isListCommand };`,
 		"utf8",
 	);
 	const mod = await import(pathToFileURL(modulePath).href);
@@ -66,6 +66,12 @@ function getDefaultThreshold() {
 
 function buildPreview(stdout, limit) {
   return { preview: stdout.slice(0, limit), hasMore: stdout.length > limit };
+}
+
+const listCommands = new Set(["ls", "tree", "du"]);
+
+function isListCommand(command) {
+  return listCommands.has(command);
 }
 
 function detectSimulatedEdit(command) {
@@ -171,8 +177,15 @@ test("bash-tail patches schema, prompt, persistence, and preview surfaces", asyn
 	assert.equal(output.includes("maxOutput"), true);
 	assert.equal(output.includes("globalThis.__bashTailOpts"), true);
 	assert.equal(output.includes("Disk persistence"), true);
+	assert.equal(output.includes("Output bounds"), true);
+	assert.equal(output.includes("Choose the cap by intent"), true);
+	assert.equal(output.includes("Producer-native caps"), true);
+	assert.equal(output.includes("Bash tool caps"), true);
 	assert.equal(output.includes("compiler/test output"), true);
 	assert.equal(output.includes("maxOutput > 0"), true);
+	assert.equal(output.includes('new Set(["ls", "tree", "du", "eza"])'), true);
+	assert.equal(output.includes("directory metadata preview"), true);
+	assert.equal(output.includes("build/test diagnostics"), true);
 	assert.equal(
 		output.includes(
 			"Do not add shell pipeline truncation just to shorten output",
@@ -253,6 +266,7 @@ test("bash-tail runtime keeps tail content, fixes preview, and honors max_output
 			mod.renderBashMessage({ command: "ls", max_output: 0 }, ctx),
 			"ls",
 		);
+		assert.equal(mod.isListCommand("eza"), true);
 		assert.deepEqual(
 			await mod.BashTool.validateInput({ command: "printf hi" }),
 			{

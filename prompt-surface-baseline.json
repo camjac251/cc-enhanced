@@ -3,8 +3,8 @@
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
-    "agents/explore.md": "e0d21e6b17b0edb700caccd5f2dbbbbf7764f9ad0ce6c1470734acfdb78308ba",
-    "agents/plan.md": "076861f67118db7cd4fc75bd8d1d24176797dff87d48cff54ddd69d282a51d92",
+    "agents/explore.md": "b721c4a13098eca4408c0e776afea47a6f64b115de36f78547ffcec2f80e3091",
+    "agents/plan.md": "c73194f66432e29db43f847394ff165b1e2be04d840e64a06fa84b7a5859ff10",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge-2.md": "39d5ac91362a22dd96f78e3938f9a8470156ffd70c41c98e032799d76cc9cab3",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge.md": "931aea562e7efacf59c7bb508e7cceb093795dc83f78a7ad7e0e225274ef92a0",
     "system/sections/dream-memory-consolidation.md": "14e94930f1f6d170941a52cea117a1a0e40c301d7f9f8dc9bec25d3baaa4cb39",

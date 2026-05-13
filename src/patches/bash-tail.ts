@@ -28,10 +28,14 @@ import { MODERN_OUTPUT_LIMIT_WARNING } from "./prompt-policy.js";
 
 const PROMPT_ADDITION = `\
   - **Disk persistence**: Outputs over 30KB are saved to disk and you'll receive a file path instead. You'll need to read that file separately (e.g., \`bat /path/to/output.txt\`). To avoid this extra step, use \`max_output\` proactively.
-  - Use \`max_output: N\` to keep outputs inline up to N characters, preventing disk saves. Set 100000-500000 for commands you expect to have large output (bat, git diff, git log, build output you want to analyze). This avoids the round-trip of reading a saved file.
-  - Use \`output_tail: true\` when the useful part is usually near the end: package manager builds, compiler/test output, Docker builds, and log reads. If output is truncated, the kept inline text comes from the final N characters.
-  - For slow builds or tests, pair \`run_in_background: true\` with \`output_tail: true\` so later checks show final diagnostics.
-  - **IMPORTANT**: Do not add shell pipeline truncation just to shorten output. Use \`max_output: N\`, \`output_tail: true\`, \`rg -m N\` for non-code text, \`fd --max-results N\`, or \`bat -r START:END\` instead. For eza directory listings, use Bash max_output or switch to fd --max-results when you need bounded filenames. Never add a head or tail pipeline as an output cap. Never pipe listing output through head or tail.`;
+  - **Output bounds**: Choose the cap by intent. Prefer producer-native caps before Bash tool caps.
+  - Producer-native caps: use \`rg -m N\` for non-code matches, \`fd --max-results N\` for bounded file lists, and \`bat -r START:END\` for file slices.
+  - Bash tool caps: use \`max_output: N\` when a command has no useful native cap or when you need a bounded inline preview. This keeps output inline up to N characters, preventing disk saves; use 100000-500000 for bat, git diff, git log, or other large output you need inline.
+  - Tail mode: use \`output_tail: true\` when the useful part is near the end: package manager builds, compiler/test output, Docker builds, and log reads. If output is truncated, the kept inline text comes from the final N characters.
+  - Long-running diagnostics: for slow builds or tests, pair \`run_in_background: true\` with \`output_tail: true\` so later checks show final diagnostics.
+  - Directory listings: for \`eza\`, use plain \`eza\` with \`max_output: N\` only when you need metadata/layout. Use \`fd --max-results N\` when entry-count bounds matter.
+  - Examples: bounded filenames -> \`fd . /path --max-results 50\`; directory metadata preview -> Bash command \`eza -la /path\` with \`max_output: 8000\`; build/test diagnostics -> Bash command \`bun test\` with \`output_tail: true\` and \`max_output: 20000\`.
+  - **IMPORTANT**: Do not add shell pipeline truncation just to shorten output. Never add a head or tail pipeline as an output cap. Never pipe listing output through head or tail.`;
 
 const LEGACY_TOKEN_WARNING_RE =
 	/Pipe output through head, tail, or grep to reduce result size\. Avoid cat on large files (?:—|\\u2014) use Read with offset\/limit instead\./g;
@@ -214,6 +218,35 @@ function nodeContainsPropertyName(node: t.Node, propertyName: string): boolean {
 	return visit(node);
 }
 
+function getStringSetValues(node: t.NewExpression): string[] | null {
+	if (!t.isIdentifier(node.callee, { name: "Set" })) return null;
+	if (node.arguments.length !== 1) return null;
+	const arg = node.arguments[0];
+	if (!t.isArrayExpression(arg)) return null;
+
+	const values: string[] = [];
+	for (const element of arg.elements) {
+		if (!t.isStringLiteral(element)) return null;
+		values.push(element.value);
+	}
+	return values;
+}
+
+function isCurrentListCommandSet(values: string[]): boolean {
+	if (values.length !== 3) return false;
+	return values[0] === "ls" && values[1] === "tree" && values[2] === "du";
+}
+
+function isPatchedListCommandSet(values: string[]): boolean {
+	if (values.length !== 4) return false;
+	return (
+		values[0] === "ls" &&
+		values[1] === "tree" &&
+		values[2] === "du" &&
+		values[3] === "eza"
+	);
+}
+
 function findIsImageCallName(
 	body: t.Statement[],
 	paramName: string,
@@ -283,6 +316,7 @@ function createBashOutputTailMutator(): Visitor {
 	let truncationPatched = false;
 	let previewPatched = false;
 	let renderPatched = false;
+	let listClassifierPatched = false;
 
 	return {
 		// 1. Add output_tail and max_output to Bash schema
@@ -323,7 +357,18 @@ function createBashOutputTailMutator(): Visitor {
 			);
 		},
 
-		// 2. Add maxOutput/outputTail to Bash result + 3. Inject global setter
+		// 2. Treat eza as a directory-listing command for Bash metadata.
+		NewExpression(path) {
+			if (listClassifierPatched) return;
+			const values = getStringSetValues(path.node);
+			if (!values || !isCurrentListCommandSet(values)) return;
+			const arrayArg = path.node.arguments[0];
+			if (!t.isArrayExpression(arrayArg)) return;
+			arrayArg.elements.push(t.stringLiteral("eza"));
+			listClassifierPatched = true;
+		},
+
+		// 3. Add maxOutput/outputTail to Bash result + 4. Inject global setter
 		ReturnStatement(path) {
 			const arg = path.node.argument;
 			if (!t.isObjectExpression(arg)) return;
@@ -397,7 +442,7 @@ function createBashOutputTailMutator(): Visitor {
 			funcBody.body.unshift(globalSetter);
 		},
 
-		// 4. Persistence threshold override + 5. Truncation function replacement
+		// 5. Persistence threshold override + 6. Truncation function replacement
 		Function(path) {
 			if (!t.isBlockStatement(path.node.body)) return;
 			const bodyBlock = path.node.body;
@@ -514,7 +559,7 @@ function createBashOutputTailMutator(): Visitor {
 			truncationPatched = true;
 		},
 
-		// 6. Destructuring + 7. Preview fix
+		// 7. Destructuring + 8. Preview fix
 		ObjectMethod(path) {
 			if (
 				getObjectKeyName(path.node.key) !==
@@ -599,7 +644,7 @@ function createBashOutputTailMutator(): Visitor {
 			});
 		},
 
-		// 8. renderToolUseMessage: append patched opts to the displayed label so
+		// 9. renderToolUseMessage: append patched opts to the displayed label so
 		// run_in_background / output_tail / max_output surface in the tool chip.
 		FunctionDeclaration(path) {
 			if (renderPatched) return;
@@ -714,8 +759,16 @@ export const bashOutputTail: Patch = {
 		let hasRenderOptsWrappedReturns = false;
 		let hasCopyablePipeHeadText = false;
 		let hasCopyablePipeTailText = false;
+		let hasEzaListClassifier = false;
 
 		traverse(verifyAst, {
+			NewExpression(path) {
+				const values = getStringSetValues(path.node);
+				if (values && isPatchedListCommandSet(values)) {
+					hasEzaListClassifier = true;
+				}
+			},
+
 			StringLiteral(path) {
 				const value = path.node.value;
 				if (hasCopyableOutputCapPipeText(value, "head")) {
@@ -866,6 +919,8 @@ export const bashOutputTail: Patch = {
 		});
 
 		if (!foundBashSchema) return "Bash input schema not found";
+		if (!hasEzaListClassifier)
+			return "Missing eza in Bash directory-listing classifier";
 		if (!schemaHasOutputTail) return "Missing output_tail in Bash schema";
 		if (!schemaHasMaxOutput) return "Missing max_output in Bash schema";
 		if (!resultHasMaxOutput) return "Missing maxOutput in Bash result data";
@@ -886,6 +941,21 @@ export const bashOutputTail: Patch = {
 		// Prompt checks
 		if (!code.includes("Disk persistence"))
 			return "Missing disk persistence guidance in prompt";
+		if (
+			!code.includes("Output bounds") ||
+			!code.includes("Choose the cap by intent")
+		)
+			return "Missing output-bounds decision guidance in prompt";
+		if (
+			!code.includes("Producer-native caps") ||
+			!code.includes("Bash tool caps")
+		)
+			return "Missing producer-native versus Bash tool cap guidance in prompt";
+		if (
+			!code.includes("directory metadata preview") ||
+			!code.includes("build/test diagnostics")
+		)
+			return "Missing output-bound examples in prompt";
 		if (
 			!code.includes("compiler/test output") ||
 			!code.includes("final diagnostics")
