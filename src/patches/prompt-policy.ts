@@ -45,10 +45,10 @@ export const MODERN_BASH_SEARCH_GUIDANCE = MODERN_CODE_SEARCH_DECISION_TREE;
 
 /** Stdout caps line: prefer tool-level limits over shell pipeline truncation. */
 export const MODERN_STDOUT_CAP =
-	"Cap stdout with tool-level or producer-native limits: max_output, output_tail: true, rg -m N for non-code text, fd --max-results, or bat -r START:END. Do not add shell pipeline truncation just to shorten output. Never add a head or tail pipeline as an output cap.";
+	"Cap stdout with tool-level or producer-native limits: max_output, output_tail: true, rg -m N for non-code text, fd --max-results, or bat -r START:END. For eza directory listings, use Bash max_output or switch to fd --max-results when you need bounded filenames. Do not add shell pipeline truncation just to shorten output. Never add a head or tail pipeline as an output cap. Never pipe listing output through head or tail.";
 
 export const MODERN_OUTPUT_LIMIT_WARNING =
-	"Use max_output, output_tail: true, rg -m N for non-code text, fd --max-results N, or bat -r START:END to reduce result size. Do not add shell pipeline truncation just to shorten output. Never add a head or tail pipeline as an output cap.";
+	"Use max_output, output_tail: true, rg -m N for non-code text, fd --max-results N, or bat -r START:END to reduce result size. For eza directory listings, use Bash max_output or switch to fd --max-results when you need bounded filenames. Do not add shell pipeline truncation just to shorten output. Never add a head or tail pipeline as an output cap. Never pipe listing output through head or tail.";
 
 /** Prohibited operations line shared across prompts. */
 export const PROHIBITED_BASH_OPS =

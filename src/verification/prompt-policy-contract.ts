@@ -61,6 +61,11 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 		needle: "Never add a head or tail pipeline as an output cap.",
 		reason: "Missing explicit head/tail pipeline cap prohibition",
 	},
+	{
+		id: "prompt-policy-listing-head-tail-cap",
+		needle: "Never pipe listing output through head or tail.",
+		reason: "Missing directory-listing head/tail pipeline cap prohibition",
+	},
 ];
 
 export const FORBIDDEN_LEGACY_PROMPT_NEEDLES: readonly PromptPolicyNeedle[] = [

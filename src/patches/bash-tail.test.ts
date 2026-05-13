@@ -179,6 +179,10 @@ test("bash-tail patches schema, prompt, persistence, and preview surfaces", asyn
 		),
 		true,
 	);
+	assert.equal(
+		output.includes("Never pipe listing output through head or tail"),
+		true,
+	);
 	assert.equal(output.includes("`| head"), false);
 	assert.equal(output.includes("| head -"), false);
 	assert.equal(output.includes("`| tail"), false);

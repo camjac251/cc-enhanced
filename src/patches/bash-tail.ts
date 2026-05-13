@@ -31,7 +31,7 @@ const PROMPT_ADDITION = `\
   - Use \`max_output: N\` to keep outputs inline up to N characters, preventing disk saves. Set 100000-500000 for commands you expect to have large output (bat, git diff, git log, build output you want to analyze). This avoids the round-trip of reading a saved file.
   - Use \`output_tail: true\` when the useful part is usually near the end: package manager builds, compiler/test output, Docker builds, and log reads. If output is truncated, the kept inline text comes from the final N characters.
   - For slow builds or tests, pair \`run_in_background: true\` with \`output_tail: true\` so later checks show final diagnostics.
-  - **IMPORTANT**: Do not add shell pipeline truncation just to shorten output. Use \`max_output: N\`, \`output_tail: true\`, \`rg -m N\` for non-code text, \`fd --max-results N\`, or \`bat -r START:END\` instead. Never add a head or tail pipeline as an output cap.`;
+  - **IMPORTANT**: Do not add shell pipeline truncation just to shorten output. Use \`max_output: N\`, \`output_tail: true\`, \`rg -m N\` for non-code text, \`fd --max-results N\`, or \`bat -r START:END\` instead. For eza directory listings, use Bash max_output or switch to fd --max-results when you need bounded filenames. Never add a head or tail pipeline as an output cap. Never pipe listing output through head or tail.`;
 
 const LEGACY_TOKEN_WARNING_RE =
 	/Pipe output through head, tail, or grep to reduce result size\. Avoid cat on large files (?:—|\\u2014) use Read with offset\/limit instead\./g;
@@ -901,6 +901,9 @@ export const bashOutputTail: Patch = {
 			return "Missing shell pipeline truncation prohibition in prompt";
 		if (!code.includes("Never add a head or tail pipeline as an output cap")) {
 			return "Missing explicit head/tail pipeline prohibition in prompt";
+		}
+		if (!code.includes("Never pipe listing output through head or tail")) {
+			return "Missing directory-listing head/tail pipeline prohibition in prompt";
 		}
 		if (hasCopyablePipeHeadText) {
 			return "Prompt still contains copyable pipe-head syntax";
