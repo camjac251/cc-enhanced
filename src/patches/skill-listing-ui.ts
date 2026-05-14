@@ -91,6 +91,20 @@ function isSkillCountAccess(
 	);
 }
 
+function isSkillNamesLengthAccess(
+	node: t.Node | null | undefined,
+	attachmentName: string,
+): node is t.MemberExpression {
+	if (!node || !t.isMemberExpression(node)) return false;
+	if (!isMemberPropertyName(node, "length")) return false;
+	const skillNamesAccess = node.object;
+	return (
+		t.isMemberExpression(skillNamesAccess) &&
+		t.isIdentifier(skillNamesAccess.object, { name: attachmentName }) &&
+		isMemberPropertyName(skillNamesAccess, "skillNames")
+	);
+}
+
 function getSkillListingRenderRootCall(
 	path: NodePath<t.SwitchCase>,
 ): { attachmentName: string; rootCall: t.CallExpression } | null {
@@ -136,6 +150,167 @@ function isSkillListingRenderLine(
 	);
 
 	return hasSkillCountText && hasPluralSkill && hasAvailableLiteral;
+}
+
+function getDynamicSkillRenderStatements(
+	path: NodePath<t.SwitchCase>,
+): t.Statement[] {
+	if (path.node.consequent.length !== 1) return path.node.consequent;
+	const [onlyStmt] = path.node.consequent;
+	return t.isBlockStatement(onlyStmt) ? onlyStmt.body : path.node.consequent;
+}
+
+function getDynamicSkillCountBinding(path: NodePath<t.SwitchCase>): {
+	attachmentName: string;
+	countName: string;
+} | null {
+	for (const statement of getDynamicSkillRenderStatements(path)) {
+		if (!t.isVariableDeclaration(statement)) continue;
+		for (const declarator of statement.declarations) {
+			if (!t.isIdentifier(declarator.id)) continue;
+			const init = declarator.init;
+			if (!init || !t.isMemberExpression(init)) continue;
+			if (!isMemberPropertyName(init, "length")) continue;
+			const skillNamesAccess = init.object;
+			if (
+				t.isMemberExpression(skillNamesAccess) &&
+				t.isIdentifier(skillNamesAccess.object) &&
+				isMemberPropertyName(skillNamesAccess, "skillNames")
+			) {
+				return {
+					attachmentName: skillNamesAccess.object.name,
+					countName: declarator.id.name,
+				};
+			}
+		}
+	}
+	return null;
+}
+
+function isDynamicSkillCountAccess(
+	node: t.Node | null | undefined,
+	attachmentName: string,
+	countName: string,
+): boolean {
+	return (
+		!!node &&
+		(t.isIdentifier(node, { name: countName }) ||
+			isSkillNamesLengthAccess(node, attachmentName))
+	);
+}
+
+function callContainsDynamicSkillCount(
+	call: t.CallExpression,
+	attachmentName: string,
+	countName: string,
+): boolean {
+	return call.arguments.some((arg) =>
+		isDynamicSkillCountAccess(arg, attachmentName, countName),
+	);
+}
+
+function callContainsDynamicSkillPlural(
+	call: t.CallExpression,
+	attachmentName: string,
+	countName: string,
+): boolean {
+	return call.arguments.some(
+		(arg) =>
+			t.isCallExpression(arg) &&
+			arg.arguments.length >= 2 &&
+			isDynamicSkillCountAccess(arg.arguments[0], attachmentName, countName) &&
+			t.isStringLiteral(arg.arguments[1], { value: "skill" }),
+	);
+}
+
+function getDynamicSkillRenderRootCall(path: NodePath<t.SwitchCase>): {
+	attachmentName: string;
+	countName: string;
+	rootCall: t.CallExpression;
+} | null {
+	const binding = getDynamicSkillCountBinding(path);
+	if (!binding) return null;
+
+	const returnStmt = getDynamicSkillRenderStatements(path).find(
+		(stmt): stmt is t.ReturnStatement => t.isReturnStatement(stmt),
+	);
+	if (!returnStmt?.argument) return null;
+	if (!t.isCallExpression(returnStmt.argument)) return null;
+
+	const rootCall = returnStmt.argument;
+	if (!t.isMemberExpression(rootCall.callee)) return null;
+	if (!isMemberPropertyName(rootCall.callee, "createElement")) return null;
+
+	return { ...binding, rootCall };
+}
+
+function isDynamicSkillRenderLine(
+	rootCall: t.CallExpression,
+	attachmentName: string,
+	countName: string,
+): boolean {
+	const hasLoadedLiteral = rootCall.arguments.some(
+		(arg) => t.isStringLiteral(arg) && arg.value.includes("Loaded"),
+	);
+	const hasFromLiteral = rootCall.arguments.some(
+		(arg) => t.isStringLiteral(arg) && arg.value.includes("from"),
+	);
+	const hasSkillCountText = rootCall.arguments.some(
+		(arg) =>
+			isDynamicSkillCountAccess(arg, attachmentName, countName) ||
+			(t.isCallExpression(arg) &&
+				t.isMemberExpression(arg.callee) &&
+				isMemberPropertyName(arg.callee, "createElement") &&
+				callContainsDynamicSkillCount(arg, attachmentName, countName)),
+	);
+	const hasPluralSkill = rootCall.arguments.some(
+		(arg) =>
+			(t.isCallExpression(arg) &&
+				arg.arguments.length >= 2 &&
+				isDynamicSkillCountAccess(
+					arg.arguments[0],
+					attachmentName,
+					countName,
+				) &&
+				t.isStringLiteral(arg.arguments[1], { value: "skill" })) ||
+			(t.isCallExpression(arg) &&
+				t.isMemberExpression(arg.callee) &&
+				isMemberPropertyName(arg.callee, "createElement") &&
+				callContainsDynamicSkillPlural(arg, attachmentName, countName)),
+	);
+	const hasDisplayPath = rootCall.arguments.some(
+		(arg) =>
+			t.isCallExpression(arg) &&
+			t.isMemberExpression(arg.callee) &&
+			isMemberPropertyName(arg.callee, "createElement") &&
+			arg.arguments.some(
+				(childArg) =>
+					t.isMemberExpression(childArg) &&
+					t.isIdentifier(childArg.object, { name: attachmentName }) &&
+					isMemberPropertyName(childArg, "displayPath"),
+			),
+	);
+
+	return (
+		hasLoadedLiteral &&
+		hasFromLiteral &&
+		hasSkillCountText &&
+		hasPluralSkill &&
+		hasDisplayPath
+	);
+}
+
+function isDynamicSkillRenderCase(path: NodePath<t.SwitchCase>): boolean {
+	if (!t.isStringLiteral(path.node.test, { value: "dynamic_skill" })) {
+		return false;
+	}
+	const renderRoot = getDynamicSkillRenderRootCall(path);
+	if (!renderRoot) return false;
+	return isDynamicSkillRenderLine(
+		renderRoot.rootCall,
+		renderRoot.attachmentName,
+		renderRoot.countName,
+	);
 }
 
 function hasSkillListingSummaryCall(rootCall: t.CallExpression): boolean {
@@ -203,12 +378,34 @@ function patchSkillListingRenderer(path: NodePath<t.SwitchCase>): boolean {
 	return true;
 }
 
+function patchDynamicSkillRenderer(path: NodePath<t.SwitchCase>): boolean {
+	const renderRoot = getDynamicSkillRenderRootCall(path);
+	if (!renderRoot) return false;
+
+	const { attachmentName, countName, rootCall } = renderRoot;
+	if (!isDynamicSkillRenderLine(rootCall, attachmentName, countName)) {
+		return false;
+	}
+	if (hasSkillListingSummaryCall(rootCall)) {
+		return true;
+	}
+
+	rootCall.arguments.push(
+		t.callExpression(t.identifier(SKILL_LISTING_SUMMARY_HELPER), [
+			t.identifier(attachmentName),
+		]),
+	);
+	return true;
+}
+
 function createSkillListingUiPasses(): PatchAstPass[] {
 	const attachmentCandidates: NodePath<t.ObjectExpression>[] = [];
 	const renderCandidates: NodePath<t.SwitchCase>[] = [];
+	const dynamicRenderCandidates: NodePath<t.SwitchCase>[] = [];
 	let helperExists = false;
 	let patchedAttachment = false;
 	let patchedRenderer = false;
+	let patchedDynamicRenderer = false;
 
 	return [
 		{
@@ -229,6 +426,10 @@ function createSkillListingUiPasses(): PatchAstPass[] {
 					}
 				},
 				SwitchCase(path) {
+					if (isDynamicSkillRenderCase(path)) {
+						dynamicRenderCandidates.push(path);
+						return;
+					}
 					if (!isSkillListingRenderCase(path)) return;
 					const renderRoot = getSkillListingRenderRootCall(path);
 					if (!renderRoot) return;
@@ -254,12 +455,23 @@ function createSkillListingUiPasses(): PatchAstPass[] {
 							);
 						}
 
+						if (
+							(renderCandidates.length === 1 ||
+								dynamicRenderCandidates.length === 1) &&
+							!helperExists
+						) {
+							path.node.body.unshift(buildSkillListingSummaryHelper());
+							helperExists = true;
+						}
+
 						if (renderCandidates.length === 1) {
-							if (!helperExists) {
-								path.node.body.unshift(buildSkillListingSummaryHelper());
-								helperExists = true;
-							}
 							patchedRenderer = patchSkillListingRenderer(renderCandidates[0]);
+						}
+
+						if (dynamicRenderCandidates.length === 1) {
+							patchedDynamicRenderer = patchDynamicSkillRenderer(
+								dynamicRenderCandidates[0],
+							);
 						}
 					},
 				},
@@ -297,6 +509,20 @@ function createSkillListingUiPasses(): PatchAstPass[] {
 								"Skill listing UI: failed to patch skill_listing render case",
 							);
 						}
+
+						if (dynamicRenderCandidates.length > 1) {
+							console.warn(
+								`Skill listing UI: ambiguous dynamic_skill render cases (${dynamicRenderCandidates.length} found)`,
+							);
+						} else if (dynamicRenderCandidates.length === 0) {
+							console.warn(
+								"Skill listing UI: could not find dynamic_skill render case",
+							);
+						} else if (!patchedDynamicRenderer) {
+							console.warn(
+								"Skill listing UI: failed to patch dynamic_skill render case",
+							);
+						}
 					},
 				},
 			},
@@ -318,6 +544,7 @@ export const skillListingUi: Patch = {
 		let helperFound = false;
 		let attachmentPatched = false;
 		let rendererPatched = false;
+		let dynamicRendererPatched = false;
 
 		traverse(verifyAst, {
 			FunctionDeclaration(path) {
@@ -339,18 +566,27 @@ export const skillListingUi: Patch = {
 				attachmentPatched = true;
 			},
 			SwitchCase(path) {
-				if (!isSkillListingRenderCase(path)) return;
-				const renderRoot = getSkillListingRenderRootCall(path);
-				if (!renderRoot) return;
-				if (
-					!isSkillListingRenderLine(
-						renderRoot.rootCall,
-						renderRoot.attachmentName,
-					)
-				) {
-					return;
+				if (isSkillListingRenderCase(path)) {
+					const renderRoot = getSkillListingRenderRootCall(path);
+					if (
+						renderRoot &&
+						isSkillListingRenderLine(
+							renderRoot.rootCall,
+							renderRoot.attachmentName,
+						)
+					) {
+						rendererPatched = hasSkillListingSummaryCall(renderRoot.rootCall);
+					}
 				}
-				rendererPatched = hasSkillListingSummaryCall(renderRoot.rootCall);
+
+				if (isDynamicSkillRenderCase(path)) {
+					const renderRoot = getDynamicSkillRenderRootCall(path);
+					if (renderRoot) {
+						dynamicRendererPatched = hasSkillListingSummaryCall(
+							renderRoot.rootCall,
+						);
+					}
+				}
 			},
 		});
 
@@ -362,6 +598,9 @@ export const skillListingUi: Patch = {
 		}
 		if (!rendererPatched) {
 			return "skill_listing renderer is missing the activated-skill summary";
+		}
+		if (!dynamicRendererPatched) {
+			return "dynamic_skill renderer is missing the loaded-skill summary";
 		}
 		return true;
 	},

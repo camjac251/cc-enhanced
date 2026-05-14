@@ -17,9 +17,34 @@ async function runSkillListingUiViaPasses(ast: any): Promise<void> {
 	);
 }
 
+function removeFirstOccurrence(source: string, needle: string): string {
+	const index = source.indexOf(needle);
+	assert.notEqual(index, -1);
+	return source.slice(0, index) + source.slice(index + needle.length);
+}
+
+function removeLastOccurrence(source: string, needle: string): string {
+	const index = source.lastIndexOf(needle);
+	assert.notEqual(index, -1);
+	return source.slice(0, index) + source.slice(index + needle.length);
+}
+
 const SKILL_LISTING_FIXTURE = `
 function renderAttachment(H) {
   switch (H.type) {
+    case "dynamic_skill": {
+      let A = H.skillNames.length;
+      return Nq.default.createElement(
+        xw,
+        null,
+        "Loaded",
+        " ",
+        Nq.default.createElement(v, { bold: !0 }, A, " ", Y6(A, "skill")),
+        " ",
+        "from ",
+        Nq.default.createElement(v, { bold: !0 }, H.displayPath),
+      );
+    }
     case "skill_listing": {
       if (H.isInitial) return null;
       return Nq.default.createElement(
@@ -72,8 +97,8 @@ test("skill-listing-ui adds skillNames metadata and a visible summary", async ()
 		true,
 	);
 	assert.equal(
-		output.includes("_claudePatchFormatSkillListingSummary(H)"),
-		true,
+		output.match(/_claudePatchFormatSkillListingSummary\(H\)/g)?.length,
+		2,
 	);
 	assert.equal(
 		/skillNames:[^,}]*Qq\$/.test(output),
@@ -107,9 +132,9 @@ test("skill-listing-ui verify fails when the visible summary is removed", async 
 	const ast = parse(SKILL_LISTING_FIXTURE);
 	await runSkillListingUiViaPasses(ast);
 	const output = print(ast);
-	const mutated = output.replace(
+	const mutated = removeLastOccurrence(
+		output,
 		", _claudePatchFormatSkillListingSummary(H)",
-		"",
 	);
 	assert.notEqual(mutated, output);
 
@@ -118,6 +143,26 @@ test("skill-listing-ui verify fails when the visible summary is removed", async 
 	assert.equal(
 		String(result).includes(
 			"skill_listing renderer is missing the activated-skill summary",
+		),
+		true,
+	);
+});
+
+test("skill-listing-ui verify fails when the dynamic skill summary is removed", async () => {
+	const ast = parse(SKILL_LISTING_FIXTURE);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+	const mutated = removeFirstOccurrence(
+		output,
+		", _claudePatchFormatSkillListingSummary(H)",
+	);
+	assert.notEqual(mutated, output);
+
+	const result = skillListingUi.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes(
+			"dynamic_skill renderer is missing the loaded-skill summary",
 		),
 		true,
 	);
