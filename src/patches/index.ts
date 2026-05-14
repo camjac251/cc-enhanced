@@ -1,5 +1,6 @@
 // All patches export a Patch object with tag, string/ast, and verify
 
+export { agentListingUi } from "./agent-listing-ui.js";
 export { agentTools } from "./agents-off.js";
 export { bashPrompt } from "./bash-prompt.js";
 export { bashOutputTail } from "./bash-tail.js";
@@ -36,6 +37,7 @@ export { worktreePerms } from "./worktree-perms.js";
 
 import type { Patch } from "../types.js";
 // Re-export all patches as an array for easy iteration
+import { agentListingUi } from "./agent-listing-ui.js";
 import { agentTools } from "./agents-off.js";
 import { bashPrompt } from "./bash-prompt.js";
 import { bashOutputTail } from "./bash-tail.js";
@@ -108,6 +110,7 @@ const basePatches: Patch[] = [
 	lspWorkspaceSymbol,
 	noCollapse,
 	skillListingUi,
+	agentListingUi,
 	subagentSystemPrompt,
 	subagentModelTag,
 	tabQueue,
