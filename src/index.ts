@@ -182,7 +182,7 @@ async function main() {
 					.option("native-fetch", {
 						type: "string",
 						description:
-							"Fetch native Claude binary from official releases (latest|stable|X.Y.Z) and use it as target",
+							"Fetch native Claude binary from official releases (latest|next|stable|X.Y.Z) and use it as target",
 					})
 					.option("native-fetch-only", {
 						type: "boolean",

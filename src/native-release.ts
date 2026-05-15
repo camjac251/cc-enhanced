@@ -9,7 +9,10 @@ import { DEFAULT_NATIVE_CACHE_DIR } from "./version-paths.js";
 
 const DEFAULT_NATIVE_BUCKET =
 	"https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases";
-const VERSION_CHANNELS = new Set(["latest", "stable"]);
+const DEFAULT_NPM_PACKAGE_URL =
+	"https://registry.npmjs.org/@anthropic-ai%2Fclaude-code";
+const VERSION_CHANNELS = new Set(["latest", "stable", "next"]);
+const NATIVE_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 180_000;
 
@@ -19,6 +22,10 @@ interface NativeManifestPlatform {
 
 interface NativeManifest {
 	platforms: Record<string, NativeManifestPlatform>;
+}
+
+interface NpmPackageMetadata {
+	"dist-tags"?: Record<string, string>;
 }
 
 type NativeDownloadCandidateError = {
@@ -76,6 +83,10 @@ function normalizeSpec(spec?: string): string {
 	const value = (spec ?? "latest").trim();
 	if (value.length === 0) return "latest";
 	return value;
+}
+
+function isNativeVersion(value: string): boolean {
+	return NATIVE_VERSION_RE.test(value);
 }
 
 function parseTimeoutMs(value: string | undefined, fallback: number): number {
@@ -297,6 +308,48 @@ function compareSemver(a: string, b: string): number {
 	return 0;
 }
 
+function pickNewestVersion(candidates: string[]): string | null {
+	let newest: string | null = null;
+	for (const candidate of candidates) {
+		if (!isNativeVersion(candidate)) continue;
+		if (newest === null || compareSemver(candidate, newest) < 0) {
+			newest = candidate;
+		}
+	}
+	return newest;
+}
+
+async function fetchNpmDistTags(): Promise<Record<string, string>> {
+	const metadata = await fetchJson<NpmPackageMetadata>(DEFAULT_NPM_PACKAGE_URL);
+	return metadata["dist-tags"] ?? {};
+}
+
+async function resolveVersionChannel(
+	spec: string,
+	bucketUrl: string,
+): Promise<string> {
+	if (spec === "stable") {
+		return fetchText(`${bucketUrl}/stable`);
+	}
+
+	if (spec === "next") {
+		const tags = await fetchNpmDistTags();
+		return tags.next ?? "";
+	}
+
+	const bucketLatest = await fetchText(`${bucketUrl}/latest`);
+	let tags: Record<string, string>;
+	try {
+		tags = await fetchNpmDistTags();
+	} catch {
+		return bucketLatest;
+	}
+	return (
+		pickNewestVersion([bucketLatest, tags.latest ?? "", tags.next ?? ""]) ??
+		bucketLatest
+	);
+}
+
 function evictOldVersions(cacheDir: string): void {
 	const keep = Number(process.env.CLAUDE_PATCHER_CACHE_KEEP) || 2;
 	if (!fs.existsSync(cacheDir)) return;
@@ -338,9 +391,9 @@ export async function fetchNativeRelease(
 	const cacheDir = path.resolve(options.cacheDir ?? DEFAULT_NATIVE_CACHE_DIR);
 
 	const version = VERSION_CHANNELS.has(spec)
-		? await fetchText(`${bucketUrl}/${spec}`)
+		? await resolveVersionChannel(spec, bucketUrl)
 		: spec;
-	if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+	if (!isNativeVersion(version)) {
 		throw new Error(
 			`Invalid native version resolved from '${spec}': ${version}`,
 		);

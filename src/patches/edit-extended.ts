@@ -330,8 +330,8 @@ function patchApprovalDialog(ast: any) {
 				return;
 			const argName = path.node.params[0].name;
 
-			let oldStringVarName: string | null = null;
-			let newStringVarName: string | null = null;
+			let oldStringTarget: t.Expression | null = null;
+			let newStringTarget: t.Expression | null = null;
 			let insertBeforePath: any = null;
 
 			// Find the edits array creation: [{ old_string: X, new_string: Y, ... }]
@@ -351,11 +351,21 @@ function patchApprovalDialog(ast: any) {
 					) as t.ObjectProperty | undefined;
 
 					if (!oldProp || !newProp) return;
-					if (!t.isIdentifier(oldProp.value) || !t.isIdentifier(newProp.value))
+					if (
+						!t.isIdentifier(oldProp.value) &&
+						!t.isMemberExpression(oldProp.value)
+					) {
 						return;
+					}
+					if (
+						!t.isIdentifier(newProp.value) &&
+						!t.isMemberExpression(newProp.value)
+					) {
+						return;
+					}
 
-					oldStringVarName = oldProp.value.name;
-					newStringVarName = newProp.value.name;
+					oldStringTarget = t.cloneNode(oldProp.value);
+					newStringTarget = t.cloneNode(newProp.value);
 
 					const stmtParent = innerPath.getStatementParent();
 					if (!stmtParent) return;
@@ -365,13 +375,18 @@ function patchApprovalDialog(ast: any) {
 				},
 			});
 
-			if (!oldStringVarName || !newStringVarName || !insertBeforePath) return;
+			if (!oldStringTarget || !newStringTarget || !insertBeforePath) return;
+
+			const directInput =
+				path.node.params.length >= 2 && t.isIdentifier(path.node.params[1])
+					? t.identifier(path.node.params[1].name)
+					: t.nullLiteral();
 
 			const buildPatchCode = template.statements(
 				`
                     const _claudeEditPreviewMarker = "EXTENDED_EDIT_PREVIEW_v1";
                     try {
-                        const INPUT_RAW = ARG && ARG.toolUseConfirm ? ARG.toolUseConfirm.input : null;
+                        const INPUT_RAW = ARG && ARG.toolUseConfirm ? ARG.toolUseConfirm.input : DIRECT_INPUT;
                         const INPUT = ${EXTENDED_EDIT_TRANSPORT_DECODE}(INPUT_RAW);
                         const _hasExtended =
                             INPUT &&
@@ -380,22 +395,25 @@ function patchApprovalDialog(ast: any) {
                         if (_hasExtended) {
                             const _previewResult = _claudeEditCanonicalizeInput(INPUT);
                             if (!_previewResult.error) {
-                                OLD_VAR = _previewResult.oldString;
-                                NEW_VAR = _previewResult.newString;
+                                OLD_TARGET = _previewResult.oldString;
+                                NEW_TARGET = _previewResult.newString;
                             }
                         }
                     } catch (_e) {}
 
-                    if (typeof OLD_VAR !== "string") OLD_VAR = "";
-                    if (typeof NEW_VAR !== "string") NEW_VAR = "";
-            `,
-				{ placeholderPattern: /^ARG$|^OLD_VAR$|^NEW_VAR$/ },
+                    if (typeof OLD_TARGET !== "string") OLD_TARGET = "";
+                    if (typeof NEW_TARGET !== "string") NEW_TARGET = "";
+                `,
+				{
+					placeholderPattern: /^ARG$|^DIRECT_INPUT$|^OLD_TARGET$|^NEW_TARGET$/,
+				},
 			);
 
 			const patchCode = buildPatchCode({
 				ARG: t.identifier(argName),
-				OLD_VAR: t.identifier(oldStringVarName),
-				NEW_VAR: t.identifier(newStringVarName),
+				DIRECT_INPUT: directInput,
+				OLD_TARGET: oldStringTarget,
+				NEW_TARGET: newStringTarget,
 			});
 
 			insertBeforePath.insertBefore(patchCode);
@@ -1616,7 +1634,41 @@ function hasFunctionDeclaration(ast: t.File, name: string): boolean {
 	return found;
 }
 
-function hasIdeDiffConfigGuard(ast: t.File): boolean {
+function hasLegacyIdeDiffConfigCall(ast: t.File): boolean {
+	let found = false;
+
+	traverse(ast, {
+		ConditionalExpression(path) {
+			if (found) {
+				path.stop();
+				return;
+			}
+			if (!t.isNullLiteral(path.node.alternate)) return;
+			if (!t.isCallExpression(path.node.consequent)) return;
+			if (!t.isMemberExpression(path.node.consequent.callee)) return;
+			if (
+				!t.isIdentifier(path.node.consequent.callee.property, {
+					name: "getConfig",
+				})
+			) {
+				return;
+			}
+			if (path.node.consequent.arguments.length !== 1) return;
+			const diffSupportRef = path.node.consequent.callee.object;
+			if (!t.isIdentifier(diffSupportRef)) return;
+			if (!t.isIdentifier(path.node.test, { name: diffSupportRef.name })) {
+				return;
+			}
+
+			found = true;
+			path.stop();
+		},
+	});
+
+	return found;
+}
+
+function hasLegacyIdeDiffConfigGuard(ast: t.File): boolean {
 	let found = false;
 
 	traverse(ast, {
@@ -1671,6 +1723,26 @@ function hasIdeDiffConfigGuard(ast: t.File): boolean {
 	});
 
 	return found;
+}
+
+function hasExtendedEditPreviewPatch(ast: t.File): boolean {
+	let found = false;
+
+	traverse(ast, {
+		StringLiteral(path) {
+			if (path.node.value !== "EXTENDED_EDIT_PREVIEW_v1") return;
+			found = true;
+			path.stop();
+		},
+	});
+
+	return found;
+}
+
+function hasIdeDiffConfigGuard(ast: t.File): boolean {
+	if (hasLegacyIdeDiffConfigGuard(ast)) return true;
+	if (hasLegacyIdeDiffConfigCall(ast)) return false;
+	return hasExtendedEditPreviewPatch(ast);
 }
 
 function hasStructuredEditInputNormalization(ast: t.File): {

@@ -112,7 +112,7 @@ No build step. TypeScript runs directly via Bun. Babel + generator over the 16 M
 
 Use this command map instead of opening task files for orientation:
 
-- `native:update`: standard fetch, patch, promote, and `verify:patches` flow through `src/index.ts --update`. Accepts a positional version (`latest`, `stable`, or `X.Y.Z`).
+- `native:update`: standard fetch, patch, promote, and `verify:patches` flow through `src/index.ts --update`. Accepts a positional version (`latest`, `next`, `stable`, or `X.Y.Z`).
 - `native:fetch`, `native:fetch-patch`, `native:pull`, `native:promote`, `native:rollback`, `native:backup`, `native:restore`, `native:unpack`, `native:unpack-current`, `native:repack`, `status`, `list`: native binary/cache operations. `native:pull` writes clean JS to `versions_clean/<version>/cli.js`. `native:unpack-current` auto-detects the active binary via PATH.
 - `inspect`, `inspect:prompts`, `inspect:view`: bundle inspection through `src/inspector.ts`.
 - `diff`: release-to-release bundle drift through `src/diff.ts`. Run before changing patch anchors after an upstream release.

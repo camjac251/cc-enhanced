@@ -129,6 +129,23 @@ function renderEditDialog(ARG) {
   return { title: "Edit file", rows };
 }
 
+function renderCurrentEditDescriptor(tool, input, theme) {
+  if (tool === EditTool) {
+    let parsed = EditTool.inputSchema.parse(input);
+    return {
+      title: "Edit file",
+      content: {
+        file_path: parsed.file_path,
+        edits: [
+          { old_string: parsed.old_string, new_string: parsed.new_string, replace_all: parsed.replace_all || false },
+        ],
+      },
+      theme,
+    };
+  }
+  return null;
+}
+
 function renderGenericToolConfirm(toolUseConfirm, ideDiffSupport, parseInput, context) {
   const parsed = parseInput(toolUseConfirm.input);
   const diffConfig = ideDiffSupport ? ideDiffSupport.getConfig(parsed) : null;
@@ -313,6 +330,33 @@ test("edit-extended bypasses ideDiffSupport.getConfig for structured edit confir
 		output.includes(
 			"ideDiffSupport ? _claudeEditHasExtendedFields(_claudeDecodeExtendedEditTransport(parsed)) ? null : ideDiffSupport.getConfig(parsed) : null",
 		),
+		true,
+	);
+});
+
+test("edit-extended patches current direct-input edit confirmation previews", async () => {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		output.includes(
+			"const INPUT_RAW = ARG && ARG.toolUseConfirm ? ARG.toolUseConfirm.input : null",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"const INPUT_RAW = tool && tool.toolUseConfirm ? tool.toolUseConfirm.input : input",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes("parsed.old_string = _previewResult.oldString"),
+		true,
+	);
+	assert.equal(
+		output.includes("parsed.new_string = _previewResult.newString"),
 		true,
 	);
 });
