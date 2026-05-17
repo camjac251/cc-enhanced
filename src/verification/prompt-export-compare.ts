@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import {
+	countForbiddenPromptDashStyle,
+	type PromptDashStyleCounts,
+} from "../prompt-dash-style.js";
 import { PROMPT_SURFACE_REVIEW_PATHS } from "./prompt-surface-rules.js";
 
 export interface PromptExportCompareInput {
@@ -17,6 +21,7 @@ export interface PromptExportCompareResult {
 	etcClaudeDir: string;
 	files: FileInventoryComparison;
 	manifest: ManifestComparison;
+	unicodeDashStyle: UnicodeDashStyleComparison;
 	watchedSurfaces: WatchedSurfaceComparison;
 	etcLayer: EtcLayerComparison;
 	policyTerms: PolicyTermComparison[];
@@ -52,6 +57,25 @@ export interface ManifestCountDelta {
 	base: number | null;
 	patched: number | null;
 	delta: number | null;
+}
+
+export interface UnicodeDashStyleComparison {
+	base: UnicodeDashCorpusStats;
+	patched: UnicodeDashCorpusStats;
+	delta: PromptDashStyleCounts;
+	changedFiles: UnicodeDashFileComparison[];
+}
+
+export interface UnicodeDashCorpusStats extends PromptDashStyleCounts {
+	markdownFiles: number;
+	filesWithDashes: number;
+}
+
+export interface UnicodeDashFileComparison {
+	file: string;
+	base: PromptDashStyleCounts;
+	patched: PromptDashStyleCounts;
+	delta: PromptDashStyleCounts;
 }
 
 export interface WatchedSurfaceComparison {
@@ -504,6 +528,93 @@ function comparePolicyTerms(
 	}));
 }
 
+function emptyDashCounts(): PromptDashStyleCounts {
+	return {
+		enDash: 0,
+		emDash: 0,
+		total: 0,
+	};
+}
+
+function addDashCounts(
+	left: PromptDashStyleCounts,
+	right: PromptDashStyleCounts,
+): PromptDashStyleCounts {
+	return {
+		enDash: left.enDash + right.enDash,
+		emDash: left.emDash + right.emDash,
+		total: left.total + right.total,
+	};
+}
+
+function subtractDashCounts(
+	left: PromptDashStyleCounts,
+	right: PromptDashStyleCounts,
+): PromptDashStyleCounts {
+	return {
+		enDash: left.enDash - right.enDash,
+		emDash: left.emDash - right.emDash,
+		total: left.total - right.total,
+	};
+}
+
+function countMarkdownDashStyle(
+	files: Map<string, CollectedFile>,
+): UnicodeDashCorpusStats {
+	let total = emptyDashCounts();
+	let filesWithDashes = 0;
+	for (const file of files.values()) {
+		const counts = countForbiddenPromptDashStyle(file.content ?? "");
+		total = addDashCounts(total, counts);
+		if (counts.total > 0) filesWithDashes++;
+	}
+	return {
+		...total,
+		markdownFiles: files.size,
+		filesWithDashes,
+	};
+}
+
+function compareUnicodeDashStyle(
+	baseMarkdownFiles: Map<string, CollectedFile>,
+	patchedMarkdownFiles: Map<string, CollectedFile>,
+): UnicodeDashStyleComparison {
+	const allPaths = new Set([
+		...baseMarkdownFiles.keys(),
+		...patchedMarkdownFiles.keys(),
+	]);
+	const changedFiles: UnicodeDashFileComparison[] = [];
+
+	for (const file of [...allPaths].sort()) {
+		const base = countForbiddenPromptDashStyle(
+			baseMarkdownFiles.get(file)?.content ?? "",
+		);
+		const patched = countForbiddenPromptDashStyle(
+			patchedMarkdownFiles.get(file)?.content ?? "",
+		);
+		const delta = subtractDashCounts(patched, base);
+		if (delta.total === 0 && delta.enDash === 0 && delta.emDash === 0) {
+			continue;
+		}
+		changedFiles.push({ file, base, patched, delta });
+	}
+
+	changedFiles.sort(
+		(left, right) =>
+			Math.abs(right.delta.total) - Math.abs(left.delta.total) ||
+			left.file.localeCompare(right.file),
+	);
+
+	const base = countMarkdownDashStyle(baseMarkdownFiles);
+	const patched = countMarkdownDashStyle(patchedMarkdownFiles);
+	return {
+		base,
+		patched,
+		delta: subtractDashCounts(patched, base),
+		changedFiles,
+	};
+}
+
 export async function comparePromptExports({
 	baseExportDir,
 	patchedExportDir,
@@ -513,6 +624,10 @@ export async function comparePromptExports({
 }: PromptExportCompareInput): Promise<PromptExportCompareResult> {
 	const baseFiles = await collectFiles(baseExportDir);
 	const patchedFiles = await collectFiles(patchedExportDir);
+	const baseMarkdownFiles = await collectFiles(baseExportDir, {
+		includeContent: true,
+		onlyMarkdown: true,
+	});
 	const patchedMarkdownFiles = await collectFiles(patchedExportDir, {
 		includeContent: true,
 		onlyMarkdown: true,
@@ -528,6 +643,10 @@ export async function comparePromptExports({
 		etcClaudeDir,
 		files: compareFileInventory(baseFiles, patchedFiles),
 		manifest: await compareManifests(baseExportDir, patchedExportDir),
+		unicodeDashStyle: compareUnicodeDashStyle(
+			baseMarkdownFiles,
+			patchedMarkdownFiles,
+		),
 		watchedSurfaces: compareWatchedSurfaces(
 			baseFiles,
 			patchedFiles,
@@ -613,6 +732,50 @@ export function formatPromptExportComparisonMarkdown(
 						delta.patched,
 					)} | ${formatDelta(delta.delta)} |`,
 			),
+			"",
+		);
+	}
+
+	lines.push(
+		"## Unicode Dash Style",
+		"",
+		"| Metric | Base | Patched | Delta |",
+		"|---|---:|---:|---:|",
+		`| Markdown files | ${result.unicodeDashStyle.base.markdownFiles} | ${result.unicodeDashStyle.patched.markdownFiles} | ${formatDelta(
+			result.unicodeDashStyle.patched.markdownFiles -
+				result.unicodeDashStyle.base.markdownFiles,
+		)} |`,
+		`| Files with Unicode dash punctuation | ${result.unicodeDashStyle.base.filesWithDashes} | ${result.unicodeDashStyle.patched.filesWithDashes} | ${formatDelta(
+			result.unicodeDashStyle.patched.filesWithDashes -
+				result.unicodeDashStyle.base.filesWithDashes,
+		)} |`,
+		`| En dash characters | ${result.unicodeDashStyle.base.enDash} | ${result.unicodeDashStyle.patched.enDash} | ${formatDelta(
+			result.unicodeDashStyle.delta.enDash,
+		)} |`,
+		`| Em dash characters | ${result.unicodeDashStyle.base.emDash} | ${result.unicodeDashStyle.patched.emDash} | ${formatDelta(
+			result.unicodeDashStyle.delta.emDash,
+		)} |`,
+		`| Total Unicode dash punctuation | ${result.unicodeDashStyle.base.total} | ${result.unicodeDashStyle.patched.total} | ${formatDelta(
+			result.unicodeDashStyle.delta.total,
+		)} |`,
+		"",
+	);
+
+	const dashRows = result.unicodeDashStyle.changedFiles
+		.slice(0, sampleLimit)
+		.map(
+			(file) =>
+				`| \`${file.file}\` | ${file.base.total} | ${file.patched.total} | ${formatDelta(
+					file.delta.total,
+				)} |`,
+		);
+	if (dashRows.length > 0) {
+		lines.push(
+			"### Unicode Dash File Deltas",
+			"",
+			"| File | Base | Patched | Delta |",
+			"|---|---:|---:|---:|",
+			...dashRows,
 			"",
 		);
 	}

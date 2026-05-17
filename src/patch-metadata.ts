@@ -41,6 +41,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Memory prompt",
 		group: "Prompt",
 	},
+	"prompt-dash-style": {
+		tag: "prompt-dash-style",
+		label: "Prompt dash style",
+		group: "Prompt",
+	},
 	"session-guidance": {
 		tag: "session-guidance",
 		label: "Session guidance",

@@ -48,6 +48,11 @@ test("comparePromptExports reports inventory, manifests, watched surfaces, and /
 		);
 		await writeFile(baseDir, "agents/explore.md", "legacy explore\n");
 		await writeFile(
+			baseDir,
+			"agents/dream.md",
+			"Perform a dream — prune memories from the last 1–3 days.\n",
+		);
+		await writeFile(
 			patchedDir,
 			"agents/explore.md",
 			"Use Serena and ChunkHound before rg for code.\nShared managed policy line for overlap.\n",
@@ -85,13 +90,14 @@ test("comparePromptExports reports inventory, manifests, watched surfaces, and /
 			minOverlapLineLength: 20,
 		});
 
-		assert.equal(result.files.baseFiles, 4);
+		assert.equal(result.files.baseFiles, 5);
 		assert.equal(result.files.patchedFiles, 4);
 		assert.equal(result.files.changed, 2);
 		assert.equal(result.files.added, 1);
-		assert.equal(result.files.removed, 1);
+		assert.equal(result.files.removed, 2);
 		assert.equal(result.files.changedByTopLevel.agents, 1);
 		assert.equal(result.files.addedByTopLevel.system, 1);
+		assert.equal(result.files.removedByTopLevel.agents, 1);
 		assert.equal(result.files.removedByTopLevel.tools, 1);
 
 		assert.deepEqual(
@@ -113,6 +119,20 @@ test("comparePromptExports reports inventory, manifests, watched surfaces, and /
 		assert.equal(result.watchedSurfaces.added, 1);
 		assert.equal(result.watchedSurfaces.missing, 1);
 
+		assert.equal(result.unicodeDashStyle.base.filesWithDashes, 1);
+		assert.equal(result.unicodeDashStyle.base.enDash, 1);
+		assert.equal(result.unicodeDashStyle.base.emDash, 1);
+		assert.equal(result.unicodeDashStyle.base.total, 2);
+		assert.equal(result.unicodeDashStyle.patched.total, 0);
+		assert.deepEqual(result.unicodeDashStyle.changedFiles, [
+			{
+				file: "agents/dream.md",
+				base: { enDash: 1, emDash: 1, total: 2 },
+				patched: { enDash: 0, emDash: 0, total: 0 },
+				delta: { enDash: -1, emDash: -1, total: -2 },
+			},
+		]);
+
 		assert.equal(result.etcLayer.files.length, 2);
 		assert.equal(result.etcLayer.totalExactLinesInPatchedExport, 1);
 		assert.ok(
@@ -130,6 +150,11 @@ test("comparePromptExports reports inventory, manifests, watched surfaces, and /
 			sampleLimit: 5,
 		});
 		assert.match(markdown, /# Prompt Export Comparison/);
+		assert.match(markdown, /Unicode Dash Style/);
+		assert.match(markdown, /En dash characters \| 1 \| 0 \| -1/);
+		assert.match(markdown, /Em dash characters \| 1 \| 0 \| -1/);
+		assert.match(markdown, /Total Unicode dash punctuation \| 2 \| 0 \| -2/);
+		assert.match(markdown, /`agents\/dream\.md` \| 2 \| 0 \| -2/);
 		assert.match(markdown, /Exact \/etc lines found in patched export: 1\./);
 		assert.match(markdown, /Watched Prompt Surfaces/);
 	} finally {

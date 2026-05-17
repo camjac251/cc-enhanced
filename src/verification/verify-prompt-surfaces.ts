@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { findForbiddenPromptDashStyle } from "../prompt-dash-style.js";
 import {
 	PROMPT_SURFACE_RULES,
 	type PromptSurfaceRule,
@@ -25,6 +26,7 @@ const PLAN_LITERAL_PLACEHOLDER = /^\$\{[A-Z][A-Z0-9_]*\}$/;
 const AGENT_REFERENCE_PLACEHOLDER = /^\$\{agent\.[A-Za-z0-9_.]+\}$/;
 const DYNAMIC_PROMPT_MARKER =
 	"(Dynamic prompt: not statically resolved from cli.js AST.)";
+const GENERATED_MARKDOWN_FILENAMES = new Set(["INDEX.md", "README.md"]);
 
 function verifyPlanSurface(content: string): PromptSurfaceFailure[] {
 	const failures: PromptSurfaceFailure[] = [];
@@ -137,6 +139,43 @@ async function readSurfaceFile(
 	}
 }
 
+async function collectPromptMarkdownFiles(
+	dir: string,
+	root = dir,
+): Promise<string[]> {
+	const entries = await fs.readdir(dir, { withFileTypes: true });
+	const files: string[] = [];
+	for (const entry of entries) {
+		const fullPath = path.join(dir, entry.name);
+		if (entry.isDirectory()) {
+			files.push(...(await collectPromptMarkdownFiles(fullPath, root)));
+			continue;
+		}
+		if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+		if (GENERATED_MARKDOWN_FILENAMES.has(entry.name)) continue;
+		files.push(path.relative(root, fullPath));
+	}
+	return files.sort();
+}
+
+async function verifyNoUnicodeDashPromptMarkdown(
+	exportDir: string,
+): Promise<PromptSurfaceFailure[]> {
+	const failures: PromptSurfaceFailure[] = [];
+	const files = await collectPromptMarkdownFiles(exportDir);
+	for (const file of files) {
+		const content = await fs.readFile(path.join(exportDir, file), "utf8");
+		const match = findForbiddenPromptDashStyle(content);
+		if (!match) continue;
+		failures.push({
+			file,
+			id: "surface-unicode-dash-style",
+			reason: `Prompt Markdown still contains ${match.label} punctuation`,
+		});
+	}
+	return failures;
+}
+
 export async function verifyPromptSurfaces(
 	input: VerifyPromptSurfacesInput,
 ): Promise<VerifyPromptSurfacesResult> {
@@ -181,6 +220,10 @@ export async function verifyPromptSurfaces(
 			failures.push(...planFailures);
 		}
 	}
+
+	const dashFailures = await verifyNoUnicodeDashPromptMarkdown(input.exportDir);
+	checksRun += dashFailures.length > 0 ? dashFailures.length : 1;
+	failures.push(...dashFailures);
 
 	return {
 		ok: failures.length === 0,

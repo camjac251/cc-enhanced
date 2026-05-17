@@ -133,6 +133,48 @@ test("verifyPromptSurfaces allows intentionally disabled optional surfaces to be
 	}
 });
 
+test("verifyPromptSurfaces rejects Unicode dash punctuation in exported prompt markdown", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "verify-prompt-surfaces-dash-style-"),
+	);
+	try {
+		await createValidSurfaceFixture(tempDir);
+		await writeSurface(
+			tempDir,
+			"tools/builtin/bash.md",
+			"# Tool: Bash\n\n## Prompt\n\nUse Bash for shell-only operations — do not use it as a prose style example.",
+		);
+		await writeSurface(
+			tempDir,
+			"scratch/en-dash.md",
+			"Read the most recent 1–3 days before deciding.",
+		);
+
+		const result = await verifyPromptSurfaces({ exportDir: tempDir });
+		assert.equal(result.ok, false);
+		const dashFailures = result.failures.filter(
+			(failure) => failure.id === "surface-unicode-dash-style",
+		);
+		assert.equal(dashFailures.length, 2);
+		assert.ok(
+			dashFailures.some(
+				(failure) =>
+					failure.file === "tools/builtin/bash.md" &&
+					failure.reason.includes("em dash"),
+			),
+		);
+		assert.ok(
+			dashFailures.some(
+				(failure) =>
+					failure.file === "scratch/en-dash.md" &&
+					failure.reason.includes("en dash"),
+			),
+		);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
 test("verifyPromptSurfaces rejects legacy live prompt guidance", async () => {
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "verify-prompt-surfaces-legacy-"),

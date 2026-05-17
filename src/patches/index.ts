@@ -20,6 +20,7 @@ export { disableAutoupdater } from "./no-autoupdate.js";
 export { noCollapse } from "./no-collapse.js";
 export { planCompactExecute } from "./plan-compact-execute.js";
 export { planDiffUi } from "./plan-diff-ui.js";
+export { promptDashStyle } from "./prompt-dash-style.js";
 export { readWithBat } from "./read-bat.js";
 export { sessionGuidance } from "./session-guidance.js";
 export { sessionMemory } from "./session-mem.js";
@@ -57,6 +58,7 @@ import { disableAutoupdater } from "./no-autoupdate.js";
 import { noCollapse } from "./no-collapse.js";
 import { planCompactExecute } from "./plan-compact-execute.js";
 import { planDiffUi } from "./plan-diff-ui.js";
+import { promptDashStyle } from "./prompt-dash-style.js";
 import { readWithBat } from "./read-bat.js";
 import { sessionGuidance } from "./session-guidance.js";
 import { sessionMemory } from "./session-mem.js";
@@ -118,6 +120,7 @@ const basePatches: Patch[] = [
 	systemPromptFile,
 	worktreePerms,
 	limits,
+	promptDashStyle,
 
 	// Signature runs last
 	signature,

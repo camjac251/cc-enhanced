@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > Read this file in full before proposing or making changes. Every section encodes a constraint the patcher depends on. Every rule below has a failure history; skimming will miss rules that invalidate otherwise-reasonable suggestions.
 
-AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle (~16 MB minified) embedded in the native Bun binary, applies 34 verifiable patches, and repacks in place at the original byte length. Tracks the latest upstream release; the README badge is the canonical version anchor and `claude --version` on the promoted binary is the runtime check. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
+AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle (~16 MB minified) embedded in the native Bun binary, applies 35 verifiable patches, and repacks in place at the original byte length. Tracks the latest upstream release; the README badge is the canonical version anchor and `claude --version` on the promoted binary is the runtime check. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
 
 `AGENTS.md` and `GEMINI.md` are symlinks to this file. Edit `CLAUDE.md` only.
 
@@ -63,7 +63,7 @@ When orienting in this repo, reach for these by purpose:
 | Need | Look at |
 |---|---|
 | Patch interface and result types | `src/types.ts` |
-| All 34 patches | `src/patches/<tag>.ts` (each ships `<tag>.test.ts`) |
+| All 35 patches | `src/patches/<tag>.ts` (each ships `<tag>.test.ts`) |
 | Patch barrel + `allPatches` | `src/patches/index.ts` |
 | Group and label registry | `src/patch-metadata.ts` (`BY_TAG`) |
 | AST helpers (`getVerifyAst`, key/property lookups) | `src/patches/ast-helpers.ts` |
@@ -95,7 +95,7 @@ Groups in `src/patch-metadata.ts` order verification reports. Listed group order
 
 | Group | What lives here |
 |---|---|
-| Prompt | Replaces prompt text. `bash-prompt`, `built-in-agent-prompt`, `claudemd-strong`, `memory-prompt-soften`, `session-guidance`, `subagent-system-prompt`, `todo-use` |
+| Prompt | Replaces prompt text. `bash-prompt`, `built-in-agent-prompt`, `claudemd-strong`, `memory-prompt-soften`, `prompt-dash-style`, `session-guidance`, `subagent-system-prompt`, `todo-use` |
 | Tooling | Built-in tool behavior. `read-bat`, `edit-extended`, `bash-tail`, `tools-off`, `shell-quote-fix`, `mcp-server-name`, `taskout-ext`, `lsp-multi-server`, `lsp-workspace-symbol` |
 | Agent | Built-in agent and command registry. `agents-off`, `commands-off` |
 | System | Runtime behavior, caching, memory, limits. `cache-tail-policy`, `effort-max`, `image-limits`, `no-autoupdate`, `limits`, `session-mem`, `sys-prompt-file`, `worktree-perms` |
@@ -135,7 +135,7 @@ Build-time env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS
 4. Add a `BY_TAG` record in `src/patch-metadata.ts` with `tag`, `label`, and `group`.
 5. If the patch affects exported live guidance, update `src/verification/prompt-surface-rules.ts` and (if it touches shared policy) the contract in `src/verification/prompt-policy-contract.ts`.
 6. **When the total patch count changes** (adding or removing a patch), update every place the count appears, in the same change:
-   - `CLAUDE.md` intro (`applies 34 verifiable patches`).
+   - `CLAUDE.md` intro (`applies 35 verifiable patches`).
    - `README.md` intro paragraph and the patch-count badge near the top.
    - GitHub repo description: `gh api -X PATCH repos/camjac251/cc-enhanced -f description="..."`. The current description embeds the count; keep them in sync.
    - Confirm the new total against `bun run cli --list` before pushing.
@@ -179,7 +179,7 @@ Short bundle-level routing language shared by prompt patches lives in `src/patch
 
 `src/verification/prompt-surface-rules.ts` is the authoritative list of curated patched surfaces with required/forbidden needles, optional-surface markers, and the drift watch list. Current required live surfaces include the Bash/Read/REPL/ToolSearch tool prompts, `agents/explore.md`, remote-planning reminders, `system/sections/session-specific-guidance.md`, and the dream-memory consolidation/pruning sections. When a prompt patch changes live guidance, update both its verifier and these rules in the same change.
 
-`prompts:compare` should normally show optional tool/agent surfaces as removed when `tools-off` / `agents-off` filtered them, and zero exact-line overlap from `/etc/claude-code` into the patched export. Rising overlap usually means a patch copied managed policy verbatim instead of using distilled bundle wording.
+`prompts:compare` should normally show optional tool/agent surfaces as removed when `tools-off` / `agents-off` filtered them, zero exact-line overlap from `/etc/claude-code` into the patched export, and `Unicode Dash Style` patched counts at zero. Rising overlap usually means a patch copied managed policy verbatim instead of using distilled bundle wording. Nonzero patched dash counts mean a prompt surface is still demonstrating en dash or em dash prose style and should be fixed before refreshing drift baselines.
 
 ## Searching cli.js
 
@@ -232,7 +232,7 @@ Prompt artifacts come from native-extracted or legacy npm-package `cli.js` bundl
 
 `mise run prompts:export` exports the promoted binary. Pass a clean version or path with `mise run prompts:export -- <version-or-path>`. `--output-dir <dir>` writes scratch exports; the current-binary exporter uses an OS temp dir and must never write into `versions_clean/<label>`. `--max-uncategorized <n>` fails when uncategorized prompt-corpus entries exceed a budget. `mise run prompts:bundle -- <version-or-path>` writes the self-contained navigable bundle through the same exporter with `--bundle`; keep both behaviors in `scripts/export-prompts.ts`.
 
-`bun run prompts:compare <vanilla-export> <patched-export> /etc/claude-code` produces a human triage report. `--output <file>` saves Markdown; `--json` saves machine-readable output. Review-only.
+`bun run prompts:compare <vanilla-export> <patched-export> /etc/claude-code` produces a human triage report. It includes file inventory, manifest deltas, watched-surface status, Unicode dash-style counts, `/etc` exact-line overlap, and policy-term presence. `--output <file>` saves Markdown; `--json` saves machine-readable output. Review-only.
 
 `verify:prompt-surfaces` is intentionally strict for curated live surfaces. Dynamic markers and unresolved helper placeholders (`${value_...}`, `${conditional(...)`, `${...spread}`) fail verification unless the surface explicitly sets `allowSyntheticPlaceholders`. If a clean upstream export still has unresolved runtime placeholders in broad corpus outputs, track that through `quality.uncategorizedCount` and use `--max-uncategorized` only where a budget is meaningful.
 

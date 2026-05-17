@@ -1,0 +1,161 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { runCombinedAstPasses } from "../ast-pass-engine.js";
+import { parse, print } from "../loader.js";
+import { countForbiddenPromptDashStyle } from "../prompt-dash-style.js";
+import {
+	normalizePromptDashText,
+	promptDashStyle,
+} from "./prompt-dash-style.js";
+
+async function runPromptDashStyleViaPasses(ast: any): Promise<void> {
+	const passes = (await promptDashStyle.astPasses?.(ast)) ?? [];
+	await runCombinedAstPasses(
+		ast,
+		passes.map((pass) => ({ tag: promptDashStyle.tag, pass })),
+		() => {},
+		() => {},
+		(_tag, error) => {
+			throw error;
+		},
+	);
+}
+
+const PROMPT_DASH_FIXTURE = [
+	'const longSystemSection = "# Managed Agents — Overview\\n\\nYou are helping the user schedule, update, list, or run remote Claude Code agents. These are NOT local cron jobs — each routine spawns a fully isolated remote session in Anthropic\\\'s cloud infrastructure. Read the most recent 1–3 days of sessions. You must use the remote tools directly and should not summarize this setup back to the user."; ',
+	"",
+	"const scheduleSkill = {",
+	'  name: "schedule",',
+	'  description: "Research and plan a large-scale change, then execute it in parallel across 5–30 isolated worktree agents.",',
+	"  prompt: `Use ${toolName} — do not use curl. Always preserve the user's requested cadence.`,",
+	"};",
+	"",
+	'const unrelated = "cache-key—v1";',
+].join("\n");
+
+const ESCAPED_PROMPT_DASH_FIXTURE = String.raw`
+const prompt = "You are monitoring a long-running agent \u2014 do not block legitimate work. You must review the transcript across 1\u20136 turns before deciding. Always return a concise classification with evidence.";
+`;
+
+const LATEST_CLEAN_PROMPT_DASH_FIXTURE = [
+	'const memoryPruning = "# Dream: Memory Pruning\\n\\nYou are performing a dream \\u2014 a pruning pass over your memory files. The job is small: delete stale or invalidated memories, and collapse duplicates."; ',
+	'const monitorGuidance = "If a monitor is armed, keep `delaySeconds` at 1200\\u20131800s \\u2014 the monitor is the wake signal and this is only the fallback heartbeat."; ',
+].join("\n");
+
+const NON_PROMPT_DASH_FIXTURE = String.raw`
+const dashRegex = /[\u2013\u2014]/;
+const dashSet = "\u2013\u2014";
+const glyphMap = { "\u2014": "em-dash" };
+`;
+
+test("normalizePromptDashText removes Unicode prose dashes", () => {
+	assert.equal(
+		normalizePromptDashText(
+			'# Managed Agents — Overview\nUse `{action: "list"}` — list all routines.\nRead 1–3 days.',
+		),
+		'# Managed Agents: Overview\nUse `{action: "list"}`. List all routines.\nRead 1-3 days.',
+	);
+});
+
+test("normalizePromptDashText preserves existing command punctuation", () => {
+	assert.equal(
+		normalizePromptDashText(
+			"Use `fd -t f . logs/` to list recent activity logs — do not rewrite the command.",
+		),
+		"Use `fd -t f . logs/` to list recent activity logs. Do not rewrite the command.",
+	);
+});
+
+test("prompt-dash-style normalizes prompt-like string and template text", async () => {
+	const ast = parse(PROMPT_DASH_FIXTURE);
+	await runPromptDashStyleViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes("Managed Agents — Overview"), false);
+	assert.equal(output.includes("5–30 isolated"), false);
+	assert.equal(output.includes("# Managed Agents: Overview"), true);
+	assert.equal(output.includes("Each routine spawns"), true);
+	assert.equal(output.includes("1-3 days"), true);
+	assert.equal(output.includes("5-30 isolated"), true);
+	assert.equal(output.includes("Do not use curl"), true);
+	assert.doesNotThrow(() => parse(output));
+	assert.equal(promptDashStyle.verify(output, ast), true);
+});
+
+test("prompt-dash-style normalizes escaped bundle dash sequences", async () => {
+	const ast = parse(ESCAPED_PROMPT_DASH_FIXTURE);
+	await runPromptDashStyleViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes("\\u2014"), false);
+	assert.equal(output.includes("\\u2013"), false);
+	assert.equal(output.includes("agent. Do not block legitimate work"), true);
+	assert.equal(output.includes("1-6 turns"), true);
+	assert.equal(promptDashStyle.verify(output, ast), true);
+});
+
+test("prompt-dash-style normalizes latest clean prompt examples", async () => {
+	assert.equal(LATEST_CLEAN_PROMPT_DASH_FIXTURE.includes("\\u2014"), true);
+	assert.equal(LATEST_CLEAN_PROMPT_DASH_FIXTURE.includes("\\u2013"), true);
+	assert.equal(
+		typeof promptDashStyle.verify(
+			LATEST_CLEAN_PROMPT_DASH_FIXTURE,
+			parse(LATEST_CLEAN_PROMPT_DASH_FIXTURE),
+		),
+		"string",
+	);
+
+	const ast = parse(LATEST_CLEAN_PROMPT_DASH_FIXTURE);
+	await runPromptDashStyleViaPasses(ast);
+	const output = print(ast);
+
+	assert.deepEqual(countForbiddenPromptDashStyle(output), {
+		enDash: 0,
+		emDash: 0,
+		total: 0,
+	});
+	assert.equal(output.includes("\\u2014"), false);
+	assert.equal(output.includes("\\u2013"), false);
+	assert.equal(output.includes("dream. A pruning pass"), true);
+	assert.equal(output.includes("1200-1800s. The monitor"), true);
+	assert.equal(promptDashStyle.verify(output, ast), true);
+});
+
+test("prompt-dash-style leaves non-prompt dash-bearing strings alone", async () => {
+	const ast = parse(PROMPT_DASH_FIXTURE);
+	await runPromptDashStyleViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes("cache-key—v1"), true);
+});
+
+test("prompt-dash-style preserves non-prompt dash regexes and glyph maps", async () => {
+	const ast = parse(NON_PROMPT_DASH_FIXTURE);
+	await runPromptDashStyleViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes("/[\\u2013\\u2014]/"), true);
+	assert.equal(output.includes('"\\u2013\\u2014"'), true);
+	assert.equal(output.includes('"\\u2014": "em-dash"'), true);
+	assert.equal(promptDashStyle.verify(output, ast), true);
+});
+
+test("prompt-dash-style is idempotent", async () => {
+	const ast = parse(PROMPT_DASH_FIXTURE);
+	await runPromptDashStyleViaPasses(ast);
+	const once = print(ast);
+
+	const astAgain = parse(once);
+	await runPromptDashStyleViaPasses(astAgain);
+	const twice = print(astAgain);
+
+	assert.equal(twice, once);
+});
+
+test("prompt-dash-style verify rejects unpatched prompt-like dash text", () => {
+	const ast = parse(PROMPT_DASH_FIXTURE);
+	const result = promptDashStyle.verify(PROMPT_DASH_FIXTURE, ast);
+
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /Unicode dash punctuation/);
+});
