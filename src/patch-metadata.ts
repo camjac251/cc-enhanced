@@ -181,11 +181,6 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Limits",
 		group: "System",
 	},
-	"worktree-perms": {
-		tag: "worktree-perms",
-		label: "Worktree permissions",
-		group: "System",
-	},
 	signature: {
 		tag: "signature",
 		label: "Signature",

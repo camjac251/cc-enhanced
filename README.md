@@ -7,15 +7,15 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
-  <img src="https://img.shields.io/badge/Patches-35-orange.svg" alt="35 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.142-8A2BE2.svg" alt="Tested against Claude Code 2.1.142">
+  <img src="https://img.shields.io/badge/Patches-34-orange.svg" alt="34 Patches">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.143-8A2BE2.svg" alt="Tested against Claude Code 2.1.143">
 </p>
 
 ---
 
-cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 35 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 34 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
 
-Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting, LSP fan-out, worktree permissions), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read, batched `edits[]` on Edit, output tails on Bash), and replace prompt fragments that steer the model toward better shell tooling.
+Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting and LSP fan-out), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read, batched `edits[]` on Edit, output tails on Bash), and replace prompt fragments that steer the model toward better shell tooling.
 
 > [!NOTE]
 > This tool patches your local copy of the Claude Code binary. It does not distribute Claude Code binaries or npm packages. All modifications happen on your machine.
@@ -119,8 +119,6 @@ Runtime behavior, caching, memory, and configuration.
 | [`limits`](src/patches/limits.ts) | Read keeps larger files inline. Byte ceiling 256K -> 1M, token budget 25K -> 50K (still overridable via `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`), persistence threshold 50K -> 120K chars, per-tool result cap 100K -> 250K chars. |
 | [`session-mem`](src/patches/session-mem.ts) | Past-context memory search guidance can be forced on with `ENABLE_SESSION_MEMORY_PAST`, which is ORed with the upstream `tengu_coral_fern` flag. |
 | [`sys-prompt-file`](src/patches/sys-prompt-file.ts) | Every conversation auto-appends a system prompt file when no append or replacement system prompt is explicitly set. Source is `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE`, falling back to `/etc/claude-code/system-prompt.md`. Replacement-mode launches via `--system-prompt` or `--system-prompt-file` skip the auto-append layer. |
-| [`worktree-perms`](src/patches/worktree-perms.ts) | Agent worktrees are added to the session's allowed edit surface on spawn and on resume, so Edit and Write inside a worktree do not fall back to per-file permission prompts. |
-
 ### Prompt
 
 Prompt text sent to the model.
@@ -372,7 +370,7 @@ When a prompt patch changes live guidance, update both the patch verifier and th
 
 ## Compatibility
 
-Current target: **Claude Code 2.1.142**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
+Current target: **Claude Code 2.1.143**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
 
 `native:update` accepts `latest`, `next`, `stable`, or an explicit `X.Y.Z`. The `latest` resolver cross-checks the native release bucket with the npm `latest` and `next` dist-tags so release promotion can follow npm when a new version appears there before the bucket alias moves.
 
