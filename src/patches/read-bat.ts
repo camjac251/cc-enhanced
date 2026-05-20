@@ -494,6 +494,55 @@ function getObjectPatternKeys(pattern: t.ObjectPattern): Set<string> {
 	return keys;
 }
 
+function getBindingNames(node: t.Node | null | undefined): Set<string> {
+	const names = new Set<string>();
+	if (!node) return names;
+
+	const addPatternNames = (pattern: t.Node | null | undefined) => {
+		if (!pattern) return;
+		for (const name of Object.keys(t.getBindingIdentifiers(pattern))) {
+			names.add(name);
+		}
+	};
+
+	const visit = (current: t.Node | null | undefined) => {
+		if (!current) return;
+		if (t.isVariableDeclarator(current)) addPatternNames(current.id);
+		if (t.isFunctionDeclaration(current) && current.id)
+			names.add(current.id.name);
+		if (t.isClassDeclaration(current) && current.id) names.add(current.id.name);
+		if (t.isFunction(current)) {
+			for (const param of current.params) addPatternNames(param);
+		}
+		if (t.isCatchClause(current)) addPatternNames(current.param);
+
+		for (const key of t.VISITOR_KEYS[current.type] ?? []) {
+			const child = (current as any)[key];
+			if (Array.isArray(child)) {
+				for (const item of child) {
+					if (item && typeof item.type === "string") visit(item);
+				}
+				continue;
+			}
+			if (child && typeof child.type === "string") visit(child);
+		}
+	};
+
+	visit(node);
+	return names;
+}
+
+function freshIdentifierName(
+	preferred: string,
+	reservedNames: Set<string>,
+): string {
+	if (!reservedNames.has(preferred)) return preferred;
+	for (let index = 2; ; index++) {
+		const candidate = `${preferred}_${index}`;
+		if (!reservedNames.has(candidate)) return candidate;
+	}
+}
+
 function isVoidZeroExpression(expr: t.Expression): boolean {
 	return (
 		t.isUnaryExpression(expr, { operator: "void" }) &&
@@ -1520,6 +1569,9 @@ export const readWithBat: Patch = {
 
 						// Track the range parameter variable name we create
 						let rangeVarName: string | null = null;
+						let whitespaceVarName: string | null = null;
+						let targetRangeVarName: string | null = null;
+						let targetWhitespaceVarName: string | null = null;
 						let callCompatRestVarName: string | null = null;
 						// Track the original read function identifier
 						let originalReadFn: string | null = null;
@@ -1740,6 +1792,11 @@ export const readWithBat: Patch = {
 								const bodyStr = JSON.stringify(callMethod.body);
 								if (bodyStr.includes("START_LINE")) return;
 
+								const validateMethod = path.node.properties.find(
+									(p): p is t.ObjectMethod =>
+										t.isObjectMethod(p) && hasObjectKeyName(p, "validateInput"),
+								);
+
 								// === 1. Modify call signature ===
 								// Original: async call({ file_path: A, offset: Q = 1, limit: B = void 0 }, G)
 								// New: async call({ file_path: A, range: R = void 0 }, G)
@@ -1786,7 +1843,20 @@ export const readWithBat: Patch = {
 									}
 
 									// Add range parameter: range: R = void 0
-									rangeVarName = "R";
+									const callReservedNames = getBindingNames(callMethod);
+									if (validateMethod) {
+										for (const name of getBindingNames(validateMethod)) {
+											callReservedNames.add(name);
+										}
+									}
+									rangeVarName = freshIdentifierName("R", callReservedNames);
+									callReservedNames.add(rangeVarName);
+									whitespaceVarName = freshIdentifierName(
+										"WSPC",
+										callReservedNames,
+									);
+									targetRangeVarName = rangeVarName;
+									targetWhitespaceVarName = whitespaceVarName;
 									const rangeProp = t.objectProperty(
 										t.identifier("range"),
 										t.assignmentPattern(
@@ -1800,7 +1870,7 @@ export const readWithBat: Patch = {
 									const wsProp = t.objectProperty(
 										t.identifier("show_whitespace"),
 										t.assignmentPattern(
-											t.identifier("WSPC"),
+											t.identifier(whitespaceVarName),
 											t.unaryExpression("void", t.numericLiteral(0)),
 										),
 									);
@@ -1822,10 +1892,6 @@ export const readWithBat: Patch = {
 								// === 1b. Modify validateInput signature and range bypass ===
 								// Original: async validateInput({ file_path: A, offset: Q, limit: B, pages: Y }, G)
 								// New: async validateInput({ file_path: A, pages: Y, range: R }, G)
-								const validateMethod = path.node.properties.find(
-									(p): p is t.ObjectMethod =>
-										t.isObjectMethod(p) && hasObjectKeyName(p, "validateInput"),
-								);
 								if (validateMethod) {
 									const rangeId = t.identifier(rangeVarName || "R");
 									const params = validateMethod.params;
@@ -2242,14 +2308,27 @@ export const readWithBat: Patch = {
 																return arg;
 															});
 															call.arguments.push(
-																t.identifier("R"),
-																t.identifier("WSPC"),
+																t.identifier(rangeVarName || "R"),
+																t.identifier(whitespaceVarName || "WSPC"),
 															);
 														}
-														helperFn.params.push(
-															t.identifier("R"),
-															t.identifier("WSPC"),
+														const helperReservedNames =
+															getBindingNames(helperFn);
+														const helperRangeVarName = freshIdentifierName(
+															rangeVarName || "R",
+															helperReservedNames,
 														);
+														helperReservedNames.add(helperRangeVarName);
+														const helperWhitespaceVarName = freshIdentifierName(
+															whitespaceVarName || "WSPC",
+															helperReservedNames,
+														);
+														helperFn.params.push(
+															t.identifier(helperRangeVarName),
+															t.identifier(helperWhitespaceVarName),
+														);
+														targetRangeVarName = helperRangeVarName;
+														targetWhitespaceVarName = helperWhitespaceVarName;
 														targetBody = helperFn.body;
 													} else {
 														console.warn(
@@ -2551,8 +2630,14 @@ export const readWithBat: Patch = {
 											declPath.node.init = t.awaitExpression(
 												t.callExpression(batFn, [
 													fileArg,
-													t.identifier(rangeVarName || "R"),
-													t.identifier("WSPC"),
+													t.identifier(
+														targetRangeVarName || rangeVarName || "R",
+													),
+													t.identifier(
+														targetWhitespaceVarName ||
+															whitespaceVarName ||
+															"WSPC",
+													),
 													t.identifier(originalReadFn),
 													fallbackMaxBytesArg,
 													fallbackSignalArg,
@@ -2639,7 +2724,7 @@ export const readWithBat: Patch = {
 											// for partial reads when either field is defined.
 											const isRangedExpr = t.binaryExpression(
 												"!==",
-												t.identifier(rangeVarName || "R"),
+												t.identifier(targetRangeVarName || rangeVarName || "R"),
 												t.unaryExpression("void", t.numericLiteral(0)),
 											);
 											const filePathExpr = t.identifier(_filePathVar || "A");
@@ -2665,7 +2750,9 @@ export const readWithBat: Patch = {
 												"&&",
 												t.binaryExpression(
 													"===",
-													t.identifier(rangeVarName || "R"),
+													t.identifier(
+														targetRangeVarName || rangeVarName || "R",
+													),
 													t.unaryExpression("void", t.numericLiteral(0)),
 												),
 												t.cloneNode(isOutputFileExpr, true),
@@ -2682,7 +2769,7 @@ export const readWithBat: Patch = {
 											);
 											const effectiveRangeExpr = t.conditionalExpression(
 												t.cloneNode(isRangedExpr, true),
-												t.identifier(rangeVarName || "R"),
+												t.identifier(targetRangeVarName || rangeVarName || "R"),
 												t.conditionalExpression(
 													t.cloneNode(isOutputFileExpr, true),
 													t.stringLiteral("-500:"),

@@ -481,6 +481,28 @@ test("read-bat patches delegated helper calls and appends range/whitespace param
 	assert.equal(output.includes('var style = "numbers"'), true);
 });
 
+test("read-bat avoids delegated helper parameter name collisions", async () => {
+	const fixture = READ_DELEGATION_FIXTURE.replace(
+		"async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2) {\n  let W = offset === 0 ? 0 : offset - 1",
+		"async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2) {\n  let R = ctx?.rangeSentinel;\n  let W = offset === 0 ? 0 : offset - 1",
+	);
+	const ast = parse(fixture);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		output.includes(
+			"helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2, R, WSPC)",
+		),
+		false,
+	);
+	assert.match(
+		output,
+		/helperRead\(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2, R_2, WSPC\)/,
+	);
+	assert.doesNotThrow(() => parse(output));
+});
+
 test("read-bat verify fails when changed-snippet cap is altered", async () => {
 	const output = await getPatchedDelegationOutput();
 	const mutated = output.replace(
