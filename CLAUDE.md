@@ -3,9 +3,7 @@
 > [!IMPORTANT]
 > Read this file in full before proposing or making changes. Every section encodes a constraint the patcher depends on. Every rule below has a failure history; skimming will miss rules that invalidate otherwise-reasonable suggestions.
 
-AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle (~16 MB minified) embedded in the native Bun binary, applies 34 verifiable patches, and repacks in place at the original byte length. Tracks the latest upstream release; the README badge is the canonical version anchor and `claude --version` on the promoted binary is the runtime check. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
-
-`AGENTS.md` and `GEMINI.md` are symlinks to this file. Edit `CLAUDE.md` only.
+AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle (~16 MB minified) embedded in the native Bun binary, applies 35 verifiable patches, and repacks in place at the original byte length. Tracks the latest upstream release; the README badge is the canonical version anchor and `claude --version` on the promoted binary is the runtime check. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
 
 ## Hard Rules
 
@@ -51,10 +49,34 @@ type AstPassName = "discover" | "mutate" | "finalize";
 
 1. `unpack`: extract embedded `cli.js` from the ELF/Mach-O/PE binary.
 2. Run the patch pipeline above.
-3. `repack` in place at the original byte length so all virtual addresses and `PT_LOAD` mappings stay valid (see `.claude/rules/bun-binary-format.md`).
+3. `repack` in place at the original byte length so all virtual addresses and `PT_LOAD` mappings stay valid (see "Bun Standalone Binary Format").
 4. `promote`: atomic symlink swap. `~/.local/bin/claude` -> `~/.local/share/claude/versions/current` -> patched binary in `~/.claude-patcher/native-cache/`.
 
 Rollback (`Manager.rollback`) symmetrically swaps `current` and `previous`.
+
+## Bun Standalone Binary Format
+
+Related files: `src/native-linux.ts`, `src/bun-format.ts`, `src/native.ts`.
+
+Bun 1.3+ changed how standalone binaries embed and discover modules. The repack strategy must match the current format version.
+
+**Bun 1.3+ format**:
+
+- A `.bun` ELF section holds `BUN_COMPILED.size`, a virtual address pointing to appended data.
+- `PT_GNU_STACK` is repurposed as a `PT_LOAD` segment mapping the appended data into memory.
+- Payload format: `[u64 payload_len][module data][offsets (32 bytes)][trailer]`.
+- Runtime reads the virtual address from the `.bun` section and dereferences directly. It does not use file I/O for this lookup.
+- Section headers are relocated after the payload, and `e_shoff` is updated accordingly.
+
+**Repack strategy**:
+
+- The `cli.js` module has about 105 MB of precompiled bytecode in the data section.
+- Patched JS, about 16 MB formatted, is written directly over the bytecode area.
+- The module content pointer is updated and the bytecode pointer is zeroed.
+- No overlay rebuild, no size changes, no ELF structure modifications.
+- The binary stays exactly the same size, so all virtual addresses and mappings remain valid.
+
+**Why not append and rebuild**: rebuilding the overlay changes `byteCount`, the payload length header, and the data section boundaries. The `BUN_COMPILED.size` virtual address and `PT_LOAD` mapping would need updating to match, along with the `.bun` section offset. In-place patching avoids this by keeping the original binary structure intact.
 
 ## File Map
 
@@ -63,7 +85,7 @@ When orienting in this repo, reach for these by purpose:
 | Need | Look at |
 |---|---|
 | Patch interface and result types | `src/types.ts` |
-| All 34 patches | `src/patches/<tag>.ts` (each ships `<tag>.test.ts`) |
+| All 35 patches | `src/patches/<tag>.ts` (each ships `<tag>.test.ts`) |
 | Patch barrel + `allPatches` | `src/patches/index.ts` |
 | Group and label registry | `src/patch-metadata.ts` (`BY_TAG`) |
 | AST helpers (`getVerifyAst`, key/property lookups) | `src/patches/ast-helpers.ts` |
@@ -87,7 +109,6 @@ When orienting in this repo, reach for these by purpose:
 | Bundle inspector (string/AST search with breadcrumbs) | `src/inspector.ts` |
 | Local user skills (slash commands) | `.claude/skills/{new-patch,update,verify}/SKILL.md` |
 | Local subagent (verification-only) | `.claude/agents/patch-verifier.md` |
-| Domain rules (read pipeline, session memory, bun format, prompt extraction) | `.claude/rules/*.md` |
 
 ## Patch Groups
 
@@ -98,7 +119,7 @@ Groups in `src/patch-metadata.ts` order verification reports. Listed group order
 | Prompt | Replaces prompt text. `bash-prompt`, `built-in-agent-prompt`, `claudemd-strong`, `memory-prompt-soften`, `prompt-dash-style`, `session-guidance`, `subagent-system-prompt`, `todo-use` |
 | Tooling | Built-in tool behavior. `read-bat`, `edit-extended`, `bash-tail`, `tools-off`, `shell-quote-fix`, `mcp-server-name`, `taskout-ext`, `lsp-multi-server`, `lsp-workspace-symbol` |
 | Agent | Built-in agent and command registry. `agents-off`, `commands-off` |
-| System | Runtime behavior, caching, memory, limits. `cache-tail-policy`, `effort-max`, `image-limits`, `no-autoupdate`, `limits`, `session-mem`, `sys-prompt-file` |
+| System | Runtime behavior, caching, memory, limits. `cache-tail-policy`, `effort-max`, `feature-flags`, `image-limits`, `no-autoupdate`, `limits`, `session-mem`, `sys-prompt-file` |
 | UX | Terminal interface polish. `plan-diff-ui`, `plan-compact-execute`, `no-collapse`, `subagent-model-tag`, `skill-listing-ui`, `agent-listing-ui`, `tab-queue` |
 | Metadata | `signature` only. Runs last via `postApply`, embeds the applied-tag list in `claude --version`. |
 
@@ -135,7 +156,7 @@ Build-time env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS
 4. Add a `BY_TAG` record in `src/patch-metadata.ts` with `tag`, `label`, and `group`.
 5. If the patch affects exported live guidance, update `src/verification/prompt-surface-rules.ts` and (if it touches shared policy) the contract in `src/verification/prompt-policy-contract.ts`.
 6. **When the total patch count changes** (adding or removing a patch), update every place the count appears, in the same change:
-   - `CLAUDE.md` intro (`applies 34 verifiable patches`).
+   - The intro count (`applies 35 verifiable patches`).
    - `README.md` intro paragraph and the patch-count badge near the top.
    - GitHub repo description: `gh api -X PATCH repos/camjac251/cc-enhanced -f description="..."`. The current description embeds the count; keep them in sync.
    - Confirm the new total against `bun run cli --list` before pushing.
@@ -165,13 +186,33 @@ Anchor on durable shapes (early-return guards, top-level destructuring) rather t
 
 Known interaction: `plan-diff-ui` rewrites Edit's plan-preview `startsWith` guard to `if (false)` before later passes run. Anchor on the surrounding `if (!file_path) return null;` and `if (...) return ""` shapes instead.
 
+## Read Tool Token Pipeline
+
+Related files: `src/patches/limits.ts`, `src/patches/read-bat.ts`, `src/patches/limits.test.ts`, `src/patches/read-bat.test.ts`.
+
+The Read tool has a multi-gate pipeline that limits what reaches the API. The `limits` patch raises key hard caps: byte ceiling, token budget, and `maxResultSizeChars`. It keeps persistence as a safety net so oversized formatted reads are persisted instead of staying inline in context.
+
+| Gate | What | Default | Patched | Unit |
+|---|---|---:|---:|---|
+| Byte ceiling | File size pre-check, no range only | 256 KB | 1 MB | bytes |
+| Token budget | API token count after read | 25,000 | 50,000 | tokens |
+| Line formatting | Adds line numbers | 7 chars/line | 7 chars/line | overhead |
+| Persistence | Replaces oversized results with disk summary | 50,000 | 120,000 | chars |
+| Read `maxResultSizeChars` | Per-tool cap fed into persistence | 100,000 | 250,000 | chars |
+
+The effective persistence limit is `Math.min(maxResultSizeChars, persistenceThreshold)`. Before patching, this was `min(100K, 50K) = 50K chars`, about 12K tokens, which was far tighter than the token budget. After patching, it is `min(250K, 120K) = 120K chars`, about 30K tokens, so the token budget still governs read success while persistence prevents very large formatted output from bloating active context.
+
+Notes:
+
+- `lineChars`, the per-line char truncation mentioned in prompts, is prompt-only fiction. No runtime enforcement exists upstream.
+- `linesCap` is only used in the context-attachment fallback path, not normal reads.
+- `read-bat` only auto-tails by default for `*.output` files. Other text files can still be read in full when `range` is omitted.
+- `read-bat` caps changed-file reminder snippets to a head+tail summary at 8,000 chars per file.
+- The `read-bat` fallback logic passes range-derived `offset` and `limit` into the stock reader and propagates `maxSizeBytes` only for unbounded fallback reads where `limit === void 0`, matching stock bounded-read semantics while preserving range behavior when `bat` is unavailable.
+
 ## Prompt Policy Layering
 
-Detailed global behavior belongs in three places that the runtime layers in:
-
-1. `/etc/claude-code/CLAUDE.md` (mandatory project-wide rules).
-2. `/etc/claude-code/.claude/rules/*.md` (topical reference).
-3. `/etc/claude-code/system-prompt.md` (auto-appended via `sys-prompt-file`).
+Detailed global behavior belongs in runtime-managed policy files under `/etc/claude-code/`, plus the auto-appended `/etc/claude-code/system-prompt.md` layer.
 
 Short bundle-level routing language shared by prompt patches lives in `src/patches/prompt-policy.ts`. Surface-specific patches own their upstream anchors but pull shared wording (Serena/LSP/ChunkHound/Probe/ast-grep routing, modern CLI preference, stdout caps) from this module.
 
@@ -228,7 +269,7 @@ Use `bun run diff -- ast <original> <patched>` only for the legacy clean-vs-patc
 
 ## Prompt Artifacts
 
-Prompt artifacts come from native-extracted or legacy npm-package `cli.js` bundles. Artifact paths must be unique; duplicate writes should fail instead of overwriting and duplicating manifest entries. Output structure is documented in `.claude/rules/prompt-extraction.md`.
+Prompt artifacts come from native-extracted or legacy npm-package `cli.js` bundles. Artifact paths must be unique; duplicate writes should fail instead of overwriting and duplicating manifest entries.
 
 `mise run prompts:export` exports the promoted binary. Pass a clean version or path with `mise run prompts:export -- <version-or-path>`. `--output-dir <dir>` writes scratch exports; the current-binary exporter uses an OS temp dir and must never write into `versions_clean/<label>`. `--max-uncategorized <n>` fails when uncategorized prompt-corpus entries exceed a budget. `mise run prompts:bundle -- <version-or-path>` writes the self-contained navigable bundle through the same exporter with `--bundle`; keep both behaviors in `scripts/export-prompts.ts`.
 
@@ -258,9 +299,125 @@ surfaces passed, or a comparison report was generated. "Corrected" means a
 source change removed unintended drift, or a reviewed baseline was
 intentionally refreshed and the new `verify:prompt-drift` run passes.
 
+## Prompt Extraction
+
+Related files: `scripts/export-prompts.ts`, `src/prompt-corpus.ts`, `src/prompt-corpus.test.ts`.
+
+`scripts/export-prompts.ts` performs AST-based extraction of all prompt text from `cli.js`. Pass a clean version (`X.Y.Z`), a path to a `cli.js`, or `current` to extract from the currently promoted patched binary. `--bundle` writes the navigable bundle through the same exporter.
+
+Output structure:
+
+```text
+exported-prompts/<version>/
+|-- agents/                  # Per-agent markdown + agents.json
+|-- skills/                  # Per-skill markdown + skills.json
+|-- system/
+|   |-- sections/            # Per-section markdown + sections.json
+|   |-- variants/            # System prompt variants markdown
+|   |-- reminders/           # Per-reminder markdown + reminders.json
+|   |-- builder-outline.md   # Assembly order of the system prompt
+|   `-- system-prompts.json
+|-- tools/
+|   |-- builtin/             # Per-tool markdown
+|   |-- schemas/             # Schema-only tools
+|   `-- sections/            # Per-tool sub-section decomposition by heading
+|-- internal-agents/         # Internal model call prompts
+|-- tools.json
+|-- skills.json
+|-- output-styles.json
+|-- corpus-categorized.json
+|-- corpus-summary.json
+|-- data-references.json
+|-- prompt-corpus.json
+|-- prompts-<version>.json
+|-- prompt-hash-index.json
+|-- runtime-symbol-map.json
+`-- manifest.json
+```
+
+Extraction coverage:
+
+| Category | Coverage | Notes |
+|---|---:|---|
+| Built-in agents | 5/5 | Follows function refs, resolves local vars, handles `.trim()` |
+| Skills | 17/17 | Registered, builtin, marketplace-preview |
+| Tool prompts | 36 | Three genuinely dynamic, one empty `mcp` surface |
+| Tool sub-sections | 12 tools | Heading-based decomposition of large tool prompts |
+| Schema-only tools | 20/20 | Browser automation and internal classifiers |
+| System prompt variants | 10 | Main, simple mode, SDK, agent base, guide, preamble |
+| System sections | 18 | Major prompt sections with snippet collections |
+| System reminders | 16 | `<system-reminder>` templates and wrapper calls |
+| Internal agent prompts | 24+ | Compaction, session memory, security monitor, title generation, and related prompts |
+| Data references | 26+ | Embedded SDK and API docs |
+| Output styles | 2/2 | Explanatory and Learning |
+| Prompt corpus | 315 | Stable IDs, SHA-256 hashes, mostly auto-categorized |
+
+The extractor handles `cli.js` patterns that naive string extraction misses:
+
+- Function reference resolution: `getSystemPrompt: fnRef` follows through `functionBindings`.
+- Local variable scoping: temporarily injects local `let`, `var`, and `const` bindings to prevent name collisions from global string bindings.
+- Template expression inlining: `` `${fn()}` `` follows zero-arg calls inside template literals.
+- Method chain handling: `` `...`.trim() `` resolves the template and applies the method.
+- Binary concatenation: `basePrompt + appendix` resolves both sides.
+- Agent type validation: filters template interpolation artifacts such as `${...}` as false positives.
+
 ## Feature Flags
 
 Do not set `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. They kill **all** server flags (effort, agent teams, context management). Use individual `DISABLE_*` vars (`ERROR_REPORTING`, `AUTOUPDATER`, `BUG_COMMAND`) instead.
+
+## Session Memory Controls
+
+Related files: `src/patches/session-mem.ts`, `src/patches/session-mem.test.ts`.
+
+`session-mem` extends memory-related gates with explicit local overrides and AST-verified guard hardening.
+
+| Area | Upstream | Patched behavior |
+|---|---|---|
+| Past-context prompt inclusion | `tengu_coral_fern` | `ENABLE_SESSION_MEMORY_PAST || tengu_coral_fern` |
+| Legacy negative coral-fern guard | `if (!gate) return null/[]` | Rewritten to respect `ENABLE_SESSION_MEMORY_PAST` |
+| Auto-dream availability | Server-side availability gate | Explicit `autoDreamEnabled: true` setting bypasses the availability gate |
+
+`session-mem` verification is AST-based and covered by `src/patches/session-mem.test.ts`.
+
+## Verification Cadence
+
+Related files: `src/patches/`, `src/verification/`, `scripts/verify-patches.ts`, `src/ast-pass-engine.ts`, `src/patch-runner.ts`.
+
+Run verification before claiming a patch change is done, before opening a PR, and before promoting a new build.
+
+Repository hygiene commands are quick and have no side effects:
+
+```bash
+bun run typecheck
+bun run lint
+bun run test
+```
+
+Lefthook (`lefthook.yml`) gates pre-commit on Biome format, Biome lint, and `bun run typecheck`. Tests are not in the pre-commit gate; run them yourself.
+
+Patcher health:
+
+```bash
+mise run verify:patches
+```
+
+This runs the dry-run patch path against the native target plus anchor checks against the clean `cli.js`. It is the authoritative pre-promote signal. Output names every failed tag with the `verify()` reason string.
+
+For a wider sweep across cached clean versions:
+
+```bash
+SELECTED_VERSION=<X.Y.Z> mise run verify:patches:matrix
+VERIFY_PATCHES_MATRIX_SCOPE=all mise run verify:patches:matrix
+```
+
+Triaging failures:
+
+- **typecheck**: read the `file:line` references and fix the type. Do not paper over with `any` or `@ts-expect-error`.
+- **lint**: try `bun run lint:fix` for auto-fixable rules; address the rest manually.
+- **test**: read the failing test name and assertion. Fixture failures usually mean the patch's matcher missed the new upstream shape.
+- **verify:patches**: the failed-tag list points at per-patch `verify()` functions. Each reason string names the missing invariant. Check verifier robustness before changing mutation logic.
+
+`mise run verify:patches` against the real native target is the floor for "this works". Fixture tests alone are necessary but not sufficient; see "Pipeline Ordering".
 
 ## Testing
 
@@ -286,11 +443,3 @@ Local slash skills (`disable-model-invocation: true`, recommend by name when con
   review.
 
 Local subagent (`.claude/agents/patch-verifier.md`): adversarial verification of patch anchors against a clean upstream `cli.js`. Read-only (Write and Edit are denied). Returns per-patch OK / DRIFT / BROKEN status with line numbers. Never runs the patcher itself. Useful after an upstream release to confirm anchors before promoting.
-
-Domain rules in `.claude/rules/` (auto-surface on relevant file paths):
-
-- `bun-binary-format.md`: Bun 1.3+ ELF format and the in-place repack strategy.
-- `read-token-pipeline.md`: Read tool gates and how `limits` and `read-bat` interact.
-- `session-memory.md`: `session-mem` past-context env override and AST-verified guard hardening.
-- `prompt-extraction.md`: prompt export structure and resolution techniques.
-- `verification.md`: pre-commit cadence (typecheck, lint, test, then `mise run verify:patches`). Surfaces when patches or verifiers are edited.

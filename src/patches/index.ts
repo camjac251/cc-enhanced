@@ -10,6 +10,7 @@ export { claudeMdSystemPrompt } from "./claudemd-strong.js";
 export { commandsOff } from "./commands-off.js";
 export { editTool } from "./edit-extended.js";
 export { effortMax } from "./effort-max.js";
+export { featureFlags } from "./feature-flags.js";
 export { imageLimits } from "./image-limits.js";
 export { getLimitsChanged, limits } from "./limits.js";
 export { lspMultiServer } from "./lsp-multi-server.js";
@@ -47,6 +48,7 @@ import { claudeMdSystemPrompt } from "./claudemd-strong.js";
 import { commandsOff } from "./commands-off.js";
 import { editTool } from "./edit-extended.js";
 import { effortMax } from "./effort-max.js";
+import { featureFlags } from "./feature-flags.js";
 import { imageLimits } from "./image-limits.js";
 import { limits } from "./limits.js";
 import { lspMultiServer } from "./lsp-multi-server.js";
@@ -98,6 +100,7 @@ const basePatches: Patch[] = [
 	cacheTailPolicy,
 	editTool,
 	effortMax,
+	featureFlags,
 	imageLimits,
 	planDiffUi,
 	planCompactExecute,

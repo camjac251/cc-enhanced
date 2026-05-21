@@ -20,10 +20,19 @@ async function runSessionMemoryViaPasses(ast: any): Promise<void> {
 const SESSION_MEMORY_FIXTURE = `
 function eH(v) { return !!v; }
 function gate(name, fallbackValue) { return fallbackValue; }
+function settings() { return { autoDreamEnabled: true }; }
+function hasDreamRollout() { return false; }
 
 function includePastContext() {
   if (!gate("tengu_coral_fern", !1)) return [];
   return ["ok"];
+}
+
+function autoDreamEnabled() {
+  if (!hasDreamRollout()) return !1;
+  let enabled = settings().autoDreamEnabled;
+  if (enabled !== void 0) return enabled;
+  return false;
 }
 
 if (eH(process.env.DUMMY_ENV)) {}
@@ -41,7 +50,7 @@ test("verify rejects unpatched code", () => {
 	assert.equal(typeof result, "string");
 });
 
-test("session-memory patches the past-context memory gate", async () => {
+test("session-memory patches memory and auto-dream gates", async () => {
 	const ast = parse(SESSION_MEMORY_FIXTURE);
 	await runSessionMemoryViaPasses(ast);
 	const output = print(ast);
@@ -56,6 +65,10 @@ test("session-memory patches the past-context memory gate", async () => {
 	assert.equal(
 		output.includes('if (!gate("tengu_coral_fern", !1)) return [];'),
 		false,
+	);
+	assert.match(
+		output,
+		/settings\(\)\.autoDreamEnabled !== true && !hasDreamRollout\(\)\) return !1;/,
 	);
 	assert.equal(sessionMemory.verify(output, ast), true);
 	assert.equal(sessionMemory.verify(output), true);
@@ -100,4 +113,19 @@ test("session-memory verify detects missing past-context env override", async ()
 		String(result).includes("Missing ENABLE_SESSION_MEMORY_PAST"),
 		true,
 	);
+});
+
+test("session-memory verify detects missing auto-dream local setting gate", async () => {
+	const ast = parse(SESSION_MEMORY_FIXTURE);
+	await runSessionMemoryViaPasses(ast);
+	const output = print(ast);
+	const mutated = output.replace(
+		/settings\(\)\.autoDreamEnabled !== true && !hasDreamRollout\(\)/,
+		"!hasDreamRollout()",
+	);
+	assert.notEqual(mutated, output);
+
+	const result = sessionMemory.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("Missing autoDreamEnabled"), true);
 });

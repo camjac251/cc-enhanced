@@ -76,6 +76,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Interactive max effort",
 		group: "System",
 	},
+	"feature-flags": {
+		tag: "feature-flags",
+		label: "Feature flags",
+		group: "System",
+	},
 	"image-limits": {
 		tag: "image-limits",
 		label: "Opus 4.7 image limits",
