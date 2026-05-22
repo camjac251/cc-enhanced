@@ -45,10 +45,10 @@ export const MODERN_BASH_SEARCH_GUIDANCE = MODERN_CODE_SEARCH_DECISION_TREE;
 
 /** Stdout caps line: prefer tool-level limits over shell pipeline truncation. */
 export const MODERN_STDOUT_CAP =
-	"Use producer-native caps first: rg -m N for non-code text, fd --max-results N for bounded file lists, and bat -r START:END for file slices. Use Bash tool caps (max_output, output_tail: true) when the command has no useful native cap or when you need a bounded inline preview. For eza directory listings, use plain eza with max_output only when you need eza metadata/layout; use fd --max-results N when entry-count bounds matter. Do not add shell pipeline truncation just to shorten output. Never add a head or tail pipeline as an output cap. Never pipe listing output through head or tail.";
+	"Use producer-native caps first: rg -m N for non-code text, fd --max-results N for bounded file lists, and bat -r START:END for file slices. Use Bash tool caps (max_output, output_tail: true) when the command has no useful native cap or when you need a bounded inline preview. For eza directory listings, use plain eza with max_output only when you need eza metadata/layout; use fd --max-results N when entry-count bounds matter. Avoid head/tail pipelines for output capping; they discard everything past the cap, while producer-native flags preserve the full result up to the limit.";
 
-export const MODERN_OUTPUT_LIMIT_WARNING =
-	"Use producer-native caps first: rg -m N for non-code text, fd --max-results N for bounded file lists, and bat -r START:END for file slices. Use Bash tool caps (max_output, output_tail: true) when the command has no useful native cap or when you need a bounded inline preview. For eza directory listings, use plain eza with max_output only when you need eza metadata/layout; use fd --max-results N when entry-count bounds matter. Do not add shell pipeline truncation just to shorten output. Never add a head or tail pipeline as an output cap. Never pipe listing output through head or tail.";
+/** Alias for the stdout-cap text, retained for surfaces that previously imported a distinct constant. */
+export const MODERN_OUTPUT_LIMIT_WARNING = MODERN_STDOUT_CAP;
 
 /** Prohibited operations line shared across prompts. */
 export const PROHIBITED_BASH_OPS =
@@ -56,12 +56,10 @@ export const PROHIBITED_BASH_OPS =
 
 export const STRONG_CLAUDEMD_DISCLAIMER_LINES = [
 	"The instructions above are MANDATORY when they apply to your current task. Follow them exactly as written.",
-	"Always use gh api for GitHub URLs, not web fetching tools.",
-	"Always use Serena first for symbol navigation and symbol-safe edits; use raw LSP only when Serena is unavailable or a direct coordinate lookup is needed.",
-	"Always choose code-search tools by intent: Serena first for known symbols/definitions/references/symbol-safe edits; ChunkHound for conceptual or architecture questions; Probe for known terms/phrases/boolean search; ast-grep MCP/sg for structural patterns and code rewrites; rg only for text/logs/config/comments.",
-	`${MODERN_CODE_TOOL_SELF_CHECK}.`,
-	"Never use cat/echo/printf for file writes - use Write or Edit tools.",
-	"Never use grep/find/ls/sed for routine search/view/edit flows - use rg for non-code text, fd/eza for discovery/listing, sg for code rewrites, and sd only for non-code shell-native replacement.",
+	"**ALWAYS** use gh api for GitHub URLs, not web fetching tools.",
+	"**ALWAYS** choose code-search tools by intent: Serena first for known symbols/definitions/references/symbol-safe edits; ChunkHound for conceptual or architecture questions; Probe for known terms/phrases/boolean search; ast-grep MCP/sg for structural patterns and code rewrites; rg only for text/logs/config/comments.",
+	"**NEVER** use cat/echo/printf for file writes - use Write or Edit tools.",
+	"**NEVER** use grep/find/ls/sed for routine search/view/edit flows - use rg for non-code text, fd/eza for discovery/listing, sg for code rewrites, and sd only for non-code shell-native replacement.",
 ] as const;
 
 export const STRONG_CLAUDEMD_DISCLAIMER =

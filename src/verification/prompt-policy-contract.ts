@@ -58,8 +58,8 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 	},
 	{
 		id: "prompt-policy-head-tail-cap",
-		needle: "Never add a head or tail pipeline as an output cap.",
-		reason: "Missing explicit head/tail pipeline cap prohibition",
+		needle: "Avoid head/tail pipelines for output capping",
+		reason: "Missing head/tail pipeline cap guidance",
 	},
 	{
 		id: "prompt-policy-producer-native-caps",
@@ -75,11 +75,6 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 		id: "prompt-policy-eza-entry-count-bounds",
 		needle: "use fd --max-results N when entry-count bounds matter",
 		reason: "Missing eza versus fd bounded-list guidance",
-	},
-	{
-		id: "prompt-policy-listing-head-tail-cap",
-		needle: "Never pipe listing output through head or tail.",
-		reason: "Missing directory-listing head/tail pipeline cap prohibition",
 	},
 ];
 
