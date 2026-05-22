@@ -616,7 +616,7 @@ export const disableTools: Patch = {
 			}
 		}
 
-		// Verify prompt cleanup — current unpatched strings must be gone
+		// Verify prompt cleanup: current unpatched strings must be gone
 		for (const fragment of FORBIDDEN_PROMPT_FRAGMENTS) {
 			if (fragment.test(code)) {
 				return `Still contains disabled-tool prompt guidance: ${fragment.source}`;

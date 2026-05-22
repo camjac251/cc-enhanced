@@ -74,7 +74,7 @@ export function detectModuleStructSize(modulesListLength: number): number {
 	const fitsOld = modulesListLength % SIZEOF_MODULE_OLD === 0;
 	if (fitsNew && !fitsOld) return SIZEOF_MODULE_NEW;
 	if (fitsOld && !fitsNew) return SIZEOF_MODULE_OLD;
-	// Ambiguous or neither — prefer new format (more likely with recent Bun)
+	// Ambiguous or neither: prefer new format (more likely with recent Bun)
 	return SIZEOF_MODULE_NEW;
 }
 

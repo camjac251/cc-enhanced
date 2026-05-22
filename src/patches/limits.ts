@@ -618,7 +618,7 @@ export const limits: Patch = {
 				return `Limit ${key} has unexpected value: ${actual} (expected ${expected})`;
 			}
 		}
-		// readMaxResultSize accepts values >= target (Infinity is fine — means no per-tool cap)
+		// readMaxResultSize accepts values >= target (Infinity is fine; means no per-tool cap)
 		if (current.readMaxResultSize === undefined) {
 			return "Could not resolve limit readMaxResultSize";
 		}

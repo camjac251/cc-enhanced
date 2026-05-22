@@ -260,7 +260,7 @@ function isGateInitExpression(node: t.Node | null | undefined): boolean {
 /**
  * Walk up through any LogicalExpression wrappers to find the innermost enclosing
  * ConditionalExpression for which this path sits in the `test` slot. Returns the
- * conditional only when the reference is part of its test — not a branch value.
+ * conditional only when the reference is part of its test, not a branch value.
  */
 function findEnclosingConditionalTest(
 	refPath: NodePath<t.Node>,
@@ -315,7 +315,7 @@ function findEmbeddedSearchGateDeclarator(
 						isAsymmetricPresenceConditional(conditional.node);
 					if (!guards) return false;
 					// If the reference is nested inside a logical wrapper that forms
-					// the conditional test, rewrite the conditional test directly —
+					// the conditional test, rewrite the conditional test directly:
 					// the declarator alone is not enough to suppress guidance.
 					if (conditional.node.test !== refPath.node) {
 						conditionalToForce = conditional;
@@ -357,7 +357,7 @@ function patchGateInFunction(path: NodePath<t.Function>): boolean {
 	const { declPath, conditionalToForce } = candidate;
 	const init = declPath.node.init;
 	// When the reference is threaded through a logical wrapper that forms a
-	// conditional test, force that test — rewriting the declarator alone would
+	// conditional test, force that test. Rewriting the declarator alone would
 	// leave the remaining logical operands to gate the guidance at runtime.
 	if (conditionalToForce) {
 		conditionalToForce.node.test = t.unaryExpression("!", t.numericLiteral(0));
@@ -630,7 +630,7 @@ export const bashPrompt: Patch = {
 						if (!t.isIdentifier(decl.node.id)) return;
 						const init = decl.node.init;
 						if (isForcedTrue(init)) {
-							// Declarator forced to !0 — confirm it participates in a
+							// Declarator forced to !0. Confirm it participates in a
 							// guidance conditional via a direct reference test.
 							const binding = decl.scope.getBinding(decl.node.id.name);
 							if (!binding) return;

@@ -135,7 +135,7 @@ export const noCollapse: Patch = {
 				const val = path.node.value;
 				if (!path.parentPath?.isObjectExpression()) return;
 				const container = path.parentPath.node;
-				// Skip static values — only match the dynamic factory return
+				// Skip static values. Only match the dynamic factory return
 				if (isFalseLike(val) || isTrueLike(val) || t.isBooleanLiteral(val))
 					return;
 				const hasIsSearchProp = container.properties.some((p) =>

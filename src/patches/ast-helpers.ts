@@ -68,7 +68,7 @@ export function isTrueLike(node: t.Node | null | undefined): boolean {
 
 /**
  * Check if an ObjectExpression has a `name` property resolving to `toolName`.
- * Use inside an ObjectExpression visitor — returns the node or null.
+ * Use inside an ObjectExpression visitor. Returns the node or null.
  */
 export function findToolObject(
 	path: { node: t.ObjectExpression; scope: any },
@@ -141,7 +141,7 @@ export function isMemberPropertyName(
 
 /**
  * Find an ObjectProperty by key name in an ObjectExpression.
- * Skips ObjectMethod nodes — use `findToolMethod` when methods are expected.
+ * Skips ObjectMethod nodes. Use `findToolMethod` when methods are expected.
  */
 export function getObjectPropertyByName(
 	objectExpr: t.ObjectExpression,

@@ -2240,7 +2240,7 @@ export const readWithBat: Patch = {
 										// through every delegation call and patch the helper body instead.
 										// Collect delegation call candidates (8+ args, lowered from 11
 										// for resilience). Verify the resolved helper contains the D2I
-										// destructuring before patching — avoids false positives if
+										// destructuring before patching, which avoids false positives if
 										// the bundle changes argument counts.
 										let helperName: string | null = null;
 										const delegationCalls: t.CallExpression[] = [];
@@ -2406,7 +2406,7 @@ export const readWithBat: Patch = {
 												callExpr.arguments[4],
 											);
 
-											// Build bat reading async IIFE — all runtime code is self-contained
+											// Build bat reading async IIFE. All runtime code is self-contained
 											// (async function(filePath, range, showWs, fallbackFn, fallbackMaxBytes, fallbackSignal) { ... })(D, R, WSPC, KtB, MAX, SIGNAL)
 											const batFn = template.expression(
 												`async function(filePath, range, showWs, fallbackFn, fallbackMaxBytes, fallbackSignal) {
