@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { allPatches } from "../patches/index.js";
 import {
 	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
+	MODERN_CODE_TOOL_SELF_CHECK,
 	MODERN_STDOUT_CAP,
 	STRONG_CLAUDEMD_DISCLAIMER_LINES,
 } from "../patches/prompt-policy.js";
@@ -99,6 +100,7 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 	const patchedFixture = [
 		...STRONG_CLAUDEMD_DISCLAIMER_LINES,
 		...MODERN_CODE_SEARCH_DECISION_TREE_LINES,
+		MODERN_CODE_TOOL_SELF_CHECK,
 		'allowedTools: ["Read", "Bash"]',
 		"**Common tool matchers:** `Bash`, `Write`, `Edit`, `Read`, `Agent`",
 		"Line range using supported bat-style forms",

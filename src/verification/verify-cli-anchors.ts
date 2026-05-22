@@ -17,7 +17,7 @@ const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 	{
 		id: "policy-apply-patch",
 		needle:
-			"Never use cat/echo/printf for file writes - use Write or Edit tools.",
+			"**NEVER** use cat/echo/printf for file writes - use Write or Edit tools.",
 		reason: "Missing enforced file-write tool policy",
 	},
 	{
@@ -59,7 +59,7 @@ const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 	},
 	{
 		id: "bash-token-warning",
-		needle: "Do not add shell pipeline truncation just to shorten output.",
+		needle: "Avoid head/tail pipelines for output capping",
 		reason: "Missing modern oversized-output warning",
 	},
 	{
@@ -101,7 +101,8 @@ const FORBIDDEN_FIXED_PATCHED: AnchorRule[] = [
 const REQUIRED_REGEX_PATCHED: RegexRule[] = [
 	{
 		id: "policy-gh-api",
-		pattern: /Always use .*gh api.*for GitHub URLs, not web fetching tools\./,
+		pattern:
+			/\*\*ALWAYS\*\* use gh api for GitHub URLs, not web fetching tools\./,
 		reason: "Missing enforced gh api policy",
 	},
 	{

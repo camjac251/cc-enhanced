@@ -572,7 +572,20 @@ function tryBypassValidateNullStateGuard(ifPath: any): boolean {
 	return true;
 }
 
-// Match call's not-read guard: `if (!IDENT) throw Error(IDENT)` immediately
+function isReadStateThrowStatement(stmt: t.Node): boolean {
+	if (t.isBlockStatement(stmt) && stmt.body.length === 1) {
+		stmt = stmt.body[0];
+	}
+	if (!t.isThrowStatement(stmt)) return false;
+	const argument = stmt.argument;
+	if (t.isNewExpression(argument)) return true;
+	return (
+		t.isCallExpression(argument) &&
+		t.isIdentifier(argument.callee, { name: "Error" })
+	);
+}
+
+// Match call's not-read guard: `if (!IDENT) throw ...` immediately
 // preceded by `let IDENT = ANY.get(...)` (the readFileState lookup).
 // Replace test with literal `false` to bypass unconditionally, and prepend
 // `IDENT &&` to the immediately following IfStatement (the mtime guard) so
@@ -587,14 +600,7 @@ function tryBypassCallNullStateGuard(ifPath: any): boolean {
 	if (!t.isIdentifier(test.argument)) return false;
 	const varName = test.argument.name;
 
-	let stmt: t.Node = ifPath.node.consequent;
-	if (t.isBlockStatement(stmt) && stmt.body.length === 1) {
-		stmt = stmt.body[0];
-	}
-	if (!t.isThrowStatement(stmt)) return false;
-	const throwArg = stmt.argument;
-	if (!t.isCallExpression(throwArg)) return false;
-	if (!t.isIdentifier(throwArg.callee, { name: "Error" })) return false;
+	if (!isReadStateThrowStatement(ifPath.node.consequent)) return false;
 
 	const parent = ifPath.parent;
 	if (!t.isBlockStatement(parent)) return false;
@@ -631,6 +637,150 @@ function tryBypassCallNullStateGuard(ifPath: any): boolean {
 	}
 
 	return true;
+}
+
+function prependStateGuardToNextIf(
+	parent: t.BlockStatement,
+	idx: number,
+	varName: string,
+): void {
+	if (idx + 1 >= parent.body.length) return;
+	const next = parent.body[idx + 1];
+	if (!t.isIfStatement(next)) return;
+
+	const alreadyPrepended =
+		t.isLogicalExpression(next.test, { operator: "&&" }) &&
+		t.isIdentifier(next.test.left, { name: varName });
+	if (alreadyPrepended) return;
+
+	next.test = t.logicalExpression(
+		"&&",
+		t.identifier(varName),
+		t.cloneNode(next.test),
+	);
+}
+
+function getPreviousGetDeclaration(
+	ifPath: any,
+	varName: string,
+): t.VariableDeclarator | null {
+	const parent = ifPath.parent;
+	if (!t.isBlockStatement(parent)) return null;
+
+	const idx = parent.body.indexOf(ifPath.node);
+	if (idx <= 0) return null;
+	const prev = parent.body[idx - 1];
+	if (!t.isVariableDeclaration(prev)) return null;
+
+	const declarator = prev.declarations.find((decl: any) =>
+		t.isIdentifier(decl.id, { name: varName }),
+	);
+	if (!declarator?.init || !t.isCallExpression(declarator.init)) return null;
+	if (!t.isMemberExpression(declarator.init.callee)) return null;
+	if (!t.isIdentifier(declarator.init.callee.property, { name: "get" })) {
+		return null;
+	}
+
+	return declarator;
+}
+
+function statementReturnsReadStateError(
+	stmt: t.Node,
+	errorCode: number,
+): boolean {
+	if (t.isBlockStatement(stmt)) {
+		if (stmt.body.length !== 1) return false;
+		stmt = stmt.body[0];
+	}
+	if (!t.isReturnStatement(stmt) || !t.isObjectExpression(stmt.argument)) {
+		return false;
+	}
+
+	return stmt.argument.properties.some(
+		(prop): prop is t.ObjectProperty =>
+			t.isObjectProperty(prop) &&
+			getObjectPropertyName(prop) === "errorCode" &&
+			t.isNumericLiteral(prop.value) &&
+			prop.value.value === errorCode,
+	);
+}
+
+function tryBypassWriteValidateNullStateGuard(ifPath: any): boolean {
+	const test = ifPath.node.test;
+
+	if (t.isBooleanLiteral(test, { value: false })) return false;
+	if (!t.isLogicalExpression(test, { operator: "||" })) return false;
+	if (!t.isUnaryExpression(test.left, { operator: "!" })) return false;
+	if (!t.isIdentifier(test.left.argument)) return false;
+	const varName = test.left.argument.name;
+	if (!t.isMemberExpression(test.right)) return false;
+	if (!t.isIdentifier(test.right.object, { name: varName })) return false;
+	if (!t.isIdentifier(test.right.property, { name: "isPartialView" })) {
+		return false;
+	}
+	if (!statementReturnsReadStateError(ifPath.node.consequent, 2)) return false;
+	if (!getPreviousGetDeclaration(ifPath, varName)) return false;
+
+	const parent = ifPath.parent;
+	const idx = t.isBlockStatement(parent)
+		? parent.body.indexOf(ifPath.node)
+		: -1;
+	ifPath.node.test = t.booleanLiteral(false);
+	if (t.isBlockStatement(parent) && idx >= 0) {
+		prependStateGuardToNextIf(parent, idx, varName);
+	}
+	return true;
+}
+
+function tryBypassWriteCallNullStateGuard(ifPath: any): boolean {
+	const test = ifPath.node.test;
+
+	if (t.isBooleanLiteral(test, { value: false })) return false;
+	if (!t.isUnaryExpression(test, { operator: "!" })) return false;
+	if (!t.isIdentifier(test.argument)) return false;
+	const varName = test.argument.name;
+
+	if (!isReadStateThrowStatement(ifPath.node.consequent)) return false;
+	if (!getPreviousGetDeclaration(ifPath, varName)) return false;
+
+	const parent = ifPath.parent;
+	const idx = t.isBlockStatement(parent)
+		? parent.body.indexOf(ifPath.node)
+		: -1;
+	ifPath.node.test = t.booleanLiteral(false);
+	if (t.isBlockStatement(parent) && idx >= 0) {
+		prependStateGuardToNextIf(parent, idx, varName);
+	}
+	return true;
+}
+
+function patchWriteReadStateGuards(ast: any): void {
+	traverse(ast, {
+		ObjectExpression(path: any) {
+			const toolName = resolveToolName(path);
+			if (toolName !== "Write") return;
+
+			for (const methodName of ["validateInput", "call"] as const) {
+				const method = path.node.properties.find(
+					(p: any): p is t.ObjectMethod =>
+						t.isObjectMethod(p) && getObjectPropertyName(p) === methodName,
+				);
+				if (!method) continue;
+
+				traverse(
+					method.body,
+					{
+						IfStatement(ifPath: any) {
+							if (tryBypassWriteValidateNullStateGuard(ifPath)) return;
+							tryBypassWriteCallNullStateGuard(ifPath);
+						},
+					},
+					path.scope,
+					path,
+				);
+			}
+		},
+	});
 }
 
 function isAlreadyWrappedWithExtendedBypass(test: any): boolean {
@@ -1364,6 +1514,7 @@ Error recovery:
 
 	patchApprovalDialog(ast);
 	patchReadStateGuards(ast);
+	patchWriteReadStateGuards(ast);
 	patchIdeDiffConfigGuards(ast);
 
 	traverse(ast, {
@@ -1528,6 +1679,9 @@ interface EditVerifyContext {
 	editToolObject: t.ObjectExpression;
 	validateMethod: t.ObjectMethod | null;
 	callMethod: t.ObjectMethod | null;
+	writeToolObject: t.ObjectExpression;
+	writeValidateMethod: t.ObjectMethod | null;
+	writeCallMethod: t.ObjectMethod | null;
 }
 
 function hasEscapedOrLiteralSnippet(code: string, snippet: string): boolean {
@@ -1910,15 +2064,7 @@ function verifyReadStateGuards(ctx: EditVerifyContext): string | null {
 					t.isIdentifier(test.argument)
 				) {
 					const varName = test.argument.name;
-					let stmt: t.Node = ifPath.node.consequent;
-					if (t.isBlockStatement(stmt) && stmt.body.length === 1) {
-						stmt = stmt.body[0];
-					}
-					if (
-						t.isThrowStatement(stmt) &&
-						t.isCallExpression(stmt.argument) &&
-						t.isIdentifier(stmt.argument.callee, { name: "Error" })
-					) {
+					if (isReadStateThrowStatement(ifPath.node.consequent)) {
 						const parent = ifPath.parent;
 						if (t.isBlockStatement(parent)) {
 							const idx = parent.body.indexOf(ifPath.node);
@@ -1946,6 +2092,93 @@ function verifyReadStateGuards(ctx: EditVerifyContext): string | null {
 
 		if (unwrappedFound) {
 			return `Edit read-state guard left unwrapped (${unwrappedFound}) (read-before-write bypass missing)`;
+		}
+	}
+
+	return null;
+}
+
+function isTimestampComparison(test: t.Node, stateVarName: string): boolean {
+	return (
+		t.isBinaryExpression(test, { operator: ">" }) &&
+		t.isMemberExpression(test.right) &&
+		t.isIdentifier(test.right.object, { name: stateVarName }) &&
+		t.isIdentifier(test.right.property, { name: "timestamp" })
+	);
+}
+
+function isStateGuardedTimestampTest(
+	test: t.Node,
+	stateVarName: string,
+): boolean {
+	return (
+		t.isLogicalExpression(test, { operator: "&&" }) &&
+		t.isIdentifier(test.left, { name: stateVarName }) &&
+		isTimestampComparison(test.right, stateVarName)
+	);
+}
+
+function verifyWriteReadStateGuards(ctx: EditVerifyContext): string | null {
+	for (const method of [ctx.writeValidateMethod, ctx.writeCallMethod]) {
+		if (!method) continue;
+		const wrapper = t.file(
+			t.program([t.functionDeclaration(null, [], method.body)]),
+		);
+		let unwrappedFound: string | null = null;
+
+		traverse(wrapper, {
+			IfStatement(ifPath) {
+				const test = ifPath.node.test;
+				if (t.isBooleanLiteral(test, { value: false })) return;
+
+				if (
+					t.isLogicalExpression(test, { operator: "||" }) &&
+					t.isUnaryExpression(test.left, { operator: "!" }) &&
+					t.isIdentifier(test.left.argument) &&
+					t.isMemberExpression(test.right) &&
+					t.isIdentifier(test.right.object, {
+						name: test.left.argument.name,
+					}) &&
+					t.isIdentifier(test.right.property, { name: "isPartialView" })
+				) {
+					unwrappedFound = "write-validate-null";
+					return;
+				}
+
+				if (
+					t.isUnaryExpression(test, { operator: "!" }) &&
+					t.isIdentifier(test.argument)
+				) {
+					let stmt: t.Node = ifPath.node.consequent;
+					if (t.isBlockStatement(stmt) && stmt.body.length === 1) {
+						stmt = stmt.body[0];
+					}
+					if (t.isThrowStatement(stmt) && t.isNewExpression(stmt.argument)) {
+						unwrappedFound = "write-call-null";
+						return;
+					}
+				}
+
+				const stateVarName =
+					t.isLogicalExpression(test, { operator: "&&" }) &&
+					t.isIdentifier(test.left)
+						? test.left.name
+						: t.isBinaryExpression(test, { operator: ">" }) &&
+								t.isMemberExpression(test.right) &&
+								t.isIdentifier(test.right.object) &&
+								t.isIdentifier(test.right.property, { name: "timestamp" })
+							? test.right.object.name
+							: null;
+				if (!stateVarName) return;
+				if (isStateGuardedTimestampTest(test, stateVarName)) return;
+				if (isTimestampComparison(test, stateVarName)) {
+					unwrappedFound = "write-mtime";
+				}
+			},
+		});
+
+		if (unwrappedFound) {
+			return `Write read-state guard left unwrapped (${unwrappedFound})`;
 		}
 	}
 
@@ -2008,12 +2241,22 @@ export const editTool: Patch = {
 		if (!editToolPath) {
 			return "Unable to resolve Edit tool object for verification";
 		}
+		const writeToolPath = findNamedToolObjectPath(verifyAst, "Write");
+		if (!writeToolPath) {
+			return "Unable to resolve Write tool object for verification";
+		}
 		const context: EditVerifyContext = {
 			code,
 			ast: verifyAst,
 			editToolObject: editToolPath.node,
 			validateMethod: getToolObjectMethod(editToolPath.node, "validateInput"),
 			callMethod: getToolObjectMethod(editToolPath.node, "call"),
+			writeToolObject: writeToolPath.node,
+			writeValidateMethod: getToolObjectMethod(
+				writeToolPath.node,
+				"validateInput",
+			),
+			writeCallMethod: getToolObjectMethod(writeToolPath.node, "call"),
 		};
 		const validators = [
 			verifyEditPromptAndHook,
@@ -2022,6 +2265,7 @@ export const editTool: Patch = {
 			verifyEditAliasNormalization,
 			verifyIdeDiffConfigGuard,
 			verifyReadStateGuards,
+			verifyWriteReadStateGuards,
 			verifyEditRenderOpts,
 		];
 		for (const validator of validators) {

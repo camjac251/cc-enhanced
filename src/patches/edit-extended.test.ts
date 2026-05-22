@@ -33,7 +33,7 @@ async function loadPatchedEditRuntimeModule() {
 		`const toolChoice = { name: "Other" };
 const incoming = {};
 ${output}
-export { EditTool, EditRenderer, GenericRenderer, renderEditDialog, renderEditMessage, _claudeEditNormalizeEdits, _claudeApplyExtendedFileEdits, _claudeDecodeExtendedEditTransport, kB, Pj, S6_, yD7, jM_, v58 };`,
+export { EditTool, WriteTool, EditRenderer, GenericRenderer, renderEditDialog, renderEditMessage, _claudeEditNormalizeEdits, _claudeApplyExtendedFileEdits, _claudeDecodeExtendedEditTransport, kB, Pj, S6_, yD7, jM_, v58 };`,
 		"utf8",
 	);
 
@@ -81,6 +81,37 @@ const BashTool = { name: "Bash" };
 const ReadTool = { name: "Read" };
 const OtherTool = { name: "Other" };
 
+const writeReadFirstMessage = "File has not been read yet. Read it first before writing to it.";
+const writeChangedMessage = "File content has changed since it was last read.";
+
+class FileStateError extends Error {}
+
+const WriteTool = {
+  name: "Write",
+  validateInput({ file_path: A, content: B }, context) {
+    let modifiedAt = Date.now();
+    let state = context.readFileState.get(A);
+    if (!state || state.isPartialView) {
+      return { result: false, message: writeReadFirstMessage, errorCode: 2 };
+    }
+    if (Math.floor(modifiedAt) > state.timestamp) {
+      return { result: false, message: writeChangedMessage, errorCode: 3 };
+    }
+    return { result: true };
+  },
+  call({ file_path: A, content: B }, { readFileState: stateMap }) {
+    const existingFile = true;
+    if (existingFile) {
+      let state = stateMap.get(A);
+      if (!state) throw new FileStateError(writeReadFirstMessage);
+      if (Date.now() > state.timestamp) {
+        throw new FileStateError(writeChangedMessage);
+      }
+    }
+    return { file_path: A, content: B };
+  },
+};
+
 const EditTool = {
   name: "Edit",
   description() {
@@ -106,8 +137,13 @@ const EditTool = {
   },
   call({ file_path: A, old_string: B, new_string: C, replace_all: D, structuredPatch: P }, context) {
     const transformed = P.reduce((acc, next) => acc.concat(next), []).map((x) => x);
-    if (!context || Date.now() > context.timestamp) {
-      throw Error("File must be read first");
+    const stateMap = context && context.readFileState ? context.readFileState : { get() { return context; } };
+    let state = stateMap.get(A);
+    if (!state) {
+      throw new FileStateError("File must be read first");
+    }
+    if (Date.now() > state.timestamp) {
+      throw new FileStateError("File content has changed since it was last read.");
     }
     return { transformed, observed: { old_string: B, new_string: C, replace_all: D } };
   },
@@ -526,7 +562,7 @@ test("edit-extended runtime keeps structured batch validation on the legacy read
 	}
 });
 
-test("edit-extended runtime keeps plain string mode read-state guards intact", async () => {
+test("edit-extended runtime bypasses plain string call read-state guards", async () => {
 	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
 	try {
 		const validateWithoutContext = mod.EditTool.validateInput(
@@ -544,15 +580,53 @@ test("edit-extended runtime keeps plain string mode read-state guards intact", a
 			errorCode: 5,
 		});
 
-		await assert.rejects(
-			async () =>
-				mod.EditTool.call({
-					file_path: "/tmp/example.txt",
-					old_string: "alpha",
-					new_string: "beta",
-					structuredPatch: [],
-				}),
-			/Error editing file/,
+		const callResult = mod.EditTool.call({
+			file_path: "/tmp/example.txt",
+			old_string: "alpha",
+			new_string: "beta",
+			structuredPatch: [],
+		});
+		assert.deepEqual(callResult.observed, {
+			old_string: "alpha",
+			new_string: "beta",
+			replace_all: undefined,
+		});
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended bypasses Write read-state guard for existing-file overwrites", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const input = { file_path: "/tmp/example.txt", content: "replacement" };
+		const context = { readFileState: new Map() };
+
+		assert.deepEqual(mod.WriteTool.validateInput(input, context), {
+			result: true,
+		});
+		assert.deepEqual(mod.WriteTool.call(input, context), input);
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended preserves Write stale-read protection when state exists", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const input = { file_path: "/tmp/example.txt", content: "replacement" };
+		const context = {
+			readFileState: new Map([[input.file_path, { timestamp: 0 }]]),
+		};
+
+		assert.deepEqual(mod.WriteTool.validateInput(input, context), {
+			result: false,
+			message: "File content has changed since it was last read.",
+			errorCode: 3,
+		});
+		assert.throws(
+			() => mod.WriteTool.call(input, context),
+			/File content has changed since it was last read\./,
 		);
 	} finally {
 		await cleanup();
