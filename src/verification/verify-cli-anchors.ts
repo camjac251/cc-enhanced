@@ -63,11 +63,6 @@ const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 		reason: "Missing modern oversized-output warning",
 	},
 	{
-		id: "session-mem-env",
-		needle: "ENABLE_SESSION_MEMORY_PAST",
-		reason: "Missing past-context memory env override",
-	},
-	{
 		id: "autoupdate-off",
 		needle: 'return "patched";',
 		reason: "Missing autoupdater early return",

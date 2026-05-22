@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
   <img src="https://img.shields.io/badge/Patches-35-orange.svg" alt="35 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.146-8A2BE2.svg" alt="Tested against Claude Code 2.1.146">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.148-8A2BE2.svg" alt="Tested against Claude Code 2.1.148">
 </p>
 
 ---
@@ -118,7 +118,7 @@ Runtime behavior, caching, memory, and configuration.
 | [`image-limits`](src/patches/image-limits.ts) | Restores the per-side image cap for `claude-opus-4-7` to the documented 2576px (3.75 MP). Upstream 2.1.122 silently downgraded the override to 2000px so conversations with more than 20 images would stop tripping the API's many-image batch limit ("dimension exceeds max for many-image requests: 2000 pixels"), but the per-message API limit is 8000px and the model itself processes Opus 4.7 input up to 2576px on the long edge. The downgrade trades documented headroom for everyone to silence one error class for heavy multi-screenshot sessions. The patch keeps the headroom; conversations that pile up more than 20 images at >2000px on either side will still hit the original 400 error and need a fresh session or a manual downscale. |
 | [`no-autoupdate`](src/patches/no-autoupdate.ts) | Forces the autoupdater guard to a safe stub so the patched binary is not replaced in the background. Marketplace plugin autoupdates continue to work through the same guard path. |
 | [`limits`](src/patches/limits.ts) | Read keeps larger files inline. Byte ceiling 256K -> 1M, token budget 25K -> 50K (still overridable via `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`), persistence threshold 50K -> 120K chars, per-tool result cap 100K -> 250K chars. |
-| [`session-mem`](src/patches/session-mem.ts) | Past-context memory search guidance can be forced on with `ENABLE_SESSION_MEMORY_PAST`, and an explicit `autoDreamEnabled: true` setting bypasses the server-side auto-dream availability gate. |
+| [`session-mem`](src/patches/session-mem.ts) | An explicit `autoDreamEnabled: true` setting bypasses the server-side auto-dream availability gate. |
 | [`sys-prompt-file`](src/patches/sys-prompt-file.ts) | Every conversation auto-appends a system prompt file when no append or replacement system prompt is explicitly set. Source is `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE`, falling back to `/etc/claude-code/system-prompt.md`. Replacement-mode launches via `--system-prompt` or `--system-prompt-file` skip the auto-append layer. |
 ### Prompt
 
@@ -183,7 +183,6 @@ Terminal interface polish.
 | `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS` | [`limits`](src/patches/limits.ts) | 50000 |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | unset |
 | `CLAUDE_CODE_WORKFLOWS` | [`feature-flags`](src/patches/feature-flags.ts) | disabled unless set truthy |
-| `ENABLE_SESSION_MEMORY_PAST` | [`session-mem`](src/patches/session-mem.ts) | upstream default |
 
 `autoDreamEnabled` is a Claude Code setting rather than an env var. When it is explicitly `true`, `session-mem` lets auto-dream run even if the server-side availability flag is off.
 
@@ -374,7 +373,7 @@ When a prompt patch changes live guidance, update both the patch verifier and th
 
 ## Compatibility
 
-Current target: **Claude Code 2.1.146**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
+Current target: **Claude Code 2.1.148**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
 
 `native:update` accepts `latest`, `next`, `stable`, or an explicit `X.Y.Z`. The `latest` resolver cross-checks the native release bucket with the npm `latest` and `next` dist-tags so release promotion can follow npm when a new version appears there before the bucket alias moves.
 

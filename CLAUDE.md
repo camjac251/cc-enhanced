@@ -369,12 +369,10 @@ Do not set `DISABLE_TELEMETRY` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Th
 
 Related files: `src/patches/session-mem.ts`, `src/patches/session-mem.test.ts`.
 
-`session-mem` extends memory-related gates with explicit local overrides and AST-verified guard hardening.
+`session-mem` extends the live auto-dream memory gate with an explicit local override and AST-verified guard hardening.
 
 | Area | Upstream | Patched behavior |
 |---|---|---|
-| Past-context prompt inclusion | `tengu_coral_fern` | `ENABLE_SESSION_MEMORY_PAST || tengu_coral_fern` |
-| Legacy negative coral-fern guard | `if (!gate) return null/[]` | Rewritten to respect `ENABLE_SESSION_MEMORY_PAST` |
 | Auto-dream availability | Server-side availability gate | Explicit `autoDreamEnabled: true` setting bypasses the availability gate |
 
 `session-mem` verification is AST-based and covered by `src/patches/session-mem.test.ts`.

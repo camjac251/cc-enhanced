@@ -68,19 +68,26 @@ function forEachMapCallback(
 }
 
 function getMarkerCountSetName(stmt: t.Statement): string | null {
-	if (!t.isExpressionStatement(stmt)) return null;
-	const expr = stmt.expression;
-	if (!t.isCallExpression(expr)) return null;
-	if (
-		!expr.arguments.some((arg) =>
-			t.isStringLiteral(arg, { value: "tengu_api_cache_breakpoints" }),
-		)
-	) {
-		return null;
-	}
-	const payload = expr.arguments.find((arg): arg is t.ObjectExpression =>
-		t.isObjectExpression(arg),
-	);
+	const match: { payload: t.ObjectExpression | null } = { payload: null };
+
+	nodeContains(stmt, (candidate) => {
+		if (match.payload) return false;
+		if (!t.isCallExpression(candidate)) return false;
+		if (
+			!candidate.arguments.some((arg) =>
+				t.isStringLiteral(arg, { value: "tengu_api_cache_breakpoints" }),
+			)
+		) {
+			return false;
+		}
+		match.payload =
+			candidate.arguments.find((arg): arg is t.ObjectExpression =>
+				t.isObjectExpression(arg),
+			) ?? null;
+		return false;
+	});
+
+	const payload = match.payload;
 	if (!payload) return null;
 
 	for (const prop of payload.properties) {

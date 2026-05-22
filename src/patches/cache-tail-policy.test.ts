@@ -75,6 +75,56 @@ function buildCacheBreakpoints(messages, cachingEnabled, ttl, includeEdits = fal
 }
 `;
 
+const CACHE_TAIL_SEQUENCE_RETURN_FIXTURE = `
+function buildCacheBreakpoints(messages, cachingEnabled, ttl, skipCacheWrite = false, forkPointId) {
+  let findCacheableIndex = (startIndex) => {
+    let candidate = startIndex;
+    while (candidate >= 0 && messages[candidate].type === "api_system") candidate--;
+    return candidate;
+  };
+  let tailIndex = findCacheableIndex(messages.length - 1);
+  if (skipCacheWrite) tailIndex = findCacheableIndex(tailIndex - 1);
+  let markerIndexes = new Set();
+  if (tailIndex >= 0) markerIndexes.add(tailIndex);
+  let forkPointPinned = false;
+  if (multiCacheEnabled()) {
+    if (forkPointId) {
+      let forkIndex = messages.findLastIndex((message) => message.uuid === forkPointId);
+      if (forkIndex >= 0 && forkIndex <= tailIndex) (markerIndexes.add(forkIndex), (forkPointPinned = true));
+    } else if (!skipCacheWrite) {
+      let previousIndex = findCacheableIndex(tailIndex - 1);
+      if (previousIndex >= 0) (markerIndexes.add(previousIndex), (forkPointPinned = true));
+    }
+  }
+  return (
+    gate("tengu_api_cache_breakpoints", {
+      totalMessageCount: messages.length,
+      cachingEnabled,
+      skipCacheWrite,
+      forkPointPinned,
+      markerCount: markerIndexes.size,
+    }),
+    messages.map((message, index) => {
+      let shouldCache = markerIndexes.has(index);
+      if (message.type === "user") return buildUser(message, shouldCache, cachingEnabled, ttl);
+      if (message.type === "api_system") return { role: "system", content: message.message.content };
+      return buildAssistant(message, shouldCache, cachingEnabled, ttl);
+    })
+  );
+}
+`;
+
+test("cache-tail-policy handles marker embedded in a sequence return", async () => {
+	const ast = parse(CACHE_TAIL_SEQUENCE_RETURN_FIXTURE);
+	await runCacheTailViaPasses(ast, [0]);
+	const output = print(ast);
+
+	assert.equal(output.includes("var cacheTailWindow = 2;"), true);
+	assert.equal(output.includes("var cacheUserOnly = true;"), true);
+	assert.equal(output.includes("cacheTailCount < cacheTailWindow"), true);
+	assert.equal(output.includes("cacheUserOnly ? false : shouldCache"), true);
+});
+
 test("cache-tail-policy applies declarations, window gate, and user-only conditional", async () => {
 	const ast = parse(CACHE_TAIL_FIXTURE);
 	await runCacheTailViaPasses(ast);
