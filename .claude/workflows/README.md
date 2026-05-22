@@ -1,21 +1,30 @@
 # cc-enhanced Workflows
 
-Repo-local workflows are for patch and prompt release work in this checkout.
-They complement the local slash skills and do not run native update, commit, or
-push by themselves.
+Two project workflows. Both lean on the `patch-verifier` subagent for deep
+cli.js inspection rather than relying on `mise run verify:patches` output
+alone. `verify:patches` catches only what each patch's `verify()` function
+knows to check; direct `rg` / `bat` / `bun run inspect` on the clean bundle
+catches anchor drift, ambiguity, fragility, and verifier weakness.
 
-Workflow summary:
+## Workflows
 
-- `patch-release-audit`: final readiness audit after patch, docs, or release
-  changes.
-- `patch-drift-triage`: first-pass release drift review before changing patch
-  anchors.
-- `prompt-drift-review`: manual review of prompt drift, prompt exports, dash
-  style, and baseline decisions.
+- `patch-update`: lifecycle workflow for going to a new upstream version (or
+  validating current patches against the latest clean bundle). Inspects every
+  patch and every watched prompt surface against the target bundle in
+  parallel, then returns a unified fix plan prioritized by severity. Read-only.
 
-Suggested release loop:
+- `patch-audit`: deep health audit of all patches in the current state. Adds
+  three layers beyond `patch-update`: a verifier-robustness audit (does each
+  `verify()` catch real drift, and could it produce false positives?), a
+  pipeline-interaction analysis (do patches step on each other in the AST
+  pass engine?), and a docs-and-counts cross-check. Read-only.
 
-1. Use `patch-drift-triage` when a new release appears.
-2. Patch the latest bundle and run the required verifier commands.
-3. Use `prompt-drift-review` if prompt-surface or watched-hash drift appears.
-4. Use `patch-release-audit` before committing or pushing.
+## Suggested usage
+
+- New upstream release appears: run `patch-update`. Apply the fix plan it
+  returns, then re-run `patch-update` to confirm clean.
+- Periodic health check or pre-push gate: run `patch-audit`. Address findings
+  by severity. `verify:patches` is still the smoke test, but `patch-audit`
+  is the deeper signal.
+- Either workflow accepts a focus string via `args` (e.g. focus on a
+  specific group or a specific version).
