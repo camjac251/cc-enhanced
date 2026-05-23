@@ -178,14 +178,50 @@ function isCallWithPromptAppend(
 	);
 }
 
+function isPatchedCallShape(
+	consequent: t.Expression,
+	alternate: t.Expression,
+): boolean {
+	if (!t.isCallExpression(consequent)) return false;
+	if (consequent.arguments.length !== 1) return false;
+	const [arr] = consequent.arguments;
+	if (!t.isArrayExpression(arr)) return false;
+	if (arr.elements.length !== 2) return false;
+
+	const [first, second] = arr.elements;
+	if (!first || !second) return false;
+	if (!t.isSpreadElement(first)) return false;
+	if (!t.isIdentifier(second, { name: APPEND_VAR_NAME })) return false;
+
+	// The spread argument must structurally match the alternate (base prompt).
+	// A regression emitting `[append]` instead of `[...basePrompt, append]`
+	// would silently strip the base subagent system prompt; this catches it.
+	return t.isNodesEquivalent(first.argument, alternate);
+}
+
+function isPatchedTestShape(test: t.Expression): boolean {
+	if (containsSubagentAppendEnv(test)) return false;
+	// The patched test must be a (possibly multi-operand) `&&` chain whose
+	// final operand is the append-var identifier the mutator introduced.
+	const operands = flattenLogicalAnd(test);
+	const last = operands[operands.length - 1];
+	if (!last || !isAppendVar(last)) return false;
+	// No earlier operand may reference the legacy env or the
+	// appendSubagentSystemPrompt option (the mutator strips both).
+	for (const operand of operands.slice(0, -1)) {
+		if (containsSubagentAppendEnv(operand)) return false;
+		if (containsOptionsProp(operand, "appendSubagentSystemPrompt"))
+			return false;
+	}
+	return true;
+}
+
 function isPatchedSubagentPromptConditional(
 	node: t.ConditionalExpression,
 ): boolean {
-	return (
-		!containsSubagentAppendEnv(node.test) &&
-		nodeContains(node.test, isAppendVar) &&
-		isCallWithPromptAppend(node.consequent, isAppendVar)
-	);
+	if (!isPatchedTestShape(node.test)) return false;
+	if (!isPatchedCallShape(node.consequent, node.alternate)) return false;
+	return true;
 }
 
 function isLegacySubagentPromptConditional(

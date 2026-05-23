@@ -107,7 +107,7 @@ When orienting in this repo, reach for these by purpose:
 | Top-level patcher health check | `scripts/verify-patches.ts` |
 | Bundle drift triage | `src/diff.ts` |
 | Bundle inspector (string/AST search with breadcrumbs) | `src/inspector.ts` |
-| Local user skills (slash commands) | `.claude/skills/{new-patch,update,verify}/SKILL.md` |
+| Local user skills (slash commands) | `.claude/skills/{new-patch,update}/SKILL.md` |
 | Local subagent (verification-only) | `.claude/agents/patch-verifier.md` |
 
 ## Patch Groups
@@ -185,6 +185,16 @@ Patches in the same combined-pass phase share one AST traversal; earlier mutatio
 Anchor on durable shapes (early-return guards, top-level destructuring) rather than syntax another patch could rewrite (`.startsWith(...)`, `.endsWith(...)`, simple `if (X) return Y` where `X` could be neutralized). Always run `mise run verify:patches` against the real `cli.js` before claiming completion.
 
 Known interaction: `plan-diff-ui` rewrites Edit's plan-preview `startsWith` guard to `if (false)` before later passes run. Anchor on the surrounding `if (!file_path) return null;` and `if (...) return ""` shapes instead.
+
+Shared visitor kinds. Multiple patches register visitors for the same node kinds in the same pass; merged into one visitor list with no source-order guarantee between sibling handlers.
+
+| Node kind | Patches sharing visitors in `mutate` | Risk |
+|---|---|---|
+| `IfStatement` | `plan-diff-ui`, `plan-compact-execute`, `session-mem`, `no-collapse`, `edit-extended`, `cache-tail-policy`, `subagent-model-tag`, `effort-max` (via `Function`) | `plan-diff-ui` rewrites tests to `false`. Other handlers reading the test (e.g. `effort-max`'s `isMaxEffortLookupInit` matcher on `!==`) can misidentify a rewritten guard. |
+| `Function` / `FunctionDeclaration` / `FunctionExpression` | `cache-tail-policy`, `feature-flags`, `effort-max`, `edit-extended`, `bash-tail`, `plan-compact-execute`, `read-bat`, `limits`, `no-autoupdate` | `cache-tail-policy` uses `body.splice()` at a marker statement index, sensitive to upstream insertion of extra statements. `effort-max` replaces the entire body with `return true`. Anchors on body length or specific statement positions can drift. |
+| `ObjectExpression` | `tools-off`, `agents-off`, `commands-off`, `edit-extended`, `no-collapse`, `limits`, `image-limits`, `session-mem`, `read-bat` | `tools-off` mutates `isEnabled` properties on tool objects. Patches that scan tool ObjectExpressions for other properties may see a partially mutated shape depending on which mutator visited first. |
+
+Rule of thumb: if a verifier needs to detect "did MY mutation land", it should mirror the mutator's own predicates exactly (capture per-site counters in module scope when feasible) rather than rely on a global shape check that could be satisfied by another patch's output.
 
 ## Read Tool Token Pipeline
 

@@ -2216,6 +2216,191 @@ function verifyEditRenderOpts(ctx: EditVerifyContext): string | null {
 	return null;
 }
 
+function verifyEditSchemaBatchEdits(ctx: EditVerifyContext): string | null {
+	const { ast } = ctx;
+	// The Edit schema lives outside the tool object in the bundle (the tool's
+	// inputSchema getter calls a factory). Walk all strictObject calls and
+	// pick the one whose object has file_path + old_string + new_string +
+	// replace_all keys. This matches what patchEditSchemaForBatchEdits does.
+	let schemaObj: t.ObjectExpression | null = null;
+	traverse(ast, {
+		CallExpression(path) {
+			if (!t.isMemberExpression(path.node.callee)) return;
+			if (!isMemberPropertyName(path.node.callee, "strictObject")) return;
+			const arg0 = path.node.arguments[0];
+			if (!t.isObjectExpression(arg0)) return;
+			const keys = new Set<string>();
+			for (const prop of arg0.properties) {
+				if (t.isObjectProperty(prop)) {
+					const k = getObjectKeyName(prop.key);
+					if (k) keys.add(k);
+				}
+			}
+			if (
+				keys.has("file_path") &&
+				keys.has("old_string") &&
+				keys.has("new_string") &&
+				keys.has("replace_all")
+			) {
+				schemaObj = arg0;
+				path.stop();
+			}
+		},
+	});
+
+	if (!schemaObj) {
+		return "Edit schema (strictObject with file_path/old_string/new_string/replace_all) not found";
+	}
+	// Re-bind to defeat TypeScript's let-narrowing-to-never inside the
+	// traverse callback's closure scope.
+	const schema: t.ObjectExpression = schemaObj;
+
+	const editsProp = schema.properties.find(
+		(p): p is t.ObjectProperty =>
+			t.isObjectProperty(p) && hasObjectKeyName(p, "edits"),
+	);
+	if (!editsProp) {
+		return "Edit schema missing batch `edits` field";
+	}
+
+	// Validate that edits resolves to z.array(z.object({...})).optional()
+	const editsValue = editsProp.value;
+	if (
+		!t.isCallExpression(editsValue) ||
+		!t.isMemberExpression(editsValue.callee) ||
+		!isMemberPropertyName(editsValue.callee, "optional")
+	) {
+		return "Edit `edits` field is not wrapped in .optional()";
+	}
+	const arrayCall = editsValue.callee.object;
+	if (
+		!t.isCallExpression(arrayCall) ||
+		!t.isMemberExpression(arrayCall.callee) ||
+		!isMemberPropertyName(arrayCall.callee, "array")
+	) {
+		return "Edit `edits` field is not z.array(...).optional()";
+	}
+	const arrayArg = arrayCall.arguments[0];
+	if (
+		!t.isCallExpression(arrayArg) ||
+		!t.isMemberExpression(arrayArg.callee) ||
+		!isMemberPropertyName(arrayArg.callee, "object")
+	) {
+		return "Edit `edits` entries are not z.object({...})";
+	}
+	const entryObj = arrayArg.arguments[0];
+	if (!t.isObjectExpression(entryObj)) {
+		return "Edit `edits` entry schema is not an ObjectExpression";
+	}
+	const entryKeys = new Set<string>();
+	for (const prop of entryObj.properties) {
+		if (t.isObjectProperty(prop)) {
+			const key = getObjectKeyName(prop.key);
+			if (key) entryKeys.add(key);
+		}
+	}
+	for (const required of ["old_string", "new_string", "replace_all"]) {
+		if (!entryKeys.has(required)) {
+			return `Edit edits entry schema missing required key '${required}'`;
+		}
+	}
+
+	// Confirm old_string/new_string in the top-level schema are wrapped in .optional()
+	// so that batch-only payloads pass safeParse.
+	for (const fieldName of ["old_string", "new_string"]) {
+		const fieldProp = schema.properties.find(
+			(p): p is t.ObjectProperty =>
+				t.isObjectProperty(p) && hasObjectKeyName(p, fieldName),
+		);
+		if (!fieldProp) continue;
+		const value = fieldProp.value;
+		if (!t.isCallExpression(value)) continue;
+		// Walk the chain looking for .optional()
+		let chain: t.Node | null = value;
+		let foundOptional = false;
+		while (chain) {
+			if (
+				t.isCallExpression(chain) &&
+				t.isMemberExpression(chain.callee) &&
+				isMemberPropertyName(chain.callee, "optional")
+			) {
+				foundOptional = true;
+				break;
+			}
+			if (t.isCallExpression(chain) && t.isMemberExpression(chain.callee)) {
+				chain = chain.callee.object as t.Node;
+				continue;
+			}
+			break;
+		}
+		if (!foundOptional) {
+			return `Edit schema field '${fieldName}' is not wrapped in .optional() (batch payloads would fail safeParse)`;
+		}
+	}
+
+	return null;
+}
+
+function verifyEditInputsEquivalent(ctx: EditVerifyContext): string | null {
+	const { code, editToolObject } = ctx;
+	const eqMethod = editToolObject.properties.find(
+		(p): p is t.ObjectMethod =>
+			t.isObjectMethod(p) && getObjectKeyName(p.key) === "inputsEquivalent",
+	);
+	if (!eqMethod) {
+		return "Edit tool object missing inputsEquivalent method (cannot verify structured-edit equality)";
+	}
+
+	// The mutator unshifts a block that calls _claudeEditInputsEquivalent on
+	// decoded inputs when either side carries extended fields. Confirm both
+	// the decode and the equality helper are referenced in the method body.
+	let usesDecode = false;
+	let usesHasExtended = false;
+	let returnsEqualityHelper = false;
+	traverse(
+		eqMethod.body,
+		{
+			CallExpression(path) {
+				const callee = path.node.callee;
+				if (t.isIdentifier(callee, { name: EXTENDED_EDIT_TRANSPORT_DECODE })) {
+					usesDecode = true;
+				}
+				if (t.isIdentifier(callee, { name: "_claudeEditHasExtendedFields" })) {
+					usesHasExtended = true;
+				}
+				if (t.isIdentifier(callee, { name: "_claudeEditInputsEquivalent" })) {
+					// Ensure this call is in a return position inside the gated branch.
+					let cursor: any = path.parentPath;
+					while (cursor) {
+						if (cursor.isReturnStatement()) {
+							returnsEqualityHelper = true;
+							break;
+						}
+						cursor = cursor.parentPath;
+					}
+				}
+			},
+			noScope: true,
+		},
+		undefined,
+		undefined,
+	);
+
+	if (!usesDecode) {
+		return "inputsEquivalent does not decode extended edit transport before comparing";
+	}
+	if (!usesHasExtended) {
+		return "inputsEquivalent does not gate on _claudeEditHasExtendedFields";
+	}
+	if (!returnsEqualityHelper) {
+		return "inputsEquivalent does not return _claudeEditInputsEquivalent for extended edits";
+	}
+	if (!code.includes("_claudeEditInputsEquivalent")) {
+		return "Bundle missing _claudeEditInputsEquivalent transport helper";
+	}
+	return null;
+}
+
 export const editTool: Patch = {
 	tag: "edit-extended",
 
@@ -2267,6 +2452,8 @@ export const editTool: Patch = {
 			verifyReadStateGuards,
 			verifyWriteReadStateGuards,
 			verifyEditRenderOpts,
+			verifyEditSchemaBatchEdits,
+			verifyEditInputsEquivalent,
 		];
 		for (const validator of validators) {
 			const result = validator(context);

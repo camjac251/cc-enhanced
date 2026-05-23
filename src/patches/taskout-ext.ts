@@ -323,45 +323,11 @@ export const taskOutputExt: Patch = {
 		const verifyAst = getVerifyAst(code, ast);
 		if (!verifyAst) return "Unable to parse AST for taskout-ext verification";
 
-		let taskSerializerFound = false;
-		let hasOutputFile = false;
-		let hasOutputFilename = false;
-		let hasOutputFileTag = false;
-		let hasOutputFilenameTag = false;
+		const serializerResult = verifyTaskSerializer(verifyAst);
+		if (serializerResult !== true) return serializerResult;
 
-		traverse(verifyAst, {
-			ObjectExpression(path) {
-				if (!isTaskSerializerObject(path.node)) return;
-				taskSerializerFound = true;
-				if (
-					path.node.properties.some((p) => hasObjectKeyName(p, "output_file"))
-				)
-					hasOutputFile = true;
-				if (
-					path.node.properties.some((p) =>
-						hasObjectKeyName(p, "output_filename"),
-					)
-				)
-					hasOutputFilename = true;
-			},
-			StringLiteral(path) {
-				if (path.node.value.includes("<output_file>")) hasOutputFileTag = true;
-				if (path.node.value.includes("<output_filename>"))
-					hasOutputFilenameTag = true;
-			},
-			TemplateElement(path) {
-				const raw = path.node.value.raw;
-				if (raw.includes("<output_file>")) hasOutputFileTag = true;
-				if (raw.includes("<output_filename>")) hasOutputFilenameTag = true;
-			},
-		});
-
-		if (!taskSerializerFound) return "Task serializer object not found";
-		if (!hasOutputFile) return "Missing output_file in task serializer";
-		if (!hasOutputFilename) return "Missing output_filename in task serializer";
-		if (!hasOutputFileTag) return "Missing <output_file> tag in response";
-		if (!hasOutputFilenameTag)
-			return "Missing <output_filename> tag in response";
+		const responseResult = verifyResponseMethod(verifyAst);
+		if (responseResult !== true) return responseResult;
 
 		// Prompt checks
 		if (!code.includes("output_file path with the Read tool"))
@@ -372,3 +338,161 @@ export const taskOutputExt: Patch = {
 		return true;
 	},
 };
+
+function verifyTaskSerializer(ast: t.File | t.Program): true | string {
+	let taskSerializerFound = false;
+	let serializerError: string | null = null;
+
+	const visit = (path: any) => {
+		if (!isTaskSerializerObject(path.node)) return;
+		taskSerializerFound = true;
+
+		const outputFileProp = path.node.properties.find((p: any) =>
+			hasObjectKeyName(p, "output_file"),
+		) as t.ObjectProperty | undefined;
+		if (!outputFileProp) {
+			serializerError = "Missing output_file in task serializer";
+			return;
+		}
+
+		const outputFilenameProp = path.node.properties.find((p: any) =>
+			hasObjectKeyName(p, "output_filename"),
+		) as t.ObjectProperty | undefined;
+		if (!outputFilenameProp) {
+			serializerError = "Missing output_filename in task serializer";
+			return;
+		}
+
+		// output_file value must be a MemberExpression rooted at the enclosing
+		// function's first identifier param, reading .outputFile.
+		const enclosingFn = path.findParent(
+			(p: any) =>
+				p.isFunctionDeclaration() ||
+				p.isFunctionExpression() ||
+				p.isArrowFunctionExpression(),
+		);
+		if (
+			!enclosingFn ||
+			!("params" in enclosingFn.node) ||
+			!t.isIdentifier(enclosingFn.node.params[0])
+		)
+			return;
+
+		const taskParam = (enclosingFn.node.params[0] as t.Identifier).name;
+		const value = outputFileProp.value;
+		if (
+			!t.isMemberExpression(value) ||
+			!t.isIdentifier(value.object, { name: taskParam }) ||
+			!isMemberPropertyName(value, "outputFile")
+		) {
+			serializerError =
+				"output_file does not reference the enclosing task param's .outputFile";
+		}
+	};
+
+	const root = t.isFile(ast) ? ast : t.file(ast as t.Program);
+	traverse(root, {
+		ObjectExpression: visit,
+	});
+
+	if (!taskSerializerFound) return "Task serializer object not found";
+	if (serializerError) return serializerError;
+	return true;
+}
+
+function verifyResponseMethod(ast: t.File | t.Program): true | string {
+	let methodFound = false;
+	let error: string | null = null;
+	let hasOutputFileTag = false;
+	let hasOutputFilenameTag = false;
+	let orderingOk = true;
+
+	const root = t.isFile(ast) ? ast : t.file(ast as t.Program);
+	traverse(root, {
+		ObjectMethod(path) {
+			if (
+				getObjectKeyName(path.node.key) !==
+				"mapToolResultToToolResultBlockParam"
+			)
+				return;
+			if (
+				!nodeContainsText(path.node.body, "<task_id>") ||
+				!nodeContainsText(path.node.body, "<status>")
+			)
+				return;
+			// Skip Bash tool's method (ObjectPattern first param)
+			if (path.node.params.length === 0) return;
+			if (t.isObjectPattern(path.node.params[0])) return;
+			if (!t.isIdentifier(path.node.params[0])) return;
+
+			methodFound = true;
+			const resultVar = (path.node.params[0] as t.Identifier).name;
+
+			// Tags must appear INSIDE this method body, not anywhere in the bundle.
+			const bodyHasFileTag = nodeContainsText(path.node.body, "<output_file>");
+			const bodyHasFilenameTag = nodeContainsText(
+				path.node.body,
+				"<output_filename>",
+			);
+			if (bodyHasFileTag) hasOutputFileTag = true;
+			if (bodyHasFilenameTag) hasOutputFilenameTag = true;
+
+			// Validate push order: every push containing the new tags must precede
+			// any statement referencing result.task.error in the same block.
+			let foundErrorBeforePush = false;
+			let foundTagPush = false;
+			const checkBlock = (block: t.BlockStatement) => {
+				let firstErrorIdx = -1;
+				let lastTagPushIdx = -1;
+				for (let i = 0; i < block.body.length; i++) {
+					const stmt = block.body[i];
+					if (nodeContainsTaskErrorRef(stmt, resultVar) && firstErrorIdx === -1)
+						firstErrorIdx = i;
+					if (
+						nodeContainsText(stmt, "<output_file>") ||
+						nodeContainsText(stmt, "<output_filename>")
+					) {
+						lastTagPushIdx = i;
+						foundTagPush = true;
+					}
+				}
+				if (
+					firstErrorIdx >= 0 &&
+					lastTagPushIdx >= 0 &&
+					lastTagPushIdx > firstErrorIdx
+				)
+					foundErrorBeforePush = true;
+			};
+
+			for (const stmt of path.node.body.body) {
+				if (t.isIfStatement(stmt) && t.isBlockStatement(stmt.consequent)) {
+					checkBlock(stmt.consequent);
+				}
+			}
+			checkBlock(path.node.body);
+			if (foundErrorBeforePush) {
+				orderingOk = false;
+				error =
+					"<output_file>/<output_filename> pushes must precede task.error handling";
+				return;
+			}
+			if (!foundTagPush && (bodyHasFileTag || bodyHasFilenameTag)) {
+				// Tags exist in the method body but not via a push() call.
+				error =
+					"<output_file>/<output_filename> tags found but not via push() into output array";
+				return;
+			}
+		},
+	});
+
+	if (!methodFound)
+		return "TaskOutput response method (mapToolResultToToolResultBlockParam) not found";
+	if (error) return error;
+	if (!orderingOk)
+		return "<output_file>/<output_filename> pushes must precede task.error handling";
+	if (!hasOutputFileTag)
+		return "Missing <output_file> tag in TaskOutput response method body";
+	if (!hasOutputFilenameTag)
+		return "Missing <output_filename> tag in TaskOutput response method body";
+	return true;
+}

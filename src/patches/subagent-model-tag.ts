@@ -109,9 +109,27 @@ function isProcessEnvMember(node: t.Node, envName: string): boolean {
 }
 
 function testContainsSubagentModelEnvGuard(test: t.Expression): boolean {
-	return nodeContains(test, (node) =>
-		isProcessEnvMember(node, "CLAUDE_CODE_SUBAGENT_MODEL"),
-	);
+	// The mutator emits: (originalTest) && !process.env.CLAUDE_CODE_SUBAGENT_MODEL.
+	// Verify must match that exact polarity and combinator. The previous
+	// version returned true if the env member appeared anywhere in the test,
+	// so `entry.model && process.env.CLAUDE_CODE_SUBAGENT_MODEL` (no `!`)
+	// would also pass and incorrectly run the tag despite the env override
+	// being set.
+	const operands = flattenLogicalAnd(test);
+	for (const operand of operands) {
+		if (!t.isUnaryExpression(operand, { operator: "!" })) continue;
+		if (isProcessEnvMember(operand.argument, "CLAUDE_CODE_SUBAGENT_MODEL")) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function flattenLogicalAnd(node: t.Expression): t.Expression[] {
+	if (t.isLogicalExpression(node, { operator: "&&" })) {
+		return [...flattenLogicalAnd(node.left), ...flattenLogicalAnd(node.right)];
+	}
+	return [node];
 }
 
 function isCandidate(path: NodePath<t.IfStatement>): boolean {

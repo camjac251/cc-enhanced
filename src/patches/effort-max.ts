@@ -5,14 +5,6 @@ import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
 const MAX_NOTIFICATION_TEXT = "Effort set to max for this turn";
 
-function objectValueValue(
-	prop: t.ObjectProperty | t.ObjectMethod | t.SpreadElement,
-): string | null {
-	if (!t.isObjectProperty(prop)) return null;
-	if (getObjectKeyName(prop.key) !== "value") return null;
-	return t.isStringLiteral(prop.value) ? prop.value.value : null;
-}
-
 function getObjectProp(
 	objectExpr: t.ObjectExpression,
 	keyName: string,
@@ -31,16 +23,6 @@ function getSingleIdentifierParam(
 	return path.node.params.length === 1 && t.isIdentifier(path.node.params[0])
 		? path.node.params[0]
 		: null;
-}
-
-function getReturnedExpression(
-	path: NodePath<t.Function>,
-): t.Expression | null {
-	const body = path.node.body;
-	if (t.isExpression(body)) return body;
-	if (body.body.length !== 1) return null;
-	const [statement] = body.body;
-	return t.isReturnStatement(statement) ? (statement.argument ?? null) : null;
 }
 
 function isMaxEffortLookupInit(
@@ -91,28 +73,19 @@ function isMaxCapabilityGate(path: NodePath<t.Function>): boolean {
 }
 
 function isPatchedMaxCapabilityGate(path: NodePath<t.Function>): boolean {
-	const returned = getReturnedExpression(path);
-	return !!returned && t.isBooleanLiteral(returned, { value: true });
-}
-
-function hasEffortOptionValue(
-	node: t.Node | null | undefined,
-	value: string,
-): node is t.ObjectExpression {
-	if (!node || !t.isObjectExpression(node)) return false;
-	return node.properties.some((prop) => objectValueValue(prop) === value);
-}
-
-function isEffortPickerArray(path: NodePath<t.ArrayExpression>): boolean {
-	const values = new Set<string>();
-	for (const element of path.node.elements) {
-		if (!element || !t.isObjectExpression(element)) continue;
-		for (const prop of element.properties) {
-			const value = objectValueValue(prop);
-			if (value) values.add(value);
-		}
-	}
-	return values.has("low") && values.has("medium") && values.has("high");
+	// Tighten beyond "function returns true" by requiring the exact post-
+	// patch shape: a single-identifier-param function whose body is exactly
+	// one statement (`return true;`). Many trivial `() => true` functions
+	// exist in the bundle; this narrows acceptance to the patch's emitted
+	// shape and preserves the parameter signature from the legacy gate.
+	const param = getSingleIdentifierParam(path);
+	if (!param) return false;
+	const body = path.node.body;
+	if (!t.isBlockStatement(body)) return false;
+	if (body.body.length !== 1) return false;
+	const stmt = body.body[0];
+	if (!t.isReturnStatement(stmt)) return false;
+	return !!stmt.argument && t.isBooleanLiteral(stmt.argument, { value: true });
 }
 
 function isSameParameterReference(
@@ -204,8 +177,7 @@ export const effortMax: Patch = {
 		if (!verifyAst) return "Unable to parse AST during verification";
 
 		let hasLegacyMaxCapabilityGate = false;
-		let hasPatchedMaxCapabilityGate = false;
-		let hasPatchedPicker = false;
+		let patchedMaxCapabilityGateCount = 0;
 		let hasMaxUltrathinkNotification = false;
 
 		traverse(verifyAst, {
@@ -214,15 +186,8 @@ export const effortMax: Patch = {
 					hasLegacyMaxCapabilityGate = true;
 				}
 				if (isPatchedMaxCapabilityGate(path)) {
-					hasPatchedMaxCapabilityGate = true;
+					patchedMaxCapabilityGateCount++;
 				}
-			},
-
-			ArrayExpression(path) {
-				if (!isEffortPickerArray(path)) return;
-				hasPatchedPicker = path.node.elements.some((element) =>
-					hasEffortOptionValue(element, "max"),
-				);
 			},
 
 			ObjectExpression(path) {
@@ -242,12 +207,14 @@ export const effortMax: Patch = {
 		if (hasLegacyMaxCapabilityGate) {
 			return 'Model max-capability gate still restricts "max"';
 		}
-		if (!hasPatchedMaxCapabilityGate) {
+		if (patchedMaxCapabilityGateCount === 0) {
 			return "Did not find patched max-capability gate";
 		}
-		if (!hasPatchedPicker) {
-			return 'Effort picker does not expose "max"';
-		}
+		// The audit flagged the previous picker invariant (requires "max" in
+		// the effort-picker array) as orthogonal to this patch: the mutator
+		// never adds it. If upstream stops shipping that option, the patch
+		// keeps its actual contract (gate returns true, ultrathink text
+		// changes), so verify shouldn't fail on an unrelated upstream change.
 		if (!hasMaxUltrathinkNotification) {
 			return 'Did not find "Effort set to max for this turn" notification';
 		}

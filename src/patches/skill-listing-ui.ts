@@ -313,14 +313,31 @@ function isDynamicSkillRenderCase(path: NodePath<t.SwitchCase>): boolean {
 	);
 }
 
-function hasSkillListingSummaryCall(rootCall: t.CallExpression): boolean {
-	return rootCall.arguments.some(
-		(arg) =>
-			t.isCallExpression(arg) &&
-			t.isIdentifier(arg.callee, {
+function hasSkillListingSummaryCall(
+	rootCall: t.CallExpression,
+	attachmentName?: string,
+): boolean {
+	for (const arg of rootCall.arguments) {
+		if (!t.isCallExpression(arg)) continue;
+		if (
+			!t.isIdentifier(arg.callee, {
 				name: SKILL_LISTING_SUMMARY_HELPER,
-			}),
-	);
+			})
+		) {
+			continue;
+		}
+		// If we know the attachment identifier the case binds, require the
+		// helper call to pass it as its single argument. The previous
+		// version accepted ANY helper call regardless of arguments, so a
+		// regression that called the helper with no arguments (rendering
+		// nothing) would still pass verify.
+		if (attachmentName === undefined) return true;
+		if (arg.arguments.length !== 1) continue;
+		if (t.isIdentifier(arg.arguments[0], { name: attachmentName })) {
+			return true;
+		}
+	}
+	return false;
 }
 
 function patchSkillListingAttachment(
@@ -575,7 +592,10 @@ export const skillListingUi: Patch = {
 							renderRoot.attachmentName,
 						)
 					) {
-						rendererPatched = hasSkillListingSummaryCall(renderRoot.rootCall);
+						rendererPatched = hasSkillListingSummaryCall(
+							renderRoot.rootCall,
+							renderRoot.attachmentName,
+						);
 					}
 				}
 
@@ -584,6 +604,7 @@ export const skillListingUi: Patch = {
 					if (renderRoot) {
 						dynamicRendererPatched = hasSkillListingSummaryCall(
 							renderRoot.rootCall,
+							renderRoot.attachmentName,
 						);
 					}
 				}

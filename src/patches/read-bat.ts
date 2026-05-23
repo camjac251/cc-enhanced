@@ -1052,6 +1052,7 @@ interface ReadVerifyContext {
 	callKeys: Set<string>;
 	rangeBindingName: string;
 	validateKeys: Set<string>;
+	callMethod: t.ObjectMethod | t.ObjectProperty | null;
 }
 
 function verifyReadSchemaAndPrompt(ctx: ReadVerifyContext): string | null {
@@ -1133,6 +1134,31 @@ function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 	const { code, ast } = ctx;
 	if (!code.includes("execFileSync")) {
 		return "Missing bat integration in text reading";
+	}
+	// Structural: require an actual execFileSync("bat", ...) CallExpression
+	// somewhere in the AST. A substring "execFileSync" appearing only inside
+	// a docstring, comment, or unrelated runtime feature should not satisfy
+	// the verifier. The bat call may live in the Read tool's call() body or
+	// in a helper function it delegates to, so this is a global AST scan.
+	let foundBatCall = false;
+	traverse(ast, {
+		CallExpression(path) {
+			const callee = path.node.callee;
+			const isExecFileSync =
+				t.isIdentifier(callee, { name: "execFileSync" }) ||
+				(t.isMemberExpression(callee) &&
+					isMemberPropertyName(callee, "execFileSync"));
+			if (!isExecFileSync) return;
+			if (path.node.arguments.length < 1) return;
+			const arg0 = path.node.arguments[0];
+			if (t.isStringLiteral(arg0) && arg0.value === "bat") {
+				foundBatCall = true;
+				path.stop();
+			}
+		},
+	});
+	if (!foundBatCall) {
+		return 'No execFileSync("bat", ...) CallExpression found in AST';
 	}
 	if (!code.includes("normalizedRange")) {
 		return "Bat IIFE not injected (D2I call site not found in call body or helper)";
@@ -3419,6 +3445,7 @@ export const readWithBat: Patch = {
 			callKeys,
 			rangeBindingName,
 			validateKeys,
+			callMethod: callMethod ?? null,
 		};
 		const validators = [
 			verifyReadSchemaAndPrompt,

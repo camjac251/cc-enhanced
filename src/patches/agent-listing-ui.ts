@@ -191,14 +191,30 @@ function isAgentListingRenderCase(path: NodePath<t.SwitchCase>): boolean {
 	);
 }
 
-function hasAgentListingSummaryCall(rootCall: t.CallExpression): boolean {
-	return rootCall.arguments.some(
-		(arg) =>
-			t.isCallExpression(arg) &&
-			t.isIdentifier(arg.callee, {
+function hasAgentListingSummaryCall(
+	rootCall: t.CallExpression,
+	attachmentName?: string,
+): boolean {
+	for (const arg of rootCall.arguments) {
+		if (!t.isCallExpression(arg)) continue;
+		if (
+			!t.isIdentifier(arg.callee, {
 				name: AGENT_LISTING_SUMMARY_HELPER,
-			}),
-	);
+			})
+		) {
+			continue;
+		}
+		// Same hardening as skill-listing-ui: confirm the helper is called
+		// with the case's attachment identifier. A regression that passed no
+		// argument (or the wrong identifier) would render incorrectly at
+		// runtime but still match the loose presence-only check.
+		if (attachmentName === undefined) return true;
+		if (arg.arguments.length !== 1) continue;
+		if (t.isIdentifier(arg.arguments[0], { name: attachmentName })) {
+			return true;
+		}
+	}
+	return false;
 }
 
 function patchAgentListingRenderer(path: NodePath<t.SwitchCase>): boolean {
@@ -209,7 +225,7 @@ function patchAgentListingRenderer(path: NodePath<t.SwitchCase>): boolean {
 	if (!isAgentListingRenderLine(rootCall, attachmentName, countName)) {
 		return false;
 	}
-	if (hasAgentListingSummaryCall(rootCall)) {
+	if (hasAgentListingSummaryCall(rootCall, attachmentName)) {
 		return true;
 	}
 
@@ -314,7 +330,10 @@ export const agentListingUi: Patch = {
 				if (!isAgentListingRenderCase(path)) return;
 				const renderRoot = getAgentListingRenderRootCall(path);
 				if (!renderRoot) return;
-				rendererPatched = hasAgentListingSummaryCall(renderRoot.rootCall);
+				rendererPatched = hasAgentListingSummaryCall(
+					renderRoot.rootCall,
+					renderRoot.attachmentName,
+				);
 			},
 		});
 

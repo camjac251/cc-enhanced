@@ -137,22 +137,6 @@ function nodeContainsFlagCall(node: t.Node, flagName: string): boolean {
 	return visit(node);
 }
 
-function nodeContainsEnvRef(node: t.Node, envName: string): boolean {
-	const visit = (value: unknown): boolean => {
-		if (!value) return false;
-		if (Array.isArray(value)) return value.some((item) => visit(item));
-		if (typeof value !== "object") return false;
-		const maybeNode = value as t.Node;
-		if (typeof (maybeNode as { type?: unknown }).type !== "string")
-			return false;
-		if (t.isIdentifier(maybeNode, { name: envName })) return true;
-		return Object.values(maybeNode as unknown as Record<string, unknown>).some(
-			(child) => visit(child),
-		);
-	};
-	return visit(node);
-}
-
 function getAssignmentExpression(
 	node: t.Statement | null | undefined,
 ): t.AssignmentExpression | null {
@@ -238,32 +222,30 @@ export const featureFlags: Patch = {
 		traverse(verifyAst, {
 			IfStatement(path) {
 				const { test } = path.node;
-				if (!nodeContainsEnvRef(test, "CLAUDE_CODE_WORKFLOWS")) return;
+				// Mirror the mutator's strict gate shape: `!CALL(MEMBER(...))`
+				// where the inner member is exactly process.env.CLAUDE_CODE_WORKFLOWS.
+				// The previous nodeContainsEnvRef check accepted any AST that
+				// happened to contain a CLAUDE_CODE_WORKFLOWS identifier
+				// anywhere in the test, including local variables sharing the
+				// name or unrelated comparisons.
+				if (!isPatchedWorkflowGateTest(test)) return;
 
 				hasWorkflowEnvGate = true;
 				const alternateAssignment = getAssignmentExpression(
 					path.node.alternate,
 				);
-				if (
-					alternateAssignment &&
-					nodeContainsFlagCall(
-						alternateAssignment.right,
-						"tengu_workflows_enabled",
-					)
-				) {
+				if (!alternateAssignment) return;
+				if (isFlagCall(alternateAssignment.right, "tengu_workflows_enabled")) {
 					hasOldWorkflowAccountGate = true;
 				}
-				if (
-					alternateAssignment &&
-					t.isBooleanLiteral(alternateAssignment.right, { value: true })
-				) {
+				if (t.isBooleanLiteral(alternateAssignment.right, { value: true })) {
 					hasPatchedWorkflowGate = true;
 				}
 			},
 		});
 
 		if (!hasWorkflowEnvGate) {
-			return "Missing CLAUDE_CODE_WORKFLOWS env var check";
+			return "Missing CLAUDE_CODE_WORKFLOWS env var check (or the gate's `!truthyFn(process.env.CLAUDE_CODE_WORKFLOWS)` shape changed)";
 		}
 		if (hasOldWorkflowAccountGate) {
 			return "Old workflow account feature gate still present";
@@ -274,3 +256,11 @@ export const featureFlags: Patch = {
 		return true;
 	},
 };
+
+function isPatchedWorkflowGateTest(node: t.Node): boolean {
+	if (!t.isUnaryExpression(node, { operator: "!" })) return false;
+	const inner = node.argument;
+	if (!t.isCallExpression(inner)) return false;
+	if (inner.arguments.length !== 1) return false;
+	return isEnvMember(inner.arguments[0], "CLAUDE_CODE_WORKFLOWS");
+}

@@ -90,6 +90,60 @@ ${SUBAGENT_PROMPT_FIXTURE}
 	assert.equal(subagentSystemPrompt.verify(output, ast), true);
 });
 
+test("subagent-system-prompt verify rejects regression that strips ...basePrompt", () => {
+	// Simulates a future regression where the array argument loses the
+	// SpreadElement and ships only the append var. Without this check the
+	// base subagent prompt would be silently stripped at runtime.
+	const broken = `
+async function runSubagent(H, q, P, O, F, jH, zH) {
+  let wH = O?.systemPrompt ? O.systemPrompt : V4(await hx_(H, q, F, jH, zH)),
+    __ccEnhancedSubagentSystemPromptAppend =
+      q.options.appendSubagentSystemPrompt ?? q.options.appendSystemPrompt,
+    TH =
+      !P && __ccEnhancedSubagentSystemPromptAppend
+        ? V4([__ccEnhancedSubagentSystemPromptAppend])
+        : wH;
+  return { systemPrompt: TH };
+}
+`;
+	const ast = parse(broken);
+	const result = subagentSystemPrompt.verify(broken, ast);
+	assert.notEqual(
+		result,
+		true,
+		"verify must reject patched shape that strips the base prompt spread",
+	);
+	assert.equal(typeof result, "string");
+});
+
+test("subagent-system-prompt verify rejects regression with mismatched spread argument", () => {
+	// Mutator emits `[...wH, append]` where wH is the base prompt. If a future
+	// edit accidentally spread a different identifier, the patched shape
+	// would render the wrong base prompt. The structural-equivalence check
+	// in the verifier catches this.
+	const mismatched = `
+async function runSubagent(H, q, P, O, F, jH, zH) {
+  let wH = O?.systemPrompt ? O.systemPrompt : V4(await hx_(H, q, F, jH, zH)),
+    bogusBase = ["unrelated"],
+    __ccEnhancedSubagentSystemPromptAppend =
+      q.options.appendSubagentSystemPrompt ?? q.options.appendSystemPrompt,
+    TH =
+      !P && __ccEnhancedSubagentSystemPromptAppend
+        ? V4([...bogusBase, __ccEnhancedSubagentSystemPromptAppend])
+        : wH;
+  return { systemPrompt: TH };
+}
+`;
+	const ast = parse(mismatched);
+	const result = subagentSystemPrompt.verify(mismatched, ast);
+	assert.notEqual(
+		result,
+		true,
+		"verify must reject patched shape where spread arg != alternate",
+	);
+	assert.equal(typeof result, "string");
+});
+
 test("subagent-system-prompt fails closed on ambiguous branches", async () => {
 	const ast = parse(`
 ${SUBAGENT_PROMPT_FIXTURE}

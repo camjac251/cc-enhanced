@@ -761,6 +761,37 @@ export const bashOutputTail: Patch = {
 		let hasCopyablePipeTailText = false;
 		let hasEzaListClassifier = false;
 
+		// The Bash prompt is built from an ArrayExpression of strings whose
+		// last (or near-last) element is the literal "When issuing multiple
+		// commands:". Scope the copyable-pipe check to that array's elements
+		// so unrelated strings elsewhere in the 16MB bundle that happen to
+		// contain "| head -N" syntax cannot trip the verifier.
+		const isBashPromptArray = (arr: t.ArrayExpression): boolean =>
+			arr.elements.some(
+				(el) =>
+					t.isStringLiteral(el) &&
+					el.value === "When issuing multiple commands:",
+			);
+
+		const scanBashPromptElement = (node: t.Node): void => {
+			if (t.isStringLiteral(node)) {
+				if (hasCopyableOutputCapPipeText(node.value, "head"))
+					hasCopyablePipeHeadText = true;
+				if (hasCopyableOutputCapPipeText(node.value, "tail"))
+					hasCopyablePipeTailText = true;
+				return;
+			}
+			if (t.isTemplateLiteral(node)) {
+				for (const quasi of node.quasis) {
+					const value = quasi.value.cooked ?? quasi.value.raw;
+					if (hasCopyableOutputCapPipeText(value, "head"))
+						hasCopyablePipeHeadText = true;
+					if (hasCopyableOutputCapPipeText(value, "tail"))
+						hasCopyablePipeTailText = true;
+				}
+			}
+		};
+
 		traverse(verifyAst, {
 			NewExpression(path) {
 				const values = getStringSetValues(path.node);
@@ -769,23 +800,10 @@ export const bashOutputTail: Patch = {
 				}
 			},
 
-			StringLiteral(path) {
-				const value = path.node.value;
-				if (hasCopyableOutputCapPipeText(value, "head")) {
-					hasCopyablePipeHeadText = true;
-				}
-				if (hasCopyableOutputCapPipeText(value, "tail")) {
-					hasCopyablePipeTailText = true;
-				}
-			},
-
-			TemplateElement(path) {
-				const value = path.node.value.cooked ?? path.node.value.raw;
-				if (hasCopyableOutputCapPipeText(value, "head")) {
-					hasCopyablePipeHeadText = true;
-				}
-				if (hasCopyableOutputCapPipeText(value, "tail")) {
-					hasCopyablePipeTailText = true;
+			ArrayExpression(path) {
+				if (!isBashPromptArray(path.node)) return;
+				for (const el of path.node.elements) {
+					if (el) scanBashPromptElement(el);
 				}
 			},
 

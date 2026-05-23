@@ -347,10 +347,19 @@ export const planDiffUi: Patch = {
 			},
 		];
 
+		let patchedGroups = 0;
 		for (const group of groups) {
 			if (group.hasCandidate && !group.patched) {
 				return `Plan diff UI: ${group.name} anchor found but not patched`;
 			}
+			if (group.patched) patchedGroups++;
+		}
+		// Positive-presence floor: if none of the four anchored surfaces show
+		// patched evidence, the patch silently no-oped against this bundle.
+		// The previous logic accepted "all groups absent" as success because
+		// each group's check was skipped, masking a complete failure.
+		if (patchedGroups === 0) {
+			return "Plan diff UI: no patched evidence in any of plan-labels, preview-hint, preview-guard, or tool-use-hide groups";
 		}
 		return true;
 	},

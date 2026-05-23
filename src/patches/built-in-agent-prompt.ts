@@ -562,27 +562,40 @@ export const builtInAgentPrompt: Patch = {
 		if (!scopedPrompts.some((scope) => scope.includes(MODERN_STDOUT_CAP))) {
 			return "Missing stdout-cap (max_output/output_tail) guidance in built-in agent prompts";
 		}
-		if (
-			scopedPrompts.some(
-				(scope) =>
-					!scope.includes(MODERN_READONLY_OPS) &&
-					scope.includes(
-						"ONLY for read-only operations (ls, git status, git log, git diff, find",
-					) &&
-					scope.includes("cat, head, tail"),
-			)
-		) {
-			return "Legacy read-only bash guidance still present in built-in agent prompts";
+		// Legacy-leftover guard. Any one of the legacy fragments surviving in
+		// a built-in agent scope without the modern replacement is a failure
+		// signal. The audit flagged the previous "both fragments must coexist"
+		// requirement as easily defeated by partial upstream rewording; check
+		// fragments independently instead.
+		const LEGACY_READONLY_FRAGMENTS = [
+			"ONLY for read-only operations (ls, git status, git log, git diff, find",
+			"For read-only operations (ls, git status, git log, git diff, find",
+			"cat, head, tail",
+		];
+		for (const scope of scopedPrompts) {
+			if (scope.includes(MODERN_READONLY_OPS)) continue;
+			for (const fragment of LEGACY_READONLY_FRAGMENTS) {
+				if (scope.includes(fragment)) {
+					return `Legacy read-only bash guidance fragment still present in built-in agent prompt: ${fragment.slice(0, 48)}`;
+				}
+			}
 		}
 
-		if (
-			!scopedPrompts.some(
-				(scope) =>
-					scope.includes(EXPLORE_PROMPT_REPLACEMENT) ||
-					scope.includes(PLAN_PROMPT_REPLACEMENT),
-			)
-		) {
-			return true;
+		// Final assertion: at least one of the three scopes (explore, plan,
+		// general) must carry the patched modern prompt opener. The previous
+		// block returned `true` from both branches and was a no-op; this
+		// catches the case where the upstream surface still renders but our
+		// string-phase rewrite missed every scope.
+		const hasAnyPatchedOpener = scopedPrompts.some(
+			(scope) =>
+				scope.includes(EXPLORE_PROMPT_REPLACEMENT) ||
+				scope.includes(PLAN_PROMPT_REPLACEMENT) ||
+				scope.includes(
+					"Your strengths:\n- Tracing execution paths and dependencies across many files",
+				),
+		);
+		if (!hasAnyPatchedOpener) {
+			return "Built-in agent prompt replacements never landed in any extracted scope";
 		}
 
 		return true;

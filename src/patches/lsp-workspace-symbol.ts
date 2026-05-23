@@ -343,10 +343,27 @@ function verifyWorkspaceSymbol(code: string, ast?: t.File): true | string {
 			)
 				return;
 
-			// Value should be a LogicalExpression (H.query || ""), not a plain StringLiteral
-			if (t.isLogicalExpression(path.node.value)) hasQueryPassthrough = true;
-			// Also accept if it's a MemberExpression (H.query) without fallback
-			if (t.isMemberExpression(path.node.value)) hasQueryPassthrough = true;
+			// Tighten the mapping check. Mutator emits either
+			//   query: <param>.query || ""        (LogicalExpression form)
+			//   query: <param>.query              (MemberExpression form)
+			// The previous check accepted ANY LogicalExpression or
+			// MemberExpression at the `query` property, which would also
+			// accept malformed values that misroute at runtime (e.g. wrong
+			// operator, wrong property name, wrong fallback type).
+			const value = path.node.value;
+			if (
+				t.isLogicalExpression(value, { operator: "||" }) &&
+				t.isMemberExpression(value.left) &&
+				t.isIdentifier(value.left.property, { name: "query" }) &&
+				t.isStringLiteral(value.right, { value: "" })
+			) {
+				hasQueryPassthrough = true;
+			} else if (
+				t.isMemberExpression(value) &&
+				t.isIdentifier(value.property, { name: "query" })
+			) {
+				hasQueryPassthrough = true;
+			}
 		},
 	});
 

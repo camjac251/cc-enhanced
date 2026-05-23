@@ -66,76 +66,63 @@ export const noCollapse: Patch = {
 				if (!t.isMemberExpression(test.left)) return;
 				if (!t.isMemberExpression(test.right)) return;
 
-				// Check for original unpatched pattern
+				// Both operands must read from the SAME identifier object. A
+				// malformed mutation like (foo.isREPL || bar.isMemoryWrite)
+				// would otherwise satisfy the structural check.
+				if (!t.isNodesEquivalent(test.left.object, test.right.object)) return;
+
+				// Verify this is the right function by checking the return object has isSearch/isRead
+				const consequent = path.node.consequent;
+				const retStmt = t.isReturnStatement(consequent)
+					? consequent
+					: t.isBlockStatement(consequent)
+						? (consequent.body.find((s) => t.isReturnStatement(s)) as
+								| t.ReturnStatement
+								| undefined)
+						: undefined;
+				if (
+					!retStmt ||
+					!t.isReturnStatement(retStmt) ||
+					!retStmt.argument ||
+					!t.isObjectExpression(retStmt.argument)
+				) {
+					return;
+				}
+				const hasIsSearch = retStmt.argument.properties.some((p) =>
+					hasObjectKeyName(p, "isSearch"),
+				);
+				const hasIsRead = retStmt.argument.properties.some((p) =>
+					hasObjectKeyName(p, "isRead"),
+				);
+				if (!hasIsSearch || !hasIsRead) return;
+
 				if (
 					isMemberPropertyName(test.left, "isCollapsible") &&
 					isMemberPropertyName(test.right, "isREPL")
 				) {
-					// Verify this is the right function by checking the return object has isSearch/isRead
-					const consequent = path.node.consequent;
-					const retStmt = t.isReturnStatement(consequent)
-						? consequent
-						: t.isBlockStatement(consequent)
-							? (consequent.body.find((s) => t.isReturnStatement(s)) as
-									| t.ReturnStatement
-									| undefined)
-							: undefined;
-					if (
-						retStmt &&
-						t.isReturnStatement(retStmt) &&
-						retStmt.argument &&
-						t.isObjectExpression(retStmt.argument)
-					) {
-						const hasIsSearch = retStmt.argument.properties.some((p) =>
-							hasObjectKeyName(p, "isSearch"),
-						);
-						const hasIsRead = retStmt.argument.properties.some((p) =>
-							hasObjectKeyName(p, "isRead"),
-						);
-						if (hasIsSearch && hasIsRead) foundOriginalGuard = true;
-					}
+					foundOriginalGuard = true;
 				}
-
-				// Check for patched pattern
 				if (
 					isMemberPropertyName(test.left, "isREPL") &&
 					isMemberPropertyName(test.right, "isMemoryWrite")
 				) {
-					const consequent = path.node.consequent;
-					const retStmt = t.isReturnStatement(consequent)
-						? consequent
-						: t.isBlockStatement(consequent)
-							? (consequent.body.find((s) => t.isReturnStatement(s)) as
-									| t.ReturnStatement
-									| undefined)
-							: undefined;
-					if (
-						retStmt &&
-						t.isReturnStatement(retStmt) &&
-						retStmt.argument &&
-						t.isObjectExpression(retStmt.argument)
-					) {
-						const hasIsSearch = retStmt.argument.properties.some((p) =>
-							hasObjectKeyName(p, "isSearch"),
-						);
-						const hasIsRead = retStmt.argument.properties.some((p) =>
-							hasObjectKeyName(p, "isRead"),
-						);
-						if (hasIsSearch && hasIsRead) foundPatchedGuard = true;
-					}
+					foundPatchedGuard = true;
 				}
 			},
 
-			// Check 2: factory still has isCollapsible set to a dynamic value
-			// (cache tail eviction is preserved). The exact expression form varies
-			// across versions, so we check that the value is not a static literal
-			// and the containing object has the expected sibling properties.
+			// Check 2: factory still has isCollapsible set to a non-literal,
+			// non-boolean value, AND the containing object carries the
+			// expected sibling properties (isSearch/isRead/isREPL/
+			// isMemoryWrite). The exact AST shape of the value varies
+			// across upstream releases (some wrap the value in a
+			// conditional expression rather than a plain disjunction).
+			// Asserting the value SHAPE was too restrictive; the sibling-
+			// properties guard plus non-literal value is the durable invariant.
 			ObjectProperty(path) {
 				if (getObjectKeyName(path.node.key) !== "isCollapsible") return;
 				const val = path.node.value;
 				if (!path.parentPath?.isObjectExpression()) return;
 				const container = path.parentPath.node;
-				// Skip static values. Only match the dynamic factory return
 				if (isFalseLike(val) || isTrueLike(val) || t.isBooleanLiteral(val))
 					return;
 				const hasIsSearchProp = container.properties.some((p) =>

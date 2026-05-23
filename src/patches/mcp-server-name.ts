@@ -44,6 +44,7 @@ export const mcpServerName: Patch = {
 
 		let updatedCount = 0;
 		let oldValidationCount = 0;
+		let mismatchedShape = false;
 
 		traverse(ast, {
 			CallExpression(path) {
@@ -53,25 +54,45 @@ export const mcpServerName: Patch = {
 				const [patternArg, messageArg] = path.node.arguments;
 				if (!t.isRegExpLiteral(patternArg)) return;
 				if (!t.isStringLiteral(messageArg)) return;
-				if (!messageArg.value.includes("Server name can only contain")) return;
 
-				if (
-					patternArg.pattern === NEW_PATTERN &&
-					messageArg.value === NEW_MESSAGE
-				) {
-					updatedCount++;
-				}
+				// Catch the corrupting shape: OLD_PATTERN + Server-name message OR
+				// any OLD_PATTERN whose paired message starts with the server-name
+				// prefix. The previous check required the message to also be the
+				// exact old message, so partial upstream rewording defeated it.
 				if (patternArg.pattern === OLD_PATTERN) {
-					oldValidationCount++;
+					if (
+						messageArg.value === OLD_MESSAGE ||
+						messageArg.value.includes("Server name can only contain")
+					) {
+						oldValidationCount++;
+					}
+					return;
 				}
+
+				if (patternArg.pattern !== NEW_PATTERN) return;
+				if (!messageArg.value.includes("Server name can only contain")) {
+					return;
+				}
+				if (messageArg.value !== NEW_MESSAGE) {
+					mismatchedShape = true;
+					return;
+				}
+				updatedCount++;
 			},
 		});
 
 		if (oldValidationCount > 0) {
-			return "Old MCP serverName regex validation still present";
+			return `Old MCP serverName regex validation still present (${oldValidationCount} site(s))`;
 		}
-		if (updatedCount < 1) {
-			return "Expected MCP serverName regex updates not found";
+		if (mismatchedShape) {
+			return "MCP serverName regex pattern was updated but the validator message does not match the patched wording";
+		}
+		// Anchor the site count. Upstream ships exactly two schemas that share
+		// this validator (allowedMcpServers and deniedMcpServers). A drop to
+		// one means our mutation only landed in half the call sites; a single
+		// updated site silently lets the other schema reject plugin names.
+		if (updatedCount < 2) {
+			return `Expected MCP serverName regex updates on both allowedMcpServers and deniedMcpServers schemas; found ${updatedCount}`;
 		}
 
 		return true;

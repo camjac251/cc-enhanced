@@ -99,7 +99,15 @@ export const memoryPromptSoften: Patch = {
 				return `Dream memory prompt still contains legacy guidance: ${legacyText}`;
 			}
 		}
-		if (LEGACY_DREAM_FIND_MEMORY_FILES_RE.test(code)) {
+		// The /g flag on LEGACY_DREAM_FIND_MEMORY_FILES_RE makes
+		// RegExp.prototype.test stateful via lastIndex; calling .test() on
+		// the global regex would yield nondeterministic results across
+		// invocations. Use a fresh non-global copy for the verify probe.
+		const legacyFindRE = new RegExp(
+			LEGACY_DREAM_FIND_MEMORY_FILES_RE.source,
+			LEGACY_DREAM_FIND_MEMORY_FILES_RE.flags.replace("g", ""),
+		);
+		if (legacyFindRE.test(code)) {
 			return "Dream memory pruning prompt still enumerates memory files with find";
 		}
 		if (!code.includes(MODERN_MEMORY_READONLY_TEXT)) {

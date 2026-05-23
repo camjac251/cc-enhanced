@@ -118,23 +118,44 @@ export const sessionMemory: Patch = {
 			return "Unable to parse AST during session-memory verification";
 		}
 
-		let hasPatchedAutoDreamGate = false;
+		let patchedGateCount = 0;
+		let legacyGateCount = 0;
 
 		traverse(verifyAst, {
 			IfStatement(path) {
 				const { test, consequent } = path.node;
-				if (
-					isNullOrFalseReturn(consequent) &&
-					nodeContainsProperty(test, "autoDreamEnabled")
-				) {
-					hasPatchedAutoDreamGate = true;
+				if (!isNullOrFalseReturn(consequent)) return;
+				if (!nodeContainsProperty(test, "autoDreamEnabled")) return;
+
+				if (isPatchedAutoDreamGateTest(test)) {
+					patchedGateCount++;
+				} else {
+					legacyGateCount++;
 				}
 			},
 		});
 
-		if (!hasPatchedAutoDreamGate) {
-			return "Missing autoDreamEnabled force-on gate";
+		if (patchedGateCount === 0) {
+			return legacyGateCount > 0
+				? "Auto-dream availability gate present but not force-on (missing `autoDreamEnabled !== true &&` prefix)"
+				: "Missing autoDreamEnabled force-on gate";
+		}
+		if (legacyGateCount > 0) {
+			return `Found ${patchedGateCount} patched gate(s) but ${legacyGateCount} unpatched gate(s) remain`;
 		}
 		return true;
 	},
 };
+
+function isPatchedAutoDreamGateTest(test: t.Expression): boolean {
+	// Mutator wraps the original test in: (autoDream !== true) && originalTest.
+	// Verify must look for that exact distinctive shape; merely seeing
+	// autoDreamEnabled in the test would also accept the unpatched code.
+	if (!t.isLogicalExpression(test, { operator: "&&" })) return false;
+	const { left } = test;
+	if (!t.isBinaryExpression(left, { operator: "!==" })) return false;
+	if (!t.isBooleanLiteral(left.right, { value: true })) return false;
+	if (!t.isMemberExpression(left.left)) return false;
+	if (getMemberPropertyName(left.left) !== "autoDreamEnabled") return false;
+	return true;
+}

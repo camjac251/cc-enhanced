@@ -17,6 +17,11 @@ import {
 
 const AGENTS_TO_DISABLE = new Set(["statusline-setup", "claude-code-guide"]);
 
+// Built-in agents the patch is EXPECTED to keep. A registry function that has
+// the disabled agents removed but also loses these (e.g. a regression that
+// strips all built-in agents) would otherwise pass verification.
+const EXPECTED_KEPT_AGENTS = new Set(["general-purpose", "Explore", "Plan"]);
+
 function resolveObjectPropertyStringValue(
 	path: any,
 	prop: t.ObjectMethod | t.ObjectProperty | null | undefined,
@@ -206,7 +211,8 @@ function createAgentRegistryMutator(): Visitor {
 function verifyBuiltInAgentRegistry(ast: t.File): true | string {
 	const foundDefinitions = new Set<string>();
 	let foundRegistry = false;
-	let leakedAgentType: string | null = null;
+	const leakedAgentTypes = new Set<string>();
+	const observedKeptAgents = new Set<string>();
 
 	traverse(ast, {
 		ObjectExpression(path: any) {
@@ -224,10 +230,6 @@ function verifyBuiltInAgentRegistry(ast: t.File): true | string {
 			foundDefinitions.add(agentType);
 		},
 		Function(path: any) {
-			if (leakedAgentType) {
-				path.stop();
-				return;
-			}
 			if (!t.isBlockStatement(path.node.body)) return;
 
 			const returnedIdentifiers = collectReturnedIdentifiers(path);
@@ -248,20 +250,15 @@ function verifyBuiltInAgentRegistry(ast: t.File): true | string {
 						if (!agentType) continue;
 						foundRegistry = true;
 						if (AGENTS_TO_DISABLE.has(agentType)) {
-							leakedAgentType = agentType;
-							path.stop();
-							return;
+							leakedAgentTypes.add(agentType);
+						} else if (EXPECTED_KEPT_AGENTS.has(agentType)) {
+							observedKeptAgents.add(agentType);
 						}
 					}
 
 					const arrayVarName = decl.id.name;
 					path.traverse({
 						CallExpression(pushPath: any) {
-							if (leakedAgentType) {
-								pushPath.stop();
-								return;
-							}
-
 							const callee = pushPath.node.callee;
 							if (!t.isMemberExpression(callee)) return;
 							if (!t.isIdentifier(callee.object, { name: arrayVarName })) {
@@ -283,10 +280,9 @@ function verifyBuiltInAgentRegistry(ast: t.File): true | string {
 								if (!agentType) continue;
 								foundRegistry = true;
 								if (AGENTS_TO_DISABLE.has(agentType)) {
-									leakedAgentType = agentType;
-									pushPath.stop();
-									path.stop();
-									return;
+									leakedAgentTypes.add(agentType);
+								} else if (EXPECTED_KEPT_AGENTS.has(agentType)) {
+									observedKeptAgents.add(agentType);
 								}
 							}
 						},
@@ -296,16 +292,28 @@ function verifyBuiltInAgentRegistry(ast: t.File): true | string {
 		},
 	});
 
+	const missingDefinitions: string[] = [];
 	for (const agentType of AGENTS_TO_DISABLE) {
 		if (!foundDefinitions.has(agentType)) {
-			return `${agentType} built-in agent definition not found`;
+			missingDefinitions.push(agentType);
 		}
 	}
-	if (!foundRegistry) {
-		return "Built-in agent registry not found";
+	if (missingDefinitions.length > 0) {
+		return `Built-in agent definitions not found: ${missingDefinitions.join(", ")}`;
 	}
-	if (leakedAgentType) {
-		return `Disabled agent "${leakedAgentType}" still present in built-in agent registry`;
+	if (!foundRegistry) {
+		return "Built-in agent registry not found (no function returns an array of resolved built-in agents)";
+	}
+	if (leakedAgentTypes.size > 0) {
+		const sorted = Array.from(leakedAgentTypes).sort();
+		return `Disabled agents still present in built-in agent registry: ${sorted.join(", ")}`;
+	}
+	// Positive assertion: registry must keep at least one expected agent.
+	// Without this, a regression that strips ALL built-in agents would pass
+	// the leak check (no AGENTS_TO_DISABLE present) but break the model's
+	// access to the kept agents.
+	if (observedKeptAgents.size === 0) {
+		return "Built-in agent registry found but no expected kept agents (general-purpose/Explore/Plan) survived";
 	}
 	return true;
 }

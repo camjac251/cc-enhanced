@@ -5,7 +5,6 @@ import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
 const OPUS_4_7_KEY = "claude-opus-4-7";
 const TARGET_PIXELS = 2576;
-const DOWNGRADED_PIXELS = 2000;
 
 function getOpusOverride(
 	objectExpr: t.ObjectExpression,
@@ -87,27 +86,34 @@ export const imageLimits: Patch = {
 		const verifyAst = getVerifyAst(code, ast);
 		if (!verifyAst) return "Unable to parse AST during verification";
 
-		let foundOverride = false;
+		let overrideCount = 0;
 		let downgraded = false;
 
 		traverse(verifyAst, {
 			ObjectExpression(path) {
 				const props = isImageLimitsOverride(path.node);
 				if (!props) return;
-				foundOverride = true;
+				overrideCount++;
 				const widthVal = (props.maxWidth.value as t.NumericLiteral).value;
 				const heightVal = (props.maxHeight.value as t.NumericLiteral).value;
-				if (widthVal === DOWNGRADED_PIXELS || heightVal === DOWNGRADED_PIXELS) {
-					downgraded = true;
-				}
+				// Any override that doesn't pin BOTH dimensions to TARGET_PIXELS
+				// is a failure. The previous separate DOWNGRADED_PIXELS clause
+				// was redundant; the !== TARGET check already catches it.
 				if (widthVal !== TARGET_PIXELS || heightVal !== TARGET_PIXELS) {
 					downgraded = true;
 				}
 			},
 		});
 
-		if (!foundOverride) {
+		if (overrideCount === 0) {
 			return "Opus 4.7 image override table not found";
+		}
+		// Bound the count. The upstream bundle is expected to ship exactly
+		// one override table that matches isImageLimitsOverride; finding
+		// multiple is suspicious (the matcher is too loose, or upstream
+		// restructured).
+		if (overrideCount > 1) {
+			return `Expected exactly one Opus 4.7 image override table, found ${overrideCount}`;
 		}
 		if (downgraded) {
 			return `Opus 4.7 image override is not pinned to ${TARGET_PIXELS}px`;
