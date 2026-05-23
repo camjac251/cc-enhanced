@@ -1,10 +1,16 @@
-import type * as t from "@babel/types";
+import * as t from "@babel/types";
 import { traverse } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getVerifyAst } from "./ast-helpers.js";
 
 const VERSION_SUFFIX = " (Claude Code)";
-const UI_TITLE_PREFIX = "Claude Code v";
+const PATCHED_VERSION_MARKER = "(Claude Code; patched:";
+const PATCHED_TITLE_MARKER = " • patched";
+const TITLE_BRAND_LITERAL = "Claude Code";
+
+// Marketplace error template that previously absorbed the patched suffix
+// because its first quasi started with "Claude Code v" (= "Claude Code version...").
+const MARKETPLACE_ERROR_FRAGMENT = "Run 'claude plugin marketplace remove ";
 
 function replaceVersionSuffix(text: string, sigFull: string): string {
 	return text.replace(VERSION_SUFFIX, ` (Claude Code; ${sigFull})`);
@@ -15,7 +21,7 @@ function isVersionStringTarget(text: string): boolean {
 }
 
 function hasPatchedVersionString(text: string): boolean {
-	return text.includes("(Claude Code; patched:");
+	return text.includes(PATCHED_VERSION_MARKER);
 }
 
 function getTemplateText(quasi: t.TemplateElement): string {
@@ -36,33 +42,46 @@ function hasPatchedVersionTemplate(node: t.TemplateLiteral): boolean {
 	return node.quasis.some((q) => hasPatchedVersionString(getTemplateText(q)));
 }
 
-function isUiTitleTemplate(node: t.TemplateLiteral): boolean {
-	const firstQuasi = node.quasis[0];
-	return (
-		!!firstQuasi && getTemplateText(firstQuasi).startsWith(UI_TITLE_PREFIX)
+/**
+ * The real UI title is a composite TemplateLiteral that interpolates two
+ * helper calls: the first renders the product label "Claude Code", the
+ * second renders the version string. The quasis are just the spaces
+ * around the two interpolations.
+ *
+ * Identify it by the outer TemplateLiteral having an expression that is a
+ * CallExpression with the literal "Claude Code" as its sole argument. This
+ * deliberately avoids matching error-text templates whose first quasi merely
+ * starts with "Claude Code v...".
+ */
+function isCompositeUiTitleTemplate(node: t.TemplateLiteral): boolean {
+	if (node.expressions.length < 1) return false;
+	return node.expressions.some((expr) => {
+		if (!t.isCallExpression(expr)) return false;
+		if (expr.arguments.length !== 1) return false;
+		const arg = expr.arguments[0];
+		return t.isStringLiteral(arg) && arg.value === TITLE_BRAND_LITERAL;
+	});
+}
+
+function hasPatchedCompositeUiTitle(node: t.TemplateLiteral): boolean {
+	return node.quasis.some((q) =>
+		getTemplateText(q).includes(PATCHED_TITLE_MARKER),
 	);
 }
 
-function hasPatchedUiTitle(node: t.TemplateLiteral): boolean {
-	const lastQuasi = node.quasis[node.quasis.length - 1];
-	return !!lastQuasi && getTemplateText(lastQuasi).includes(" • patched");
+function isMarketplaceErrorTemplate(node: t.TemplateLiteral): boolean {
+	return node.quasis.some((q) =>
+		getTemplateText(q).includes(MARKETPLACE_ERROR_FRAGMENT),
+	);
 }
 
-/**
- * Inject signature into version strings.
- * The signature is built from all patches that passed verification.
- */
 export const signature: Patch = {
 	tag: "signature",
 
-	// Runs after verification with all applied tags
 	postApply: (ast, appliedTags) => {
 		const tags = appliedTags;
 		if (tags.length === 0) return;
 
-		// Short signature for UI display (avoids width overflow)
-		const sigShort = "patched";
-		// Full signature for --version output
 		const sigFull = `patched: ${tags.join(", ")}`;
 
 		traverse(ast, {
@@ -84,11 +103,14 @@ export const signature: Patch = {
 					quasi.value.cooked = replaced;
 				}
 
-				if (isUiTitleTemplate(path.node) && !hasPatchedUiTitle(path.node)) {
+				if (
+					isCompositeUiTitleTemplate(path.node) &&
+					!hasPatchedCompositeUiTitle(path.node)
+				) {
 					const lastQuasi = path.node.quasis[path.node.quasis.length - 1];
-					const suffix = ` • ${sigShort}`;
-					lastQuasi.value.raw += suffix;
-					lastQuasi.value.cooked = (lastQuasi.value.cooked ?? "") + suffix;
+					lastQuasi.value.raw += PATCHED_TITLE_MARKER;
+					lastQuasi.value.cooked =
+						(lastQuasi.value.cooked ?? "") + PATCHED_TITLE_MARKER;
 				}
 			},
 		});
@@ -99,48 +121,57 @@ export const signature: Patch = {
 		if (!verifyAst) return "Unable to parse AST during signature verification";
 
 		let hasPatchedVersion = false;
-		let hasLegacyVersion = false;
-		let hasPatchedTitle = false;
-		let hasLegacyTitle = false;
+		let hasLegacyVersionTemplate = false;
+		let compositeTitleCount = 0;
+		let patchedTitleCount = 0;
+		let marketplaceErrorPolluted = false;
 
 		traverse(verifyAst, {
 			StringLiteral(path) {
 				const value = path.node.value;
-				if (isVersionStringTarget(value)) {
-					hasLegacyVersion = true;
-				}
 				if (hasPatchedVersionString(value)) {
 					hasPatchedVersion = true;
 				}
 			},
 			TemplateLiteral(path) {
 				if (isVersionTemplateTarget(path.node)) {
-					hasLegacyVersion = true;
+					hasLegacyVersionTemplate = true;
 				}
 				if (hasPatchedVersionTemplate(path.node)) {
 					hasPatchedVersion = true;
 				}
-				if (isUiTitleTemplate(path.node)) {
-					if (hasPatchedUiTitle(path.node)) {
-						hasPatchedTitle = true;
-					} else {
-						hasLegacyTitle = true;
+				if (isCompositeUiTitleTemplate(path.node)) {
+					compositeTitleCount++;
+					if (hasPatchedCompositeUiTitle(path.node)) {
+						patchedTitleCount++;
 					}
+				}
+				if (
+					isMarketplaceErrorTemplate(path.node) &&
+					hasPatchedCompositeUiTitle(path.node)
+				) {
+					marketplaceErrorPolluted = true;
 				}
 			},
 		});
 
-		if (hasLegacyVersion) {
+		if (hasLegacyVersionTemplate) {
 			return "Missing patched version signature in version output";
 		}
 		if (!hasPatchedVersion) {
 			return "Did not find patched version output";
 		}
-		if (hasLegacyTitle) {
-			return "Missing patched UI title signature";
+		if (marketplaceErrorPolluted) {
+			return "Marketplace error template was polluted with patched marker (wrong anchor)";
 		}
-		if (!hasPatchedTitle) {
-			return "Did not find patched UI title";
+		if (compositeTitleCount === 0) {
+			return "Composite UI title template not found (upstream may have restructured)";
+		}
+		if (patchedTitleCount === 0) {
+			return "Composite UI title was not decorated with patched marker";
+		}
+		if (patchedTitleCount !== compositeTitleCount) {
+			return `Patched ${patchedTitleCount} of ${compositeTitleCount} composite UI titles`;
 		}
 		return true;
 	},

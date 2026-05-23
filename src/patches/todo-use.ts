@@ -16,9 +16,21 @@ const TODO_SKIP_REPLACEMENT = `## Examples of When NOT to Use the Todo List
 `;
 
 const TRIGGER = "## Examples of When to Use the Todo List";
-const EXPECTED_USE_LINE = "Reach for it when the user hands you multiple";
-const EXPECTED_SKIP_LINE =
+const SKIP_HEADING = "## Examples of When NOT to Use the Todo List";
+const NEXT_SECTION_HEADING = "## Task States and Management";
+const EXPECTED_USE_FIRST_BULLET =
+	"Reach for it when the user hands you multiple";
+const EXPECTED_USE_SECOND_BULLET =
+	"Keep items current as you work so the list reflects real progress.";
+const EXPECTED_SKIP_FIRST_BULLET =
 	"Skip it for quick, single-step tasks where tracking would add overhead.";
+const EXPECTED_SKIP_SECOND_BULLET =
+	"Clear stale entries so the list only mirrors the active work.";
+const STALE_PROSE_SIGNALS = [
+	"How do I print 'Hello World' in Python?",
+	"What does the git status command do?",
+	"Run npm install for me and tell me what happens",
+];
 
 export const todo: Patch = {
 	tag: "todo-use",
@@ -28,7 +40,6 @@ export const todo: Patch = {
 
 		let result = code;
 
-		// Replace the "When to Use" section
 		const useRegex =
 			/(## Examples of When to Use the Todo List\n)([\s\S]*?)(?=\n## Examples of When NOT to Use the Todo List)/;
 		if (useRegex.test(result)) {
@@ -38,10 +49,10 @@ export const todo: Patch = {
 			);
 		}
 
-		// Replace the "When NOT to Use" section.
-		// Lookahead: next heading OR end of the string literal (quote/backtick).
+		// Anchor the lookahead on the next stable heading so quote chars inside
+		// example dialogue can't terminate the captured block early.
 		const skipRegex =
-			/(## Examples of When NOT to Use the Todo List\n)([\s\S]*?)(?=\n## |["'`]|$)/;
+			/(## Examples of When NOT to Use the Todo List\n)([\s\S]*?)(?=\n## Task States and Management)/;
 		if (skipRegex.test(result)) {
 			result = result.replace(
 				skipRegex,
@@ -53,21 +64,37 @@ export const todo: Patch = {
 	},
 
 	verify: (code) => {
-		if (code.includes(TRIGGER) && !code.includes(EXPECTED_USE_LINE)) {
-			return "Missing condensed Todo examples";
+		if (code.includes(TRIGGER)) {
+			if (!code.includes(EXPECTED_USE_FIRST_BULLET)) {
+				return "Missing condensed Todo use first bullet";
+			}
+			if (!code.includes(EXPECTED_USE_SECOND_BULLET)) {
+				return "Missing condensed Todo use second bullet";
+			}
 		}
-		if (
-			code.includes("## Examples of When NOT to Use the Todo List") &&
-			!code.includes(EXPECTED_SKIP_LINE)
-		) {
-			return "Missing condensed Todo NOT-to-use examples";
+		if (code.includes(SKIP_HEADING)) {
+			if (!code.includes(EXPECTED_SKIP_FIRST_BULLET)) {
+				return "Missing condensed Todo NOT-to-use first bullet";
+			}
+			if (!code.includes(EXPECTED_SKIP_SECOND_BULLET)) {
+				return "Missing condensed Todo NOT-to-use second bullet";
+			}
+			for (const stale of STALE_PROSE_SIGNALS) {
+				if (code.includes(stale)) {
+					return `Stale upstream prose survived in Todo NOT-to-use section: ${stale.slice(0, 40)}...`;
+				}
+			}
+			const skipIndex = code.indexOf(SKIP_HEADING);
+			const nextHeadingIndex = code.indexOf(NEXT_SECTION_HEADING, skipIndex);
+			if (nextHeadingIndex === -1) {
+				return "Could not locate next section heading after NOT-to-use section";
+			}
+			const sectionBody = code.slice(skipIndex, nextHeadingIndex);
+			if (sectionBody.includes("<example>")) {
+				return "Stale <example> blocks survived in Todo NOT-to-use section";
+			}
 		}
-		// If Todo tool exists but neither section was found/checked, flag as drift
-		if (
-			!code.includes(TRIGGER) &&
-			(code.includes('"TodoWrite"') || code.includes('"Todo"'))
-		) {
-			// Tool exists but the expected prompt section is missing.
+		if (!code.includes(TRIGGER) && code.includes('name: "TodoWrite"')) {
 			return "Todo tool found but expected prompt section missing (bundle drift)";
 		}
 		return true;
