@@ -79,11 +79,9 @@ test("tools-off verify accepts prompt cleanup when tools are still disabled", as
 	assert.equal(result, true);
 });
 
-test("tools-off rewrites current disabled-tool guidance to neutral wording", async () => {
-	const currentPrompt = [
-		"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using ${Read}",
-		"- If you want to read a specific file path, use the ${Bq} tool or ${P} instead of the ${YK} tool, to find the match more quickly",
-	].join("\n");
+test("tools-off rewrites claude-code-guide reference text to neutral wording", async () => {
+	const currentPrompt =
+		"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using ${Read}";
 
 	const input = `${TOOL_FIXTURE}\nconst prompt = \`${currentPrompt}\`;`;
 	const rewritten = disableTools.string?.(input) ?? input;
@@ -92,14 +90,39 @@ test("tools-off rewrites current disabled-tool guidance to neutral wording", asy
 		rewritten,
 		/Reference local project files \(CLAUDE\.md, \.claude\/ directory\) when relevant using Read/,
 	);
-	assert.match(
-		rewritten,
-		/use the \$\{Bq\} tool instead of the \$\{YK\} tool, for faster access/,
-	);
+	assert.doesNotMatch(rewritten, /using \$\{Read\}/);
 
 	const ast = parse(rewritten);
 	await runToolsOffViaPasses(ast);
 	assert.equal(disableTools.verify(print(ast), ast), true);
+});
+
+test("tools-off rewrites runtime-conditional plan-mode exploration template", () => {
+	// Mirrors the live upstream shape: "1. Thoroughly explore the codebase
+	// using ${expr}\n" where expr is a balanced template expression. Stale
+	// PLAN_REWRITES (`Glob, Grep, and Read tools` literal) would silently
+	// no-op against this shape.
+	const input = [
+		"## What Happens in Plan Mode",
+		"",
+		"In plan mode, you'll:",
+		"1. Thoroughly explore the codebase using ${_L() && O1() ? `\\`find\\`/${J5}, \\`grep\\`/${B1}, and ${YK}` : `${J5}, ${B1}, and ${YK}`}",
+		"2. Understand existing patterns",
+	].join("\n");
+
+	const output = disableTools.string?.(input) ?? input;
+	assert.equal(
+		output.includes(
+			"1. Thoroughly explore the codebase using available search tooling and Read",
+		),
+		true,
+		`expected neutral plan-mode line in output:\n${output}`,
+	);
+	assert.equal(
+		output.includes("Thoroughly explore the codebase using ${"),
+		false,
+		"runtime-conditional template should be fully replaced",
+	);
 });
 
 test("tools-off verify ignores unrelated GrepTool labels outside prompt guidance", async () => {

@@ -40,19 +40,12 @@ const REGEX_REPLACEMENTS: Array<{ pattern: RegExp; replacement: string }> = [
 		replacement:
 			"Reference local project files (CLAUDE.md, .claude/ directory) when relevant using Read",
 	},
-	{
-		// Current agent prompt: "use the ${X} tool or ${Y} instead of the ${Z} tool"
-		pattern:
-			/use the \$\{([^}]+)\} tool or \$\{[^}]+\} instead of the \$\{([^}]+)\} tool/g,
-		replacement: "use the ${$1} tool instead of the ${$2} tool",
-	},
 ];
 
 const TRIGGER_PHRASES = ["Reference local project files (CLAUDE.md"];
 
 const FORBIDDEN_PROMPT_FRAGMENTS = [
 	/Reference local project files \(CLAUDE\.md, \.claude\/ directory\) when relevant using \$\{[^}]+\}/,
-	/use the \$\{[^}]+\} tool or \$\{[^}]+\} instead of the \$\{[^}]+\} tool/,
 ];
 
 const CONDITIONAL_REWRITE_MARKERS: Array<{
@@ -96,26 +89,18 @@ const PROMPT_REWRITE_REPLACEMENTS: Array<[RegExp, string]> = [
 		),
 		"- Content search: Use available content-search tooling with focused scope",
 	],
-	[
-		new RegExp(
-			`instead of using \\$\\{${VAR}\\} or \\$\\{${VAR}\\} directly`,
-			"g",
-		),
-		"for comprehensive exploration",
-	],
 ];
 
+// Plan-mode prompt builder emits the codebase-exploration instruction as a
+// runtime-conditional template expression: a literal prefix
+// "1. Thoroughly explore the codebase using ${ ... }" followed by a balanced
+// expression whose body references disabled-tool identifiers. Replace the
+// whole template line with a neutral, runtime-condition-free instruction.
 const PLAN_REWRITES: Array<{ pattern: RegExp; replacement: string }> = [
 	{
-		pattern:
-			/Thoroughly explore the codebase using Glob, Grep, and Read tools/g,
+		pattern: /1\. Thoroughly explore the codebase using \$\{[^\n]+\}\n/g,
 		replacement:
-			"Thoroughly explore the codebase using available search tooling and Read.",
-	},
-	{
-		pattern: /Explore the codebase using Glob, Grep, and Read tools/g,
-		replacement:
-			"Explore the codebase using available search tooling and Read for focused viewing.",
+			"1. Thoroughly explore the codebase using available search tooling and Read\n",
 	},
 ];
 
@@ -260,10 +245,8 @@ const FORBIDDEN_TOOL_MARKDOWN_ROW_PATTERN =
 const MCP_DOC_HINT_SHORT = "MCP doc tools (context7, perplexity, firecrawl)";
 
 const SKILL_DOC_TEXT_REPLACEMENTS: Array<[RegExp, string]> = [
-	[
-		/\*\*Common tool matchers:\*\* `Bash`, `Write`, `Edit`, `Read`, `Glob`, `Grep`/g,
-		"**Common tool matchers:** `Bash`, `Write`, `Edit`, `Read`, `Agent`",
-	],
+	// Bundle ships only the escaped-backtick form; the plain-backtick form
+	// has been absent since the source moved to template literals.
 	[
 		/\*\*Common tool matchers:\*\* \\`Bash\\`, \\`Write\\`, \\`Edit\\`, \\`Read\\`, \\`Glob\\`, \\`Grep\\`/g,
 		"**Common tool matchers:** \\`Bash\\`, \\`Write\\`, \\`Edit\\`, \\`Read\\`, \\`Agent\\`",
@@ -508,9 +491,6 @@ export const disableTools: Patch = {
 			for (const { pattern, replacement } of REGEX_REPLACEMENTS) {
 				result = result.replace(pattern, replacement);
 			}
-			result = result
-				.split("to find the match more quickly")
-				.join("for faster access");
 		}
 
 		// --- Neutral prompt rewrites (agent/plan/guide/debug) ---
@@ -654,15 +634,19 @@ function verifyPromptRewrite(code: string): true | string {
 			return "Missing neutral replacements for agent search prompts";
 		}
 	}
-	if (code.includes("Explore the codebase using Glob, Grep, and Read tools")) {
-		return "Plan mode prompt still references Glob/Grep";
+	// Plan-mode exploration template: the unpatched runtime-conditional form
+	// has a `${...}` expression directly after the literal prefix. The patched
+	// form is a constant neutral sentence with no `${`.
+	if (/1\. Thoroughly explore the codebase using \$\{/.test(code)) {
+		return "Plan mode prompt still emits runtime-conditional tool-list template";
 	}
 	if (
-		code.includes(
-			"Thoroughly explore the codebase using Glob, Grep, and Read tools",
-		)
+		!code.includes(
+			"1. Thoroughly explore the codebase using available search tooling and Read",
+		) &&
+		code.includes("## What Happens in Plan Mode")
 	) {
-		return "Plan mode prompt still references Glob/Grep in thorough exploration guidance";
+		return "Plan mode prompt missing neutral exploration instruction";
 	}
 	if (code.includes('name: "debug"')) {
 		if (code.includes('allowedTools: ["Read", "Grep", "Glob"]')) {
