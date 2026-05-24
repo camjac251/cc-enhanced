@@ -818,6 +818,40 @@ function visibleOptionCountMatchesOptionsLength(
 	return t.isIdentifier(prop.value.object, { name: optionsName });
 }
 
+function consequentAssignsBypassPermissions(consequent: t.Statement): boolean {
+	// Walk the consequent looking for an AssignmentExpression whose right side
+	// is exactly the StringLiteral "bypassPermissions" (or a permissionMode
+	// member set to "bypassPermissions"). A substring match elsewhere in the
+	// subtree is not enough — the audit flagged this as a place where unrelated
+	// strings could trip the verifier or upstream renames could silently
+	// neutralize it.
+	let found = false;
+	const walk = (value: unknown): void => {
+		if (found) return;
+		if (!value) return;
+		if (Array.isArray(value)) {
+			for (const item of value) walk(item);
+			return;
+		}
+		if (typeof value !== "object") return;
+		const maybeNode = value as t.Node;
+		if (typeof (maybeNode as { type?: unknown }).type !== "string") return;
+		if (t.isAssignmentExpression(maybeNode)) {
+			if (t.isStringLiteral(maybeNode.right, { value: "bypassPermissions" })) {
+				found = true;
+				return;
+			}
+		}
+		for (const child of Object.values(
+			maybeNode as unknown as Record<string, unknown>,
+		)) {
+			walk(child);
+		}
+	};
+	walk(consequent);
+	return found;
+}
+
 export const planCompactExecute: Patch = {
 	tag: "plan-compact-execute",
 
@@ -853,7 +887,19 @@ export const planCompactExecute: Patch = {
 					if (optionValue === COMPACT_AUTO_VALUE) compactAutoOption = true;
 					if (optionValue === COMPACT_ACCEPT_EDITS_VALUE)
 						compactAcceptEditsOption = true;
-					if (nodeContainsText(path.node, "bypass permissions")) {
+					// Tighten bypass-permissions detection: only consider strings
+					// inside the option's own label/description/value/key fields,
+					// not anything mentioned anywhere in the subtree. A future
+					// option that documents the bypass mode (e.g. "do not pick
+					// bypass permissions for compact") in a long description
+					// must not flip this signal.
+					const labelStr = objectPropertyStringValue(path.node, "label") ?? "";
+					const descStr =
+						objectPropertyStringValue(path.node, "description") ?? "";
+					if (
+						labelStr.toLowerCase().includes("bypass permissions") ||
+						descStr.toLowerCase().includes("bypass permissions")
+					) {
 						compactBypassOption = true;
 					}
 				}
@@ -898,7 +944,13 @@ export const planCompactExecute: Patch = {
 					nodeContainsText(path.node.test, COMPACT_AUTO_VALUE) ||
 					nodeContainsText(path.node.test, COMPACT_ACCEPT_EDITS_VALUE)
 				) {
-					if (nodeContainsText(path.node.consequent, "bypassPermissions")) {
+					// Tighten bypass check: only flag a structural assignment
+					// whose RIGHT side is the literal string "bypassPermissions"
+					// AND whose LEFT side is some MemberExpression. A coincidental
+					// substring like "bypassPermissions" appearing in a comment
+					// stripped to text, a docstring, or a different attribute
+					// name should not satisfy this.
+					if (consequentAssignsBypassPermissions(path.node.consequent)) {
 						compactBranchAssignsBypass = true;
 					}
 				}

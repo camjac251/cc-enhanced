@@ -4,6 +4,7 @@ import type { Patch } from "../types.js";
 import {
 	getObjectKeyName,
 	getVerifyAst,
+	hasObjectKeyName,
 	isMemberPropertyName,
 	objectPatternHasKey,
 } from "./ast-helpers.js";
@@ -1727,6 +1728,64 @@ function verifyAgentCacheTtlAllowlist(ast: t.File): true | string {
 	return true;
 }
 
+function isMapCallbackProperlyShaped(
+	callback: t.FunctionExpression | t.ArrowFunctionExpression,
+): boolean {
+	// Mutator emits map callbacks that look like:
+	//   (entry) => {
+	//     if (cacheControlExcess < 0) return entry;
+	//     const { cache_control, ...rest } = entry;
+	//     if (!cache_control) return entry;
+	//     cacheControlExcess--;
+	//     return rest;
+	//   }
+	// We require: (a) `cacheControlExcess--` UpdateExpression somewhere in
+	// the body, and (b) at least one ObjectPattern with a `cache_control`
+	// property key (the destructure that drops the cache_control field).
+	let sawDecrement = false;
+	let sawCacheControlDestructure = false;
+
+	const visitBody = (node: t.Node): void => {
+		const walk = (value: unknown): void => {
+			if (sawDecrement && sawCacheControlDestructure) return;
+			if (!value) return;
+			if (Array.isArray(value)) {
+				for (const item of value) walk(item);
+				return;
+			}
+			if (typeof value !== "object") return;
+			const maybeNode = value as t.Node;
+			if (typeof (maybeNode as { type?: unknown }).type !== "string") return;
+			if (
+				t.isUpdateExpression(maybeNode, { operator: "--" }) &&
+				t.isIdentifier(maybeNode.argument, { name: "cacheControlExcess" })
+			) {
+				sawDecrement = true;
+			}
+			if (t.isObjectPattern(maybeNode)) {
+				for (const prop of maybeNode.properties) {
+					if (
+						t.isObjectProperty(prop) &&
+						hasObjectKeyName(prop, "cache_control")
+					) {
+						sawCacheControlDestructure = true;
+						break;
+					}
+				}
+			}
+			for (const child of Object.values(
+				maybeNode as unknown as Record<string, unknown>,
+			)) {
+				walk(child);
+			}
+		};
+		walk(node);
+	};
+
+	visitBody(callback.body);
+	return sawDecrement && sawCacheControlDestructure;
+}
+
 function verifyCacheControlBlockCap(ast: t.File): true | string {
 	const requestClampAnchor = findRequestClampFunction(ast);
 	if (!requestClampAnchor) {
@@ -1810,15 +1869,32 @@ function verifyCacheControlBlockCap(ast: t.File): true | string {
 					if (!isMemberPropertyName(right.callee, "map")) return;
 					const keyName = getObjectKeyName(left.property);
 					if (
-						keyName === "messages" ||
-						keyName === "system" ||
-						keyName === "tools"
+						keyName !== "messages" &&
+						keyName !== "system" &&
+						keyName !== "tools"
 					) {
-						if (isClampFunction) {
-							strippedClampTargets.add(keyName);
-						} else {
-							strippedRequestBuilderTargets.add(keyName);
-						}
+						return;
+					}
+					// Per audit: assert each .map() callback's body contains
+					// `cacheControlExcess--` (the per-block decrement) AND
+					// destructures cache_control off the iterated element via
+					// an ObjectPattern with a `cache_control:` key. Presence
+					// of `.map()` alone is insemantic — a regression that
+					// replaced the strip body with a no-op would otherwise
+					// satisfy the verifier.
+					const callback = right.arguments[0];
+					if (
+						!callback ||
+						(!t.isFunctionExpression(callback) &&
+							!t.isArrowFunctionExpression(callback))
+					) {
+						return;
+					}
+					if (!isMapCallbackProperlyShaped(callback)) return;
+					if (isClampFunction) {
+						strippedClampTargets.add(keyName);
+					} else {
+						strippedRequestBuilderTargets.add(keyName);
 					}
 				},
 			});

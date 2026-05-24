@@ -451,16 +451,77 @@ function verifyMultiServer(code: string, ast?: t.File): true | string {
 		);
 		if (!fn) return `${label} function (${name}) not found in factory`;
 
-		// Check for a ForStatement in the function body (multi-server iteration)
-		let hasFor = false;
-		let hasMethod = false;
+		// Stronger structural check: find a ForStatement whose body contains a
+		// sendNotification CallExpression carrying THIS lifecycle's method
+		// string as one of its arguments. The previous check accepted any
+		// ForStatement plus any matching string anywhere in the function, so
+		// a refactor that broke the for-loop / notification coupling (or
+		// moved the method string into a comment) would silently pass.
+		let forWithMatchingNotification = false;
 		walkNode(fn, (node) => {
-			if (t.isForStatement(node)) hasFor = true;
-			if (t.isStringLiteral(node) && node.value === method) hasMethod = true;
+			if (!t.isForStatement(node)) return;
+			let matched = false;
+			walkNode(node.body, (inner) => {
+				if (matched) return;
+				if (!t.isCallExpression(inner)) return;
+				const callee = inner.callee;
+				const isSendNotification =
+					(t.isMemberExpression(callee) &&
+						((t.isIdentifier(callee.property) &&
+							callee.property.name === "sendNotification") ||
+							(t.isStringLiteral(callee.property) &&
+								callee.property.value === "sendNotification"))) ||
+					t.isIdentifier(callee, { name: "sendNotification" });
+				if (!isSendNotification) return;
+				const carriesMethod = inner.arguments.some((arg) =>
+					t.isStringLiteral(arg, { value: method }),
+				);
+				if (carriesMethod) matched = true;
+			});
+			if (matched) forWithMatchingNotification = true;
 		});
 
-		if (!hasFor) return `${label} missing for-loop (multi-server iteration)`;
-		if (!hasMethod) return `${label} missing "${method}" notification`;
+		if (!forWithMatchingNotification) {
+			return `${label} missing for-loop with sendNotification("${method}") inside its body`;
+		}
+	}
+
+	// For openFile and changeFile, the per-URI tracking map (Map<uri, Set<string>>)
+	// must accumulate. Assert that the function body either constructs a
+	// `new Set()` for a fresh URI or calls `.add(...)` on an existing tracker.
+	// The previous verifier never inspected this and would accept the
+	// upstream pre-patch Map<uri, string> shape.
+	for (const { name, label } of [
+		{ name: refs.openFile, label: "openFile" },
+		{ name: refs.changeFile, label: "changeFile" },
+	]) {
+		const fn = (factoryBody as t.Statement[]).find(
+			(s): s is t.FunctionDeclaration =>
+				t.isFunctionDeclaration(s) && s.id?.name === name,
+		);
+		if (!fn) continue;
+		let hasSetAddOrConstruction = false;
+		walkNode(fn, (node) => {
+			if (hasSetAddOrConstruction) return;
+			if (
+				t.isNewExpression(node) &&
+				t.isIdentifier(node.callee, { name: "Set" })
+			) {
+				hasSetAddOrConstruction = true;
+				return;
+			}
+			if (!t.isCallExpression(node)) return;
+			const callee = node.callee;
+			if (!t.isMemberExpression(callee)) return;
+			const propName =
+				(t.isIdentifier(callee.property) && callee.property.name) ||
+				(t.isStringLiteral(callee.property) && callee.property.value) ||
+				null;
+			if (propName === "add") hasSetAddOrConstruction = true;
+		});
+		if (!hasSetAddOrConstruction) {
+			return `${label} does not look like it tracks tracked URIs as a Set (no .add() or new Set() observed)`;
+		}
 	}
 
 	// Verify getServerForFile still returns primary (I[0] pattern intact)
