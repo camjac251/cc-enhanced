@@ -40,7 +40,7 @@ test("claudemd-strong verify accepts the exact shared strong disclaimer lines", 
 });
 
 test("claudemd-strong line checks reject incomplete strong wrapper text", () => {
-	const input = STRONG_DISCLAIMER_LINES.slice(0, 5).join("\n");
+	const input = STRONG_DISCLAIMER_LINES.slice(0, -1).join("\n");
 	const result = claudeMdSystemPrompt.verify(input);
 	assert.equal(typeof result, "string");
 	assert.equal(
