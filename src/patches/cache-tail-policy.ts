@@ -1230,20 +1230,23 @@ function createCacheControlCapStatements(
 	});
 }
 
-function findRequestClampFunction(ast: t.File): {
+type RequestClampAnchor = {
 	functionName: string;
 	requestCopyName: string;
 	maxTokensName: string;
 	returnStmt: t.ReturnStatement;
 	body: t.Statement[];
-} | null {
-	let match: {
-		functionName: string;
-		requestCopyName: string;
-		maxTokensName: string;
-		returnStmt: t.ReturnStatement;
-		body: t.Statement[];
-	} | null = null;
+};
+
+// Cache the request clamp anchor per AST so the verify phase can reuse the
+// result the mutator's Program.exit hook already computed during mutate.
+const clampAnchorCache = new WeakMap<t.File, RequestClampAnchor | null>();
+
+function findRequestClampFunction(ast: t.File): RequestClampAnchor | null {
+	const cached = clampAnchorCache.get(ast);
+	if (cached !== undefined) return cached;
+
+	let match: RequestClampAnchor | null = null;
 
 	traverse(ast, {
 		Function(path) {
@@ -1303,6 +1306,7 @@ function findRequestClampFunction(ast: t.File): {
 		},
 	});
 
+	clampAnchorCache.set(ast, match);
 	return match;
 }
 
@@ -1786,8 +1790,10 @@ function isMapCallbackProperlyShaped(
 	return sawDecrement && sawCacheControlDestructure;
 }
 
-function verifyCacheControlBlockCap(ast: t.File): true | string {
-	const requestClampAnchor = findRequestClampFunction(ast);
+function verifyCacheControlBlockCap(
+	ast: t.File,
+	requestClampAnchor: ReturnType<typeof findRequestClampFunction>,
+): true | string {
 	if (!requestClampAnchor) {
 		return "Could not locate request clamp helper for cache_control cap";
 	}
@@ -1964,14 +1970,21 @@ export const cacheTailPolicy: Patch = {
 			return "Unable to parse AST for cache-tail-policy verification";
 		}
 
-		for (const check of [
-			verifyTailWindowPolicy,
-			verifySyspromptGlobalScope,
-			verifyScopedCacheControlTtl,
-			verifyAgentCacheTtlAllowlist,
-			verifyCacheControlBlockCap,
-		]) {
-			const result = check(verifyAst);
+		// Memoize the request clamp anchor for the verify pass instead of
+		// letting the block-cap verifier re-walk the bundle for it. The
+		// mutator's Program.exit hook does its own pass during mutate; this
+		// keeps a second walk out of verify.
+		const requestClampAnchor = findRequestClampFunction(verifyAst);
+
+		const checks: Array<() => true | string> = [
+			() => verifyTailWindowPolicy(verifyAst),
+			() => verifySyspromptGlobalScope(verifyAst),
+			() => verifyScopedCacheControlTtl(verifyAst),
+			() => verifyAgentCacheTtlAllowlist(verifyAst),
+			() => verifyCacheControlBlockCap(verifyAst, requestClampAnchor),
+		];
+		for (const check of checks) {
+			const result = check();
 			if (result !== true) {
 				return result;
 			}
