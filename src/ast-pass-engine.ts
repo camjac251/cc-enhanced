@@ -157,11 +157,21 @@ function materializePassVisitor(
 	const disabledTags = new Set<string>();
 	const warnedStopTags = new Set<string>();
 	const safeRun = (handlers: Handler[]) => (path: NodePath<t.Node>) => {
+		const initialNode = path.node;
 		for (const handler of handlers) {
 			if (
 				disabledTags.has(handler.tag) ||
 				globallyFailedTags.has(handler.tag)
 			) {
+				continue;
+			}
+			// If a prior merged handler replaced this node (via path.replaceWith
+			// or similar), skip handlers that were registered for the original
+			// node. They would otherwise inspect the replacement, which may be
+			// a different kind, and crash on missing fields. Babel re-traverses
+			// the replacement separately so kind-appropriate handlers still
+			// fire on the new node.
+			if (path.node !== initialNode) {
 				continue;
 			}
 			const pathWithStop = path as NodePath<t.Node> & { stop: () => void };

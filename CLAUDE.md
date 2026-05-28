@@ -198,6 +198,8 @@ Shared visitor kinds. Multiple patches register visitors for the same node kinds
 
 Rule of thumb: if a verifier needs to detect "did MY mutation land", it should mirror the mutator's own predicates exactly (capture per-site counters in module scope when feasible) rather than rely on a global shape check that could be satisfied by another patch's output.
 
+The combined-pass engine skips later merged handlers on a path whose node was replaced (different node instance) by an earlier handler, so kind-changing `path.replaceWith(...)` no longer crashes siblings that were registered for the original node kind. This is a safety net for full-node replacement only; in-place AST shape mutations (rewriting children, flipping operators, swapping test expressions) still flow through every sibling handler, so the hazards in the table above continue to require defensive matchers.
+
 ## Read Tool Token Pipeline
 
 Related files: `src/patches/limits.ts`, `src/patches/read-bat.ts`, `src/patches/limits.test.ts`, `src/patches/read-bat.test.ts`.
