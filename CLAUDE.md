@@ -45,6 +45,8 @@ type AstPassName = "discover" | "mutate" | "finalize";
 6. **Signature**: if all other patches verified, `signature.postApply` injects the applied tag list, then `signature.verify` runs.
 7. **Write**: only if `failedTags.length === 0`. Failed verifications skip the write entirely.
 
+**Memory hygiene** (load-bearing): one run holds a large fixed Babel working set over the ~22 MB formatted bundle. To keep that from compounding across the update flow, `run()` drops the parsed AST from `PatchResult` (`src/types.ts`) after printing, `src/patch-runner.ts` calls `clearTraverseCache()` (`src/babel.ts`) at the end of each run to release the Babel traverse cache, and the `--update` path (`src/index.ts`) forces a GC before spawning post-update verification so the verify pipeline starts from a clean heap. Removing any of these reintroduces the update-time OOM.
+
 **Native binary lifecycle** (`src/manager.ts`, `src/native.ts`, `src/native-linux.ts`):
 
 1. `unpack`: extract embedded `cli.js` from the ELF/Mach-O/PE binary.
@@ -71,7 +73,7 @@ Bun 1.3+ changed how standalone binaries embed and discover modules. The repack 
 **Repack strategy**:
 
 - The `cli.js` module has about 105 MB of precompiled bytecode in the data section.
-- Patched JS, about 16 MB formatted, is written directly over the bytecode area.
+- Patched JS, about 22 MB formatted, is written directly over the bytecode area.
 - The module content pointer is updated and the bytecode pointer is zeroed.
 - No overlay rebuild, no size changes, no ELF structure modifications.
 - The binary stays exactly the same size, so all virtual addresses and mappings remain valid.
@@ -127,13 +129,13 @@ The README has per-patch effect summaries; do not duplicate them in this file.
 
 ## Commands
 
-No build step. TypeScript runs directly via Bun. Babel + generator over the 16 MB bundle is heavy, but JSC sizes its heap dynamically, so no explicit heap flag is required.
+No build step. TypeScript runs directly via Bun. Babel + generator over the ~22 MB formatted bundle is heavy, but JSC sizes its heap dynamically, so no explicit heap flag is required.
 
 `package.json` is the canonical alias table. `mise.toml` is a thin task index that calls `bun run <alias>` and should not grow workflow logic, except for the `patch` safety guard. Put real behavior in TypeScript entry points and scripts (`src/index.ts`, `scripts/export-prompts.ts`, `scripts/verify-patches.ts`). Use `mise run <task> -- ...` to pass versions, paths, or flags through to the underlying alias.
 
 Use this command map instead of opening task files for orientation:
 
-- `native:update`: standard fetch, patch, promote, and `verify:patches` flow through `src/index.ts --update`. Accepts a positional version (`latest`, `next`, `stable`, or `X.Y.Z`).
+- `native:update`: standard fetch, patch, promote, and `verify:patches` flow through `src/index.ts --update`. Accepts a positional version (`latest`, `next`, `stable`, or `X.Y.Z`). Post-update verification runs lean: it checks prompt surfaces against the just-promoted binary instead of re-running the full patch pipeline again (the patch step already gated the promote on zero failed tags).
 - `native:fetch`, `native:fetch-patch`, `native:pull`, `native:promote`, `native:rollback`, `native:backup`, `native:restore`, `native:unpack`, `native:unpack-current`, `native:repack`, `status`, `list`: native binary/cache operations. `native:pull` writes clean JS to `versions_clean/<version>/cli.js`. `native:unpack-current` auto-detects the active binary via PATH.
 - `inspect`, `inspect:prompts`, `inspect:view`: bundle inspection through `src/inspector.ts`.
 - `diff`: release-to-release bundle drift through `src/diff.ts`. Run before changing patch anchors after an upstream release.
@@ -142,7 +144,7 @@ Use this command map instead of opening task files for orientation:
 - `prompts:export`, `prompts:bundle`: prompt artifact export (bundle mode is `--bundle` on the same exporter, not a separate workflow).
 - `prompts:compare`: vanilla-vs-patched prompt review (review-only; does not replace `verify:prompt-surfaces` or `verify:prompt-drift`).
 - `verify:cache`, `verify:cache:agent`: live cache efficiency benchmark; needs `ANTHROPIC_API_KEY`.
-- `test`, `typecheck`, `lint`, `format`, `lint:fix`: repository hygiene.
+- `test`, `typecheck`, `lint`, `format`, `lint:fix`: repository hygiene. Formatting and linting use Biome (`lint` = `biome check src/`, `format` = `biome format --write src/`); the bundle normalizer (`src/normalizer.ts`) also shells to the bundled Biome to format the extracted `cli.js` before parsing.
 
 Useful CLI flags on `src/index.ts` not always reflected in the alias table: `--dry-run`, `--force`, `--diff`, `--fast-verify` (skip duplicate per-patch verifier pass during update), `--skip-smoke-test`, `--summary-path <file>` for JSON dry-run summaries.
 
@@ -409,7 +411,7 @@ Patcher health:
 mise run verify:patches
 ```
 
-This runs the dry-run patch path against the native target plus anchor checks against the clean `cli.js`. It is the authoritative pre-promote signal. Output names every failed tag with the `verify()` reason string.
+This runs typecheck and lint, then patches the native target once (writing a temporary patched binary plus a `--summary-path` JSON of failed tags) and reuses that patched binary for the prompt-surface and prompt-drift checks. It does not promote, so it stays the authoritative pre-promote signal. The summary names every failed tag with the `verify()` reason string. Clean-`cli.js` anchor checks and the cli.js dry-run are opt-in via `CLI_TARGET`.
 
 For a wider sweep across cached clean versions:
 

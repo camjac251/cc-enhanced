@@ -154,9 +154,9 @@ export const promptDashStyle: Patch = {
 	astPasses: () => [
 		{
 			// Register node visitors directly in the shared finalize pass instead of
-			// a Program.exit hook that runs its own full traverse. prompt-dash-style
-			// is the only finalize patch, so this is the finalize traversal: one walk
-			// instead of two over the ~690K-node tree.
+			// a Program.exit hook that runs its own full traverse, so this patch's
+			// node work rides the existing finalize walk rather than adding a second
+			// full pass over the ~690K-node tree.
 			pass: "finalize" as const,
 			visitor: {
 				StringLiteral(path) {

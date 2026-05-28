@@ -48,7 +48,7 @@ flowchart LR
     class Abort fail
 ```
 
-Prompt-only edits run first as string transforms. Everything structural shares a single Babel traversal (`discover` -> `mutate` -> `finalize`) over the 16 MB bundle, so every AST patch sees the same parse. Each patch ships its own verifier; one failure is reported and the rest still apply. The repacked JavaScript goes back into the ELF container at the exact original byte length, so nothing downstream of the bundle is disturbed.
+Prompt-only edits run first as string transforms. Everything structural shares a single Babel traversal (`discover` -> `mutate` -> `finalize`) over the ~22 MB formatted bundle, so every AST patch sees the same parse. Each patch ships its own verifier; one failure is reported and the rest still apply. The repacked JavaScript goes back into the ELF container at the exact original byte length, so nothing downstream of the bundle is disturbed.
 
 ## Quick Start
 
@@ -202,7 +202,7 @@ mise run status                                   # Show current, previous, cach
 mise run native:pull -- <version>                 # Fetch upstream + extract clean JS to versions_clean/<version>/cli.js
 mise run native:unpack-current -- <out>           # Extract patched JS from the currently-promoted binary (auto-detects via PATH)
 mise run native:unpack -- <bin> <out>             # Extract embedded JS from any native binary
-mise run verify:patches                           # Typecheck + lint + native dry-run + prompt drift
+mise run verify:patches                           # Typecheck + lint + native patch + prompt drift
 mise run verify:patches:matrix                    # Dry-run patches against latest clean cli.js
 VERIFY_PATCHES_MATRIX_SCOPE=all mise run verify:patches:matrix
 mise run verify:anchors -- <patched-cli> <clean-cli>
@@ -386,7 +386,7 @@ Current target: **Claude Code 2.1.152**. Tracks the latest upstream release and 
 - A working **Claude Code** installation
 - A local Claude Code policy file at `/etc/claude-code/system-prompt.md`, or set `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE` to the file you want auto-appended
 
-Babel AST + generator over the 16 MB bundle is the heaviest part of the patcher. JSC (Bun's engine) sizes its heap dynamically, so no explicit flag is required; both direct `bun src/index.ts ...` and `mise` task invocations work.
+Babel AST + generator over the ~22 MB formatted bundle is the heaviest part of the patcher. JSC (Bun's engine) sizes its heap dynamically, so no explicit flag is required; both direct `bun src/index.ts ...` and `mise` task invocations work.
 
 The test suite uses `bun test` against the `node:test` API shim and is pinned to `--parallel=1` because bun's shim mishandles concurrent file loads. Use `bun run test` (which already pins the flag) rather than raw `bun test src/`.
 
