@@ -2152,124 +2152,83 @@ function createTabQueuePasses(): PatchAstPass[] {
 	];
 }
 
-function countVerifiedDraftTargets(ast: t.File): number {
-	let count = 0;
+type TabQueueVerifyCounts = {
+	draft: number;
+	tabEdit: number;
+	promptBarPreview: number;
+	typeahead: number;
+	deferredSubmitReceiver: number;
+	endTurnDrain: number;
+	footer: number;
+};
+
+// One full-tree traversal collects counts for every verified target instead
+// of running seven separate countVerified* walks. Each branch keeps the same
+// target predicates so the resulting counts feed the original 0/1/>1
+// ambiguity guards unchanged. The three function-shape kinds are kept
+// explicit (rather than using the babel Function alias) so we do not pick up
+// ObjectMethod / ClassMethod nodes that the original code excluded.
+function countAllVerifiedTargets(ast: t.File): TabQueueVerifyCounts {
+	const counts: TabQueueVerifyCounts = {
+		draft: 0,
+		tabEdit: 0,
+		promptBarPreview: 0,
+		typeahead: 0,
+		deferredSubmitReceiver: 0,
+		endTurnDrain: 0,
+		footer: 0,
+	};
+
+	const visitFunctionLike = (path: any): void => {
+		const drainTarget = getEndTurnDrainTarget(path);
+		if (drainTarget && hasEndTurnDrain(drainTarget)) {
+			counts.endTurnDrain++;
+		}
+		const footerTarget = getFooterHintTarget(path);
+		if (
+			footerTarget &&
+			hasQueueHint(footerTarget) &&
+			hasEditHint(footerTarget) &&
+			hasQueuePartsLengthFallback(footerTarget)
+		) {
+			counts.footer++;
+		}
+	};
+
 	traverse(ast, {
 		ObjectExpression(path) {
-			const target = getDraftQueueTarget(path);
-			if (
-				target &&
-				hasTabQueueGuard(target) &&
-				hasSubmitForwardDeferOption(target)
-			) {
-				count++;
+			const draftTarget = getDraftQueueTarget(path);
+			if (draftTarget) {
+				if (
+					hasTabQueueGuard(draftTarget) &&
+					hasSubmitForwardDeferOption(draftTarget)
+				) {
+					counts.draft++;
+				}
+				if (hasTabEditGuard(draftTarget)) {
+					counts.tabEdit++;
+				}
+				if (hasPromptBarPreview(draftTarget.ownerFunction.node)) {
+					counts.promptBarPreview++;
+				}
+			}
+			const deferredTarget = getDeferredSubmitReceiverTarget(path);
+			if (deferredTarget && hasDeferredSubmitReceiver(deferredTarget)) {
+				counts.deferredSubmitReceiver++;
 			}
 		},
-	});
-	return count;
-}
-
-function countVerifiedTabEditTargets(ast: t.File): number {
-	let count = 0;
-	traverse(ast, {
-		ObjectExpression(path) {
-			const target = getDraftQueueTarget(path);
-			if (target && hasTabEditGuard(target)) count++;
-		},
-	});
-	return count;
-}
-
-function countVerifiedPromptBarPreviewTargets(ast: t.File): number {
-	let count = 0;
-	traverse(ast, {
-		ObjectExpression(path) {
-			const target = getDraftQueueTarget(path);
-			if (target && hasPromptBarPreview(target.ownerFunction.node)) count++;
-		},
-	});
-	return count;
-}
-
-function countVerifiedTypeaheadTargets(ast: t.File): number {
-	let count = 0;
-	traverse(ast, {
 		IfStatement(path) {
-			const target = getTypeaheadThinkingHintTarget(path);
-			if (target && hasTypeaheadQueueBypass(target)) count++;
-		},
-	});
-	return count;
-}
-
-function countVerifiedDeferredSubmitReceivers(ast: t.File): number {
-	let count = 0;
-	traverse(ast, {
-		ObjectExpression(path) {
-			const target = getDeferredSubmitReceiverTarget(path);
-			if (target && hasDeferredSubmitReceiver(target)) count++;
-		},
-	});
-	return count;
-}
-
-function countVerifiedEndTurnDrains(ast: t.File): number {
-	let count = 0;
-	traverse(ast, {
-		FunctionDeclaration(path) {
-			const target = getEndTurnDrainTarget(path);
-			if (target && hasEndTurnDrain(target)) count++;
-		},
-		FunctionExpression(path) {
-			const target = getEndTurnDrainTarget(path);
-			if (target && hasEndTurnDrain(target)) count++;
-		},
-		ArrowFunctionExpression(path) {
-			const target = getEndTurnDrainTarget(path);
-			if (target && hasEndTurnDrain(target)) count++;
-		},
-	});
-	return count;
-}
-
-function countVerifiedFooterTargets(ast: t.File): number {
-	let count = 0;
-	traverse(ast, {
-		FunctionDeclaration(path) {
-			const target = getFooterHintTarget(path);
-			if (
-				target &&
-				hasQueueHint(target) &&
-				hasEditHint(target) &&
-				hasQueuePartsLengthFallback(target)
-			) {
-				count++;
+			const typeaheadTarget = getTypeaheadThinkingHintTarget(path);
+			if (typeaheadTarget && hasTypeaheadQueueBypass(typeaheadTarget)) {
+				counts.typeahead++;
 			}
 		},
-		FunctionExpression(path) {
-			const target = getFooterHintTarget(path);
-			if (
-				target &&
-				hasQueueHint(target) &&
-				hasEditHint(target) &&
-				hasQueuePartsLengthFallback(target)
-			) {
-				count++;
-			}
-		},
-		ArrowFunctionExpression(path) {
-			const target = getFooterHintTarget(path);
-			if (
-				target &&
-				hasQueueHint(target) &&
-				hasEditHint(target) &&
-				hasQueuePartsLengthFallback(target)
-			) {
-				count++;
-			}
-		},
+		FunctionDeclaration: visitFunctionLike,
+		FunctionExpression: visitFunctionLike,
+		ArrowFunctionExpression: visitFunctionLike,
 	});
-	return count;
+
+	return counts;
 }
 
 export const tabQueue: Patch = {
@@ -2281,61 +2240,55 @@ export const tabQueue: Patch = {
 		const verifyAst = getVerifyAst(code, ast);
 		if (!verifyAst) return "Unable to parse AST during tab-queue verification";
 
-		const draftTargetCount = countVerifiedDraftTargets(verifyAst);
-		if (draftTargetCount === 0) {
+		const counts = countAllVerifiedTargets(verifyAst);
+
+		if (counts.draft === 0) {
 			return "Draft Tab queue key handler not found";
 		}
-		if (draftTargetCount > 1) {
-			return `Draft Tab queue key handler is ambiguous (${draftTargetCount} handlers found)`;
+		if (counts.draft > 1) {
+			return `Draft Tab queue key handler is ambiguous (${counts.draft} handlers found)`;
 		}
 
-		const editTargetCount = countVerifiedTabEditTargets(verifyAst);
-		if (editTargetCount === 0) {
+		if (counts.tabEdit === 0) {
 			return "Draft Tab queue edit handler not found";
 		}
-		if (editTargetCount > 1) {
-			return `Draft Tab queue edit handler is ambiguous (${editTargetCount} handlers found)`;
+		if (counts.tabEdit > 1) {
+			return `Draft Tab queue edit handler is ambiguous (${counts.tabEdit} handlers found)`;
 		}
 
-		const promptBarPreviewCount =
-			countVerifiedPromptBarPreviewTargets(verifyAst);
-		if (promptBarPreviewCount === 0) {
+		if (counts.promptBarPreview === 0) {
 			return "Draft Tab queue prompt bar preview not found";
 		}
-		if (promptBarPreviewCount > 1) {
-			return `Draft Tab queue prompt bar preview is ambiguous (${promptBarPreviewCount} previews found)`;
+		if (counts.promptBarPreview > 1) {
+			return `Draft Tab queue prompt bar preview is ambiguous (${counts.promptBarPreview} previews found)`;
 		}
 
-		const typeaheadTargetCount = countVerifiedTypeaheadTargets(verifyAst);
-		if (typeaheadTargetCount === 0) {
+		if (counts.typeahead === 0) {
 			return "Draft Tab queue typeahead bypass not found";
 		}
-		if (typeaheadTargetCount > 1) {
-			return `Draft Tab queue typeahead bypass is ambiguous (${typeaheadTargetCount} bypasses found)`;
+		if (counts.typeahead > 1) {
+			return `Draft Tab queue typeahead bypass is ambiguous (${counts.typeahead} bypasses found)`;
 		}
 
-		const receiverTargetCount = countVerifiedDeferredSubmitReceivers(verifyAst);
-		if (receiverTargetCount === 0) {
+		if (counts.deferredSubmitReceiver === 0) {
 			return "Deferred Tab queue submit receiver not found";
 		}
-		if (receiverTargetCount > 1) {
-			return `Deferred Tab queue submit receiver is ambiguous (${receiverTargetCount} receivers found)`;
+		if (counts.deferredSubmitReceiver > 1) {
+			return `Deferred Tab queue submit receiver is ambiguous (${counts.deferredSubmitReceiver} receivers found)`;
 		}
 
-		const drainTargetCount = countVerifiedEndTurnDrains(verifyAst);
-		if (drainTargetCount === 0) {
+		if (counts.endTurnDrain === 0) {
 			return "Deferred Tab queue end-turn drain not found";
 		}
-		if (drainTargetCount > 1) {
-			return `Deferred Tab queue end-turn drain is ambiguous (${drainTargetCount} drains found)`;
+		if (counts.endTurnDrain > 1) {
+			return `Deferred Tab queue end-turn drain is ambiguous (${counts.endTurnDrain} drains found)`;
 		}
 
-		const footerTargetCount = countVerifiedFooterTargets(verifyAst);
-		if (footerTargetCount === 0) {
+		if (counts.footer === 0) {
 			return "Draft Tab queue footer hint not found";
 		}
-		if (footerTargetCount > 1) {
-			return `Draft Tab queue footer hint is ambiguous (${footerTargetCount} hints found)`;
+		if (counts.footer > 1) {
+			return `Draft Tab queue footer hint is ambiguous (${counts.footer} hints found)`;
 		}
 
 		return true;
