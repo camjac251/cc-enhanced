@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > Read this file in full before proposing or making changes. Every section encodes a constraint the patcher depends on. Every rule below has a failure history; skimming will miss rules that invalidate otherwise-reasonable suggestions.
 
-AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle (~16 MB minified) embedded in the native Bun binary, applies 35 verifiable patches, and repacks in place at the original byte length. Tracks the latest upstream release; the README badge is the canonical version anchor and `claude --version` on the promoted binary is the runtime check. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
+AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle (~16 MB minified) embedded in the native Bun binary, applies 36 verifiable patches, and repacks in place at the original byte length. Tracks the latest upstream release; the README badge is the canonical version anchor and `claude --version` on the promoted binary is the runtime check. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
 
 ## Hard Rules
 
@@ -85,7 +85,7 @@ When orienting in this repo, reach for these by purpose:
 | Need | Look at |
 |---|---|
 | Patch interface and result types | `src/types.ts` |
-| All 35 patches | `src/patches/<tag>.ts` (each ships `<tag>.test.ts`) |
+| All 36 patches | `src/patches/<tag>.ts` (each ships `<tag>.test.ts`) |
 | Patch barrel + `allPatches` | `src/patches/index.ts` |
 | Group and label registry | `src/patch-metadata.ts` (`BY_TAG`) |
 | AST helpers (`getVerifyAst`, key/property lookups) | `src/patches/ast-helpers.ts` |
@@ -118,7 +118,7 @@ Groups in `src/patch-metadata.ts` order verification reports. Listed group order
 |---|---|
 | Prompt | Replaces prompt text. `bash-prompt`, `built-in-agent-prompt`, `claudemd-strong`, `memory-prompt-soften`, `prompt-dash-style`, `session-guidance`, `subagent-system-prompt`, `todo-use` |
 | Tooling | Built-in tool behavior. `read-bat`, `edit-extended`, `bash-tail`, `tools-off`, `shell-quote-fix`, `mcp-server-name`, `taskout-ext`, `lsp-multi-server`, `lsp-workspace-symbol` |
-| Agent | Built-in agent and command registry. `agents-off`, `commands-off` |
+| Agent | Built-in agent and command registry. `agents-off`, `commands-off`, `skill-paths-invoke` |
 | System | Runtime behavior, caching, memory, limits. `cache-tail-policy`, `effort-max`, `feature-flags`, `image-limits`, `no-autoupdate`, `limits`, `session-mem`, `sys-prompt-file` |
 | UX | Terminal interface polish. `plan-diff-ui`, `plan-compact-execute`, `no-collapse`, `subagent-model-tag`, `skill-listing-ui`, `agent-listing-ui`, `tab-queue` |
 | Metadata | `signature` only. Runs last via `postApply`, embeds the applied-tag list in `claude --version`. |
@@ -156,7 +156,7 @@ Build-time env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS
 4. Add a `BY_TAG` record in `src/patch-metadata.ts` with `tag`, `label`, and `group`.
 5. If the patch affects exported live guidance, update `src/verification/prompt-surface-rules.ts` and (if it touches shared policy) the contract in `src/verification/prompt-policy-contract.ts`.
 6. **When the total patch count changes** (adding or removing a patch), update every place the count appears, in the same change:
-   - The intro count (`applies 35 verifiable patches`).
+   - The intro count (`applies 36 verifiable patches`).
    - `README.md` intro paragraph and the patch-count badge near the top.
    - GitHub repo description: `gh api -X PATCH repos/camjac251/cc-enhanced -f description="..."`. The current description embeds the count; keep them in sync.
    - Confirm the new total against `bun run cli --list` before pushing.

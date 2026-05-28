@@ -121,6 +121,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Disable built-in commands",
 		group: "Agent",
 	},
+	"skill-paths-invoke": {
+		tag: "skill-paths-invoke",
+		label: "Skill paths invocation",
+		group: "Agent",
+	},
 	"no-collapse": {
 		tag: "no-collapse",
 		label: "Disable collapse",
