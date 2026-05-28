@@ -175,6 +175,7 @@ Terminal interface polish.
 | `CLAUDE_PATCHER_EXCLUDE_TAGS` | Comma-separated blocklist. Listed patches are skipped. |
 | `CLAUDE_PATCHER_REVISION` | Override the revision string embedded in the signature. |
 | `CLAUDE_PATCHER_CACHE_KEEP` | Retain extra cached builds beyond the default rotation. |
+| `CLAUDE_PATCHER_PROFILE` | Set to `1` to emit a stderr summary of per-phase and per-tag verify timings after each patch run. |
 
 ### Runtime (installed binary)
 

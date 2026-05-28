@@ -59,6 +59,14 @@ export class PatchRunner {
 		const originalCode = await fs.readFile(filePath, "utf-8");
 		let code = originalCode;
 
+		// Optional pipeline profiling, gated by CLAUDE_PATCHER_PROFILE=1.
+		// Emits one stderr summary line at the end of the run with
+		// parse/passes/print/verify times and the slowest verify tags.
+		const profileEnabled =
+			process.env.CLAUDE_PATCHER_PROFILE === "1" ||
+			process.env.CLAUDE_PATCHER_PROFILE === "true";
+		const verifyTimings = new Map<string, number>();
+
 		const appliedTags: string[] = [];
 		const failedTags: string[] = [];
 		const verifications: PatchVerification[] = [];
@@ -88,6 +96,7 @@ export class PatchRunner {
 		}
 
 		// Phase 2: Parse AST
+		const tBeforeParse = performance.now();
 		const parseSpinner = ora({
 			text: `Parsing AST (${(code.length / 1024 / 1024).toFixed(1)} MB)`,
 			prefixText: "   ",
@@ -95,6 +104,7 @@ export class PatchRunner {
 		}).start();
 		const ast = parse(code);
 		parseSpinner.succeed("AST parsed");
+		const tAfterParse = performance.now();
 
 		// Phase 3: Run AST-based patches
 		const combinedPatchEntries: Array<{ tag: string; pass: PatchAstPass }> = [];
@@ -121,6 +131,7 @@ export class PatchRunner {
 			}
 		}
 
+		const tBeforePasses = performance.now();
 		if (combinedPatchEntries.length > 0) {
 			await runCombinedAstPasses(
 				ast,
@@ -142,8 +153,11 @@ export class PatchRunner {
 			);
 		}
 
+		const tAfterPasses = performance.now();
+
 		// Phase 4: Print AST to code
 		const output = print(ast);
+		const tAfterPrint = performance.now();
 
 		// Phase 5: Verify all patches
 		for (const patch of this.patches) {
@@ -161,7 +175,9 @@ export class PatchRunner {
 					failedTags.push(patch.tag);
 					continue;
 				}
+				const verifyStart = performance.now();
 				const result = patch.verify(output, ast);
+				verifyTimings.set(patch.tag, performance.now() - verifyStart);
 				const meta = getPatchMetadata(patch.tag);
 				if (result === true) {
 					verifications.push({
@@ -338,6 +354,22 @@ export class PatchRunner {
 		}
 
 		const groupResults = buildGroupResults(verifications);
+
+		const tAfterVerify = performance.now();
+		if (profileEnabled) {
+			const parseMs = (tAfterParse - tBeforeParse).toFixed(1);
+			const passesMs = (tAfterPasses - tBeforePasses).toFixed(1);
+			const printMs = (tAfterPrint - tAfterPasses).toFixed(1);
+			const verifyMs = (tAfterVerify - tAfterPrint).toFixed(1);
+			const topVerify = [...verifyTimings.entries()]
+				.sort((a, b) => b[1] - a[1])
+				.slice(0, 6)
+				.map(([tag, ms]) => `${tag}=${ms.toFixed(1)}ms`)
+				.join(" ");
+			console.error(
+				`[profile] parse=${parseMs}ms passes=${passesMs}ms print=${printMs}ms verify=${verifyMs}ms top: ${topVerify}`,
+			);
+		}
 
 		// Release Babel's path/scope cache for this run before returning. Callers
 		// hold the result across memory-heavy work (post-update verification spawns
