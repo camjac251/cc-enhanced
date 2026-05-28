@@ -6,6 +6,7 @@ import * as path from "node:path";
 import chalk from "chalk";
 import ora from "ora";
 import { runCombinedAstPasses } from "./ast-pass-engine.js";
+import { clearTraverseCache } from "./babel.js";
 import { parse, print } from "./loader.js";
 import { buildGroupResults, getPatchMetadata } from "./patch-metadata.js";
 import { allPatches, getLimitsChanged, signature } from "./patches/index.js";
@@ -338,12 +339,17 @@ export class PatchRunner {
 
 		const groupResults = buildGroupResults(verifications);
 
+		// Release Babel's path/scope cache for this run before returning. Callers
+		// hold the result across memory-heavy work (post-update verification spawns
+		// its own full pipeline), and a populated cache keeps the entire NodePath
+		// graph resident the whole time.
+		clearTraverseCache();
+
 		return {
 			appliedTags,
 			failedTags,
 			verifications,
 			groupResults,
-			ast,
 			limits: getLimitsChanged(),
 			errors: errors.map(({ tag, error }) => ({ tag, reason: error.message })),
 		};

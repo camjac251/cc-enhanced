@@ -64,9 +64,6 @@ export interface PatchResult {
 	/** Aggregated verification result by patch group */
 	groupResults?: PatchGroupResult[];
 
-	/** The final AST (for signature injection) */
-	ast?: t.File;
-
 	/** Runtime patch execution errors captured before verification */
 	errors?: Array<{ tag: string; reason: string }>;
 

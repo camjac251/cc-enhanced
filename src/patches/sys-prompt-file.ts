@@ -102,7 +102,7 @@ function findPathHelpers(
 				} else if (t.isCallExpression(innerStmt.test)) {
 					call = innerStmt.test;
 				}
-				if (!call || call.arguments.length !== 1) continue;
+				if (call?.arguments.length !== 1) continue;
 				if (!t.isExpression(call.callee)) continue;
 				const [firstArg] = call.arguments;
 				if (

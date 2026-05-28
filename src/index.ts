@@ -60,12 +60,19 @@ function stringifySummary(report: unknown): string {
 	}
 }
 
-function runPostUpdateVerification(): void {
+function runPostUpdateVerification(promotedBinary?: string): void {
 	console.log(chalk.bold("\nPost-update verification"));
 	console.log("$ bun scripts/verify-patches.ts");
+	const env = { ...process.env };
+	if (promotedBinary) {
+		// Tell verify-patches to check prompts against this just-promoted binary
+		// rather than re-running the full patch pipeline twice more (the patch
+		// step already verified and gated the promote on zero failed tags).
+		env.CC_POST_UPDATE_PROMOTED = promotedBinary;
+	}
 	const result = spawnSync(process.execPath, ["scripts/verify-patches.ts"], {
 		cwd: repoRoot,
-		env: process.env,
+		env,
 		stdio: "inherit",
 	});
 	if (result.error) throw result.error;
@@ -626,7 +633,17 @@ async function main() {
 				console.log(`Summary written to ${p}`);
 			}
 			printUpdateResult(result);
-			if (!result.dryRun) runPostUpdateVerification();
+			if (!result.dryRun) {
+				// spawnSync below blocks this thread through the whole verification
+				// chain, which spawns its own full patch pipeline. No GC runs while
+				// blocked, so force one now to free this run's AST and Babel path
+				// cache before the child's peak; otherwise the parent's resident set
+				// stacks on the child's and the pair can exhaust memory.
+				(globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(
+					true,
+				);
+				runPostUpdateVerification(result.promoteResult?.target);
+			}
 		} catch (e) {
 			console.error(e);
 			process.exit(1);

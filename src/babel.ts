@@ -26,5 +26,17 @@ export const traverse = unwrap(_traverse) as TraverseFn;
 export const generator = unwrap(_generator) as GeneratorFn;
 export const template = unwrap(_template) as TemplateFn;
 
+/**
+ * Drop @babel/traverse's global path/scope cache.
+ *
+ * The cache holds a NodePath/Scope graph weakly keyed by the File node, so it
+ * stays resident for as long as the parsed AST is reachable. On the large
+ * bundle this graph outweighs the AST itself, so a long-lived process must
+ * clear it after a run or the wrappers persist into later memory-heavy work.
+ */
+export function clearTraverseCache(): void {
+	(traverse as unknown as { cache?: { clear?: () => void } }).cache?.clear?.();
+}
+
 export type { GeneratorOptions } from "@babel/generator";
 export type { NodePath, Visitor } from "@babel/traverse";

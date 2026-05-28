@@ -168,22 +168,20 @@ function assertCleanSummary(summaryPath: string, label: string): void {
 	const parsed = JSON.parse(
 		fs.readFileSync(summaryPath, "utf8"),
 	) as DryRunSummary;
+	// A failed patch run reports a top-level error and no result, so check that
+	// first to surface the real reason rather than a schema complaint.
+	if (parsed.error != null) {
+		throw new Error(
+			`Patch run reported an error for ${label}: ${String(parsed.error)}`,
+		);
+	}
 	const result = parsed.result;
 	if (
 		!result ||
 		!Array.isArray(result.failedTags) ||
 		!Array.isArray(result.appliedTags)
 	) {
-		throw new Error(
-			`Invalid dry-run summary schema for ${label}: ${summaryPath}`,
-		);
-	}
-	if (parsed.error != null) {
-		throw new Error(
-			`Dry-run summary reports top-level error for ${label}: ${String(
-				parsed.error,
-			)}`,
-		);
+		throw new Error(`Invalid summary schema for ${label}: ${summaryPath}`);
 	}
 	if (result.failedTags.length === 0) return;
 
@@ -242,28 +240,14 @@ function verifyCliTarget(cliTarget: string, paths: VerifyPaths): void {
 	assertCleanSummary(paths.cliSummary, "cli.js");
 }
 
-function verifyNativeTarget(nativeTarget: string, paths: VerifyPaths): void {
+function runPromptExportAndVerify(
+	patchedBinary: string,
+	paths: VerifyPaths,
+): void {
 	runBun([
 		"src/index.ts",
 		"--target",
-		nativeTarget,
-		"--dry-run",
-		"--summary-path",
-		paths.nativeSummary,
-	]);
-	assertCleanSummary(paths.nativeSummary, "native");
-
-	runBun([
-		"src/index.ts",
-		"--target",
-		nativeTarget,
-		"--output",
-		paths.nativePatchedForPrompts,
-	]);
-	runBun([
-		"src/index.ts",
-		"--target",
-		paths.nativePatchedForPrompts,
+		patchedBinary,
 		"--unpack",
 		paths.nativePatchedJs,
 	]);
@@ -280,7 +264,6 @@ function verifyNativeTarget(nativeTarget: string, paths: VerifyPaths): void {
 		"--verify-prompt-surfaces",
 		paths.nativePromptExportDir,
 	]);
-
 	runBun([
 		"src/index.ts",
 		"--verify-prompt-drift",
@@ -288,6 +271,34 @@ function verifyNativeTarget(nativeTarget: string, paths: VerifyPaths): void {
 		"--prompt-drift-baseline",
 		promptDriftBaselinePath(),
 	]);
+}
+
+function verifyNativeTarget(nativeTarget: string, paths: VerifyPaths): void {
+	const promotedBinary = envValue("CC_POST_UPDATE_PROMOTED");
+	if (promotedBinary && fileExists(promotedBinary)) {
+		// Post-update: the patch step already produced this binary and gated the
+		// promote on zero failed tags, and updateNative re-checked anchors before
+		// promoting. A dry-run patch (correctness) and an --output re-patch (only
+		// to feed the prompt export) would each repeat the full ~150s/13GB
+		// pipeline. Verify prompts against the promoted artifact itself instead.
+		runPromptExportAndVerify(promotedBinary, paths);
+		return;
+	}
+
+	// Standalone verify:patches: no fresh promote to trust. A single patch run
+	// both writes the binary for the prompt export and emits the summary we assert
+	// failed-tags-clean on, instead of a separate dry-run plus re-patch.
+	runBun([
+		"src/index.ts",
+		"--target",
+		nativeTarget,
+		"--output",
+		paths.nativePatchedForPrompts,
+		"--summary-path",
+		paths.nativeSummary,
+	]);
+	assertCleanSummary(paths.nativeSummary, "native");
+	runPromptExportAndVerify(paths.nativePatchedForPrompts, paths);
 }
 
 function verifyAnchors(cliTarget: string, paths: VerifyPaths): void {

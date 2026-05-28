@@ -124,27 +124,6 @@ function templateText(node: t.TemplateLiteral): string {
 		.join("");
 }
 
-function normalizePromptDashes(ast: t.File): void {
-	traverse(ast, {
-		StringLiteral(path) {
-			if (!isPromptDashCandidate(path.node.value, path)) return;
-			path.node.value = normalizePromptDashText(path.node.value);
-		},
-		TemplateLiteral(path) {
-			const text = templateText(path.node);
-			if (!isPromptDashCandidate(text, path)) return;
-
-			for (const quasi of path.node.quasis) {
-				const original = quasi.value.cooked ?? quasi.value.raw;
-				const next = normalizePromptDashText(original);
-				if (next === original) continue;
-				quasi.value.cooked = next;
-				quasi.value.raw = escapeTemplateRaw(next);
-			}
-		},
-	});
-}
-
 function findResidualPromptDash(ast: t.File): string | null {
 	let residual: string | null = null;
 	traverse(ast, {
@@ -172,14 +151,29 @@ function findResidualPromptDash(ast: t.File): string | null {
 export const promptDashStyle: Patch = {
 	tag: "prompt-dash-style",
 
-	astPasses: (ast) => [
+	astPasses: () => [
 		{
+			// Register node visitors directly in the shared finalize pass instead of
+			// a Program.exit hook that runs its own full traverse. prompt-dash-style
+			// is the only finalize patch, so this is the finalize traversal: one walk
+			// instead of two over the ~690K-node tree.
 			pass: "finalize" as const,
 			visitor: {
-				Program: {
-					exit() {
-						normalizePromptDashes(ast);
-					},
+				StringLiteral(path) {
+					if (!isPromptDashCandidate(path.node.value, path)) return;
+					path.node.value = normalizePromptDashText(path.node.value);
+				},
+				TemplateLiteral(path) {
+					const text = templateText(path.node);
+					if (!isPromptDashCandidate(text, path)) return;
+
+					for (const quasi of path.node.quasis) {
+						const original = quasi.value.cooked ?? quasi.value.raw;
+						const next = normalizePromptDashText(original);
+						if (next === original) continue;
+						quasi.value.cooked = next;
+						quasi.value.raw = escapeTemplateRaw(next);
+					}
 				},
 			},
 		},

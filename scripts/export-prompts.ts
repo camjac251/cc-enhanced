@@ -261,7 +261,8 @@ async function resolveCurrentInput(
 		path.join(os.tmpdir(), "cc-prompts-current-"),
 	);
 	const cliPath = path.join(cleanupDir, "cli.js");
-	const extracted = extractClaudeJsFromNativeBinary(binaryPath).toString("utf-8");
+	const extracted =
+		extractClaudeJsFromNativeBinary(binaryPath).toString("utf-8");
 	const wrapper = unwrapBunCjsModule(extracted);
 	const formatted = await normalize(wrapper ? wrapper.body : extracted, {
 		filepath: cliPath,

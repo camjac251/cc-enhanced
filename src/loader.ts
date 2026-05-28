@@ -25,6 +25,9 @@ const SCRIPT_PARSE_OPTIONS = {
 } satisfies parser.ParserOptions;
 
 const GENERATOR_OPTIONS = {
+	// retainLines must stay true: turning it off reflows generated output enough
+	// to break verifiers that assert on the printed shape (e.g. read-bat's Read
+	// prompt examples). The generate cost it adds is not worth that breakage.
 	retainLines: true,
 	compact: false,
 } satisfies GeneratorOptions;
