@@ -127,6 +127,7 @@ function collectCurrentLimits(ast: t.File): {
 	tokenBudget?: number;
 	resultSizeCap?: number;
 	readMaxResultSize?: number;
+	hasTokenEnvRef?: boolean;
 } {
 	const current: {
 		linesCap?: number;
@@ -135,8 +136,12 @@ function collectCurrentLimits(ast: t.File): {
 		tokenBudget?: number;
 		resultSizeCap?: number;
 		readMaxResultSize?: number;
+		hasTokenEnvRef?: boolean;
 	} = {};
 
+	// One full-tree traversal collects every verifier input at once. Each
+	// branch keeps its own first-match guard so the result matches what
+	// five separate traverses plus an env-ref check produced before.
 	traverse(ast, {
 		TemplateLiteral(path: any) {
 			if (current.linesCap !== undefined && current.lineChars !== undefined)
@@ -162,118 +167,111 @@ function collectCurrentLimits(ast: t.File): {
 				if (text.includes("longer than ")) current.lineChars = init.value;
 			}
 		},
-	});
-
-	traverse(ast, {
 		Function(path: any) {
-			if (current.byteCeiling !== undefined) return;
-			if (!t.isBlockStatement(path.node.body)) return;
-			if (path.node.params.length < 2) return;
+			// byteCeiling: file-size check function
+			if (
+				current.byteCeiling === undefined &&
+				t.isBlockStatement(path.node.body) &&
+				path.node.params.length >= 2
+			) {
+				const [fileParam, limitParam] = path.node.params;
+				if (
+					t.isIdentifier(fileParam) &&
+					t.isAssignmentPattern(limitParam) &&
+					t.isIdentifier(limitParam.left) &&
+					t.isIdentifier(limitParam.right)
+				) {
+					const fileParamName = fileParam.name;
+					const limitParamName = limitParam.left.name;
+					const byteCeilingVarName = limitParam.right.name;
+					const fileBinding = path.scope.getBinding(fileParamName);
+					const limitBinding = path.scope.getBinding(limitParamName);
 
-			const [fileParam, limitParam] = path.node.params;
-			if (!t.isIdentifier(fileParam)) return;
-			if (!t.isAssignmentPattern(limitParam)) return;
-			if (!t.isIdentifier(limitParam.left)) return;
-			if (!t.isIdentifier(limitParam.right)) return;
+					let isFileSizeCheckFn = false;
+					path.traverse({
+						BinaryExpression(innerPath: any) {
+							const node = innerPath.node;
+							if (node.operator !== "<=") return;
+							if (!isSameBinding(innerPath, node.right, limitBinding)) return;
 
-			const fileParamName = fileParam.name;
-			const limitParamName = limitParam.left.name;
-			const byteCeilingVarName = limitParam.right.name;
-			const fileBinding = path.scope.getBinding(fileParamName);
-			const limitBinding = path.scope.getBinding(limitParamName);
+							const left = node.left;
+							if (!t.isMemberExpression(left)) return;
+							if (!isMemberPropertyName(left, "size")) return;
 
-			let isFileSizeCheckFn = false;
-			path.traverse({
-				BinaryExpression(innerPath: any) {
-					const node = innerPath.node;
-					if (node.operator !== "<=") return;
-					if (!isSameBinding(innerPath, node.right, limitBinding)) return;
+							const statCall = left.object;
+							if (!t.isCallExpression(statCall)) return;
+							if (!t.isMemberExpression(statCall.callee)) return;
+							if (!isMemberPropertyName(statCall.callee, "statSync")) return;
+							if (
+								statCall.arguments.length < 1 ||
+								!isSameBinding(innerPath, statCall.arguments[0], fileBinding)
+							)
+								return;
 
-					const left = node.left;
-					if (!t.isMemberExpression(left)) return;
-					if (!isMemberPropertyName(left, "size")) return;
-
-					const statCall = left.object;
-					if (!t.isCallExpression(statCall)) return;
-					if (!t.isMemberExpression(statCall.callee)) return;
-					if (!isMemberPropertyName(statCall.callee, "statSync")) return;
-					if (
-						statCall.arguments.length < 1 ||
-						!isSameBinding(innerPath, statCall.arguments[0], fileBinding)
-					)
-						return;
-
-					isFileSizeCheckFn = true;
-					innerPath.stop();
-				},
-			});
-			if (!isFileSizeCheckFn) return;
-
-			const binding = path.scope.getBinding(byteCeilingVarName);
-			const init =
-				binding && t.isVariableDeclarator(binding.path.node)
-					? binding.path.node.init
-					: null;
-			if (!t.isNumericLiteral(init)) return;
-
-			current.byteCeiling = init.value;
-			path.stop();
-		},
-	});
-
-	traverse(ast, {
-		Function(path: any) {
-			if (current.tokenBudget !== undefined) return;
-			if (!t.isBlockStatement(path.node.body)) return;
-
-			let hasEnv = false;
-			path.traverse({
-				MemberExpression(innerPath: any) {
-					const node = innerPath.node;
-					const prop = node.property;
-					const propName =
-						(t.isIdentifier(prop) && prop.name) ||
-						(t.isStringLiteral(prop) && prop.value) ||
-						null;
-					if (propName !== "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS") return;
-					hasEnv = true;
-					innerPath.stop();
-				},
-			});
-			if (!hasEnv) return;
-
-			// The token budget default is stored as a sibling variable after the function.
-			const nextSibling = path.getNextSibling?.();
-			if (nextSibling?.node && t.isVariableDeclaration(nextSibling.node)) {
-				for (const decl of nextSibling.node.declarations) {
-					if (
-						t.isNumericLiteral(decl.init) &&
-						(decl.init.value === 25000 || decl.init.value === NEW_TOKEN_BUDGET)
-					) {
-						current.tokenBudget = decl.init.value;
-						break;
+							isFileSizeCheckFn = true;
+							innerPath.stop();
+						},
+					});
+					if (isFileSizeCheckFn) {
+						const binding = path.scope.getBinding(byteCeilingVarName);
+						const init =
+							binding && t.isVariableDeclarator(binding.path.node)
+								? binding.path.node.init
+								: null;
+						if (t.isNumericLiteral(init)) {
+							current.byteCeiling = init.value;
+						}
 					}
 				}
 			}
 
-			if (current.tokenBudget !== undefined) path.stop();
+			// tokenBudget: function whose body references the env var, with
+			// the budget default declared as the next sibling variable.
+			if (
+				current.tokenBudget === undefined &&
+				t.isBlockStatement(path.node.body)
+			) {
+				let hasEnv = false;
+				path.traverse({
+					MemberExpression(innerPath: any) {
+						const node = innerPath.node;
+						const prop = node.property;
+						const propName =
+							(t.isIdentifier(prop) && prop.name) ||
+							(t.isStringLiteral(prop) && prop.value) ||
+							null;
+						if (propName !== "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS") return;
+						hasEnv = true;
+						innerPath.stop();
+					},
+				});
+				if (hasEnv) {
+					const nextSibling = path.getNextSibling?.();
+					if (nextSibling?.node && t.isVariableDeclaration(nextSibling.node)) {
+						for (const decl of nextSibling.node.declarations) {
+							if (
+								t.isNumericLiteral(decl.init) &&
+								(decl.init.value === 25000 ||
+									decl.init.value === NEW_TOKEN_BUDGET)
+							) {
+								current.tokenBudget = decl.init.value;
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			// resultSizeCap
+			if (current.resultSizeCap === undefined) {
+				const resolved = resolveResultSizeCapBinding(path);
+				if (resolved) {
+					current.resultSizeCap = resolved.value;
+				}
+			}
 		},
-	});
-
-	traverse(ast, {
-		Function(path: any) {
-			if (current.resultSizeCap !== undefined) return;
-			const resolved = resolveResultSizeCapBinding(path);
-			if (!resolved) return;
-
-			current.resultSizeCap = resolved.value;
-			path.stop();
-		},
-	});
-
-	// Find Read tool's maxResultSizeChars
-	traverse(ast, {
 		ObjectExpression(path: any) {
+			// Read tool's maxResultSizeChars
 			if (current.readMaxResultSize !== undefined) return;
 			const nameProp = path.node.properties.find(
 				(p: any): p is t.ObjectProperty =>
@@ -316,7 +314,20 @@ function collectCurrentLimits(ast: t.File): {
 			if (resolved === null) return;
 
 			current.readMaxResultSize = resolved;
-			path.stop();
+		},
+		MemberExpression(path: any) {
+			// Token-budget env var: just confirm an occurrence exists somewhere
+			// in the bundle. The original verify did a dedicated full-tree
+			// traverse for this; folding it in here drops one full walk.
+			if (current.hasTokenEnvRef) return;
+			const prop = path.node.property;
+			const propName =
+				(t.isIdentifier(prop) && prop.name) ||
+				(t.isStringLiteral(prop) && prop.value) ||
+				null;
+			if (propName === "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS") {
+				current.hasTokenEnvRef = true;
+			}
 		},
 	});
 
@@ -648,22 +659,7 @@ export const limits: Patch = {
 			return `resultSizeCap (${current.resultSizeCap}) must be less than readMaxResultSize (${current.readMaxResultSize}) for persistence to govern`;
 		}
 
-		// Verify the token budget function still references the env var override
-		let hasTokenEnvRef = false;
-		traverse(ast, {
-			MemberExpression(path: any) {
-				const prop = path.node.property;
-				const propName =
-					(t.isIdentifier(prop) && prop.name) ||
-					(t.isStringLiteral(prop) && prop.value) ||
-					null;
-				if (propName === "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS") {
-					hasTokenEnvRef = true;
-					path.stop();
-				}
-			},
-		});
-		if (!hasTokenEnvRef) {
+		if (!current.hasTokenEnvRef) {
 			return "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS env var reference not found in token budget function";
 		}
 
