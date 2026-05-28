@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > Read this file in full before proposing or making changes. Every section encodes a constraint the patcher depends on. Every rule below has a failure history; skimming will miss rules that invalidate otherwise-reasonable suggestions.
 
-AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle (~16 MB minified) embedded in the native Bun binary, applies 36 verifiable patches, and repacks in place at the original byte length. Tracks the latest upstream release; the README badge is the canonical version anchor and `claude --version` on the promoted binary is the runtime check. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
+AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle embedded in the native Bun binary, applies 36 verifiable patches, and repacks in place at the original byte length. Tracks the latest upstream release; the README badge is the canonical version anchor and `claude --version` on the promoted binary is the runtime check. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
 
 ## Hard Rules
 
@@ -45,7 +45,7 @@ type AstPassName = "discover" | "mutate" | "finalize";
 6. **Signature**: if all other patches verified, `signature.postApply` injects the applied tag list, then `signature.verify` runs.
 7. **Write**: only if `failedTags.length === 0`. Failed verifications skip the write entirely.
 
-**Memory hygiene** (load-bearing): one run holds a large fixed Babel working set over the ~22 MB formatted bundle. To keep that from compounding across the update flow, `run()` drops the parsed AST from `PatchResult` (`src/types.ts`) after printing, `src/patch-runner.ts` calls `clearTraverseCache()` (`src/babel.ts`) at the end of each run to release the Babel traverse cache, and the `--update` path (`src/index.ts`) forces a GC before spawning post-update verification so the verify pipeline starts from a clean heap. Removing any of these reintroduces the update-time OOM.
+**Memory hygiene** (load-bearing): one run holds a large fixed Babel working set over the formatted bundle. To keep that from compounding across the update flow, `run()` drops the parsed AST from `PatchResult` (`src/types.ts`) after printing, `src/patch-runner.ts` calls `clearTraverseCache()` (`src/babel.ts`) at the end of each run to release the Babel traverse cache, and the `--update` path (`src/index.ts`) forces a GC before spawning post-update verification so the verify pipeline starts from a clean heap. Removing any of these reintroduces the update-time OOM.
 
 **Native binary lifecycle** (`src/manager.ts`, `src/native.ts`, `src/native-linux.ts`):
 
@@ -72,8 +72,8 @@ Bun 1.3+ changed how standalone binaries embed and discover modules. The repack 
 
 **Repack strategy**:
 
-- The `cli.js` module has about 105 MB of precompiled bytecode in the data section.
-- Patched JS, about 22 MB formatted, is written directly over the bytecode area.
+- The `cli.js` module has a large precompiled bytecode payload in the data section.
+- Patched JS is written directly over the bytecode area, which is comfortably larger than the formatted bundle.
 - The module content pointer is updated and the bytecode pointer is zeroed.
 - No overlay rebuild, no size changes, no ELF structure modifications.
 - The binary stays exactly the same size, so all virtual addresses and mappings remain valid.
@@ -129,7 +129,7 @@ The README has per-patch effect summaries; do not duplicate them in this file.
 
 ## Commands
 
-No build step. TypeScript runs directly via Bun. Babel + generator over the ~22 MB formatted bundle is heavy, but JSC sizes its heap dynamically, so no explicit heap flag is required.
+No build step. TypeScript runs directly via Bun. Babel + generator over the formatted bundle is heavy, but JSC sizes its heap dynamically, so no explicit heap flag is required.
 
 `package.json` is the canonical alias table. `mise.toml` is a thin task index that calls `bun run <alias>` and should not grow workflow logic, except for the `patch` safety guard. Put real behavior in TypeScript entry points and scripts (`src/index.ts`, `scripts/export-prompts.ts`, `scripts/verify-patches.ts`). Use `mise run <task> -- ...` to pass versions, paths, or flags through to the underlying alias.
 
@@ -160,7 +160,6 @@ Build-time env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS
 6. **When the total patch count changes** (adding or removing a patch), update every place the count appears, in the same change:
    - The intro count (`applies 36 verifiable patches`).
    - `README.md` intro paragraph and the patch-count badge near the top.
-   - GitHub repo description: `gh api -X PATCH repos/camjac251/cc-enhanced -f description="..."`. The current description embeds the count; keep them in sync.
    - Confirm the new total against `bun run cli --list` before pushing.
 
 The `/new-patch` slash skill scaffolds steps 1-4. Use it when starting from scratch. Recommend it by name; do not improvise the scaffold by hand.

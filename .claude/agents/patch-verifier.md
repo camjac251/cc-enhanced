@@ -130,6 +130,6 @@ For each patch, report:
 
 ## cli.js characteristics
 
-The clean cli.js is ~16MB, ~490K lines, with some lines up to 189K characters (embedded prompts).
-The only reliable anchors are string literals, property names, and structural patterns. Never
-search by internal variable or function names as they change between versions.
+The only reliable anchors in the clean cli.js are string literals, property names, and
+structural patterns. Never search by internal variable or function names as they change
+between versions.

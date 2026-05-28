@@ -37,4 +37,4 @@ Tell the user the four files are created. Do not implement the visitor or verifi
   `mise run verify:prompt-surfaces -- <export-dir>`, review
   `prompts:compare`, and run `verify:prompt-drift` against a reviewed baseline
   before calling drift corrected.
-- **Step 6**: keep the patch count in sync across `CLAUDE.md` intro, `README.md` intro and badge, and the GitHub repo description (`gh api -X PATCH repos/camjac251/cc-enhanced -f description="..."`). Confirm the new total against `bun run cli --list` before pushing.
+- **Step 6**: keep the patch count in sync across `CLAUDE.md` intro and `README.md` intro and badge. Confirm the new total against `bun run cli --list` before pushing.

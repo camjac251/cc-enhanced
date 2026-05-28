@@ -764,7 +764,7 @@ export const bashOutputTail: Patch = {
 		// The Bash prompt is built from an ArrayExpression of strings whose
 		// last (or near-last) element is the literal "When issuing multiple
 		// commands:". Scope the copyable-pipe check to that array's elements
-		// so unrelated strings elsewhere in the 16MB bundle that happen to
+		// so unrelated strings elsewhere in the bundle that happen to
 		// contain "| head -N" syntax cannot trip the verifier.
 		const isBashPromptArray = (arr: t.ArrayExpression): boolean =>
 			arr.elements.some(

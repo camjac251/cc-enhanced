@@ -13,15 +13,15 @@ const BIOME_BIN = path.resolve(
 	"node_modules/.bin/biome",
 );
 
-// The bundle is ~22MB formatted; biome's default 1MB ceiling would reject it.
+// Bundle is far over biome's default 1MB ceiling; raise the cap.
 const BIOME_MAX_FILE_SIZE = 64 * 1024 * 1024;
-// Formatted output is ~22MB; give execFileSync headroom over its 1MB default.
+// Formatted output is much larger than execFileSync's 1MB default; raise the buffer.
 const BIOME_MAX_BUFFER = 512 * 1024 * 1024;
 
 /**
  * Format JavaScript with biome.
  *
- * biome is ~2.6x faster and ~4x lighter than prettier on the ~22MB bundle and
+ * biome is ~2.6x faster and ~4x lighter than prettier on the bundle and
  * produces output that every patch applies to identically. Formatter settings
  * are passed as flags (mirroring the former prettier config). biome runs from a
  * neutral working directory and reads via stdin so the repo's own biome config,
