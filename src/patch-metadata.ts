@@ -71,9 +71,9 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Edit tool",
 		group: "Tooling",
 	},
-	"effort-max": {
-		tag: "effort-max",
-		label: "Interactive max effort",
+	"effort-stack": {
+		tag: "effort-stack",
+		label: "Stack max effort + ultracode",
 		group: "System",
 	},
 	"feature-flags": {

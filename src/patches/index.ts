@@ -9,7 +9,7 @@ export { cacheTailPolicy } from "./cache-tail-policy.js";
 export { claudeMdSystemPrompt } from "./claudemd-strong.js";
 export { commandsOff } from "./commands-off.js";
 export { editTool } from "./edit-extended.js";
-export { effortMax } from "./effort-max.js";
+export { effortStack } from "./effort-stack.js";
 export { featureFlags } from "./feature-flags.js";
 export { imageLimits } from "./image-limits.js";
 export { getLimitsChanged, limits } from "./limits.js";
@@ -48,7 +48,7 @@ import { cacheTailPolicy } from "./cache-tail-policy.js";
 import { claudeMdSystemPrompt } from "./claudemd-strong.js";
 import { commandsOff } from "./commands-off.js";
 import { editTool } from "./edit-extended.js";
-import { effortMax } from "./effort-max.js";
+import { effortStack } from "./effort-stack.js";
 import { featureFlags } from "./feature-flags.js";
 import { imageLimits } from "./image-limits.js";
 import { limits } from "./limits.js";
@@ -101,7 +101,7 @@ const basePatches: Patch[] = [
 	taskOutputExt,
 	cacheTailPolicy,
 	editTool,
-	effortMax,
+	effortStack,
 	featureFlags,
 	imageLimits,
 	planDiffUi,

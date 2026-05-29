@@ -121,7 +121,7 @@ Groups in `src/patch-metadata.ts` order verification reports. Listed group order
 | Prompt | Replaces prompt text. `bash-prompt`, `built-in-agent-prompt`, `claudemd-strong`, `memory-prompt-soften`, `prompt-dash-style`, `session-guidance`, `subagent-system-prompt`, `todo-use` |
 | Tooling | Built-in tool behavior. `read-bat`, `edit-extended`, `bash-tail`, `tools-off`, `shell-quote-fix`, `mcp-server-name`, `taskout-ext`, `lsp-multi-server`, `lsp-workspace-symbol` |
 | Agent | Built-in agent and command registry. `agents-off`, `commands-off`, `skill-paths-invoke` |
-| System | Runtime behavior, caching, memory, limits. `cache-tail-policy`, `effort-max`, `feature-flags`, `image-limits`, `no-autoupdate`, `limits`, `session-mem`, `sys-prompt-file` |
+| System | Runtime behavior, caching, memory, limits. `cache-tail-policy`, `effort-stack`, `feature-flags`, `image-limits`, `no-autoupdate`, `limits`, `session-mem`, `sys-prompt-file` |
 | UX | Terminal interface polish. `plan-diff-ui`, `plan-compact-execute`, `no-collapse`, `subagent-model-tag`, `skill-listing-ui`, `agent-listing-ui`, `tab-queue` |
 | Metadata | `signature` only. Runs last via `postApply`, embeds the applied-tag list in `claude --version`. |
 
@@ -191,8 +191,8 @@ Shared visitor kinds. Multiple patches register visitors for the same node kinds
 
 | Node kind | Patches sharing visitors in `mutate` | Risk |
 |---|---|---|
-| `IfStatement` | `plan-diff-ui`, `plan-compact-execute`, `session-mem`, `no-collapse`, `edit-extended`, `cache-tail-policy`, `subagent-model-tag`, `effort-max` (via `Function`) | `plan-diff-ui` rewrites tests to `false`. Other handlers reading the test (e.g. `effort-max`'s `isMaxEffortLookupInit` matcher on `!==`) can misidentify a rewritten guard. |
-| `Function` / `FunctionDeclaration` / `FunctionExpression` | `cache-tail-policy`, `feature-flags`, `effort-max`, `edit-extended`, `bash-tail`, `plan-compact-execute`, `read-bat`, `limits`, `no-autoupdate` | `cache-tail-policy` uses `body.splice()` at a marker statement index, sensitive to upstream insertion of extra statements. `effort-max` replaces the entire body with `return true`. Anchors on body length or specific statement positions can drift. |
+| `IfStatement` | `plan-diff-ui`, `plan-compact-execute`, `session-mem`, `no-collapse`, `edit-extended`, `cache-tail-policy`, `subagent-model-tag`, `effort-stack` | `plan-diff-ui` rewrites tests to `false`. Other handlers reading the test can misidentify a rewritten guard if they don't anchor on the unique shape of their target. |
+| `Function` / `FunctionDeclaration` / `FunctionExpression` | `cache-tail-policy`, `feature-flags`, `edit-extended`, `bash-tail`, `plan-compact-execute`, `read-bat`, `limits`, `no-autoupdate` | `cache-tail-policy` uses `body.splice()` at a marker statement index, sensitive to upstream insertion of extra statements. Anchors on body length or specific statement positions can drift. |
 | `ObjectExpression` | `tools-off`, `agents-off`, `commands-off`, `edit-extended`, `no-collapse`, `limits`, `image-limits`, `session-mem`, `read-bat` | `tools-off` mutates `isEnabled` properties on tool objects. Patches that scan tool ObjectExpressions for other properties may see a partially mutated shape depending on which mutator visited first. |
 
 Rule of thumb: if a verifier needs to detect "did MY mutation land", it should mirror the mutator's own predicates exactly (capture per-site counters in module scope when feasible) rather than rely on a global shape check that could be satisfied by another patch's output.
