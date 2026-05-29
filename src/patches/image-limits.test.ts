@@ -25,14 +25,20 @@ var nr = T(() => {
 var kv1;
 var wE = T(() => {
   nr();
-  kv1 = { "claude-opus-4-7": { maxWidth: 2000, maxHeight: 2000 } };
+  kv1 = {
+    "claude-opus-4-7": { maxWidth: 2000, maxHeight: 2000 },
+    "claude-opus-4-8": { maxWidth: 2000, maxHeight: 2000 },
+  };
 });
 `;
 
 const ALREADY_RESTORED_FIXTURE = `
 var kv1;
 var wE = T(() => {
-  kv1 = { "claude-opus-4-7": { maxWidth: 2576, maxHeight: 2576 } };
+  kv1 = {
+    "claude-opus-4-7": { maxWidth: 2576, maxHeight: 2576 },
+    "claude-opus-4-8": { maxWidth: 2576, maxHeight: 2576 },
+  };
 });
 `;
 
@@ -41,6 +47,7 @@ var kv1;
 var wE = T(() => {
   kv1 = {
     "claude-opus-4-7": { maxWidth: 2000, maxHeight: 2000 },
+    "claude-opus-4-8": { maxWidth: 2000, maxHeight: 2000 },
     "claude-opus-5-0": { maxWidth: 3000, maxHeight: 3000 },
   };
 });
@@ -74,7 +81,7 @@ test("verify accepts the documented 2576px override", () => {
 	assert.equal(imageLimits.verify(code, ast), true);
 });
 
-test("image-limits restores Opus 4.7 to 2576px", async () => {
+test("image-limits restores Opus 4.7 and Opus 4.8 to 2576px", async () => {
 	const ast = parse(DOWNGRADED_FIXTURE);
 	await runImageLimitsViaPasses(ast);
 	const output = print(ast);
@@ -82,6 +89,10 @@ test("image-limits restores Opus 4.7 to 2576px", async () => {
 	assert.match(
 		output,
 		/"claude-opus-4-7":\s*\{\s*maxWidth:\s*2576,\s*maxHeight:\s*2576\s*\}/,
+	);
+	assert.match(
+		output,
+		/"claude-opus-4-8":\s*\{\s*maxWidth:\s*2576,\s*maxHeight:\s*2576\s*\}/,
 	);
 	assert.equal(imageLimits.verify(output, ast), true);
 });
@@ -110,10 +121,14 @@ test("image-limits is idempotent", async () => {
 		output,
 		/"claude-opus-4-7":\s*\{\s*maxWidth:\s*2576,\s*maxHeight:\s*2576\s*\}/,
 	);
+	assert.match(
+		output,
+		/"claude-opus-4-8":\s*\{\s*maxWidth:\s*2576,\s*maxHeight:\s*2576\s*\}/,
+	);
 	assert.equal(imageLimits.verify(output, ast), true);
 });
 
-test("image-limits only touches the Opus 4.7 entry in a multi-entry table", async () => {
+test("image-limits leaves unrelated Opus entries untouched in a multi-entry table", async () => {
 	const ast = parse(MULTI_ENTRY_FIXTURE);
 	await runImageLimitsViaPasses(ast);
 	const output = print(ast);
@@ -121,6 +136,10 @@ test("image-limits only touches the Opus 4.7 entry in a multi-entry table", asyn
 	assert.match(
 		output,
 		/"claude-opus-4-7":\s*\{\s*maxWidth:\s*2576,\s*maxHeight:\s*2576\s*\}/,
+	);
+	assert.match(
+		output,
+		/"claude-opus-4-8":\s*\{\s*maxWidth:\s*2576,\s*maxHeight:\s*2576\s*\}/,
 	);
 	assert.match(
 		output,

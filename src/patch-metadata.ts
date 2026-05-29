@@ -83,7 +83,7 @@ const BY_TAG: Record<string, PatchMetadata> = {
 	},
 	"image-limits": {
 		tag: "image-limits",
-		label: "Opus 4.7 image limits",
+		label: "Opus 4.7/4.8 image limits",
 		group: "System",
 	},
 	"plan-diff-ui": {
