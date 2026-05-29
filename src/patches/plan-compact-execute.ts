@@ -398,6 +398,83 @@ function buildCompactAutoModeIf(
 	);
 }
 
+function orChainContainsSelectionEquals(
+	node: t.Node | null | undefined,
+	selectionName: string,
+	value: string,
+): boolean {
+	let found = false;
+	visitNodeValues(node, (candidate) => {
+		if (found) return true;
+		if (!t.isBinaryExpression(candidate)) return false;
+		if (candidate.operator !== "===" && candidate.operator !== "==")
+			return false;
+		if (
+			t.isIdentifier(candidate.left, { name: selectionName }) &&
+			t.isStringLiteral(candidate.right, { value })
+		) {
+			found = true;
+			return true;
+		}
+		if (
+			t.isStringLiteral(candidate.left, { value }) &&
+			t.isIdentifier(candidate.right, { name: selectionName })
+		) {
+			found = true;
+			return true;
+		}
+		return false;
+	});
+	return found;
+}
+
+function extendPlanGateOrChain(
+	ifPath: NodePath<t.IfStatement>,
+	selectionName: string,
+): boolean {
+	const newValues = [COMPACT_AUTO_VALUE, COMPACT_ACCEPT_EDITS_VALUE];
+
+	const matchesAnchor = (node: t.Node | null | undefined): boolean =>
+		t.isLogicalExpression(node, { operator: "||" }) &&
+		orChainContainsSelectionEquals(
+			node,
+			selectionName,
+			"yes-auto-clear-context",
+		);
+
+	const buildExtended = (chain: t.Expression): t.Expression => {
+		let current = chain;
+		for (const value of newValues) {
+			if (orChainContainsSelectionEquals(current, selectionName, value))
+				continue;
+			current = t.logicalExpression(
+				"||",
+				current,
+				buildSelectionComparison(selectionName, value),
+			);
+		}
+		return current;
+	};
+
+	const testPath = ifPath.get("test");
+	if (matchesAnchor(testPath.node)) {
+		testPath.replaceWith(buildExtended(testPath.node));
+		return true;
+	}
+
+	let extended = false;
+	testPath.traverse({
+		LogicalExpression(orPath) {
+			if (extended) return;
+			if (!matchesAnchor(orPath.node)) return;
+			orPath.replaceWith(buildExtended(orPath.node));
+			orPath.skip();
+			extended = true;
+		},
+	});
+	return extended;
+}
+
 function buildCompactAcceptEditsIf(
 	selectionName: string,
 	modeName: string,
@@ -818,6 +895,24 @@ function visibleOptionCountMatchesOptionsLength(
 	return t.isIdentifier(prop.value.object, { name: optionsName });
 }
 
+function testReferencesNonCompactYesValue(test: t.Expression): boolean {
+	const NON_COMPACT_YES_VALUES = new Set([
+		"yes-bypass-permissions",
+		"yes-accept-edits",
+		"yes-auto-clear-context",
+	]);
+	let found = false;
+	visitNodeValues(test, (node) => {
+		if (found) return true;
+		if (t.isStringLiteral(node) && NON_COMPACT_YES_VALUES.has(node.value)) {
+			found = true;
+			return true;
+		}
+		return false;
+	});
+	return found;
+}
+
 function consequentAssignsBypassPermissions(consequent: t.Statement): boolean {
 	// Walk the consequent looking for an AssignmentExpression whose right side
 	// is exactly the StringLiteral "bypassPermissions" (or a permissionMode
@@ -876,6 +971,7 @@ export const planCompactExecute: Patch = {
 		let compactInitialMessageHandlerUsesMessagesToKeepFallback = false;
 		let planSelectorCount = 0;
 		let patchedPlanSelectorCount = 0;
+		let planGateRestrictedWithoutCompact = false;
 
 		traverse(verifyAst, {
 			ObjectExpression(path) {
@@ -941,15 +1037,20 @@ export const planCompactExecute: Patch = {
 			},
 			IfStatement(path) {
 				if (
-					nodeContainsText(path.node.test, COMPACT_AUTO_VALUE) ||
-					nodeContainsText(path.node.test, COMPACT_ACCEPT_EDITS_VALUE)
+					(nodeContainsText(path.node.test, COMPACT_AUTO_VALUE) ||
+						nodeContainsText(path.node.test, COMPACT_ACCEPT_EDITS_VALUE)) &&
+					!testReferencesNonCompactYesValue(path.node.test)
 				) {
 					// Tighten bypass check: only flag a structural assignment
 					// whose RIGHT side is the literal string "bypassPermissions"
 					// AND whose LEFT side is some MemberExpression. A coincidental
 					// substring like "bypassPermissions" appearing in a comment
 					// stripped to text, a docstring, or a different attribute
-					// name should not satisfy this.
+					// name should not satisfy this. We also require the test to
+					// reference ONLY compact values; the outer plan-exit gate
+					// now contains compact values in its OR-chain after the
+					// gate extension, and its body legitimately assigns
+					// bypassPermissions for the non-compact bypass branch.
 					if (consequentAssignsBypassPermissions(path.node.consequent)) {
 						compactBranchAssignsBypass = true;
 					}
@@ -968,6 +1069,21 @@ export const planCompactExecute: Patch = {
 					if (nodeContainsMessagesToKeepArrayFallback(path.node.consequent)) {
 						compactInitialMessageHandlerUsesMessagesToKeepFallback = true;
 					}
+				}
+				// Plan-exit handoff: when upstream guards execution behind a
+				// value allowlist (the `yes-bypass-permissions / yes-accept-edits
+				// / yes-auto-clear-context` OR-chain), the compact selections
+				// must be in that allowlist too. Otherwise everything the patch
+				// inserts inside the block is dead and pressing the compact
+				// option does nothing.
+				if (
+					nodeContainsText(path.node.consequent, PLAN_IMPLEMENT_PREFIX) &&
+					nodeContainsText(path.node.test, "yes-auto-clear-context") &&
+					nodeContainsText(path.node.test, "yes-bypass-permissions") &&
+					(!nodeContainsText(path.node.test, COMPACT_AUTO_VALUE) ||
+						!nodeContainsText(path.node.test, COMPACT_ACCEPT_EDITS_VALUE))
+				) {
+					planGateRestrictedWithoutCompact = true;
 				}
 			},
 		});
@@ -1002,6 +1118,9 @@ export const planCompactExecute: Patch = {
 		}
 		if (patchedPlanSelectorCount !== planSelectorCount) {
 			return "Plan approval selector visibleOptionCount does not track options.length";
+		}
+		if (planGateRestrictedWithoutCompact) {
+			return "Plan execution gate restricts selection values without accepting yes-compact-auto / yes-compact-accept-edits; compact option would be a no-op";
 		}
 		return true;
 	},
@@ -1064,22 +1183,35 @@ function createPlanCompactExecuteMutator(): Visitor {
 				const autoBranch = findAutoModeBranch(path.node.consequent);
 				const modeDeclaration = findModeDeclaration(path.node.consequent);
 				if (selectionName && autoBranch && modeDeclaration) {
-					path.node.consequent.body.splice(
-						modeDeclaration.statementIndex + 1,
-						0,
-						buildCompactAutoModeIf(selectionName, autoBranch),
-						buildCompactAcceptEditsIf(selectionName, modeDeclaration.modeName),
-					);
-					const clearContextPatches = patchClearContextProperties(
-						path,
-						selectionName,
-					);
-					const compactContextPatched = addCompactContextProperty(
-						path,
-						selectionName,
-					);
-					if (clearContextPatches > 0 && compactContextPatched)
-						patchedPlanBranch += 1;
+					// Upstream narrowed the outer guard to a value allowlist
+					// (`o === "yes-bypass-permissions" || o === "yes-accept-edits"
+					// || o === "yes-auto-clear-context"`). The inserted compact
+					// branches below sit inside this guarded block, so without
+					// extending the allowlist to include the compact values the
+					// branches would be unreachable and selecting a compact
+					// option would silently do nothing.
+					const gateExtended = extendPlanGateOrChain(path, selectionName);
+					if (gateExtended) {
+						path.node.consequent.body.splice(
+							modeDeclaration.statementIndex + 1,
+							0,
+							buildCompactAutoModeIf(selectionName, autoBranch),
+							buildCompactAcceptEditsIf(
+								selectionName,
+								modeDeclaration.modeName,
+							),
+						);
+						const clearContextPatches = patchClearContextProperties(
+							path,
+							selectionName,
+						);
+						const compactContextPatched = addCompactContextProperty(
+							path,
+							selectionName,
+						);
+						if (clearContextPatches > 0 && compactContextPatched)
+							patchedPlanBranch += 1;
+					}
 				}
 			}
 

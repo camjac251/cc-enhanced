@@ -79,7 +79,11 @@ function UP4({ toolUseConfirm: H, setStickyFooter: _ }) {
       HH === "yes-default-keep-context" ||
       HH === "yes-resume-auto-mode";
     if (HH !== "no") uW5(Q, z, !wH);
-    if (HH !== "no" && !wH) {
+    if (
+      HH === "yes-bypass-permissions" ||
+      HH === "yes-accept-edits" ||
+      HH === "yes-auto-clear-context"
+    ) {
       let GH = "default";
       if (HH === "yes-bypass-permissions") GH = "bypassPermissions";
       else if (HH === "yes-accept-edits") GH = "acceptEdits";
@@ -254,6 +258,47 @@ test("plan-compact-execute is idempotent", async () => {
 
 	assert.equal(twice, once);
 	assert.equal(planCompactExecute.verify(twice), true);
+});
+
+test("plan-compact-execute extends restrictive plan gate to accept compact values", async () => {
+	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+
+	// The outer plan-exit handoff gate must include === comparisons against
+	// both compact selection values. If upstream restricts the gate to an
+	// allowlist (bypass/accept-edits/auto-clear-context) and we do not extend
+	// it, the inserted compact branches are unreachable and pressing the
+	// compact option silently does nothing.
+	const gateMatch = output.match(
+		/if\s*\(([\s\S]*?)\)\s*\{\s*let\s+\w+\s*=\s*"default"/,
+	);
+	assert.ok(gateMatch, "outer plan-exit gate not found in patched output");
+	const gateTest = gateMatch[1];
+	assert.ok(
+		gateTest.includes('=== "yes-compact-auto"'),
+		`gate test must include yes-compact-auto comparison, got: ${gateTest}`,
+	);
+	assert.ok(
+		gateTest.includes('=== "yes-compact-accept-edits"'),
+		`gate test must include yes-compact-accept-edits comparison, got: ${gateTest}`,
+	);
+});
+
+test("plan-compact-execute verify rejects restrictive gate without compact values", async () => {
+	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+	// Simulate a regression where the gate was tightened but the patch failed
+	// to extend it (e.g. the OR-chain matcher missed a future upstream shape).
+	const regressed = output
+		.replace(' || HH === "yes-compact-auto"', "")
+		.replace(' || HH === "yes-compact-accept-edits"', "");
+
+	const result = planCompactExecute.verify(regressed);
+
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("Plan execution gate restricts"), true);
 });
 
 test("plan-compact-execute verify rejects missing messagesToKeep fallback", async () => {
