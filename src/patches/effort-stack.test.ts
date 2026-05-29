@@ -23,6 +23,57 @@ function resolveEffortLevel(H) {
   return H.settings.effortLevel ?? "high";
 }
 
+function readUltracodeFlag() {
+  let enabled = settings().ultracode === !0;
+  if (enabled) unpinLaunchEffort();
+  return enabled;
+}
+
+function ultracodeAvailable(model) {
+  return workflowsEnabled() && (model === void 0 || supportsXhigh(model));
+}
+
+function isUltracodeActive(model, effort, ultracode) {
+  return ultracode === !0 && workflowsEnabled() && resolveEffort(model, effort) === "xhigh";
+}
+
+function readEnvEffort() {
+  let raw = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  return raw?.toLowerCase() === "unset" || raw?.toLowerCase() === "auto" ? null : parseEffort(raw);
+}
+
+function resolveEffectiveEffort(model, effort) {
+  if (!effortSupported(model)) return;
+  let launchDefault = pinnedLaunchEffort(model);
+  let envEffort = readEnvEffort();
+  if (envEffort === null) return launchDefault ? defaultEffort(model) : void 0;
+  let resolved = envEffort ?? (launchDefault ? defaultEffort(model) : void 0) ?? effort ?? defaultEffort(model);
+  if (resolved === "max" && !supportsMax(model)) return "high";
+  if (resolved === "xhigh" && !supportsXhigh(model)) return "high";
+  return resolved;
+}
+
+function effortWouldChange(next, current, model, cacheToken, hasConversationMessages) {
+  if (!hasConversationMessages) return !1;
+  let marker = changedMessageCount();
+  if (marker === 0 || marker === cacheToken) return !1;
+  if (!effortSupported(model)) return !1;
+  if (launchPinned(model)) {
+    if (next === void 0 || next === defaultEffort(model)) return !1;
+  } else if (resolveEffectiveEffort(model, next) === resolveEffectiveEffort(model, current)) return !1;
+  return !0;
+}
+
+function storeEffortSetting(H) {
+  let parsed = H !== void 0 ? parsePersistedEffort(H) : void 0;
+  if (H === void 0 || parsed !== void 0) {
+    let result = saveSettings("userSettings", { effortLevel: parsed });
+    if (result.error) return result.error;
+  }
+  unpinLaunchEffort();
+  return;
+}
+
 function notify(EL) {
   EL({
     key: "ultrathink-active",
@@ -33,8 +84,14 @@ function notify(EL) {
 }
 
 function pickUltracode() {
+  let envEffort = readEnvEffort();
+  if (envEffort !== void 0 && envEffort !== "xhigh")
+    return {
+      message: \`CLAUDE_CODE_EFFORT_LEVEL=\${process.env.CLAUDE_CODE_EFFORT_LEVEL} overrides effort this session — clear it and ultracode takes over\`,
+      effortUpdate: { value: "xhigh", ultracode: !0 },
+    };
   return {
-    message: \`CLAUDE_CODE_EFFORT_LEVEL=\${process.env.CLAUDE_CODE_EFFORT_LEVEL} overrides effort this session — clear it and ultracode takes over\`,
+    message: "Set effort level to ultracode (this session only): xhigh + dynamic workflow orchestration",
     effortUpdate: { value: "xhigh", ultracode: !0 },
   };
 }
@@ -44,6 +101,27 @@ function pickEffort(H) {
   return {
     message: \`CLAUDE_CODE_EFFORT_LEVEL=\${Y} overrides this session — clear it and \${labelFor(H)} takes over\`,
     effortUpdate: { value: H, ultracode: !1 },
+  };
+}
+
+function pickMaxEffort(H) {
+  let Y = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  return {
+    message: \`Not applied: CLAUDE_CODE_EFFORT_LEVEL=\${Y} overrides effort this session, and \${labelFor(H)} is session-only (nothing saved)\`,
+    effortUpdate: { value: H, ultracode: !1 },
+  };
+}
+
+function clearEffort() {
+  let envEffort = readEnvEffort();
+  if (envEffort !== void 0 && envEffort !== null)
+    return {
+      message: \`Cleared effort from settings, but CLAUDE_CODE_EFFORT_LEVEL=\${process.env.CLAUDE_CODE_EFFORT_LEVEL} still controls this session\`,
+      effortUpdate: { value: void 0, ultracode: !1 },
+    };
+  return {
+    message: "Effort level set to auto",
+    effortUpdate: { value: void 0, ultracode: !1 },
   };
 }
 
@@ -59,6 +137,30 @@ function describeOption(H, $ = !1) {
   if (!H) return;
   if ($) return \`\${ULTRACODE_ICON} ultracode · xhigh effort + dynamic workflows for maximum thoroughness\`;
   return \`option: \${H}\`;
+}
+
+function runEffortCommand(H, setState, done) {
+  let K = pickCommand(H);
+  if (K.effortUpdate) {
+    let { value: _, ultracode: z = !1 } = K.effortUpdate;
+    setState((A) => {
+      if (A.effortValue === _ && (A.ultracode ?? !1) === z) return A;
+      return { ...A, effortValue: _, ultracode: z };
+    });
+  }
+  done(K.message);
+}
+
+function callEffortCommand(H, api) {
+  let K = pickCommand(H);
+  if (K.effortUpdate) {
+    let _ = K.effortUpdate.value;
+    let z = K.effortUpdate.ultracode ?? !1;
+    api.setAppState((A) =>
+      A.effortValue === _ && (A.ultracode ?? !1) === z ? A : { ...A, effortValue: _, ultracode: z },
+    );
+  }
+  return { type: "text", value: K.message };
 }
 `;
 
@@ -77,7 +179,31 @@ test("effort-stack patches resolver to honor CLAUDE_CODE_EFFORT_LEVEL=max", asyn
 
 	assert.match(
 		output,
-		/H\.settings\.ultracode === !0 && process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== "max"/,
+		/\(H\.settings\.ultracode === !0 \|\| \["1", "true", "yes", "on"\]\.includes\(String\(process\.env\.CLAUDE_CODE_ULTRACODE\)\.toLowerCase\(\)\)\) && String\(process\.env\.CLAUDE_CODE_EFFORT_LEVEL\)\.toLowerCase\(\) !== "max"/,
+	);
+});
+
+test("effort-stack lets CLAUDE_CODE_ULTRACODE enable workflow mode", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes(
+			'let enabled = settings().ultracode === !0 || ["1", "true", "yes", "on"].includes(String(process.env.CLAUDE_CODE_ULTRACODE).toLowerCase())',
+		),
+		true,
+	);
+});
+
+test("effort-stack patches ultracode active gate to treat max as active", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes(
+			'ultracode === !0 && ultracodeAvailable(model) && (resolveEffort(model, effort) === "xhigh" || resolveEffort(model, effort) === "max")',
+		),
+		true,
 	);
 });
 
@@ -91,14 +217,20 @@ test("effort-stack rewrites the ultrathink notification text", async () => {
 	);
 });
 
-test("effort-stack rewrites BYz override warning into a stacked-state message", async () => {
+test("effort-stack makes the ultracode env override message state-aware", async () => {
 	const ast = parse(EFFORT_STACK_FIXTURE);
 	await runEffortStackViaPasses(ast);
 	const output = print(ast);
 	assert.equal(
-		output.includes(
-			"Ultracode active. Effort stays at ${process.env.CLAUDE_CODE_EFFORT_LEVEL} via env (stacked); workflow guidance is armed for this session.",
-		),
+		output.includes("Ultracode workflows active for this session"),
+		true,
+	);
+	assert.equal(
+		output.includes("Set effort level to ultracode for this session"),
+		true,
+	);
+	assert.equal(
+		output.includes('value: envEffort === "max" ? "max" : "xhigh"'),
 		true,
 	);
 	assert.equal(
@@ -108,16 +240,21 @@ test("effort-stack rewrites BYz override warning into a stacked-state message", 
 	);
 });
 
-test("effort-stack rewrites uYz override warning into an honest 'still wins' message", async () => {
+test("effort-stack rewrites effort env override warnings into session overrides", async () => {
 	const ast = parse(EFFORT_STACK_FIXTURE);
 	await runEffortStackViaPasses(ast);
 	const output = print(ast);
 	assert.equal(
 		output.includes(
-			"CLAUDE_CODE_EFFORT_LEVEL=${Y} still wins this session. Stored ${labelFor(H)} for next session (clear the env var to drop the override).",
+			"CLAUDE_CODE_EFFORT_LEVEL=${Y} remains the launch default for new sessions. Set effort level to ${labelFor(H)} for this session.",
 		),
 		true,
 	);
+	assert.equal(
+		output.includes("Not applied: CLAUDE_CODE_EFFORT_LEVEL="),
+		false,
+	);
+	assert.equal(output.includes("still controls this session"), false);
 	assert.equal(
 		output.includes(" overrides this session "),
 		false,
@@ -131,7 +268,7 @@ test("effort-stack prepends env-stacking branch to current-effort display", asyn
 	const output = print(ast);
 	assert.match(
 		output,
-		/if \(q === true && process\.env\.CLAUDE_CODE_EFFORT_LEVEL === "max"\)\s+return \{\s+message: "Current effort level: max effort \+ ultracode workflows \(env-stacked, this session only\)"/,
+		/if\s*\(\s*isUltracodeActive\(\$, H, q\) && String\(process\.env\.CLAUDE_CODE_EFFORT_LEVEL\)\.toLowerCase\(\) === "max"\)\s+return \{\s+message: "Current effort level: max effort \+ ultracode workflows \(env-stacked\)"/,
 	);
 });
 
@@ -141,8 +278,42 @@ test("effort-stack wraps ultracode description in env-aware conditional", async 
 	const output = print(ast);
 	assert.equal(
 		output.includes(
-			'process.env.CLAUDE_CODE_EFFORT_LEVEL === "max" ? `${ULTRACODE_ICON} ultracode · max effort + dynamic workflows for maximum thoroughness` : `${ULTRACODE_ICON} ultracode · xhigh effort + dynamic workflows for maximum thoroughness`',
+			'String(process.env.CLAUDE_CODE_EFFORT_LEVEL).toLowerCase() === "max" ? `${ULTRACODE_ICON} ultracode · max effort + dynamic workflows for maximum thoroughness` : `${ULTRACODE_ICON} ultracode · xhigh effort + dynamic workflows for maximum thoroughness`',
 		),
+		true,
+	);
+});
+
+test("effort-stack lets /effort override env for the current session", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes("globalThis.__claudeCodeEffortSessionOverride === true"),
+		true,
+	);
+	assert.equal(
+		output.includes("globalThis.__claudeCodeEffortSessionOverride = true"),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0 && next !== current",
+		),
+		true,
+	);
+});
+
+test("effort-stack keeps env-backed effort changes session-only", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes("process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0"),
+		true,
+	);
+	assert.equal(
+		output.includes('saveSettings("userSettings", { effortLevel: parsed })'),
 		true,
 	);
 });
@@ -169,39 +340,38 @@ test("effort-stack verify rejects regression where env guard is dropped", async 
 	await runEffortStackViaPasses(ast);
 	const output = print(ast);
 	const regressed = output.replace(
-		' && process.env.CLAUDE_CODE_EFFORT_LEVEL !== "max"',
+		' && String(process.env.CLAUDE_CODE_EFFORT_LEVEL).toLowerCase() !== "max"',
 		"",
 	);
 
 	const result = effortStack.verify(regressed);
 	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("still ignores"), true);
+	assert.equal(String(result).includes("patched ultracode resolver"), true);
 });
 
-test("effort-stack verify soft-warns on UX drift without failing", async () => {
+test("effort-stack verify fails hard on ultracode command UI drift", async () => {
 	const ast = parse(EFFORT_STACK_FIXTURE);
 	await runEffortStackViaPasses(ast);
 	const output = print(ast);
 	const regressed = output.replace(
-		"Ultracode active. Effort stays at ${process.env.CLAUDE_CODE_EFFORT_LEVEL} via env (stacked); workflow guidance is armed for this session.",
-		`CLAUDE_CODE_EFFORT_LEVEL=\${process.env.CLAUDE_CODE_EFFORT_LEVEL} overrides effort this session — clear it and ultracode takes over`,
+		"Ultracode workflows active for this session",
+		"`CLAUDE_CODE_EFFORT_LEVEL=${process.env.CLAUDE_CODE_EFFORT_LEVEL} overrides effort this session — clear it and ultracode takes over`",
 	);
-	const warnings: string[] = [];
-	const originalWarn = console.warn;
-	console.warn = (msg: string) => warnings.push(String(msg));
-	try {
-		const result = effortStack.verify(regressed);
-		assert.equal(result, true, "verify should soft-pass on UX drift");
-		assert.equal(
-			warnings.some((w) =>
-				w.includes("ultracode-picker override message anchor drifted"),
-			),
-			true,
-			"expected soft warning for BYz drift",
-		);
-	} finally {
-		console.warn = originalWarn;
-	}
+	const result = effortStack.verify(regressed);
+	assert.equal(typeof result, "string");
+});
+
+test("effort-stack verify fails hard when env ultracode source is missing", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replace(
+		'settings().ultracode === !0 || ["1", "true", "yes", "on"].includes(String(process.env.CLAUDE_CODE_ULTRACODE).toLowerCase())',
+		"settings().ultracode === !0",
+	);
+	const result = effortStack.verify(regressed);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("CLAUDE_CODE_ULTRACODE"), true);
 });
 
 test("effort-stack verify still fails hard when resolver guard is dropped", async () => {
@@ -209,12 +379,64 @@ test("effort-stack verify still fails hard when resolver guard is dropped", asyn
 	await runEffortStackViaPasses(ast);
 	const output = print(ast);
 	const regressed = output.replace(
-		' && process.env.CLAUDE_CODE_EFFORT_LEVEL !== "max"',
+		' && String(process.env.CLAUDE_CODE_EFFORT_LEVEL).toLowerCase() !== "max"',
 		"",
 	);
 	const result = effortStack.verify(regressed);
 	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("still ignores"), true);
+	assert.equal(String(result).includes("patched ultracode resolver"), true);
+});
+
+test("effort-stack verify fails hard when active gate rejects max", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replace(
+		' && ultracodeAvailable(model) && (resolveEffort(model, effort) === "xhigh" || resolveEffort(model, effort) === "max")',
+		' && workflowsEnabled() && resolveEffort(model, effort) === "xhigh"',
+	);
+	const result = effortStack.verify(regressed);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("active-state gate"), true);
+});
+
+test("effort-stack verify fails hard when session override resolver guard is missing", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replace(
+		"if (globalThis.__claudeCodeEffortSessionOverride === true) return;",
+		"",
+	);
+	const result = effortStack.verify(regressed);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("session override guard"), true);
+});
+
+test("effort-stack verify fails hard when /effort updates do not mark session override", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replaceAll(
+		"globalThis.__claudeCodeEffortSessionOverride = true",
+		"void 0",
+	);
+	const result = effortStack.verify(regressed);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("session override state update"), true);
+});
+
+test("effort-stack verify fails hard when the picker still treats env choices as no-ops", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replace(
+		" && !(process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0 && next !== current)",
+		"",
+	);
+	const result = effortStack.verify(regressed);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("no-ops"), true);
 });
 
 test("effort-stack verify fails closed when anchors are absent", () => {
