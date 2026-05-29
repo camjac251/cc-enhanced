@@ -324,6 +324,10 @@ const SKILL_DOC_TEXT_REPLACEMENTS: Array<[RegExp, string]> = [
 		"If fetching fails (network issues, URL changed):",
 	],
 	[
+		/If WebFetch fails or you have no network:/g,
+		"If fetching fails or you have no network:",
+	],
+	[
 		/\*\*Latest docs via WebFetch:\*\*/g,
 		`**Latest docs via ${MCP_DOC_HINT_SHORT}:**`,
 	],
