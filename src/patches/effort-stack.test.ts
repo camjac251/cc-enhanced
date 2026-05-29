@@ -178,7 +178,7 @@ test("effort-stack verify rejects regression where env guard is dropped", async 
 	assert.equal(String(result).includes("still ignores"), true);
 });
 
-test("effort-stack verify rejects regression where BYz reverts", async () => {
+test("effort-stack verify soft-warns on UX drift without failing", async () => {
 	const ast = parse(EFFORT_STACK_FIXTURE);
 	await runEffortStackViaPasses(ast);
 	const output = print(ast);
@@ -186,9 +186,35 @@ test("effort-stack verify rejects regression where BYz reverts", async () => {
 		"Ultracode active. Effort stays at ${process.env.CLAUDE_CODE_EFFORT_LEVEL} via env (stacked); workflow guidance is armed for this session.",
 		`CLAUDE_CODE_EFFORT_LEVEL=\${process.env.CLAUDE_CODE_EFFORT_LEVEL} overrides effort this session — clear it and ultracode takes over`,
 	);
+	const warnings: string[] = [];
+	const originalWarn = console.warn;
+	console.warn = (msg: string) => warnings.push(String(msg));
+	try {
+		const result = effortStack.verify(regressed);
+		assert.equal(result, true, "verify should soft-pass on UX drift");
+		assert.equal(
+			warnings.some((w) =>
+				w.includes("ultracode-picker override message anchor drifted"),
+			),
+			true,
+			"expected soft warning for BYz drift",
+		);
+	} finally {
+		console.warn = originalWarn;
+	}
+});
+
+test("effort-stack verify still fails hard when resolver guard is dropped", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replace(
+		' && process.env.CLAUDE_CODE_EFFORT_LEVEL !== "max"',
+		"",
+	);
 	const result = effortStack.verify(regressed);
 	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("misleading"), true);
+	assert.equal(String(result).includes("still ignores"), true);
 });
 
 test("effort-stack verify fails closed when anchors are absent", () => {

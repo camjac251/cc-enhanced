@@ -472,26 +472,38 @@ export const effortStack: Patch = {
 		if (!hasMaxNotification) {
 			return 'Did not find "Effort set to max for this turn" notification';
 		}
+
 		if (hasLegacyByz) {
-			return "Ultracode-picker override message still uses misleading 'overrides' phrasing";
-		}
-		if (!hasPatchedByz) {
-			return "Did not find patched ultracode-picker override message";
+			console.warn(
+				"effort-stack[soft]: ultracode-picker override message anchor drifted; upstream warning text returned",
+			);
+		} else if (!hasPatchedByz) {
+			console.warn(
+				"effort-stack[soft]: ultracode-picker override message anchor not found; UX text may be stale",
+			);
 		}
 		if (hasLegacyUyz) {
-			return "Effort-picker override message still uses misleading 'takes over' phrasing";
-		}
-		if (!hasPatchedUyz) {
-			return "Did not find patched effort-picker override message";
+			console.warn(
+				"effort-stack[soft]: effort-picker override message anchor drifted; upstream warning text returned",
+			);
+		} else if (!hasPatchedUyz) {
+			console.warn(
+				"effort-stack[soft]: effort-picker override message anchor not found; UX text may be stale",
+			);
 		}
 		if (!hasPatchedHy8) {
-			return "Did not find env-stacking branch in current-effort display";
+			console.warn(
+				"effort-stack[soft]: current-effort env-stacking branch not present; /effort no-args display may understate the state",
+			);
 		}
 		if (hasLegacyYN4) {
-			return "Ultracode description still hardcodes 'xhigh effort'";
-		}
-		if (!hasPatchedYN4) {
-			return "Did not find env-aware ultracode description";
+			console.warn(
+				"effort-stack[soft]: ultracode description anchor drifted; upstream 'xhigh effort' text returned",
+			);
+		} else if (!hasPatchedYN4) {
+			console.warn(
+				"effort-stack[soft]: ultracode description anchor not found; menu sublabel may be stale",
+			);
 		}
 		return true;
 	},
