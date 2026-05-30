@@ -14,17 +14,21 @@ catches anchor drift, ambiguity, fragility, and verifier weakness.
   parallel, then returns a unified fix plan prioritized by severity. Read-only.
 
 - `patch-audit`: deep health audit of all patches in the current state. Adds
-  three layers beyond `patch-update`: a verifier-robustness audit (does each
+  four layers beyond `patch-update`: a verifier-robustness audit (does each
   `verify()` catch real drift, and could it produce false positives?), a
   pipeline-interaction analysis (do patches step on each other in the AST
-  pass engine?), and a docs-and-counts cross-check. Read-only.
+  pass engine?), a docs-and-counts cross-check, and per-patch test-hardening
+  (each inspector emits paste-ready `node:test` assertions for whatever the
+  current test and `verify()` leave unlocked, so future drift is caught
+  automatically). Read-only.
 
 ## Suggested usage
 
 - New upstream release appears: run `patch-update`. Apply the fix plan it
   returns, then re-run `patch-update` to confirm clean.
 - Periodic health check or pre-push gate: run `patch-audit`. Address findings
-  by severity. `verify:patches` is still the smoke test, but `patch-audit`
-  is the deeper signal.
+  by severity and apply the `testHardening` assertions it returns to lock in
+  future drift detection. `verify:patches` is still the smoke test, but
+  `patch-audit` is the deeper signal.
 - Either workflow accepts a focus string via `args` (e.g. focus on a
   specific group or a specific version).
