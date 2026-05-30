@@ -57,6 +57,25 @@ const PATCH_INSPECTION_SCHEMA = {
     concerns: { type: 'array', items: { type: 'string' } },
     evidence: { type: 'array', items: { type: 'string' } },
     robustnessNotes: { type: 'array', items: { type: 'string' } },
+    testHardening: {
+      type: 'object',
+      properties: {
+        currentCoverage: { type: 'string' },
+        gaps: { type: 'array', items: { type: 'string' } },
+        assertions: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['rationale', 'code'],
+            properties: {
+              rationale: { type: 'string' },
+              anchor: { type: 'string' },
+              code: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
   },
 }
 
@@ -178,7 +197,58 @@ const AUDIT_SCHEMA = {
     nextSteps: { type: 'array', items: { type: 'string' } },
     crossCuttingObservations: { type: 'array', items: { type: 'string' } },
     notes: { type: 'array', items: { type: 'string' } },
+    testHardening: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['tag', 'assertions'],
+        properties: {
+          tag: { type: 'string' },
+          gaps: { type: 'array', items: { type: 'string' } },
+          assertions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                rationale: { type: 'string' },
+                anchor: { type: 'string' },
+                code: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
   },
+}
+
+// Warm the shared prompt-cache on item 0, then run the rest in small batches so a
+// wide fan-out doesn't burst the input-token rate limit. One agent per item; nulls retry once.
+async function throttledFanout(items, run, { width = 4, warm = true } = {}) {
+  const out = new Array(items.length).fill(null)
+  const queue = items.map((_, i) => i)
+  if (warm && queue.length > 1) {
+    const first = queue.shift()
+    out[first] = await run(items[first], first)
+  }
+  const drain = async (idxs) => {
+    const missed = []
+    for (let i = 0; i < idxs.length; i += width) {
+      const slice = idxs.slice(i, i + width)
+      const got = await parallel(slice.map((idx) => () => run(items[idx], idx)))
+      got.forEach((g, k) => {
+        if (g == null) missed.push(slice[k])
+        else out[slice[k]] = g
+      })
+    }
+    return missed
+  }
+  const missed = await drain(queue)
+  if (missed.length) {
+    log(`throttledFanout: ${missed.length} agent(s) returned null (likely rate-limited); retrying once`)
+    await drain(missed)
+  }
+  return out
 }
 
 const argsObj = (() => {
@@ -248,8 +318,7 @@ const patchesInScope = mode === 'quick' && !groupFilter && !tagFilter
 
 const patchesSkipped = allPatches.length - patchesInScope.length
 
-const patchInspections = await parallel(
-  patchesInScope.map((p) => () => agent(
+const patchInspections = await throttledFanout(patchesInScope, (p) => agent(
     `Deep-inspect the cc-enhanced patch \`${p.tag}\` (source: ${p.sourceFile}) against ${cleanBundle}. This is a robustness audit, not a failure diagnosis.
 
 Methodology:
@@ -261,26 +330,25 @@ Methodology:
    - fragility: low, medium, or high
 4. Classify the patch as OK, DRIFT, BROKEN, or UNKNOWN.
 5. Note robustness issues in robustnessNotes.
+6. Test-hardening: read src/patches/${p.tag}.test.ts and the verify() function in ${p.sourceFile}, then identify what they do NOT lock down such that a future upstream change could drift undetected (anchor hit-counts, the specific occurrence index, post-mutation invariants, structural context). For each gap, write a concrete node:test assertion matching the conventions already in that test file (node:test + node:assert/strict, the helpers it already imports, no reliance on minified identifier names) that a future mise run verify:patches would catch the drift with. Populate testHardening: currentCoverage (what the existing test plus verify() already lock), gaps, and assertions (each with rationale, the anchor it locks, and paste-ready code).
 
-Return anchorsChecked, structuralContext, concerns, evidence, robustnessNotes.
+Return anchorsChecked, structuralContext, concerns, evidence, robustnessNotes, testHardening.
 
-Do not run the patcher, do not modify any files.`,
+Do not run the patcher or verify:patches, do not modify any files.`,
     {
       label: `inspect:${p.tag}`,
       phase: 'PatchInspection',
       schema: PATCH_INSPECTION_SCHEMA,
       agentType: 'patch-verifier',
     },
-  )),
-)
+))
 
 const confirmedInspections = (patchInspections ?? []).filter(Boolean)
 
 let confirmedVerifierAudits = []
 if (runVerifierAudit) {
   phase('VerifierAudit')
-  const verifierAudits = await parallel(
-    patchesInScope.map((p) => () => agent(
+  const verifierAudits = await throttledFanout(patchesInScope, (p) => agent(
       `Audit the verify() function of cc-enhanced patch \`${p.tag}\` (source: ${p.sourceFile}). The goal is to assess whether verify() catches real drift and whether it can produce false positives. This is source-code reasoning, not bundle inspection.
 
 Methodology:
@@ -299,8 +367,7 @@ You do not need to search cli.js for this audit; you are reasoning about the ver
         phase: 'VerifierAudit',
         schema: VERIFIER_AUDIT_SCHEMA,
       },
-    )),
-  )
+  ))
   confirmedVerifierAudits = (verifierAudits ?? []).filter(Boolean)
 }
 
@@ -412,6 +479,8 @@ Status:
 nextSteps: concrete actions in priority order. Always include "mise run verify:patches" and specific source fixes.
 
 crossCuttingObservations: surface patterns across sources.
+
+testHardening: collect every patch inspection's testHardening into one array, one entry per patch that has at least one gap or assertion, carrying tag, gaps, and assertions (rationale, anchor, and code verbatim). This is the consolidated set of test additions to apply so a future mise run verify:patches catches drift automatically; carry forward only what the inspectors produced, do not invent assertions.
 
 Set scope = {mode, patchesInspected, patchesSkipped, phasesRun}.
 

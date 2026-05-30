@@ -169,6 +169,35 @@ const PLAN_SCHEMA = {
   },
 }
 
+// Warm the shared prompt-cache on item 0, then run the rest in small batches so a
+// wide fan-out doesn't burst the input-token rate limit. One agent per item; nulls retry once.
+async function throttledFanout(items, run, { width = 4, warm = true } = {}) {
+  const out = new Array(items.length).fill(null)
+  const queue = items.map((_, i) => i)
+  if (warm && queue.length > 1) {
+    const first = queue.shift()
+    out[first] = await run(items[first], first)
+  }
+  const drain = async (idxs) => {
+    const missed = []
+    for (let i = 0; i < idxs.length; i += width) {
+      const slice = idxs.slice(i, i + width)
+      const got = await parallel(slice.map((idx) => () => run(items[idx], idx)))
+      got.forEach((g, k) => {
+        if (g == null) missed.push(slice[k])
+        else out[slice[k]] = g
+      })
+    }
+    return missed
+  }
+  const missed = await drain(queue)
+  if (missed.length) {
+    log(`throttledFanout: ${missed.length} agent(s) returned null (likely rate-limited); retrying once`)
+    await drain(missed)
+  }
+  return out
+}
+
 const argsObj = (() => {
   if (args && typeof args === 'object') return args
   if (typeof args === 'string' && args.trim()) {
@@ -246,8 +275,7 @@ const patchesInScope = mode === 'quick' && !groupFilter && !tagFilter
 const patchesSkipped = allPatches.length - patchesInScope.length
 
 phase('PatchInspection')
-const patchFindings = await parallel(
-  patchesInScope.map((p) => () => agent(
+const patchFindings = await throttledFanout(patchesInScope, (p) => agent(
     `Deep-inspect the cc-enhanced patch \`${p.tag}\` (source: ${p.sourceFile}) against ${targetBundle}.
 
 This is a proactive validation, not a failure diagnosis. Validate every anchor the patch depends on, even if the patch is currently passing verify:patches.
@@ -268,16 +296,14 @@ Do not run the patcher. Do not modify any files.`,
       schema: PATCH_INSPECTION_SCHEMA,
       agentType: 'patch-verifier',
     },
-  )),
-)
+))
 
 const confirmedPatchFindings = (patchFindings ?? []).filter(Boolean)
 
 phase('PromptAnchors')
 const surfacesInScope = mode === 'quick' ? allSurfaces.slice(0, 5) : allSurfaces
 
-const promptFindings = await parallel(
-  surfacesInScope.map((surface) => () => agent(
+const promptFindings = await throttledFanout(surfacesInScope, (surface) => agent(
     `Validate whether the watched prompt surface \`${surface.path}\` is still REACHABLE in the target clean bundle.
 
 This is an anchor-existence check on a CLEAN bundle, not a needle validation. Required and forbidden needles describe POST-patch state and cannot be validated against a clean cli.js. ${patchedExportPath ? `A patched export path was provided (${patchedExportPath}); needle validation against that export is enabled below.` : 'No patched export was provided; needle validation is skipped.'}
@@ -313,8 +339,7 @@ Do not run the patcher. Do not run mise run prompts:export. Do not modify any fi
       schema: PROMPT_ANCHOR_SCHEMA,
       agentType: 'patch-verifier',
     },
-  )),
-)
+))
 
 const confirmedPromptFindings = (promptFindings ?? []).filter(Boolean)
 
