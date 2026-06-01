@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > Read this file in full before proposing or making changes. Every section encodes a constraint the patcher depends on. Every rule below has a failure history; skimming will miss rules that invalidate otherwise-reasonable suggestions.
 
-AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle embedded in the native Bun binary, applies 36 verifiable patches, and repacks in place at the original byte length. Tracks the latest upstream release; the README badge is the canonical version anchor and `claude --version` on the promoted binary is the runtime check. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
+AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle embedded in the native Bun binary, applies its full suite of verifiable patches, and repacks in place at the original byte length. Tracks the latest upstream release; the README badge is the canonical version anchor and `claude --version` on the promoted binary is the runtime check. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
 
 ## Hard Rules
 
@@ -87,7 +87,7 @@ When orienting in this repo, reach for these by purpose:
 | Need | Look at |
 |---|---|
 | Patch interface and result types | `src/types.ts` |
-| All 36 patches | `src/patches/<tag>.ts` (each ships `<tag>.test.ts`) |
+| All patches | `src/patches/<tag>.ts` (each ships `<tag>.test.ts`); current roster via `bun run cli --list` |
 | Patch barrel + `allPatches` | `src/patches/index.ts` |
 | Group and label registry | `src/patch-metadata.ts` (`BY_TAG`) |
 | AST helpers (`getVerifyAst`, key/property lookups) | `src/patches/ast-helpers.ts` |
@@ -114,16 +114,16 @@ When orienting in this repo, reach for these by purpose:
 
 ## Patch Groups
 
-Groups in `src/patch-metadata.ts` order verification reports. Listed group order: `Prompt`, `Tooling`, `Agent`, `System`, `UX`, `Metadata`. The `--list` view shows each tag with a `[S A P]` flag triplet (string, astPasses, postApply).
+Groups in `src/patch-metadata.ts` order verification reports. `bun run cli --list` is the source of truth for which tags fall under which group, each shown with a `[S A P]` flag triplet (string, astPasses, postApply).
 
 | Group | What lives here |
 |---|---|
-| Prompt | Replaces prompt text. `bash-prompt`, `built-in-agent-prompt`, `claudemd-strong`, `memory-prompt-soften`, `prompt-dash-style`, `session-guidance`, `subagent-system-prompt`, `todo-use` |
-| Tooling | Built-in tool behavior. `read-bat`, `edit-extended`, `bash-tail`, `tools-off`, `shell-quote-fix`, `mcp-server-name`, `taskout-ext`, `lsp-multi-server`, `lsp-workspace-symbol` |
-| Agent | Built-in agent and command registry. `agents-off`, `commands-off`, `skill-paths-invoke` |
-| System | Runtime behavior, caching, memory, limits. `cache-tail-policy`, `effort-stack`, `feature-flags` (reserved no-op), `image-limits`, `no-autoupdate`, `limits`, `session-mem`, `sys-prompt-file` |
-| UX | Terminal interface polish. `plan-diff-ui`, `plan-compact-execute`, `no-collapse`, `subagent-model-tag`, `skill-listing-ui`, `agent-listing-ui`, `tab-queue` |
-| Metadata | `signature` only. Runs last via `postApply`, embeds the applied-tag list in `claude --version`. |
+| Prompt | Replaces prompt text. |
+| Tooling | Built-in tool behavior. |
+| Agent | Built-in agent and command registry. |
+| System | Runtime behavior, caching, memory, limits. |
+| UX | Terminal interface polish. |
+| Metadata | `signature` only: runs last via `postApply`, embeds the applied-tag list in `claude --version`. |
 
 The README has per-patch effect summaries; do not duplicate them in this file.
 
@@ -143,7 +143,7 @@ Use this command map instead of opening task files for orientation:
 - `verify:anchors`, `verify:prompt-surfaces`, `verify:prompt-drift`, `prompts:drift-baseline`: verifier and baseline entry points.
 - `prompts:export`, `prompts:bundle`: prompt artifact export (bundle mode is `--bundle` on the same exporter, not a separate workflow).
 - `prompts:compare`: vanilla-vs-patched prompt review (review-only; does not replace `verify:prompt-surfaces` or `verify:prompt-drift`).
-- `verify:cache`, `verify:cache:agent`: live cache efficiency benchmark; needs `ANTHROPIC_API_KEY`.
+- `verify:cache`, `verify:cache:agent`: live cache efficiency benchmark; needs `ANTHROPIC_API_KEY` unless `--dry-run` is set.
 - `test`, `typecheck`, `lint`, `format`, `lint:fix`: repository hygiene. Formatting and linting use Biome (`lint` = `biome check src/`, `format` = `biome format --write src/`); the bundle normalizer (`src/normalizer.ts`) also shells to the bundled Biome to format the extracted `cli.js` before parsing.
 
 Useful CLI flags on `src/index.ts` not always reflected in the alias table: `--dry-run`, `--force`, `--diff`, `--fast-verify` (skip duplicate per-patch verifier pass during update), `--skip-smoke-test`, `--summary-path <file>` for JSON dry-run summaries.
@@ -157,10 +157,7 @@ Build-time env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS
 3. Re-export from `src/patches/index.ts` (both the named export line and the `allPatches` array entry).
 4. Add a `BY_TAG` record in `src/patch-metadata.ts` with `tag`, `label`, and `group`.
 5. If the patch affects exported live guidance, update `src/verification/prompt-surface-rules.ts` and (if it touches shared policy) the contract in `src/verification/prompt-policy-contract.ts`.
-6. **When the total patch count changes** (adding or removing a patch), update every place the count appears, in the same change:
-   - The intro count (`applies 36 verifiable patches`).
-   - `README.md` intro paragraph and the patch-count badge near the top.
-   - Confirm the new total against `bun run cli --list` before pushing.
+6. **When the total patch count changes** (adding or removing a patch), update `README.md` (intro paragraph and the patch-count badge near the top) and confirm the new total against `bun run cli --list` before pushing.
 
 The `/new-patch` slash skill scaffolds steps 1-4. Use it when starting from scratch. Recommend it by name; do not improvise the scaffold by hand.
 
@@ -225,13 +222,13 @@ Notes:
 
 ## Prompt Policy Layering
 
-Detailed global behavior belongs in runtime-managed policy files under `/etc/claude-code/`, plus the auto-appended `/etc/claude-code/system-prompt.md` layer.
+Detailed global behavior belongs in runtime-managed policy files under `/etc/claude-code/`, plus the auto-appended `/etc/claude-code/system-prompt.md` layer. The auto-append layer is intended to survive replacement-mode `--system-prompt` launches unless the caller supplies its own append prompt, and `CLAUDE.md` user context is intended to remain available to subagent contexts.
 
 Short bundle-level routing language shared by prompt patches lives in `src/patches/prompt-policy.ts`. Surface-specific patches own their upstream anchors but pull shared wording (Serena/LSP/ChunkHound/Probe/ast-grep routing, modern CLI preference, stdout caps) from this module.
 
 `src/verification/prompt-policy-contract.ts` enforces required and forbidden needles independently of the policy module, so accidental weakening of shared wording still fails verification.
 
-`src/verification/prompt-surface-rules.ts` is the authoritative list of curated patched surfaces with required/forbidden needles, optional-surface markers, and the drift watch list. Current required live surfaces include the Bash/Read/REPL/ToolSearch tool prompts, `agents/explore.md`, remote-planning reminders, `system/sections/session-specific-guidance.md`, and the dream-memory consolidation/pruning sections. When a prompt patch changes live guidance, update both its verifier and these rules in the same change.
+`src/verification/prompt-surface-rules.ts` is the authoritative list of curated patched surfaces with required/forbidden needles, optional-surface markers, and the drift watch list. Current curated live surfaces include Bash/Read/REPL/ToolSearch/Edit tool prompts, Agent tool routing, `agents/explore.md`, `agents/plan.md`, worker/workflow-subagent/claude agent surfaces, remote-planning reminders, optional `system/sections/schedule-remote-agents.md`, `system/sections/session-specific-guidance.md`, and the dream-memory consolidation/pruning sections. When a prompt patch changes live guidance, update both its verifier and these rules in the same change.
 
 `prompts:compare` should normally show optional tool/agent surfaces as removed when `tools-off` / `agents-off` filtered them, zero exact-line overlap from `/etc/claude-code` into the patched export, and `Unicode Dash Style` patched counts at zero. Rising overlap usually means a patch copied managed policy verbatim instead of using distilled bundle wording. Nonzero patched dash counts mean a prompt surface is still demonstrating en dash or em dash prose style and should be fixed before refreshing drift baselines.
 
@@ -334,9 +331,11 @@ exported-prompts/<version>/
 |   |-- builtin/             # Per-tool markdown
 |   |-- schemas/             # Schema-only tools
 |   `-- sections/            # Per-tool sub-section decomposition by heading
+|-- workflows/               # Workflow & orchestration surface index (links to canonical files)
 |-- internal-agents/         # Internal model call prompts
 |-- tools.json
 |-- skills.json
+|-- workflows.json
 |-- output-styles.json
 |-- corpus-categorized.json
 |-- corpus-summary.json
@@ -348,22 +347,7 @@ exported-prompts/<version>/
 `-- manifest.json
 ```
 
-Extraction coverage:
-
-| Category | Coverage | Notes |
-|---|---:|---|
-| Built-in agents | 5/5 | Follows function refs, resolves local vars, handles `.trim()` |
-| Skills | 17/17 | Registered, builtin, marketplace-preview |
-| Tool prompts | 36 | Three genuinely dynamic, one empty `mcp` surface |
-| Tool sub-sections | 12 tools | Heading-based decomposition of large tool prompts |
-| Schema-only tools | 20/20 | Browser automation and internal classifiers |
-| System prompt variants | 10 | Main, simple mode, SDK, agent base, guide, preamble |
-| System sections | 18 | Major prompt sections with snippet collections |
-| System reminders | 16 | `<system-reminder>` templates and wrapper calls |
-| Internal agent prompts | 24+ | Compaction, session memory, security monitor, title generation, and related prompts |
-| Data references | 26+ | Embedded SDK and API docs |
-| Output styles | 2/2 | Explanatory and Learning |
-| Prompt corpus | 315 | Stable IDs, SHA-256 hashes, mostly auto-categorized |
+Extraction coverage spans built-in agents, skills, tool prompts (plus heading-based sub-sections), schema-only tools, system prompt variants, sections, and reminders, internal-agent prompts, data references, output styles, the aggregated workflow/orchestration view, and the full prompt corpus. Per-category counts are not pinned here, since they move every upstream release: each export's `manifest.json` (`counts`) carries the live numbers, and `bun run prompts:export -- <version>` regenerates them.
 
 The extractor handles `cli.js` patterns that naive string extraction misses:
 

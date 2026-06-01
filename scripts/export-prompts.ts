@@ -37,6 +37,10 @@ import {
 	type PromptCorpusEntry,
 } from "../src/prompt-corpus.js";
 import { createUniqueSlug, writeArtifact } from "../src/prompt-export-utils.js";
+import {
+	collectWorkflowSurfaces,
+	type WorkflowSurface,
+} from "../src/workflow-surfaces.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3024,6 +3028,7 @@ function writeBundleIndex(outputDir: string, label: string): void {
 		"- [Built-in agents](./agents/README.md)",
 		"- [Skills](./skills/README.md)",
 		"- [Tool prompts](./tools/README.md)",
+		"- [Workflow & orchestration surfaces](./workflows/README.md)",
 		"- [Internal agents](./internal-agents/README.md)",
 		"- [Manifest](./manifest.json)",
 		"",
@@ -3074,6 +3079,11 @@ async function main(): Promise<void> {
 		const builder = extractBuilderOutline(ast, context);
 		const skills = collectSkillPrompts(ast, context);
 		const sections = collectSectionPrompts(ast, context);
+		const workflowSurfaces = collectWorkflowSurfaces(
+			builtInTools,
+			agents,
+			sections,
+		);
 		const promptCorpus = collectPromptCorpus(ast, context);
 		const promptCorpusIdMap = buildPromptCorpusIdMap(promptCorpus);
 		const promptDataset = buildPromptDataset(resolved.label, promptCorpus);
@@ -3371,6 +3381,45 @@ async function main(): Promise<void> {
 			].join("\n"),
 		);
 
+		if (workflowSurfaces.length > 0) {
+			const workflowsByKind = (kind: WorkflowSurface["kind"]) =>
+				workflowSurfaces.filter((surface) => surface.kind === kind);
+			const renderLinks = (entries: WorkflowSurface[]) =>
+				entries.map(
+					(surface, index) =>
+						`${index + 1}. [${surface.name}](../${surface.path})`,
+				);
+			writeArtifact(
+				outputDir,
+				written,
+				path.join("workflows", "README.md"),
+				[
+					"# Workflow & Orchestration Surfaces",
+					"",
+					"Multi-agent workflow and orchestration prompt surfaces, aggregated",
+					"from the tool, agent, and system-section exports. Each file lives in",
+					"its canonical location; the links below point there.",
+					"",
+					`- Total: ${workflowSurfaces.length}`,
+					"",
+					"## Tools",
+					...renderLinks(workflowsByKind("tool")),
+					"",
+					"## Agents",
+					...renderLinks(workflowsByKind("agent")),
+					"",
+					"## System sections",
+					...renderLinks(workflowsByKind("section")),
+				].join("\n"),
+			);
+			writeArtifact(
+				outputDir,
+				written,
+				"workflows.json",
+				`${JSON.stringify(workflowSurfaces, null, 2)}\n`,
+			);
+		}
+
 		if (outputStyles) {
 			writeArtifact(
 				outputDir,
@@ -3572,6 +3621,9 @@ async function main(): Promise<void> {
 				`- [Skills](./skills/README.md)`,
 				`- [System prompts](./system/README.md)`,
 				`- [Tool prompts](./tools/README.md)`,
+				workflowSurfaces.length > 0
+					? `- [Workflows](./workflows/README.md)`
+					: null,
 				internalAgents.length > 0
 					? `- [Internal agents](./internal-agents/README.md)`
 					: null,
@@ -3600,6 +3652,7 @@ async function main(): Promise<void> {
 				systemReminders: systemReminders.length,
 				builtInTools: builtInTools.length,
 				schemaTools: schemaTools.length,
+				workflows: workflowSurfaces.length,
 				outputStyles: outputStyles?.styles.length ?? 0,
 				internalAgents: internalAgents.length,
 				dataReferences: dataRefs.length,
@@ -3628,7 +3681,7 @@ async function main(): Promise<void> {
 		console.log(`Exported prompt artifacts from ${resolved.cliPath}`);
 		console.log(`Output directory: ${outputDir}`);
 		console.log(
-			`Counts: agents=${agents.length}, skills=${skills.length}, sections=${sections.length}, variants=${systemVariants.length}, reminders=${systemReminders.length}, tools=${builtInTools.length}, schemas=${schemaTools.length}, styles=${outputStyles?.styles.length ?? 0}, internalAgents=${internalAgents.length}, dataRefs=${dataRefs.length}, corpus=${promptCorpusDebug.length}, aliases=${aliasEntries.length}`,
+			`Counts: agents=${agents.length}, skills=${skills.length}, sections=${sections.length}, variants=${systemVariants.length}, reminders=${systemReminders.length}, tools=${builtInTools.length}, schemas=${schemaTools.length}, workflows=${workflowSurfaces.length}, styles=${outputStyles?.styles.length ?? 0}, internalAgents=${internalAgents.length}, dataRefs=${dataRefs.length}, corpus=${promptCorpusDebug.length}, aliases=${aliasEntries.length}`,
 		);
 		if (options.bundle) {
 			writeBundleIndex(outputDir, resolved.label);

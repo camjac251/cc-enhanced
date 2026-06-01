@@ -313,6 +313,16 @@ async function main() {
 			default: "5m" as const,
 			description: "cache_control TTL to use for benchmark breakpoints",
 		})
+		.option("baseline-ttl", {
+			choices: ["5m", "1h", "none"] as const,
+			description:
+				"cache_control TTL for the baseline policy; defaults to --ttl",
+		})
+		.option("patched-ttl", {
+			choices: ["5m", "1h", "none"] as const,
+			description:
+				"cache_control TTL for the patched policy; defaults to --ttl",
+		})
 		.option("max-breakpoints", {
 			type: "number",
 			default: 4,
@@ -398,7 +408,8 @@ async function main() {
 				"src/verification/fixtures/cache-transcript-subagent.json",
 			);
 		}
-		if (!hasFlag("ttl")) argv.ttl = "1h";
+		if (!hasFlag("baseline-ttl")) argv.baselineTtl = "5m";
+		if (!hasFlag("patched-ttl")) argv.patchedTtl = "1h";
 		if (!hasFlag("max-cost-regression-pct")) argv.maxCostRegressionPct = 10;
 		if (!hasFlag("min-cache-read-delta")) {
 			argv.minCacheReadDelta = -1_000_000;
@@ -406,6 +417,8 @@ async function main() {
 	}
 
 	const model = String(argv.model ?? "").trim();
+	const baselineTtl = (argv.baselineTtl ?? argv.ttl) as CacheTtl;
+	const patchedTtl = (argv.patchedTtl ?? argv.ttl) as CacheTtl;
 
 	const transcriptPath = path.resolve(String(argv.transcript));
 	const transcript = await loadTranscript(transcriptPath);
@@ -434,9 +447,10 @@ async function main() {
 
 	for (const policy of POLICIES) {
 		const turns: TurnResult[] = [];
+		const policyTtl = policy.name === "baseline" ? baselineTtl : patchedTtl;
 		const systemBlocks = buildSystemBlocks(
 			transcript,
-			argv.ttl as CacheTtl,
+			policyTtl,
 			policy.cacheNamespace,
 		);
 		for (let turnIndex = 0; turnIndex < transcript.turns.length; turnIndex++) {
@@ -444,7 +458,7 @@ async function main() {
 				transcript.turns,
 				turnIndex,
 			);
-			const messages = applyPolicy(baseMessages, policy, argv.ttl as CacheTtl);
+			const messages = applyPolicy(baseMessages, policy, policyTtl);
 			const cacheBreakpointCount = countBreakpoints(systemBlocks, messages);
 
 			const exceedsBreakpointLimit = cacheBreakpointCount > maxBreakpoints;
@@ -537,6 +551,8 @@ async function main() {
 		transcriptDescription: transcript.description ?? null,
 		options: {
 			ttl: argv.ttl,
+			baselineTtl,
+			patchedTtl,
 			maxTokens: Number(argv.maxTokens),
 			temperature: Number(argv.temperature),
 			maxBreakpoints,
@@ -634,6 +650,7 @@ async function main() {
 	console.log(`Transcript: ${transcriptPath}`);
 	console.log(`Model:      ${model}`);
 	console.log(`Mode:       ${liveRun ? "live API" : "dry-run planning only"}`);
+	console.log(`TTL:        baseline=${baselineTtl}, patched=${patchedTtl}`);
 	console.log(
 		`Delta:      cache_read=${cacheReadDelta}, equivalent_input=${equivalentDelta.toFixed(2)}, estimated_cost_pct=${Number.isFinite(costDeltaPct) ? costDeltaPct.toFixed(2) : "inf"}%`,
 	);

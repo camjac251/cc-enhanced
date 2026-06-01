@@ -678,6 +678,8 @@ function createBashOutputTailMutator(): Visitor {
 					(typeof INPUT.max_output === "number" && INPUT.max_output > 0)
 						? "max_output: " + INPUT.max_output
 						: null,
+					(typeof INPUT.timeout === "number") ? "timeout: " + INPUT.timeout : null,
+					INPUT.dangerouslyDisableSandbox ? "no-sandbox" : null,
 				].filter(function (v) { return v != null; }) : [];
 				var _bashOptsSuffix = _bashOptsRaw.length > 0
 					? " · " + _bashOptsRaw.join(", ")
@@ -757,6 +759,8 @@ export const bashOutputTail: Patch = {
 		let hasRenderOptsFunction = false;
 		let hasRenderOptsHelper = false;
 		let hasRenderOptsWrappedReturns = false;
+		let hasRenderTimeoutMarker = false;
+		let hasRenderNoSandboxMarker = false;
 		let hasCopyablePipeHeadText = false;
 		let hasCopyablePipeTailText = false;
 		let hasEzaListClassifier = false;
@@ -933,6 +937,12 @@ export const bashOutputTail: Patch = {
 				if (hasOnlyWrappedTopLevelReturns(path, "_bashAppendOpts")) {
 					hasRenderOptsWrappedReturns = true;
 				}
+				path.traverse({
+					StringLiteral(sp: any) {
+						if (sp.node.value === "timeout: ") hasRenderTimeoutMarker = true;
+						if (sp.node.value === "no-sandbox") hasRenderNoSandboxMarker = true;
+					},
+				});
 			},
 		});
 
@@ -956,6 +966,10 @@ export const bashOutputTail: Patch = {
 			return "Missing _bashAppendOpts helper in renderToolUseMessage";
 		if (!hasRenderOptsWrappedReturns)
 			return "Bash renderToolUseMessage returns are not all wrapped with _bashAppendOpts";
+		if (!hasRenderTimeoutMarker)
+			return "Missing timeout marker in Bash render opts";
+		if (!hasRenderNoSandboxMarker)
+			return "Missing no-sandbox marker in Bash render opts";
 		// Prompt checks
 		if (!code.includes("Disk persistence"))
 			return "Missing disk persistence guidance in prompt";

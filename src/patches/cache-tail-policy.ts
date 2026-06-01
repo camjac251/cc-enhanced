@@ -6,7 +6,6 @@ import {
 	getVerifyAst,
 	hasObjectKeyName,
 	isMemberPropertyName,
-	objectPatternHasKey,
 } from "./ast-helpers.js";
 
 const AGENT_CACHE_TTL_QUERY_SOURCE = "agent:*";
@@ -695,127 +694,6 @@ function createSyspromptGlobalScopeMutator(): Visitor {
 				if (!patched) {
 					console.warn(
 						"cache-tail-policy: Could not patch sysprompt identity scope to global",
-					);
-				}
-			},
-		},
-	};
-}
-
-// ---------------------------------------------------------------------------
-// Cache control 1h TTL mutator
-// ---------------------------------------------------------------------------
-
-/**
- * Patch the cache_control builder so scoped blocks always get `ttl: "1h"`,
- * regardless of the caller-decided ttl argument. The builder has the shape:
- *
- *   function ({ scope: H, ttl: $ } = {}) {
- *     return { type: "ephemeral", ...($ && { ttl: $ }), ...(H === "global" && { scope: H }) };
- *   }
- *
- * We transform `$ && { ttl: $ }` into `(H || $) && { ttl: H ? "1h" : $ }` so
- * that any non-null scope (including "global") emits `ttl: "1h"` even when the
- * caller did not opt into the 1h TTL flag.
- */
-function createCacheControlTtlMutator(): Visitor {
-	let patched = false;
-
-	return {
-		Function(path) {
-			if (patched) return;
-			if (!t.isBlockStatement(path.node.body)) return;
-
-			const params = path.node.params;
-			if (params.length < 1) return;
-
-			let pattern: t.ObjectPattern | null = null;
-			const firstParam = params[0];
-			if (t.isObjectPattern(firstParam)) {
-				pattern = firstParam;
-			} else if (
-				t.isAssignmentPattern(firstParam) &&
-				t.isObjectPattern(firstParam.left)
-			) {
-				pattern = firstParam.left;
-			}
-			if (!pattern) return;
-			if (!objectPatternHasKey(pattern, "scope")) return;
-			if (!objectPatternHasKey(pattern, "ttl")) return;
-
-			const scopeLocalName = getObjectPatternBindingName(pattern, "scope");
-			const ttlLocalName = getObjectPatternBindingName(pattern, "ttl");
-			if (!scopeLocalName || !ttlLocalName) return;
-
-			let hasEphemeral = false;
-			path.traverse({
-				StringLiteral(strPath) {
-					if (strPath.node.value === "ephemeral") hasEphemeral = true;
-				},
-			});
-			if (!hasEphemeral) return;
-
-			path.traverse({
-				ObjectExpression(objPath) {
-					if (patched) return;
-
-					const ttlProp = objPath.node.properties.find(
-						(p): p is t.ObjectProperty =>
-							t.isObjectProperty(p) && getObjectKeyName(p.key) === "ttl",
-					);
-					if (!ttlProp) return;
-
-					const parent = objPath.parentPath;
-					if (
-						!parent?.isLogicalExpression({ operator: "&&" }) ||
-						parent.node.right !== objPath.node
-					) {
-						return;
-					}
-
-					const left = parent.node.left;
-
-					// Idempotent: already patched.
-					if (
-						t.isLogicalExpression(left, { operator: "||" }) &&
-						t.isIdentifier(left.left, { name: scopeLocalName }) &&
-						t.isIdentifier(left.right, { name: ttlLocalName }) &&
-						t.isConditionalExpression(ttlProp.value) &&
-						t.isIdentifier(ttlProp.value.test, { name: scopeLocalName }) &&
-						t.isStringLiteral(ttlProp.value.consequent, { value: "1h" }) &&
-						t.isIdentifier(ttlProp.value.alternate, { name: ttlLocalName })
-					) {
-						patched = true;
-						return;
-					}
-
-					// Pre-patch shape: `<ttl> && { ttl: <ttl> }`.
-					if (
-						!t.isIdentifier(left, { name: ttlLocalName }) ||
-						!t.isIdentifier(ttlProp.value, { name: ttlLocalName })
-					) {
-						return;
-					}
-
-					parent.node.left = t.logicalExpression(
-						"||",
-						t.identifier(scopeLocalName),
-						t.identifier(ttlLocalName),
-					);
-					ttlProp.value = t.conditionalExpression(
-						t.identifier(scopeLocalName),
-						t.stringLiteral("1h"),
-						t.identifier(ttlLocalName),
-					);
-					patched = true;
-				},
-			});
-		},
-		Program: {
-			exit() {
-				if (!patched) {
-					console.warn(
-						"cache-tail-policy: Could not patch cache control 1h TTL for scoped blocks",
 					);
 				}
 			},
@@ -1605,9 +1483,10 @@ function getObjectPatternBindingName(
 	return null;
 }
 
-function verifyScopedCacheControlTtl(ast: t.File): true | string {
+function verifyCacheControlTtlRespectsCaller(ast: t.File): true | string {
 	let foundCacheControlBuilder = false;
-	let hasScopeTtlGate = false;
+	let hasCallerTtlGate = false;
+	let hasScopeForcedTtlGate = false;
 
 	traverse(ast, {
 		Function(path) {
@@ -1644,20 +1523,12 @@ function verifyScopedCacheControlTtl(ast: t.File): true | string {
 
 			path.traverse({
 				ObjectExpression(objPath) {
-					if (hasScopeTtlGate) return;
+					if (hasCallerTtlGate && hasScopeForcedTtlGate) return;
 					const ttlProp = objPath.node.properties.find(
 						(prop): prop is t.ObjectProperty =>
 							t.isObjectProperty(prop) && getObjectKeyName(prop.key) === "ttl",
 					);
 					if (!ttlProp) return;
-					if (
-						!t.isConditionalExpression(ttlProp.value) ||
-						!t.isIdentifier(ttlProp.value.test, { name: scopeLocalName }) ||
-						!t.isStringLiteral(ttlProp.value.consequent, { value: "1h" }) ||
-						!t.isIdentifier(ttlProp.value.alternate, { name: ttlLocalName })
-					) {
-						return;
-					}
 
 					const parent = objPath.parentPath;
 					if (
@@ -1669,11 +1540,21 @@ function verifyScopedCacheControlTtl(ast: t.File): true | string {
 
 					const left = parent.node.left;
 					if (
+						t.isIdentifier(left, { name: ttlLocalName }) &&
+						t.isIdentifier(ttlProp.value, { name: ttlLocalName })
+					) {
+						hasCallerTtlGate = true;
+					}
+					if (
 						t.isLogicalExpression(left, { operator: "||" }) &&
 						t.isIdentifier(left.left, { name: scopeLocalName }) &&
-						t.isIdentifier(left.right, { name: ttlLocalName })
+						t.isIdentifier(left.right, { name: ttlLocalName }) &&
+						t.isConditionalExpression(ttlProp.value) &&
+						t.isIdentifier(ttlProp.value.test, { name: scopeLocalName }) &&
+						t.isStringLiteral(ttlProp.value.consequent, { value: "1h" }) &&
+						t.isIdentifier(ttlProp.value.alternate, { name: ttlLocalName })
 					) {
-						hasScopeTtlGate = true;
+						hasScopeForcedTtlGate = true;
 					}
 				},
 			});
@@ -1685,8 +1566,11 @@ function verifyScopedCacheControlTtl(ast: t.File): true | string {
 	if (!foundCacheControlBuilder) {
 		return "Could not locate cache control builder anchor";
 	}
-	if (!hasScopeTtlGate) {
-		return "Cache control builder not patched for 1h TTL on scoped blocks";
+	if (hasScopeForcedTtlGate) {
+		return "Cache control builder forces 1h TTL from scope instead of respecting caller TTL";
+	}
+	if (!hasCallerTtlGate) {
+		return "Cache control builder no longer respects caller-provided TTL";
 	}
 	return true;
 }
@@ -1948,10 +1832,6 @@ export const cacheTailPolicy: Patch = {
 		},
 		{
 			pass: "mutate",
-			visitor: createCacheControlTtlMutator(),
-		},
-		{
-			pass: "mutate",
 			visitor: createCacheControlBlockCapClampInjector(ast),
 		},
 		{
@@ -1979,7 +1859,7 @@ export const cacheTailPolicy: Patch = {
 		const checks: Array<() => true | string> = [
 			() => verifyTailWindowPolicy(verifyAst),
 			() => verifySyspromptGlobalScope(verifyAst),
-			() => verifyScopedCacheControlTtl(verifyAst),
+			() => verifyCacheControlTtlRespectsCaller(verifyAst),
 			() => verifyAgentCacheTtlAllowlist(verifyAst),
 			() => verifyCacheControlBlockCap(verifyAst, requestClampAnchor),
 		];

@@ -54,6 +54,20 @@ export const MODERN_OUTPUT_LIMIT_WARNING = MODERN_STDOUT_CAP;
 export const PROHIBITED_BASH_OPS =
 	"NEVER use %TOOL% for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification";
 
+/**
+ * Compact code-search + temp-file routing for generic sub-agent prompts
+ * (worker, workflow-subagent) that otherwise ship with no tool guidance.
+ *
+ * Uses bare tool names with no backticks and no `${` interpolation markers:
+ * this text is spliced into bundle template literals, where a backtick would
+ * terminate the literal and a `${` would start a runtime interpolation.
+ */
+export const MODERN_SUBAGENT_CODE_ROUTING = [
+	"When the task involves code, route search by intent: Serena for symbols, definitions, and references; ChunkHound for conceptual or architecture questions; Probe search_code for known terms or boolean search (exact: true for symbol-precise); ast-grep MCP or sg for structural patterns and code rewrites (preview before applying).",
+	"Use rg only for non-code text such as logs, config, comments, and prose, never to search code files. Use fd to find files, eza to list directories, bat -r START:END to view file ranges, and Write or Edit to change files. For GitHub URLs, file content, and metadata use gh api.",
+	"Cap output at the producer (rg -m N, fd --max-results N, git log -n N) rather than piping through head or tail. Put temporary files in the session scratchpad or $TMPDIR, never /tmp.",
+].join("\n");
+
 export const STRONG_CLAUDEMD_DISCLAIMER_LINES = [
 	"The instructions above are MANDATORY when they apply to your current task. Follow them exactly as written.",
 	"**ALWAYS** use gh api for GitHub URLs, not web fetching tools.",

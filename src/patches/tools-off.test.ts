@@ -204,6 +204,46 @@ test("tools-off rewrites remote planning disabled-tool guidance", () => {
 	);
 });
 
+test("tools-off scrubs the PowerShell search bullets and leaves the Bash-builder shape for bash-prompt", () => {
+	// Two shapes ship in the bundle: "- " bullets in the PowerShell prompt (scrubbed
+	// here) and no-marker backtick array elements in the Bash prompt builder, which
+	// the bash-prompt patch rewrites into modern code-search guidance. tools-off must
+	// scrub only the "- " PowerShell shape; clobbering the Bash-builder shape would
+	// strip the richer guidance bash-prompt injects.
+	const input = [
+		"- File search: Use ${p_} (NOT Get-ChildItem -Recurse)",
+		"- Content search: Use ${K5} (NOT Select-String)",
+		"`File search: Use ${p_} (NOT find or ls)`",
+		"`Content search: Use ${K5} (NOT grep or rg)`",
+	].join("\n");
+	const output = disableTools.string?.(input) ?? input;
+	// PowerShell "- " bullets scrub to neutral wording.
+	assert.equal(
+		output.includes(
+			"- File search: Use available file-search tooling with focused scope",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"- Content search: Use available content-search tooling with focused scope",
+		),
+		true,
+	);
+	// No "- " PowerShell bullet still names a disabled tool.
+	assert.equal(output.includes("- File search: Use ${"), false);
+	assert.equal(output.includes("- Content search: Use ${"), false);
+	// The Bash-builder backtick shape is left intact for bash-prompt to rewrite.
+	assert.equal(
+		output.includes("`File search: Use ${p_} (NOT find or ls)`"),
+		true,
+	);
+	assert.equal(
+		output.includes("`Content search: Use ${K5} (NOT grep or rg)`"),
+		true,
+	);
+});
+
 // ---------------------------------------------------------------------------
 // Skill tools tests
 // ---------------------------------------------------------------------------
@@ -237,5 +277,34 @@ const skill = {
 	assert.equal(output.includes("## When to Fetch Live Documentation"), true);
 	assert.equal(output.includes('allowedTools: ["Read", "Bash"]'), true);
 	assert.equal(output.includes('filePatternTools: ["Read"]'), true);
+	assert.equal(disableTools.verify(output, ast), true);
+});
+
+test("tools-off strips forbidden tools from JSON-style allowed_tools examples", async () => {
+	const input = `
+${TOOL_FIXTURE}
+const docs = "**Common tool matchers:** \\\`Bash\\\`, \\\`Write\\\`, \\\`Edit\\\`, \\\`Read\\\`, \\\`Glob\\\`, \\\`Grep\\\`";
+const remoteRoutineExample = {
+  job_config: {
+    ccr: {
+      session_context: {
+        "allowed_tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+      },
+    },
+  },
+};
+`;
+	const { output, ast } = await applyFullPatch(input);
+
+	assert.equal(
+		output.includes('"allowed_tools": ["Bash", "Read", "Write", "Edit"]'),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			'"allowed_tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]',
+		),
+		false,
+	);
 	assert.equal(disableTools.verify(output, ast), true);
 });

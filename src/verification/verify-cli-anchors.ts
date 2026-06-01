@@ -47,9 +47,9 @@ const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 		reason: "Missing system prompt env override",
 	},
 	{
-		id: "sys-prompt-replacement-guard",
-		needle: "systemPromptFile === void 0",
-		reason: "Missing replacement-mode guard for auto-append system prompt file",
+		id: "sys-prompt-auto-append-guard",
+		needle: "appendSystemPromptFile === void 0",
+		reason: "Missing auto-append guard for system prompt file",
 	},
 	{
 		id: "subagent-system-prompt-fallback",
@@ -95,6 +95,11 @@ const FORBIDDEN_FIXED_PATCHED: AnchorRule[] = [
 		id: "legacy-webfetch-html-heading",
 		needle: "<h2>When to Use WebFetch</h2>",
 		reason: "Legacy HTML WebFetch heading still present",
+	},
+	{
+		id: "slim-subagent-claudemd-omit",
+		needle: "tengu_slim_subagent_claudemd",
+		reason: "Slim subagent CLAUDE.md omission gate still present",
 	},
 ];
 

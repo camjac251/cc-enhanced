@@ -266,6 +266,24 @@ test("bash-tail runtime keeps tail content, fixes preview, and honors max_output
 			mod.renderBashMessage({ command: "ls", max_output: 0 }, ctx),
 			"ls",
 		);
+		assert.equal(
+			mod.renderBashMessage({ command: "ls", timeout: 5000 }, ctx),
+			"ls · timeout: 5000",
+		);
+		assert.equal(
+			mod.renderBashMessage(
+				{ command: "ls", run_in_background: true, timeout: 5000 },
+				ctx,
+			),
+			"ls · background, timeout: 5000",
+		);
+		assert.equal(
+			mod.renderBashMessage(
+				{ command: "ls", dangerouslyDisableSandbox: true },
+				ctx,
+			),
+			"ls · no-sandbox",
+		);
 		assert.equal(mod.isListCommand("eza"), true);
 		assert.deepEqual(
 			await mod.BashTool.validateInput({ command: "printf hi" }),

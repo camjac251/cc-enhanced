@@ -78,15 +78,18 @@ const PROMPT_REWRITE_REPLACEMENTS: Array<[RegExp, string]> = [
 		),
 		"- Use available content-search tooling for targeted discovery",
 	],
+	// The File/Content search bullets ship in two shapes: "- " bullets in the
+	// PowerShell prompt (PowerShell-specific NOT hints) and no-marker backtick array
+	// elements in the Bash prompt builder ("NOT find or ls" / "NOT grep or rg").
+	// Scrub only the "- " PowerShell shape here; the Bash-builder shape is rewritten
+	// into modern code-search guidance by the bash-prompt patch, so matching it here
+	// would clobber that richer text before bash-prompt's AST pass runs.
 	[
-		new RegExp(`- File search: Use \\$\\{${VAR}\\} \\(NOT find or ls\\)`, "g"),
+		new RegExp(`- File search: Use \\$\\{${VAR}\\} \\(NOT [^)]+\\)`, "g"),
 		"- File search: Use available file-search tooling with focused scope",
 	],
 	[
-		new RegExp(
-			`- Content search: Use \\$\\{${VAR}\\} \\(NOT grep or [^)]+\\)`,
-			"g",
-		),
+		new RegExp(`- Content search: Use \\$\\{${VAR}\\} \\(NOT [^)]+\\)`, "g"),
 		"- Content search: Use available content-search tooling with focused scope",
 	],
 ];
@@ -352,7 +355,7 @@ function normalizePlainAllowedToolsArrays(code: string): string {
 	let result = code;
 	for (const key of ["allowedTools", "allowed_tools", "tools"] as const) {
 		result = result.replace(
-			new RegExp(`(${key}\\s*[:=]\\s*)\\[([^\\]]+)\\]`, "g"),
+			new RegExp(`((?:"${key}"|${key})\\s*[:=]\\s*)\\[([^\\]]+)\\]`, "g"),
 			(match, prefix, items) => {
 				const tools = extractTools(items, /"([^"]+)"/g);
 				if (!tools.some((tool) => FORBIDDEN_TOOLS.has(tool))) return match;
@@ -689,6 +692,17 @@ function verifyPromptRewrite(code: string): true | string {
 			}
 		}
 	}
+
+	// The "- " PowerShell File/Content search bullets must not survive carrying a
+	// disabled-tool interpolation. (The no-marker Bash-builder shape is owned by the
+	// bash-prompt patch.) A reshaped bullet would no-op silently without this guard.
+	if (
+		new RegExp(`- (?:File|Content) search: Use \\$\\{${VAR}\\} \\(NOT `).test(
+			code,
+		)
+	) {
+		return "File/Content search guidance still names a disabled search tool";
+	}
 	return true;
 }
 
@@ -728,7 +742,7 @@ function verifySkillTools(code: string, ast: t.File): true | string {
 	if (code.includes("allowed-tools:")) stringChecksExercised++;
 
 	if (
-		/(allowedTools|allowed_tools|\btools\b)\s*[:=]\s*\[[^\]]*"(Glob|Grep|WebFetch|WebSearch)"/.test(
+		/(?:"(?:allowedTools|allowed_tools|tools)"|allowedTools|allowed_tools|\btools\b)\s*[:=]\s*\[[^\]]*"(Glob|Grep|WebFetch|WebSearch)"/.test(
 			code,
 		) ||
 		/(allowedTools|allowed_tools)\s*[:=]\s*\[[^\]]*&quot;(Glob|Grep|WebFetch|WebSearch)&quot;/.test(

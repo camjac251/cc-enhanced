@@ -1329,6 +1329,9 @@ function verifyReadExamplesAndValidate(ctx: ReadVerifyContext): string | null {
 	if (!code.includes(" · pages ") && !code.includes("\\xB7 pages ")) {
 		return "renderToolUseMessage missing pages display";
 	}
+	if (!code.includes(" · range: ") && !code.includes("\\xB7 range: ")) {
+		return "renderToolUseMessage not showing range on agent-output reads";
+	}
 	return null;
 }
 
@@ -3038,7 +3041,7 @@ export const readWithBat: Patch = {
 									template.statements(
 										`
 					if (!FILE_PATH) return null;
-					if (CHECK_FN(FILE_PATH)) return "";
+					if (CHECK_FN(FILE_PATH)) return R ? " · range: " + R : "";
 					let DISPLAY = VERBOSE ? FILE_PATH : ABBR_FN(FILE_PATH);
 					if (PAGES) return CE.createElement(CE.Fragment, null, CE.createElement(COMP, { filePath: FILE_PATH }, DISPLAY), " · pages " + PAGES);
 					var opts = [];

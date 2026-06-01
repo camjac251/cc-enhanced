@@ -5,6 +5,7 @@ import {
 	MODERN_CODE_TOOL_SELF_CHECK,
 	MODERN_READONLY_OPS,
 	MODERN_STDOUT_CAP,
+	MODERN_SUBAGENT_CODE_ROUTING,
 	MODERN_TOOL_PREFERENCE,
 	PROHIBITED_BASH_OPS,
 } from "./prompt-policy.js";
@@ -230,7 +231,49 @@ const CORPUS_EXAMPLE_REPLACEMENTS: Array<[string, string]> = [
 		"curl -si localhost:3000/api/thing | head -20",
 		"curl -sI localhost:3000/api/thing",
 	],
+	["grep CI logs for retry markers", "search CI logs for retry markers"],
+	["grep test logs for retries", "search test logs for retries"],
 ];
+
+// Modern-tooling routing for the built-in sub-agent and orchestration prompt
+// surfaces the Explore/Plan/general-purpose rewrites above do not cover. Each
+// anchor below is a verbatim, minified-name-free literal in the bundle.
+const WORKER_AGENT_OPENER =
+	"You are a worker agent executing a task assigned by the coordinator.";
+
+const WORKFLOW_SUBAGENT_OPENER =
+	"You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task.";
+
+const SUBAGENT_ROUTING_ANCHORS = [
+	WORKER_AGENT_OPENER,
+	WORKFLOW_SUBAGENT_OPENER,
+] as const;
+
+const CLAUDE_NOISY_INVESTIGATION_SOURCE =
+	"For noisy investigation (grep sweeps, log trawls, broad search), spawn a subagent and keep only the findings here.";
+
+const CLAUDE_NOISY_INVESTIGATION_REPLACEMENT =
+	"For noisy investigation (broad code search or log trawls), spawn a subagent and keep only the findings here. The subagent should route search by intent (Serena, ChunkHound, Probe, ast-grep MCP or sg) and use rg only for logs and other non-code text.";
+
+const AGENT_TOOL_SYMBOL_LOOKUP_SOURCE = "`grep` via the Bash tool";
+
+const AGENT_TOOL_SYMBOL_LOOKUP_REPLACEMENT =
+	"Serena or Probe search_code (exact: true)";
+
+function subagentRoutingInjection(anchor: string): string {
+	return `${anchor}\n\n${MODERN_SUBAGENT_CODE_ROUTING}`;
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+	if (!needle) return 0;
+	let count = 0;
+	let index = haystack.indexOf(needle);
+	while (index !== -1) {
+		count += 1;
+		index = haystack.indexOf(needle, index + needle.length);
+	}
+	return count;
+}
 
 const GENERAL_SOURCE_SIGNALS = [
 	"Your strengths:\n- Searching for code, configurations, and patterns across large codebases",
@@ -356,6 +399,19 @@ const PLAN_SCOPE_END_SIGNALS = [
 	"[Why it matters to the implementation]",
 ];
 
+// The Biome-formatted bundle stores every non-ASCII character in a string literal
+// as a \uXXXX escape; it contains no raw non-ASCII bytes. A source needle authored
+// with a literal non-ASCII character (e.g. an em dash) therefore never matches the
+// bundle text, and the rewrite silently no-ops while verify() sees neither the
+// source nor the replacement and passes. Normalize needles to the escaped form
+// before matching so they line up with the bundle's representation.
+function escapeNonAscii(text: string): string {
+	return text.replace(
+		/[^\x00-\x7F]/g,
+		(ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
+}
+
 export const builtInAgentPrompt: Patch = {
 	tag: "built-in-agent-prompt",
 
@@ -363,18 +419,21 @@ export const builtInAgentPrompt: Patch = {
 		let result = code;
 
 		result = result.replaceAll(
-			EXPLORE_WHEN_TO_USE_SOURCE,
+			escapeNonAscii(EXPLORE_WHEN_TO_USE_SOURCE),
 			EXPLORE_WHEN_TO_USE_REPLACEMENT,
 		);
 		result = result.replaceAll(
-			PLAN_WHEN_TO_USE_SOURCE,
+			escapeNonAscii(PLAN_WHEN_TO_USE_SOURCE),
 			PLAN_WHEN_TO_USE_REPLACEMENT,
 		);
 		result = result.replaceAll(
-			EXPLORE_PROMPT_SOURCE,
+			escapeNonAscii(EXPLORE_PROMPT_SOURCE),
 			EXPLORE_PROMPT_REPLACEMENT,
 		);
-		result = result.replaceAll(PLAN_PROMPT_SOURCE, PLAN_PROMPT_REPLACEMENT);
+		result = result.replaceAll(
+			escapeNonAscii(PLAN_PROMPT_SOURCE),
+			PLAN_PROMPT_REPLACEMENT,
+		);
 		result = result.replace(
 			EXPLORE_HELPER_GUIDELINES_RE,
 			(match, toolExprA: string, toolExprB: string) =>
@@ -401,16 +460,31 @@ export const builtInAgentPrompt: Patch = {
 		);
 
 		for (const [source, replacement] of EXPLORE_SECTION_REPLACEMENTS) {
-			result = result.replaceAll(source, replacement);
+			result = result.replaceAll(escapeNonAscii(source), replacement);
 		}
 		for (const [source, replacement] of PLAN_SECTION_REPLACEMENTS) {
-			result = result.replaceAll(source, replacement);
+			result = result.replaceAll(escapeNonAscii(source), replacement);
 		}
 		for (const [source, replacement] of GENERAL_PURPOSE_SECTION_REPLACEMENTS) {
-			result = result.replaceAll(source, replacement);
+			result = result.replaceAll(escapeNonAscii(source), replacement);
 		}
 		for (const [source, replacement] of CORPUS_EXAMPLE_REPLACEMENTS) {
-			result = result.replaceAll(source, replacement);
+			result = result.replaceAll(escapeNonAscii(source), replacement);
+		}
+
+		result = result.replaceAll(
+			escapeNonAscii(AGENT_TOOL_SYMBOL_LOOKUP_SOURCE),
+			AGENT_TOOL_SYMBOL_LOOKUP_REPLACEMENT,
+		);
+		result = result.replaceAll(
+			escapeNonAscii(CLAUDE_NOISY_INVESTIGATION_SOURCE),
+			CLAUDE_NOISY_INVESTIGATION_REPLACEMENT,
+		);
+		for (const anchor of SUBAGENT_ROUTING_ANCHORS) {
+			const injected = subagentRoutingInjection(anchor);
+			if (!result.includes(injected)) {
+				result = result.replaceAll(escapeNonAscii(anchor), injected);
+			}
 		}
 
 		return result;
@@ -422,7 +496,7 @@ export const builtInAgentPrompt: Patch = {
 			replacement: string,
 			label: string,
 		): true | string => {
-			const hasSource = code.includes(source);
+			const hasSource = code.includes(escapeNonAscii(source));
 			const hasReplacement = code.includes(replacement);
 			if (!hasSource && !hasReplacement) return true;
 			if (!hasReplacement) {
@@ -480,7 +554,7 @@ export const builtInAgentPrompt: Patch = {
 		if (planWhenToUseResult !== true) return planWhenToUseResult;
 
 		for (const [source, replacement] of CORPUS_EXAMPLE_REPLACEMENTS) {
-			const hasSource = code.includes(source);
+			const hasSource = code.includes(escapeNonAscii(source));
 			const hasReplacement = code.includes(replacement);
 			if (!hasSource && !hasReplacement) continue;
 			if (hasSource) {
@@ -596,6 +670,32 @@ export const builtInAgentPrompt: Patch = {
 		);
 		if (!hasAnyPatchedOpener) {
 			return "Built-in agent prompt replacements never landed in any extracted scope";
+		}
+
+		const agentToolResult = verifyExactReplacement(
+			AGENT_TOOL_SYMBOL_LOOKUP_SOURCE,
+			AGENT_TOOL_SYMBOL_LOOKUP_REPLACEMENT,
+			"Agent tool symbol-lookup routing",
+		);
+		if (agentToolResult !== true) return agentToolResult;
+
+		const claudeNoisyResult = verifyExactReplacement(
+			CLAUDE_NOISY_INVESTIGATION_SOURCE,
+			CLAUDE_NOISY_INVESTIGATION_REPLACEMENT,
+			"claude background-job investigation routing",
+		);
+		if (claudeNoisyResult !== true) return claudeNoisyResult;
+
+		for (const anchor of SUBAGENT_ROUTING_ANCHORS) {
+			const anchorCount = countOccurrences(code, anchor);
+			if (anchorCount === 0) continue;
+			const injectedCount = countOccurrences(
+				code,
+				subagentRoutingInjection(anchor),
+			);
+			if (injectedCount !== anchorCount) {
+				return `Sub-agent prompt missing modern-tooling routing: ${anchorCount - injectedCount} of ${anchorCount} occurrence(s) of "${anchor.slice(0, 32)}" not patched`;
+			}
 		}
 
 		return true;

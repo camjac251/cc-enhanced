@@ -332,14 +332,14 @@ function shouldUseOneHourCache(querySource) {
 }
 `;
 
-test("cache-tail-policy patches cache control builder for 1h TTL on scoped blocks", async () => {
+test("cache-tail-policy preserves caller-controlled cache control TTL", async () => {
 	const ast = parse(CACHE_CONTROL_BUILDER_FIXTURE);
 	await runCacheTailViaPasses(ast);
 	const output = print(ast);
 
-	// Post-patch: `(H || $) && { ttl: H ? "1h" : $ }`.
-	assert.equal(output.includes("H || $"), true);
-	assert.equal(output.includes('H ? "1h" : $'), true);
+	assert.equal(output.includes("$ && { ttl: $ }"), true);
+	assert.equal(output.includes("H || $"), false);
+	assert.equal(output.includes('H ? "1h" : $'), false);
 });
 
 test("cache-tail-policy extends 1h TTL allowlist to subagent query sources", async () => {
@@ -351,6 +351,34 @@ test("cache-tail-policy extends 1h TTL allowlist to subagent query sources", asy
 	assert.equal(output.includes('allowlist.push("agent:*")'), true);
 	assert.equal(output.includes('"hook_agent"'), false);
 	assert.equal(output.includes('"verification_agent"'), false);
+	assert.equal(output.includes('"agent_summary"'), false);
+	assert.equal(output.includes('"agent_creation"'), false);
+});
+
+test("cache-tail-policy 1h allowlist matches only real subagent query sources", async () => {
+	const ast = parse(CACHE_TTL_ALLOWLIST_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const runtime = new Function(`
+let cachedAllowlist = null;
+const process = { env: {} };
+function truthy(value) { return Boolean(value); }
+function promptCachingAvailable() { return true; }
+const account = { isUsingOverage: false };
+function getCachedAllowlist() { return cachedAllowlist; }
+function setCachedAllowlist(value) { cachedAllowlist = value; }
+function flag(_name, fallback) { return fallback; }
+${output}
+return { shouldUseOneHourCache };
+`)() as { shouldUseOneHourCache: (source: string) => boolean };
+
+	assert.equal(runtime.shouldUseOneHourCache("agent:custom"), true);
+	assert.equal(runtime.shouldUseOneHourCache("agent:default"), true);
+	assert.equal(runtime.shouldUseOneHourCache("agent:builtin:explore"), true);
+	assert.equal(runtime.shouldUseOneHourCache("hook_agent"), false);
+	assert.equal(runtime.shouldUseOneHourCache("verification_agent"), false);
+	assert.equal(runtime.shouldUseOneHourCache("agent_summary"), false);
+	assert.equal(runtime.shouldUseOneHourCache("agent_creation"), false);
 });
 
 test("cache-tail-policy patches all required features in full fixture", async () => {
@@ -369,14 +397,14 @@ test("cache-tail-policy patches all required features in full fixture", async ()
 		"global scope on identity",
 	);
 	assert.equal(
-		output.includes("H || $"),
+		output.includes("$ && { ttl: $ }"),
 		true,
-		"scope-gated 1h TTL left operand",
+		"cache_control builder keeps caller-controlled TTL",
 	);
 	assert.equal(
 		output.includes('H ? "1h" : $'),
-		true,
-		"scope-gated 1h TTL ternary value",
+		false,
+		"scope alone must not force 1h TTL",
 	);
 	assert.equal(
 		output.includes('"agent:*"'),
@@ -393,7 +421,7 @@ test("cache-tail-policy patches all required features in full fixture", async ()
 	assert.equal(cacheTailPolicy.verify(output, parse(output)), true);
 });
 
-test("cache-tail-policy verify rejects unpatched cache control builder in combined fixture", async () => {
+test("cache-tail-policy verify rejects scope-forced 1h cache control builder", async () => {
 	const ast = parse(FULL_VERIFY_FIXTURE);
 	await runCacheTailViaPasses(ast);
 	let output = print(ast);
@@ -410,12 +438,14 @@ test("cache-tail-policy verify rejects unpatched cache control builder in combin
 		"fully patched passes",
 	);
 
-	// Revert the TTL patch: `(H || $) && { ttl: H ? "1h" : $ }` -> `$ && { ttl: $ }`
-	output = output.replace("H || $", "$").replace('H ? "1h" : $', "$");
+	output = output.replace(
+		"$ && { ttl: $ }",
+		'(H || $) && { ttl: H ? "1h" : $ }',
+	);
 	const result = cacheTailPolicy.verify(output, parse(output));
 	assert.equal(typeof result, "string");
 	assert.equal(
-		String(result).includes("1h TTL"),
+		String(result).includes("forces 1h TTL"),
 		true,
 		`Expected TTL-related failure, got: ${result}`,
 	);
@@ -652,7 +682,6 @@ test("cache-tail-policy verify rejects patched code missing required anchors", a
 	assert.equal(typeof result, "string");
 	assert.equal(
 		String(result).includes("sysprompt") ||
-			String(result).includes("cache control builder") ||
 			String(result).includes("request clamp helper"),
 		true,
 		`Expected missing-anchor failure, got: ${result}`,

@@ -5,11 +5,15 @@ import {
 	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
 	MODERN_CODE_SEARCH_POLICY,
 	MODERN_STDOUT_CAP,
+	MODERN_SUBAGENT_CODE_ROUTING,
 	MODERN_TOOL_PREFERENCE,
 } from "./prompt-policy.js";
 
+// EXPLORE_FIXTURE stores the whenToUse em dash as a unicode escape (U+2014), the
+// way the Biome-formatted cli.js does (it has no raw non-ASCII). Keep it escaped:
+// a raw em dash here would no longer match the patch needle and would mask the no-op.
 const EXPLORE_FIXTURE = `
-const whenToUse = 'Fast read-only search agent for locating code. Use it to find files by pattern (eg. "src/components/**/*.tsx"), grep for symbols or keywords (eg. "API endpoints"), or answer "where is X defined / which files reference Y." Do NOT use it for code review, design-doc auditing, cross-file consistency checks, or open-ended analysis — it reads excerpts rather than whole files and will miss content past its read window. When calling, specify search breadth: "quick" for a single targeted lookup, "medium" for moderate exploration, or "very thorough" to search across multiple locations and naming conventions.';
+const whenToUse = 'Fast read-only search agent for locating code. Use it to find files by pattern (eg. "src/components/**/*.tsx"), grep for symbols or keywords (eg. "API endpoints"), or answer "where is X defined / which files reference Y." Do NOT use it for code review, design-doc auditing, cross-file consistency checks, or open-ended analysis \\u2014 it reads excerpts rather than whole files and will miss content past its read window. When calling, specify search breadth: "quick" for a single targeted lookup, "medium" for moderate exploration, or "very thorough" to search across multiple locations and naming conventions.';
 return \`You are a file search specialist for Claude Code, Anthropic's official CLI for Claude. You excel at thoroughly navigating and exploring codebases.
 
 Your role is EXCLUSIVELY to search and analyze existing code. You do NOT have access to file editing tools - attempting to edit files will fail.
@@ -173,6 +177,15 @@ test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
 	assert.equal(output.includes(MODERN_STDOUT_CAP), true);
 	assert.equal(output.includes("Complete the user's research request"), true);
 	assert.equal(builtInAgentPrompt.verify(patchedCombinedAgentFixture()), true);
+});
+
+test("built-in-agent-prompt rewrites the Explore whenToUse despite the bundle's escaped em dash", () => {
+	// EXPLORE_FIXTURE carries the whenToUse em dash as a unicode escape (U+2014); a
+	// literal-character needle silently no-ops against it. Asserting the whenToUse
+	// replacement landed locks this surface against the recurring escaped-dash drift.
+	const output =
+		builtInAgentPrompt.string?.(EXPLORE_FIXTURE) ?? EXPLORE_FIXTURE;
+	assert.equal(output.includes("Deep codebase research agent"), true);
 });
 
 test("built-in-agent-prompt rewrites Plan prompt and whenToUse", () => {
@@ -393,6 +406,108 @@ test("built-in-agent-prompt verify flags partial corpus rewrite", () => {
 	assert.equal(
 		String(result).includes("Unpatched corpus example") ||
 			String(result).includes("Missing rewritten corpus example"),
+		true,
+	);
+});
+
+const WORKER_AGENT_FIXTURE =
+	"return `You are a worker agent executing a task assigned by the coordinator. Report the commit hash.`;";
+
+const WORKFLOW_SUBAGENT_FIXTURE =
+	"g0_ = `You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task. Return verbatim.`; l0_ = `You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task. Call the tool.`;";
+
+const AGENT_TOOL_LOOKUP_FIXTURE =
+	"If the target is already known, use the direct tool: Read for a known path, `grep` via the Bash tool for a specific symbol or string.";
+
+const CLAUDE_NOISY_FIXTURE =
+	"For noisy investigation (grep sweeps, log trawls, broad search), spawn a subagent and keep only the findings here.";
+
+const WORKFLOW_GREP_EXAMPLE_FIXTURE =
+	"const flaky = await agent('grep CI logs for retry markers', {schema: FLAKY_SCHEMA}); { title: 'Scan', detail: 'grep test logs for retries' }";
+
+function patchedSubagentSurfaces(): string {
+	return [
+		patchedCombinedAgentFixture(),
+		builtInAgentPrompt.string?.(WORKER_AGENT_FIXTURE) ?? WORKER_AGENT_FIXTURE,
+		builtInAgentPrompt.string?.(WORKFLOW_SUBAGENT_FIXTURE) ??
+			WORKFLOW_SUBAGENT_FIXTURE,
+		builtInAgentPrompt.string?.(AGENT_TOOL_LOOKUP_FIXTURE) ??
+			AGENT_TOOL_LOOKUP_FIXTURE,
+		builtInAgentPrompt.string?.(CLAUDE_NOISY_FIXTURE) ?? CLAUDE_NOISY_FIXTURE,
+	].join("\n");
+}
+
+test("built-in-agent-prompt routes the Agent tool symbol lookup to Serena and Probe", () => {
+	const output =
+		builtInAgentPrompt.string?.(AGENT_TOOL_LOOKUP_FIXTURE) ??
+		AGENT_TOOL_LOOKUP_FIXTURE;
+	assert.equal(output.includes("`grep` via the Bash tool"), false);
+	assert.equal(
+		output.includes(
+			"Serena or Probe search_code (exact: true) for a specific symbol or string",
+		),
+		true,
+	);
+});
+
+test("built-in-agent-prompt injects modern routing into the worker agent prompt", () => {
+	const output =
+		builtInAgentPrompt.string?.(WORKER_AGENT_FIXTURE) ?? WORKER_AGENT_FIXTURE;
+	assert.equal(output.split(MODERN_SUBAGENT_CODE_ROUTING).length - 1, 1);
+	assert.equal(
+		output.includes(
+			"You are a worker agent executing a task assigned by the coordinator.",
+		),
+		true,
+	);
+});
+
+test("built-in-agent-prompt injects modern routing into both workflow-subagent variants", () => {
+	const output =
+		builtInAgentPrompt.string?.(WORKFLOW_SUBAGENT_FIXTURE) ??
+		WORKFLOW_SUBAGENT_FIXTURE;
+	assert.equal(output.split(MODERN_SUBAGENT_CODE_ROUTING).length - 1, 2);
+});
+
+test("built-in-agent-prompt modernizes the claude background-job investigation line", () => {
+	const output =
+		builtInAgentPrompt.string?.(CLAUDE_NOISY_FIXTURE) ?? CLAUDE_NOISY_FIXTURE;
+	assert.equal(output.includes("grep sweeps, log trawls, broad search"), false);
+	assert.equal(
+		output.includes(
+			"route search by intent (Serena, ChunkHound, Probe, ast-grep MCP or sg)",
+		),
+		true,
+	);
+});
+
+test("built-in-agent-prompt softens the Workflow grep example to search", () => {
+	const output =
+		builtInAgentPrompt.string?.(WORKFLOW_GREP_EXAMPLE_FIXTURE) ??
+		WORKFLOW_GREP_EXAMPLE_FIXTURE;
+	assert.equal(output.includes("grep CI logs for retry markers"), false);
+	assert.equal(output.includes("grep test logs for retries"), false);
+	assert.equal(output.includes("search CI logs for retry markers"), true);
+	assert.equal(output.includes("search test logs for retries"), true);
+});
+
+test("built-in-agent-prompt verify passes with patched sub-agent surfaces", () => {
+	assert.equal(builtInAgentPrompt.verify(patchedSubagentSurfaces()), true);
+});
+
+test("built-in-agent-prompt verify flags an unpatched worker prompt", () => {
+	const broken = `${patchedSubagentSurfaces()}\n${WORKER_AGENT_FIXTURE}`;
+	const result = builtInAgentPrompt.verify(broken);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("missing modern-tooling routing"), true);
+});
+
+test("built-in-agent-prompt verify flags an unpatched Agent tool grep reference", () => {
+	const broken = `${patchedSubagentSurfaces()}\n${AGENT_TOOL_LOOKUP_FIXTURE}`;
+	const result = builtInAgentPrompt.verify(broken);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("Agent tool symbol-lookup routing"),
 		true,
 	);
 });

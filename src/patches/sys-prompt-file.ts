@@ -263,7 +263,7 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 		hasAppendAssignment,
 		hasExistsSync,
 		guardsReplacementPrompt:
-			guardedProps.has("systemPromptFile") && guardedProps.has("systemPrompt"),
+			guardedProps.has("systemPromptFile") || guardedProps.has("systemPrompt"),
 	};
 }
 
@@ -355,8 +355,8 @@ export const systemPromptFile: Patch = {
 		if (!autoAppendGuard.hasExistsSync) {
 			return "Missing existsSync call within auto-append guard body";
 		}
-		if (!autoAppendGuard.guardsReplacementPrompt) {
-			return "Auto-append guard must skip replacement-mode systemPrompt/systemPromptFile";
+		if (autoAppendGuard.guardsReplacementPrompt) {
+			return "Auto-append guard must not skip replacement-mode systemPrompt/systemPromptFile";
 		}
 
 		return true;
@@ -394,7 +394,7 @@ function createSystemPromptFileMutator(): Visitor {
 
 			const [autoAppendIf] = template.statements(
 				`
-                if (OPTIONS.systemPromptFile === void 0 && OPTIONS.systemPrompt === void 0 && OPTIONS.appendSystemPromptFile === void 0 && OPTIONS.appendSystemPrompt === void 0) {
+                if (OPTIONS.appendSystemPromptFile === void 0 && OPTIONS.appendSystemPrompt === void 0) {
                     let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";
                     try {
 						let resolvedSystemPromptFile = RESOLVE(configuredSystemPromptFilePath);

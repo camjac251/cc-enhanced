@@ -209,6 +209,82 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 		],
 	},
 	{
+		file: "agents/worker.md",
+		allowSyntheticPlaceholders: true,
+		required: [
+			{
+				id: "worker-code-search-routing",
+				needle:
+					"route search by intent: Serena for symbols, definitions, and references",
+				reason: "Worker agent missing modern code-search-by-intent routing",
+			},
+			{
+				id: "worker-scratchpad-not-tmp",
+				needle:
+					"Put temporary files in the session scratchpad or $TMPDIR, never /tmp.",
+				reason: "Worker agent missing scratchpad-over-/tmp temp-file guidance",
+			},
+		],
+	},
+	{
+		file: "agents/workflow-subagent.md",
+		allowSyntheticPlaceholders: true,
+		required: [
+			{
+				id: "workflow-subagent-code-search-routing",
+				needle:
+					"route search by intent: Serena for symbols, definitions, and references",
+				reason:
+					"workflow-subagent missing modern code-search-by-intent routing",
+			},
+			{
+				id: "workflow-subagent-rg-non-code-only",
+				needle: "Use rg only for non-code text",
+				reason: "workflow-subagent missing rg-only-for-non-code-text guidance",
+			},
+		],
+	},
+	{
+		file: "agents/claude.md",
+		allowSyntheticPlaceholders: true,
+		required: [
+			{
+				id: "claude-investigation-routing",
+				needle:
+					"route search by intent (Serena, ChunkHound, Probe, ast-grep MCP or sg)",
+				reason:
+					"claude background-job agent missing modern investigation routing",
+			},
+		],
+		forbidden: [
+			{
+				id: "claude-legacy-grep-sweeps",
+				needle: "grep sweeps, log trawls, broad search",
+				reason:
+					"claude background-job agent still uses legacy grep-sweep wording",
+			},
+		],
+	},
+	{
+		file: "tools/builtin/agent.md",
+		allowSyntheticPlaceholders: true,
+		required: [
+			{
+				id: "agent-tool-symbol-routing",
+				needle: "Serena or Probe search_code (exact: true)",
+				reason: "Agent tool missing Serena/Probe symbol-lookup routing",
+			},
+		],
+		forbidden: [
+			{
+				id: "agent-tool-grep-via-bash",
+				needle: "`grep` via the Bash tool",
+				reason:
+					"Agent tool still routes a symbol lookup to grep via the Bash tool",
+			},
+		],
+	},
+	{
 		file: "system/sections/using-your-tools.md",
 		allowSyntheticPlaceholders: true,
 		forbidden: [
@@ -348,6 +424,20 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				needle: "find ${",
 				reason:
 					"Dream memory pruning still enumerates markdown files with find",
+			},
+		],
+	},
+	{
+		file: "system/sections/schedule-remote-agents.md",
+		presence: "optional",
+		allowSyntheticPlaceholders: true,
+		forbidden: [
+			{
+				id: "schedule-remote-agents-disabled-allowed-tools",
+				needle:
+					'"allowed_tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]',
+				reason:
+					"Schedule remote agents surface still suggests disabled Glob/Grep tools in allowed_tools",
 			},
 		],
 	},
