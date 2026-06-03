@@ -194,9 +194,10 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				reason: "design-sync skill missing full prompt heading",
 			},
 			{
-				id: "design-sync-finalize-plan",
-				needle: "DesignSync(finalize_plan)",
-				reason: "design-sync skill missing upload planning guidance",
+				id: "design-sync-shape-handoff",
+				needle:
+					"Then `Read` `<skill-base-dir>/storybook/SKILL.md` or `<skill-base-dir>/non-storybook/SKILL.md`",
+				reason: "design-sync skill missing shape-specific handoff guidance",
 			},
 			{
 				id: "design-sync-ship-built-code",

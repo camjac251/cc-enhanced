@@ -201,6 +201,16 @@ test("verify detects hardcoded empty query in mapping", () => {
 	assert.match(String(result), /hardcoded/i);
 });
 
+test("verify accepts upstream nullish query fallback in mapping", async () => {
+	const ast = parse(WORKSPACE_SYMBOL_FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	const nullishFallback = output.replace('H.query || ""', 'H.query ?? ""');
+	assert.notEqual(nullishFallback, output);
+
+	assert.equal(lspWorkspaceSymbol.verify(nullishFallback), true);
+});
+
 test("verify detects missing workspaceSymbol query prompt guidance", async () => {
 	const ast = parse(WORKSPACE_SYMBOL_FIXTURE);
 	await runViaPasses(ast);

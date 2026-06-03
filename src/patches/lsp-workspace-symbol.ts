@@ -388,6 +388,7 @@ function verifyWorkspaceSymbol(code: string, ast?: t.File): true | string {
 
 			// Tighten the mapping check. Mutator emits either
 			//   query: <param>.query || ""        (LogicalExpression form)
+			//   query: <param>.query ?? ""        (upstream nullish fallback)
 			//   query: <param>.query              (MemberExpression form)
 			// The previous check accepted ANY LogicalExpression or
 			// MemberExpression at the `query` property, which would also
@@ -395,7 +396,8 @@ function verifyWorkspaceSymbol(code: string, ast?: t.File): true | string {
 			// operator, wrong property name, wrong fallback type).
 			const value = path.node.value;
 			if (
-				t.isLogicalExpression(value, { operator: "||" }) &&
+				t.isLogicalExpression(value) &&
+				(value.operator === "||" || value.operator === "??") &&
 				t.isMemberExpression(value.left) &&
 				t.isIdentifier(value.left.property, { name: "query" }) &&
 				t.isStringLiteral(value.right, { value: "" })
