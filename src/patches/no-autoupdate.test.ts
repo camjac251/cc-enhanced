@@ -19,9 +19,10 @@ async function runDisableAutoupdaterViaPasses(ast: any): Promise<void> {
 
 const AUTOUPDATER_FIXTURE = `
 function isBool(v) { return typeof v === "boolean"; }
+const envFlags = {};
 
 function checkForUpdates() {
-  if (isBool(process.env.DISABLE_AUTOUPDATER)) {
+  if (envFlags.DISABLE_AUTOUPDATER) {
     return "disabled";
   }
   return null;

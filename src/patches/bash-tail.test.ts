@@ -159,6 +159,7 @@ function renderBashMessage(input, { verbose, theme }) {
 const oversizedOutputWarning = "Pipe output through head, tail, or grep to reduce result size. Avoid cat on large files — use Read with offset/limit instead.";
 const escapedOversizedOutputWarning = "Pipe output through head, tail, or grep to reduce result size. Avoid cat on large files \\u2014 use Read with offset/limit instead.";
 const powershellOversizedOutputWarning = "Pipe output through Select-Object -First/-Last or Select-String to reduce result size. Avoid Get-Content on large files \\u2014 use Read with offset/limit instead.";
+const monitorGuidance = "Every pipe stage must flush per line. \`head\` cannot flush at all \\u2014 \`| head -N\` delivers nothing until N matches accumulate, then ends the stream.";
 `;
 
 test("bash-tail verify rejects the unpatched fixture", () => {
@@ -186,6 +187,16 @@ test("bash-tail patches schema, prompt, persistence, and preview surfaces", asyn
 	assert.equal(output.includes('new Set(["ls", "tree", "du", "eza"])'), true);
 	assert.equal(output.includes("directory metadata preview"), true);
 	assert.equal(output.includes("build/test diagnostics"), true);
+	assert.equal(
+		output.includes(
+			"`head` waits for its quota before ending the stream, so it delays notifications instead of streaming useful events.",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes("delivers nothing until N matches accumulate"),
+		false,
+	);
 	assert.equal(
 		output.includes(
 			"Do not add shell pipeline truncation just to shorten output",

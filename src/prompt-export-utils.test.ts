@@ -3,7 +3,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { createUniqueSlug, writeArtifact } from "./prompt-export-utils.js";
+import {
+	buildFrontmatterPromptMap,
+	createUniqueSlug,
+	extractFrontmatterName,
+	writeArtifact,
+} from "./prompt-export-utils.js";
 
 test("createUniqueSlug suffixes duplicates", () => {
 	const seen = new Set<string>();
@@ -27,4 +32,34 @@ test("writeArtifact rejects duplicate manifest paths", async () => {
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}
+});
+
+test("extractFrontmatterName reads unquoted and quoted names", () => {
+	assert.equal(
+		extractFrontmatterName("---\nname: design-sync\n---\nbody"),
+		"design-sync",
+	);
+	assert.equal(
+		extractFrontmatterName('---\nname: "run-skill"\n---\nbody'),
+		"run-skill",
+	);
+	assert.equal(extractFrontmatterName("name: missing-frontmatter"), null);
+});
+
+test("buildFrontmatterPromptMap keeps the longest prompt per name", () => {
+	const shortPrompt = "---\nname: design-sync\n---\nshort";
+	const longPrompt =
+		"---\nname: design-sync\n---\nfull prompt body with more detail";
+	const quotedPrompt = "---\nname: 'verify'\n---\nverify prompt";
+
+	const prompts = buildFrontmatterPromptMap([
+		{ text: shortPrompt },
+		{ text: "not frontmatter" },
+		{ text: quotedPrompt },
+		{ text: longPrompt },
+	]);
+
+	assert.equal(prompts.get("design-sync"), longPrompt);
+	assert.equal(prompts.get("verify"), quotedPrompt);
+	assert.equal(prompts.has("not frontmatter"), false);
 });

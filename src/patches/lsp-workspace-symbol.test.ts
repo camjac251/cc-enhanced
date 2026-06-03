@@ -47,10 +47,28 @@ Note: LSP servers must be configured for the file type. If no server is availabl
 var h = {
   strictObject: (obj) => obj,
   literal: (v) => v,
+  enum: (v) => v,
   string: () => ({ describe: (d) => d, int: () => ({ positive: () => ({ describe: (d) => d }) }) }),
   number: () => ({ int: () => ({ positive: () => ({ describe: (d) => d }) }) }),
   discriminatedUnion: (key, variants) => variants,
 };
+
+var inputSchema = h.strictObject({
+  operation: h.enum([
+    "goToDefinition",
+    "findReferences",
+    "hover",
+    "documentSymbol",
+    "workspaceSymbol",
+    "goToImplementation",
+    "prepareCallHierarchy",
+    "incomingCalls",
+    "outgoingCalls",
+  ]).describe("The LSP operation to perform"),
+  filePath: h.string().describe("The absolute or relative path to the file"),
+  line: h.number().int().positive().describe("The line number"),
+  character: h.number().int().positive().describe("The character offset"),
+});
 
 var schema = h.discriminatedUnion("operation", [
   h.strictObject({
@@ -112,6 +130,11 @@ test("lsp-workspace-symbol adds query to schema and mapping", async () => {
 	);
 	assert.equal(
 		output.includes("workspaceSymbol optionally accepts:"),
+		false,
+		"prompt should not say workspaceSymbol is exempt from common fields",
+	);
+	assert.equal(
+		output.includes("workspaceSymbol also accepts:"),
 		true,
 		"prompt should document workspaceSymbol query guidance",
 	);
@@ -131,23 +154,46 @@ test("lsp-workspace-symbol adds query to schema and mapping", async () => {
 	assert.equal(lspWorkspaceSymbol.verify(output), true);
 });
 
-test("verify detects missing query in schema", () => {
-	// Has the mapping fix but not the schema fix
+test("verify detects missing query in public input schema", () => {
+	// Has the mapping fix and workspaceSymbol variant fix, but not the
+	// model-visible public input schema fix.
 	const partial = WORKSPACE_SYMBOL_FIXTURE.replace(
 		'query: ""',
 		'query: H.query || ""',
+	).replace(
+		'operation: h.literal("workspaceSymbol"),',
+		'operation: h.literal("workspaceSymbol"), query: h.string().optional().describe("Symbol name to search for"),',
 	);
 	const ast = parse(partial);
 	const result = lspWorkspaceSymbol.verify(partial, ast);
 	assert.equal(typeof result, "string");
-	assert.match(String(result), /schema.*query/i);
+	assert.match(String(result), /public input schema.*query/i);
+});
+
+test("verify detects missing query in workspaceSymbol validation schema", () => {
+	// Has the mapping fix and public input schema fix, but not the
+	// operation-specific validator fix.
+	const partial = WORKSPACE_SYMBOL_FIXTURE.replace(
+		'query: ""',
+		'query: H.query || ""',
+	).replace(
+		'character: h.number().int().positive().describe("The character offset"),\n});',
+		'character: h.number().int().positive().describe("The character offset"),\n  query: h.string().optional().describe("Symbol name to search for"),\n});',
+	);
+	const ast = parse(partial);
+	const result = lspWorkspaceSymbol.verify(partial, ast);
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /validation schema.*query/i);
 });
 
 test("verify detects hardcoded empty query in mapping", () => {
-	// Has the schema fix but not the mapping fix
+	// Has both schema fixes but not the mapping fix
 	const partial = WORKSPACE_SYMBOL_FIXTURE.replace(
 		'operation: h.literal("workspaceSymbol"),',
 		'operation: h.literal("workspaceSymbol"), query: h.string().optional().describe("Symbol name to search for"),',
+	).replace(
+		'character: h.number().int().positive().describe("The character offset"),\n});',
+		'character: h.number().int().positive().describe("The character offset"),\n  query: h.string().optional().describe("Symbol name to search for"),\n});',
 	);
 	const ast = parse(partial);
 	const result = lspWorkspaceSymbol.verify(partial, ast);

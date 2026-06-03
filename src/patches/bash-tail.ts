@@ -43,6 +43,12 @@ const LEGACY_TOKEN_WARNING_RE =
 const LEGACY_POWERSHELL_TOKEN_WARNING_RE =
 	/Pipe output through Select-Object -First\/-Last or Select-String to reduce result size\. Avoid Get-Content on large files (?:—|\\u2014) use Read with offset\/limit instead\./g;
 
+const MONITOR_COPYABLE_PIPE_HEAD_RE =
+	/`head` cannot flush at all (?:—|\\u2014) `\| head -N` delivers nothing until N matches accumulate, then ends the stream\./g;
+
+const MODERN_MONITOR_HEAD_WARNING =
+	"`head` waits for its quota before ending the stream, so it delays notifications instead of streaming useful events.";
+
 // --- Helpers ---
 
 function hasCopyableOutputCapPipeText(value: string, command: "head" | "tail") {
@@ -715,7 +721,8 @@ export const bashOutputTail: Patch = {
 	string: (code) => {
 		code = code
 			.replace(LEGACY_TOKEN_WARNING_RE, MODERN_OUTPUT_LIMIT_WARNING)
-			.replace(LEGACY_POWERSHELL_TOKEN_WARNING_RE, MODERN_OUTPUT_LIMIT_WARNING);
+			.replace(LEGACY_POWERSHELL_TOKEN_WARNING_RE, MODERN_OUTPUT_LIMIT_WARNING)
+			.replace(MONITOR_COPYABLE_PIPE_HEAD_RE, MODERN_MONITOR_HEAD_WARNING);
 
 		// Insert disk persistence / output_tail guidance into the Bash prompt.
 		// The current prompt builder emits an array of strings (one per bullet).

@@ -24,17 +24,9 @@ function isProcessReference(node: t.Expression): boolean {
  * or a string reason if disabled. We inject an early return "patched".
  */
 function isDisableAutoupdaterCheck(node: t.Node | null | undefined): boolean {
-	if (!node || !t.isCallExpression(node)) return false;
-	if (node.arguments.length !== 1) return false;
-
-	const arg = node.arguments[0];
-	if (!t.isMemberExpression(arg)) return false;
-	if (!t.isMemberExpression(arg.object)) return false;
-
-	const innerObj = arg.object;
-	if (!isProcessReference(innerObj.object)) return false;
-	if (getMemberPropertyName(innerObj) !== "env") return false;
-	return getMemberPropertyName(arg) === "DISABLE_AUTOUPDATER";
+	if (!node || !t.isMemberExpression(node)) return false;
+	if (!t.isIdentifier(node.object)) return false;
+	return getMemberPropertyName(node) === "DISABLE_AUTOUPDATER";
 }
 
 function isForceAutoupdatePluginsCheck(

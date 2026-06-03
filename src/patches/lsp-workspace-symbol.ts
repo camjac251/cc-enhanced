@@ -7,9 +7,10 @@ import { getVerifyAst } from "./ast-helpers.js";
  * Fix workspaceSymbol to accept a query parameter instead of always
  * sending {query: ""}. Without this, language servers return no results.
  *
- * Two changes:
- * 1. Schema: add optional `query` string field to the workspaceSymbol variant
- * 2. Mapping: use H.query (the input param) instead of hardcoded ""
+ * Three changes:
+ * 1. Public input schema: expose optional `query` to the tool caller
+ * 2. Validation schema: add optional `query` to the workspaceSymbol variant
+ * 3. Mapping: use H.query (the input param) instead of hardcoded ""
  *
  * GitHub issues: #17149, #30948
  */
@@ -18,18 +19,45 @@ import { getVerifyAst } from "./ast-helpers.js";
 // Find: h.strictObject({ operation: h.literal("workspaceSymbol"), filePath: ..., line: ..., character: ... })
 // Add:  query: h.string().optional().describe("Symbol name to search for")
 
+function getMemberPropertyName(member: t.MemberExpression): string | null {
+	if (t.isIdentifier(member.property)) return member.property.name;
+	if (t.isStringLiteral(member.property)) return member.property.value;
+	return null;
+}
+
+function unwrapZodDescribeCall(node: t.Node): t.Node {
+	let current = node;
+	while (t.isCallExpression(current) && t.isMemberExpression(current.callee)) {
+		if (getMemberPropertyName(current.callee) !== "describe") break;
+		const receiver = current.callee.object;
+		if (!t.isCallExpression(receiver)) break;
+		current = receiver;
+	}
+	return current;
+}
+
 function isZodLiteral(node: t.Node, value: string): boolean {
+	const unwrapped = unwrapZodDescribeCall(node);
 	// Match: <z>.literal("workspaceSymbol")
-	if (!t.isCallExpression(node)) return false;
-	if (!t.isMemberExpression(node.callee)) return false;
-	if (
-		!t.isIdentifier(node.callee.property, { name: "literal" }) &&
-		!t.isStringLiteral(node.callee.property, { value: "literal" })
-	)
-		return false;
+	if (!t.isCallExpression(unwrapped)) return false;
+	if (!t.isMemberExpression(unwrapped.callee)) return false;
+	if (getMemberPropertyName(unwrapped.callee) !== "literal") return false;
 	return (
-		node.arguments.length >= 1 &&
-		t.isStringLiteral(node.arguments[0], { value })
+		unwrapped.arguments.length >= 1 &&
+		t.isStringLiteral(unwrapped.arguments[0], { value })
+	);
+}
+
+function isZodEnumContaining(node: t.Node, value: string): boolean {
+	const unwrapped = unwrapZodDescribeCall(node);
+	// Match: <z>.enum(["...", "workspaceSymbol", "..."])
+	if (!t.isCallExpression(unwrapped)) return false;
+	if (!t.isMemberExpression(unwrapped.callee)) return false;
+	if (getMemberPropertyName(unwrapped.callee) !== "enum") return false;
+	const values = unwrapped.arguments[0];
+	if (!t.isArrayExpression(values)) return false;
+	return values.elements.some(
+		(element) => t.isStringLiteral(element) && element.value === value,
 	);
 }
 
@@ -49,13 +77,10 @@ const WORKSPACE_SYMBOL_PROMPT_BULLET =
 	"- workspaceSymbol: Search for symbols across the entire workspace";
 const WORKSPACE_SYMBOL_PROMPT_BULLET_PATCHED =
 	"- workspaceSymbol: Search for symbols across the entire workspace using an optional query";
-const WORKSPACE_SYMBOL_REQUIRED_HEADER = "All operations require:";
-const WORKSPACE_SYMBOL_REQUIRED_HEADER_PATCHED =
-	"All operations except workspaceSymbol require:";
 const WORKSPACE_SYMBOL_CHARACTER_LINE =
 	"- character: The character offset (1-based, as shown in editors)";
 const WORKSPACE_SYMBOL_QUERY_SECTION =
-	"workspaceSymbol optionally accepts:\n- query: Symbol name to search for across the workspace";
+	"workspaceSymbol also accepts:\n- query: Symbol name to search for across the workspace\n\nFor workspaceSymbol, filePath selects which language server to query; line and character can point to any valid position in that file.";
 
 function rewriteLspPromptText(text: string): string | null {
 	let next = text;
@@ -68,17 +93,6 @@ function rewriteLspPromptText(text: string): string | null {
 		next = next.replace(
 			WORKSPACE_SYMBOL_PROMPT_BULLET,
 			WORKSPACE_SYMBOL_PROMPT_BULLET_PATCHED,
-		);
-		touched = true;
-	}
-
-	if (
-		next.includes(WORKSPACE_SYMBOL_REQUIRED_HEADER) &&
-		!next.includes(WORKSPACE_SYMBOL_REQUIRED_HEADER_PATCHED)
-	) {
-		next = next.replace(
-			WORKSPACE_SYMBOL_REQUIRED_HEADER,
-			WORKSPACE_SYMBOL_REQUIRED_HEADER_PATCHED,
 		);
 		touched = true;
 	}
@@ -99,17 +113,35 @@ ${WORKSPACE_SYMBOL_QUERY_SECTION}`,
 	return touched ? next : null;
 }
 
+function createOptionalQueryProperty(zodNs: string): t.ObjectProperty {
+	const hString = t.callExpression(
+		t.memberExpression(t.identifier(zodNs), t.identifier("string")),
+		[],
+	);
+	const hOptional = t.callExpression(
+		t.memberExpression(hString, t.identifier("optional")),
+		[],
+	);
+	const hDescribe = t.callExpression(
+		t.memberExpression(hOptional, t.identifier("describe")),
+		[t.stringLiteral("Symbol name to search for")],
+	);
+	return t.objectProperty(t.identifier("query"), hDescribe);
+}
+
 function createMutateVisitor(): Visitor {
-	let schemaPatched = false;
+	let inputSchemaPatched = false;
+	let workspaceVariantSchemaPatched = false;
 	let mappingPatched = false;
 	let promptPatched = false;
 
 	return {
-		// 1. Schema: find the strictObject call for workspaceSymbol
+		// 1. Schemas: patch the public input schema and the workspaceSymbol validator variant.
 		CallExpression(path) {
 			const node = path.node;
 
 			// Match: z.strictObject({ operation: z.literal("workspaceSymbol"), ... })
+			// or:    z.strictObject({ operation: z.enum([... "workspaceSymbol" ...]), ... })
 			if (!t.isMemberExpression(node.callee)) return;
 			const methodName = t.isIdentifier(node.callee.property)
 				? node.callee.property.name
@@ -123,39 +155,30 @@ function createMutateVisitor(): Visitor {
 			if (!t.isObjectExpression(objArg)) return;
 
 			const opProp = findPropertyByKey(objArg.properties, "operation");
-			if (!opProp || !isZodLiteral(opProp.value, "workspaceSymbol")) return;
+			if (!opProp) return;
+			const isWorkspaceVariant = isZodLiteral(opProp.value, "workspaceSymbol");
+			const isPublicInputSchema = isZodEnumContaining(
+				opProp.value,
+				"workspaceSymbol",
+			);
+			if (!isWorkspaceVariant && !isPublicInputSchema) return;
 
 			// Already has query field?
 			if (findPropertyByKey(objArg.properties, "query")) {
-				schemaPatched = true;
+				if (isWorkspaceVariant) workspaceVariantSchemaPatched = true;
+				if (isPublicInputSchema) inputSchemaPatched = true;
 				return;
 			}
 
-			// Build: query: z.string().optional().describe("Symbol name to search for")
 			// We need the zod namespace identifier used on the input schema
 			const zodNs = t.isIdentifier(node.callee.object)
 				? node.callee.object.name
 				: null;
 			if (!zodNs) return;
 
-			// h.string().optional().describe("Symbol name to search for")
-			const hString = t.callExpression(
-				t.memberExpression(t.identifier(zodNs), t.identifier("string")),
-				[],
-			);
-			const hOptional = t.callExpression(
-				t.memberExpression(hString, t.identifier("optional")),
-				[],
-			);
-			const hDescribe = t.callExpression(
-				t.memberExpression(hOptional, t.identifier("describe")),
-				[t.stringLiteral("Symbol name to search for")],
-			);
-
-			objArg.properties.push(
-				t.objectProperty(t.identifier("query"), hDescribe),
-			);
-			schemaPatched = true;
+			objArg.properties.push(createOptionalQueryProperty(zodNs));
+			if (isWorkspaceVariant) workspaceVariantSchemaPatched = true;
+			if (isPublicInputSchema) inputSchemaPatched = true;
 		},
 
 		TemplateLiteral(path) {
@@ -250,7 +273,8 @@ function createMutateVisitor(): Visitor {
 		Program: {
 			exit() {
 				const parts = [];
-				if (schemaPatched) parts.push("schema");
+				if (inputSchemaPatched) parts.push("input schema");
+				if (workspaceVariantSchemaPatched) parts.push("workspaceSymbol schema");
 				if (mappingPatched) parts.push("mapping");
 				if (promptPatched) parts.push("prompt");
 				if (parts.length > 0) {
@@ -268,10 +292,12 @@ function verifyWorkspaceSymbol(code: string, ast?: t.File): true | string {
 	if (!verifyAst)
 		return "Unable to parse AST for lsp-workspace-symbol verification";
 
-	let hasQueryInSchema = false;
+	let hasQueryInInputSchema = false;
+	let hasQueryInWorkspaceVariantSchema = false;
 	let hasQueryPassthrough = false;
 	let sawPromptSurface = false;
 	let hasPromptQueryGuidance = false;
+	let hasMisleadingPromptExemption = false;
 
 	traverse(verifyAst, {
 		StringLiteral(path) {
@@ -284,6 +310,9 @@ function verifyWorkspaceSymbol(code: string, ast?: t.File): true | string {
 				if (value.includes(WORKSPACE_SYMBOL_QUERY_SECTION)) {
 					hasPromptQueryGuidance = true;
 				}
+			}
+			if (value.includes("All operations except workspaceSymbol require:")) {
+				hasMisleadingPromptExemption = true;
 			}
 		},
 		TemplateLiteral(path) {
@@ -300,6 +329,9 @@ function verifyWorkspaceSymbol(code: string, ast?: t.File): true | string {
 					hasPromptQueryGuidance = true;
 				}
 			}
+			if (value.includes("All operations except workspaceSymbol require:")) {
+				hasMisleadingPromptExemption = true;
+			}
 		},
 		CallExpression(path) {
 			// Check schema has query field
@@ -313,8 +345,19 @@ function verifyWorkspaceSymbol(code: string, ast?: t.File): true | string {
 			if (!t.isObjectExpression(obj)) return;
 
 			const opProp = findPropertyByKey(obj.properties, "operation");
-			if (!opProp || !isZodLiteral(opProp.value, "workspaceSymbol")) return;
-			if (findPropertyByKey(obj.properties, "query")) hasQueryInSchema = true;
+			if (!opProp) return;
+			if (
+				isZodLiteral(opProp.value, "workspaceSymbol") &&
+				findPropertyByKey(obj.properties, "query")
+			) {
+				hasQueryInWorkspaceVariantSchema = true;
+			}
+			if (
+				isZodEnumContaining(opProp.value, "workspaceSymbol") &&
+				findPropertyByKey(obj.properties, "query")
+			) {
+				hasQueryInInputSchema = true;
+			}
 		},
 
 		ObjectProperty(path) {
@@ -367,11 +410,17 @@ function verifyWorkspaceSymbol(code: string, ast?: t.File): true | string {
 		},
 	});
 
-	if (!hasQueryInSchema) return "workspaceSymbol schema missing query field";
+	if (!hasQueryInInputSchema)
+		return "LSP public input schema missing workspaceSymbol query field";
+	if (!hasQueryInWorkspaceVariantSchema)
+		return "workspaceSymbol validation schema missing query field";
 	if (!hasQueryPassthrough)
 		return 'workspaceSymbol mapping still uses hardcoded ""';
 	if (sawPromptSurface && !hasPromptQueryGuidance) {
 		return "workspaceSymbol prompt missing query guidance";
+	}
+	if (hasMisleadingPromptExemption) {
+		return "workspaceSymbol prompt incorrectly says common fields are not required";
 	}
 
 	return true;

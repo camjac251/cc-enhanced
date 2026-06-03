@@ -36,7 +36,11 @@ import {
 	isValidPromptText,
 	type PromptCorpusEntry,
 } from "../src/prompt-corpus.js";
-import { createUniqueSlug, writeArtifact } from "../src/prompt-export-utils.js";
+import {
+	buildFrontmatterPromptMap,
+	createUniqueSlug,
+	writeArtifact,
+} from "../src/prompt-export-utils.js";
 import {
 	collectWorkflowSurfaces,
 	type WorkflowSurface,
@@ -2507,6 +2511,19 @@ function collectSkillPrompts(
 	);
 }
 
+function applySkillPromptCorpusFallbacks(
+	skills: SkillPrompt[],
+	corpus: Array<{ text: string }>,
+): void {
+	const promptsByFrontmatterName = buildFrontmatterPromptMap(corpus);
+	for (const skill of skills) {
+		if (skill.promptTexts.length > 0) continue;
+		const fallback = promptsByFrontmatterName.get(skill.name);
+		if (!fallback) continue;
+		skill.promptTexts = [fallback];
+	}
+}
+
 function collectSystemReminders(
 	ast: t.File,
 	context: RenderContext,
@@ -3096,6 +3113,7 @@ async function main(): Promise<void> {
 			promptDataset,
 			promptCorpusIdMap,
 		);
+		applySkillPromptCorpusFallbacks(skills, promptCorpusDebug);
 		const systemVariants = collectSystemPromptVariants(
 			promptCorpusDebug,
 			context,

@@ -23,8 +23,8 @@ function resolveEffortLevel(H) {
   return H.settings.effortLevel ?? "high";
 }
 
-function readUltracodeFlag() {
-  let enabled = settings().ultracode === !0;
+function readUltracodeFlag(state) {
+  let enabled = settings().ultracode === !0 || !1;
   if (enabled) unpinLaunchEffort();
   return enabled;
 }
@@ -189,7 +189,7 @@ test("effort-stack lets CLAUDE_CODE_ULTRACODE enable workflow mode", async () =>
 	const output = print(ast);
 	assert.equal(
 		output.includes(
-			'let enabled = settings().ultracode === !0 || ["1", "true", "yes", "on"].includes(String(process.env.CLAUDE_CODE_ULTRACODE).toLowerCase())',
+			'let enabled = settings().ultracode === !0 || !1 || ["1", "true", "yes", "on"].includes(String(process.env.CLAUDE_CODE_ULTRACODE).toLowerCase())',
 		),
 		true,
 	);
@@ -366,7 +366,7 @@ test("effort-stack verify fails hard when env ultracode source is missing", asyn
 	await runEffortStackViaPasses(ast);
 	const output = print(ast);
 	const regressed = output.replace(
-		'settings().ultracode === !0 || ["1", "true", "yes", "on"].includes(String(process.env.CLAUDE_CODE_ULTRACODE).toLowerCase())',
+		'settings().ultracode === !0 || !1 || ["1", "true", "yes", "on"].includes(String(process.env.CLAUDE_CODE_ULTRACODE).toLowerCase())',
 		"settings().ultracode === !0",
 	);
 	const result = effortStack.verify(regressed);

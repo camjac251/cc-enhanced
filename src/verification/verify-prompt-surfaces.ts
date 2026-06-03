@@ -76,6 +76,7 @@ function verifyResolvedSurface(
 
 	for (const placeholder of content.match(/\$\{[^}]+\}/g) ?? []) {
 		if (PLAN_LITERAL_PLACEHOLDER.test(placeholder)) continue;
+		if (rule.allowLiteralTemplatePlaceholders) continue;
 		if (placeholder.startsWith("${...")) {
 			pushOnce(
 				"surface-unresolved-spread",

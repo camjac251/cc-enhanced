@@ -287,6 +287,12 @@ function isSettingsUltracodeSourceWithEnv(expr: t.Expression): boolean {
 }
 
 function isRawUltracodeEqualsTrueTest(expr: t.Expression): boolean {
+	if (
+		t.isLogicalExpression(expr, { operator: "||" }) &&
+		isFalseLiteralExpression(expr.right as t.Expression)
+	) {
+		return isRawUltracodeEqualsTrueTest(expr.left as t.Expression);
+	}
 	if (!t.isBinaryExpression(expr, { operator: "===" })) return false;
 	if (!isTrueLiteralExpression(expr.right as t.Expression)) return false;
 	const left = expr.left;
@@ -514,7 +520,7 @@ function buildPatchedUltracodeActiveGate(
 }
 
 function patchRawUltracodeFlagFunction(fn: t.Function): boolean | null {
-	if (fn.params.length !== 0 || !t.isBlockStatement(fn.body)) return null;
+	if (fn.params.length !== 1 || !t.isBlockStatement(fn.body)) return null;
 	for (const stmt of fn.body.body) {
 		if (!t.isVariableDeclaration(stmt)) continue;
 		for (const declaration of stmt.declarations) {
@@ -537,7 +543,7 @@ function patchRawUltracodeFlagFunction(fn: t.Function): boolean | null {
 }
 
 function hasPatchedRawUltracodeFlagFunction(fn: t.Function): boolean {
-	if (fn.params.length !== 0 || !t.isBlockStatement(fn.body)) return false;
+	if (fn.params.length !== 1 || !t.isBlockStatement(fn.body)) return false;
 	for (const stmt of fn.body.body) {
 		if (!t.isVariableDeclaration(stmt)) continue;
 		for (const declaration of stmt.declarations) {

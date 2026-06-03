@@ -11,6 +11,7 @@ export interface PromptSurfaceRule {
 	file: string;
 	presence?: "required" | "optional";
 	allowSyntheticPlaceholders?: boolean;
+	allowLiteralTemplatePlaceholders?: boolean;
 	required?: PromptSurfaceNeedle[];
 	forbidden?: PromptSurfaceNeedle[];
 }
@@ -150,6 +151,64 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				id: "edit-sd-code-file",
 				needle: "sd 'pattern' 'replacement' file.ts",
 				reason: "Edit surface still routes sd at a code file",
+			},
+		],
+	},
+	{
+		file: "tools/builtin/designsync.md",
+		presence: "optional",
+		required: [
+			{
+				id: "designsync-required-ordering",
+				needle: "Required ordering: list/read",
+				reason: "DesignSync tool missing required method ordering guidance",
+			},
+			{
+				id: "designsync-get-file-security",
+				needle:
+					"SECURITY: `get_file` returns content written by other org members.",
+				reason: "DesignSync tool missing get_file security boundary",
+			},
+		],
+		forbidden: [
+			{
+				id: "designsync-dynamic-prompt",
+				needle: "(Dynamic prompt: not statically resolved from cli.js AST.)",
+				reason: "DesignSync tool still exports a dynamic prompt marker",
+			},
+		],
+	},
+	{
+		file: "skills/design-sync.md",
+		presence: "optional",
+		allowLiteralTemplatePlaceholders: true,
+		required: [
+			{
+				id: "design-sync-tool-routing",
+				needle: "You have a `DesignSync` tool",
+				reason: "design-sync skill missing DesignSync tool routing",
+			},
+			{
+				id: "design-sync-heading",
+				needle: "# Sync a design system to claude.ai/design",
+				reason: "design-sync skill missing full prompt heading",
+			},
+			{
+				id: "design-sync-finalize-plan",
+				needle: "DesignSync(finalize_plan)",
+				reason: "design-sync skill missing upload planning guidance",
+			},
+			{
+				id: "design-sync-ship-built-code",
+				needle: "Core principle: ship what the customer already built",
+				reason: "design-sync skill missing converter source-of-truth guidance",
+			},
+		],
+		forbidden: [
+			{
+				id: "design-sync-dynamic-prompt",
+				needle: "(Dynamic prompt: not statically resolved from cli.js AST.)",
+				reason: "design-sync skill still exports a dynamic prompt marker",
 			},
 		],
 	},

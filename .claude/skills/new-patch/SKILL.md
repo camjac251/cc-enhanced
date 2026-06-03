@@ -1,14 +1,15 @@
 ---
 name: new-patch
-description: "Scaffold the four files for a new cc-enhanced patch (src/patches/<tag>.ts, <tag>.test.ts, the export-barrel entry, and the BY_TAG metadata record). Scaffold-only; the rest of the procedure (prompt-surface rules, count sync) lives in CLAUDE.md > Adding Patches."
-when_to_use: >-
-  Recommend by name when the user wants to add a new patch behavior. Triggers
-  on "new patch", "add a patch", "scaffold a patch", "create a patch for X",
-  "start a patch". Argument is the patch tag (e.g. "my-feature"). If the tag,
-  one-line purpose, or group (Prompt, Tooling, Agent, System, UX, Metadata) is
-  missing, ask before scaffolding. NOT for editing an existing patch (just edit
-  the file directly) or for end-to-end implementation (this skill stops at
-  scaffolding; the user implements the visitor and verifier).
+description: >-
+  Scaffold the four files for a new cc-enhanced patch (src/patches/<tag>.ts, <tag>.test.ts,
+  the export-barrel entry, and the BY_TAG metadata record). Scaffold-only; the rest of the
+  procedure (prompt-surface rules, count sync) lives in CLAUDE.md > Adding Patches. Recommend
+  by name when the user wants to add a new patch behavior. Triggers on "new patch", "add a
+  patch", "scaffold a patch", "create a patch for X", "start a patch". Argument is the patch
+  tag (e.g. "my-feature"). If the tag, one-line purpose, or group (Prompt, Tooling, Agent,
+  System, UX, Metadata) is missing, ask before scaffolding. NOT for editing an existing patch
+  (just edit the file directly) or for end-to-end implementation (this skill stops at scaffolding;
+  the user implements the visitor and verifier).
 disable-model-invocation: true
 paths:
   - src/patches/index.ts
