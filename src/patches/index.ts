@@ -27,6 +27,7 @@ export { sessionGuidance } from "./session-guidance.js";
 export { sessionMemory } from "./session-mem.js";
 export { shellQuoteFix } from "./shell-quote-fix.js";
 export { signature } from "./signature.js";
+export { skillGlobalPaths } from "./skill-global-paths.js";
 export { skillListingUi } from "./skill-listing-ui.js";
 export { skillPathsInvoke } from "./skill-paths-invoke.js";
 export { subagentModelTag } from "./subagent-model-tag.js";
@@ -66,6 +67,7 @@ import { sessionGuidance } from "./session-guidance.js";
 import { sessionMemory } from "./session-mem.js";
 import { shellQuoteFix } from "./shell-quote-fix.js";
 import { signature } from "./signature.js";
+import { skillGlobalPaths } from "./skill-global-paths.js";
 import { skillListingUi } from "./skill-listing-ui.js";
 import { skillPathsInvoke } from "./skill-paths-invoke.js";
 import { subagentModelTag } from "./subagent-model-tag.js";
@@ -115,6 +117,7 @@ const basePatches: Patch[] = [
 	lspWorkspaceSymbol,
 	noCollapse,
 	skillPathsInvoke,
+	skillGlobalPaths,
 	skillListingUi,
 	agentListingUi,
 	subagentSystemPrompt,

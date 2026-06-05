@@ -7,13 +7,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
-  <img src="https://img.shields.io/badge/Patches-36-orange.svg" alt="36 Patches">
+  <img src="https://img.shields.io/badge/Patches-37-orange.svg" alt="37 Patches">
   <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.162-8A2BE2.svg" alt="Tested against Claude Code 2.1.162">
 </p>
 
 ---
 
-cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 36 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 37 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
 
 Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting and LSP fan-out), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read, batched `edits[]` on Edit, output tails on Bash), and replace prompt fragments that steer the model toward better shell tooling.
 
@@ -144,6 +144,7 @@ Which built-in agents and commands are exposed.
 | [`agents-off`](src/patches/agents-off.ts) | Removes `statusline-setup` and `claude-code-guide` from the built-in agent registry. Those flows move to user skills. |
 | [`commands-off`](src/patches/commands-off.ts) | Removes the `/security-review` built-in slash command, leaving `/review` as the single review entry point and freeing the name for local skills to shadow. |
 | [`skill-paths-invoke`](src/patches/skill-paths-invoke.ts) | Keeps `paths`-scoped skills visible to model invocation while preserving the stored path metadata and explicit model-invocation opt-outs. |
+| [`skill-global-paths`](src/patches/skill-global-paths.ts) | Adds a `global-paths` skill frontmatter field whose globs path-activate a skill when a matching file is touched anywhere on disk, not only inside the project. Uses the same gitignore syntax (including `!` exclusions) as `paths`, is purely additive, and is ignored by unpatched builds. |
 
 ### UX
 
@@ -424,7 +425,7 @@ The prompt patches use "available" deliberately. The patched CLI should still ru
 | ChunkHound | Conceptual and architectural codebase search. Use semantic search for "where/how does this work" questions. |
 | Probe | Known-symbol, known-phrase, and boolean code search, especially when ChunkHound is unavailable or too broad. |
 | ast-grep MCP | Multi-rule or structural AST search from MCP. The `sg` CLI remains the local fallback. |
-| Context7, docfork, ref | Library and framework documentation lookup when built-in web tools are disabled. |
+| Context7, ref | Library and framework documentation lookup when built-in web tools are disabled. |
 | Perplexity, Exa, Firecrawl, Nia | Web research, code examples, scraping, package/repo indexing, and persistent knowledge workflows. |
 
 `tools-off` disables Claude Code's built-in `Glob`, `Grep`, `WebSearch`, `WebFetch`, and `NotebookEdit` surfaces. That is intentional. Keep the modern CLI tools and MCP replacements available, or exclude `tools-off` for a build that needs the stock tools.

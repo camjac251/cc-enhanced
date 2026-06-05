@@ -126,6 +126,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Skill paths invocation",
 		group: "Agent",
 	},
+	"skill-global-paths": {
+		tag: "skill-global-paths",
+		label: "Skill global paths",
+		group: "Agent",
+	},
 	"no-collapse": {
 		tag: "no-collapse",
 		label: "Disable collapse",
