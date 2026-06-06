@@ -151,6 +151,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Skill listing UI",
 		group: "UX",
 	},
+	"skill-activation-notice": {
+		tag: "skill-activation-notice",
+		label: "Skill activation notice",
+		group: "UX",
+	},
 	"agent-listing-ui": {
 		tag: "agent-listing-ui",
 		label: "Agent listing UI",
