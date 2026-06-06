@@ -513,7 +513,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "guide-mcp-doc-tools",
 				needle:
-					"Fetch the appropriate docs map URL using MCP doc tools (context7, docfork, or ref)",
+					"Fetch the appropriate docs map URL using MCP doc tools (context7 or ref)",
 				reason: "Guide surface missing MCP doc tools rewrite",
 			},
 			{

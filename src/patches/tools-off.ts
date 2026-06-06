@@ -190,7 +190,7 @@ const GUIDE_REWRITES: Array<{ pattern: RegExp; replacement: string }> = [
 			"g",
 		),
 		replacement:
-			"2. Fetch the appropriate docs map URL using MCP doc tools (context7, docfork, or ref)",
+			"2. Fetch the appropriate docs map URL using MCP doc tools (context7 or ref)",
 	},
 	{
 		pattern: new RegExp(
@@ -682,7 +682,7 @@ function verifyPromptRewrite(code: string): true | string {
 	}
 	if (code.includes("You are the Claude guide agent")) {
 		if (code.includes("to fetch the appropriate docs map")) {
-			if (!code.includes("MCP doc tools (context7, docfork, or ref)")) {
+			if (!code.includes("MCP doc tools (context7 or ref)")) {
 				return "Guide approach still references WebFetch for docs map";
 			}
 		}
