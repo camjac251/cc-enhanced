@@ -235,6 +235,17 @@ const CORPUS_EXAMPLE_REPLACEMENTS: Array<[string, string]> = [
 	["grep test logs for retries", "search test logs for retries"],
 ];
 
+const EXPLORE_ENHANCED_SEARCH_GUIDANCE_REPLACEMENTS: Array<[RegExp, string]> = [
+	[
+		/- Use \\?`find\\?` via \$\{[A-Za-z0-9_$]+\} for broad file pattern matching/g,
+		"- Use available code/file search tooling for focused discovery",
+	],
+	[
+		/- Use \\?`grep\\?` via \$\{[A-Za-z0-9_$]+\} for searching file contents with regex/g,
+		"- Use available content-search tooling for targeted discovery",
+	],
+];
+
 // Modern-tooling routing for the built-in sub-agent and orchestration prompt
 // surfaces the Explore/Plan/general-purpose rewrites above do not cover. Each
 // anchor below is a verbatim, minified-name-free literal in the bundle.
@@ -471,6 +482,12 @@ export const builtInAgentPrompt: Patch = {
 		for (const [source, replacement] of CORPUS_EXAMPLE_REPLACEMENTS) {
 			result = result.replaceAll(escapeNonAscii(source), replacement);
 		}
+		for (const [
+			pattern,
+			replacement,
+		] of EXPLORE_ENHANCED_SEARCH_GUIDANCE_REPLACEMENTS) {
+			result = result.replace(pattern, replacement);
+		}
 
 		result = result.replaceAll(
 			escapeNonAscii(AGENT_TOOL_SYMBOL_LOOKUP_SOURCE),
@@ -652,6 +669,11 @@ export const builtInAgentPrompt: Patch = {
 				if (scope.includes(fragment)) {
 					return `Legacy read-only bash guidance fragment still present in built-in agent prompt: ${fragment.slice(0, 48)}`;
 				}
+			}
+		}
+		for (const fragment of ["Use `find` via", "Use `grep` via"]) {
+			if (code.includes(fragment)) {
+				return `Legacy enhanced search guidance still present in built-in agent prompt: ${fragment}`;
 			}
 		}
 

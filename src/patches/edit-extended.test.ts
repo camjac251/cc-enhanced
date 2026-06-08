@@ -86,13 +86,21 @@ const writeChangedMessage = "File content has changed since it was last read.";
 
 class FileStateError extends Error {}
 
+function readStateGuardSkipped() {
+  return false;
+}
+
 const WriteTool = {
   name: "Write",
   validateInput({ file_path: A, content: B }, context) {
     let modifiedAt = Date.now();
     let state = context.readFileState.get(A);
     if (!state || state.isPartialView) {
-      return { result: false, message: writeReadFirstMessage, errorCode: 2 };
+      let guardSkipped = !state && readStateGuardSkipped();
+      if (!guardSkipped) {
+        return { result: false, message: writeReadFirstMessage, errorCode: 2 };
+      }
+      return { result: true };
     }
     if (Math.floor(modifiedAt) > state.timestamp) {
       return { result: false, message: writeChangedMessage, errorCode: 3 };
@@ -103,8 +111,9 @@ const WriteTool = {
     const existingFile = true;
     if (existingFile) {
       let state = stateMap.get(A);
-      if (!state) throw new FileStateError(writeReadFirstMessage);
-      if (Date.now() > state.timestamp) {
+      if (!state) {
+        if (!readStateGuardSkipped()) throw new FileStateError(writeReadFirstMessage);
+      } else if (Date.now() > state.timestamp) {
         throw new FileStateError(writeChangedMessage);
       }
     }
@@ -133,6 +142,18 @@ const EditTool = {
     if (!context) {
       return { result: false, behavior: "ask", message: "File has not been read yet", errorCode: 5 };
     }
+    let state = context.readFileState?.get(A);
+    if (!state || state.isPartialView) {
+      let guardSkipped = readStateGuardSkipped();
+      if (!guardSkipped) {
+        return { result: false, behavior: "ask", message: "File has not been read yet. Read it first before writing to it.", errorCode: 6 };
+      }
+    }
+    if (state) {
+      if (Date.now() > state.timestamp) {
+        return { result: false, behavior: "ask", message: "File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.", errorCode: 7 };
+      }
+    }
     return { result: true };
   },
   call({ file_path: A, old_string: B, new_string: C, replace_all: D, structuredPatch: P }, context) {
@@ -140,9 +161,8 @@ const EditTool = {
     const stateMap = context && context.readFileState ? context.readFileState : { get() { return context; } };
     let state = stateMap.get(A);
     if (!state) {
-      throw new FileStateError("File must be read first");
-    }
-    if (Date.now() > state.timestamp) {
+      if (!readStateGuardSkipped()) throw new FileStateError("File must be read first");
+    } else if (Date.now() > state.timestamp) {
       throw new FileStateError("File content has changed since it was last read.");
     }
     return { transformed, observed: { old_string: B, new_string: C, replace_all: D } };

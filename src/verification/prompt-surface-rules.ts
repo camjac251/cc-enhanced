@@ -255,6 +255,18 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 					"spawn multiple parallel tool calls for grepping and reading files",
 				reason: "Explore surface still uses legacy grepping wording",
 			},
+			{
+				id: "explore-enhanced-find-via-bash",
+				needle: "Use `find` via",
+				reason:
+					"Explore surface still routes enhanced-mode file discovery through find",
+			},
+			{
+				id: "explore-enhanced-grep-via-bash",
+				needle: "Use `grep` via",
+				reason:
+					"Explore surface still routes enhanced-mode content search through grep",
+			},
 		],
 	},
 	{

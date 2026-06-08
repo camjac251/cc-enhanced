@@ -271,7 +271,7 @@ function tryPatchActivationLoop(node: t.ForOfStatement): boolean {
 	// Inject the absolute-path check after `let f = ...`, before the cwd-skip.
 	const stripCall = t.callExpression(
 		t.memberExpression(t.identifier(innerLoopId), t.identifier("replace")),
-		[t.regExpLiteral("^/+", ""), t.stringLiteral("")],
+		[t.regExpLiteral("^\\/+", ""), t.stringLiteral("")],
 	);
 	const globalTest = t.logicalExpression(
 		"&&",

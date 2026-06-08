@@ -108,6 +108,7 @@ test("patch wraps loader paths, splits matcher, injects helpers, and verifies", 
 	assert.ok(output.includes(".add(_claudeGpSplit.local)"));
 	assert.ok(output.includes("_claudeGpIgnore"));
 
+	assert.doesNotThrow(() => parse(output));
 	assert.equal(skillGlobalPaths.verify(output, ast), true);
 });
 

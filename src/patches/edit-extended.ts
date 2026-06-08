@@ -60,6 +60,23 @@ function getToolObjectMethod(
 	);
 }
 
+function visitNodeValues(
+	value: unknown,
+	visit: (node: t.Node) => boolean,
+): boolean {
+	if (!value) return false;
+	if (Array.isArray(value)) {
+		return value.some((item) => visitNodeValues(item, visit));
+	}
+	if (typeof value !== "object") return false;
+	const maybeNode = value as t.Node;
+	if (typeof (maybeNode as { type?: unknown }).type !== "string") return false;
+	if (visit(maybeNode)) return true;
+	return Object.values(maybeNode as unknown as Record<string, unknown>).some(
+		(child) => visitNodeValues(child, visit),
+	);
+}
+
 const EDIT_RENDER_EXCLUDED_KEYS = [
 	"range",
 	"show_whitespace",
@@ -552,21 +569,8 @@ function tryBypassValidateNullStateGuard(ifPath: any): boolean {
 	if (!t.isIdentifier(test.right.property, { name: "isPartialView" }))
 		return false;
 
-	let stmt: t.Node = ifPath.node.consequent;
-	if (t.isBlockStatement(stmt)) {
-		if (stmt.body.length !== 1) return false;
-		stmt = stmt.body[0];
-	}
-	if (!t.isReturnStatement(stmt) || !t.isObjectExpression(stmt.argument))
+	if (!nodeContainsReadStateErrorReturn(ifPath.node.consequent, 6))
 		return false;
-	const hasErrorCode6 = stmt.argument.properties.some(
-		(p: any) =>
-			t.isObjectProperty(p) &&
-			getObjectPropertyName(p) === "errorCode" &&
-			t.isNumericLiteral(p.value) &&
-			p.value.value === 6,
-	);
-	if (!hasErrorCode6) return false;
 
 	ifPath.node.test = t.booleanLiteral(false);
 	return true;
@@ -585,11 +589,64 @@ function isReadStateThrowStatement(stmt: t.Node): boolean {
 	);
 }
 
+function nodeContainsReadStateThrow(node: t.Node): boolean {
+	let found = false;
+	visitNodeValues(node, (candidate) => {
+		if (isReadStateThrowStatement(candidate)) {
+			found = true;
+			return true;
+		}
+		return false;
+	});
+	return found;
+}
+
+function nodeContainsReadStateErrorReturn(
+	node: t.Node,
+	errorCode: number,
+): boolean {
+	let found = false;
+	visitNodeValues(node, (candidate) => {
+		if (!t.isReturnStatement(candidate)) return false;
+		if (!t.isObjectExpression(candidate.argument)) return false;
+		if (
+			candidate.argument.properties.some(
+				(prop): prop is t.ObjectProperty =>
+					t.isObjectProperty(prop) &&
+					getObjectPropertyName(prop) === "errorCode" &&
+					t.isNumericLiteral(prop.value, { value: errorCode }),
+			)
+		) {
+			found = true;
+			return true;
+		}
+		return false;
+	});
+	return found;
+}
+
+function prependStateGuardToIfTest(
+	ifNode: t.IfStatement,
+	varName: string,
+): void {
+	const test = ifNode.test;
+	const alreadyPrepended =
+		t.isLogicalExpression(test, { operator: "&&" }) &&
+		t.isIdentifier(test.left, { name: varName });
+	if (alreadyPrepended) return;
+
+	ifNode.test = t.logicalExpression(
+		"&&",
+		t.identifier(varName),
+		t.cloneNode(test),
+	);
+}
+
 // Match call's not-read guard: `if (!IDENT) throw ...` immediately
 // preceded by `let IDENT = ANY.get(...)` (the readFileState lookup).
 // Replace test with literal `false` to bypass unconditionally, and prepend
-// `IDENT &&` to the immediately following IfStatement (the mtime guard) so
-// it short-circuits safely when readFileState entry is undefined.
+// `IDENT &&` to the immediately following or alternate IfStatement (the mtime
+// guard) so it short-circuits safely when readFileState entry is undefined.
 // Idempotent: skip if already bypassed.
 function tryBypassCallNullStateGuard(ifPath: any): boolean {
 	const test = ifPath.node.test;
@@ -600,7 +657,7 @@ function tryBypassCallNullStateGuard(ifPath: any): boolean {
 	if (!t.isIdentifier(test.argument)) return false;
 	const varName = test.argument.name;
 
-	if (!isReadStateThrowStatement(ifPath.node.consequent)) return false;
+	if (!nodeContainsReadStateThrow(ifPath.node.consequent)) return false;
 
 	const parent = ifPath.parent;
 	if (!t.isBlockStatement(parent)) return false;
@@ -618,21 +675,14 @@ function tryBypassCallNullStateGuard(ifPath: any): boolean {
 
 	ifPath.node.test = t.booleanLiteral(false);
 
+	if (t.isIfStatement(ifPath.node.alternate)) {
+		prependStateGuardToIfTest(ifPath.node.alternate, varName);
+	}
+
 	if (idx + 1 < parent.body.length) {
 		const next = parent.body[idx + 1];
 		if (t.isIfStatement(next)) {
-			const alreadyPrepended =
-				t.isLogicalExpression(next.test, { operator: "&&" }) &&
-				t.isIdentifier((next.test as t.LogicalExpression).left, {
-					name: varName,
-				});
-			if (!alreadyPrepended) {
-				next.test = t.logicalExpression(
-					"&&",
-					t.identifier(varName),
-					t.cloneNode(next.test),
-				);
-			}
+			prependStateGuardToIfTest(next, varName);
 		}
 	}
 
@@ -688,21 +738,7 @@ function statementReturnsReadStateError(
 	stmt: t.Node,
 	errorCode: number,
 ): boolean {
-	if (t.isBlockStatement(stmt)) {
-		if (stmt.body.length !== 1) return false;
-		stmt = stmt.body[0];
-	}
-	if (!t.isReturnStatement(stmt) || !t.isObjectExpression(stmt.argument)) {
-		return false;
-	}
-
-	return stmt.argument.properties.some(
-		(prop): prop is t.ObjectProperty =>
-			t.isObjectProperty(prop) &&
-			getObjectPropertyName(prop) === "errorCode" &&
-			t.isNumericLiteral(prop.value) &&
-			prop.value.value === errorCode,
-	);
+	return nodeContainsReadStateErrorReturn(stmt, errorCode);
 }
 
 function tryBypassWriteValidateNullStateGuard(ifPath: any): boolean {
@@ -740,7 +776,7 @@ function tryBypassWriteCallNullStateGuard(ifPath: any): boolean {
 	if (!t.isIdentifier(test.argument)) return false;
 	const varName = test.argument.name;
 
-	if (!isReadStateThrowStatement(ifPath.node.consequent)) return false;
+	if (!nodeContainsReadStateThrow(ifPath.node.consequent)) return false;
 	if (!getPreviousGetDeclaration(ifPath, varName)) return false;
 
 	const parent = ifPath.parent;
@@ -748,6 +784,9 @@ function tryBypassWriteCallNullStateGuard(ifPath: any): boolean {
 		? parent.body.indexOf(ifPath.node)
 		: -1;
 	ifPath.node.test = t.booleanLiteral(false);
+	if (t.isIfStatement(ifPath.node.alternate)) {
+		prependStateGuardToIfTest(ifPath.node.alternate, varName);
+	}
 	if (t.isBlockStatement(parent) && idx >= 0) {
 		prependStateGuardToNextIf(parent, idx, varName);
 	}
@@ -2064,7 +2103,7 @@ function verifyReadStateGuards(ctx: EditVerifyContext): string | null {
 					t.isIdentifier(test.argument)
 				) {
 					const varName = test.argument.name;
-					if (isReadStateThrowStatement(ifPath.node.consequent)) {
+					if (nodeContainsReadStateThrow(ifPath.node.consequent)) {
 						const parent = ifPath.parent;
 						if (t.isBlockStatement(parent)) {
 							const idx = parent.body.indexOf(ifPath.node);
@@ -2149,11 +2188,7 @@ function verifyWriteReadStateGuards(ctx: EditVerifyContext): string | null {
 					t.isUnaryExpression(test, { operator: "!" }) &&
 					t.isIdentifier(test.argument)
 				) {
-					let stmt: t.Node = ifPath.node.consequent;
-					if (t.isBlockStatement(stmt) && stmt.body.length === 1) {
-						stmt = stmt.body[0];
-					}
-					if (t.isThrowStatement(stmt) && t.isNewExpression(stmt.argument)) {
+					if (nodeContainsReadStateThrow(ifPath.node.consequent)) {
 						unwrappedFound = "write-call-null";
 						return;
 					}
