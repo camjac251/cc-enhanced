@@ -10,6 +10,11 @@ import {
 
 const SKILL_LISTING_SUMMARY_HELPER = "_claudePatchFormatSkillListingSummary";
 
+type RenderRoot = {
+	rootCall: t.CallExpression;
+	cacheGuard?: t.IfStatement;
+};
+
 function buildSkillListingSummaryHelper(): t.Statement {
 	return template.statement(
 		`
@@ -27,6 +32,138 @@ function ${SKILL_LISTING_SUMMARY_HELPER}(attachment) {
 `,
 		{ placeholderPattern: false },
 	)();
+}
+
+function isCreateElementCall(
+	node: t.Node | null | undefined,
+): node is t.CallExpression {
+	return (
+		!!node &&
+		t.isCallExpression(node) &&
+		t.isMemberExpression(node.callee) &&
+		isMemberPropertyName(node.callee, "createElement")
+	);
+}
+
+const VISITOR_KEYS = (
+	t as unknown as { VISITOR_KEYS: Record<string, string[]> }
+).VISITOR_KEYS;
+
+function nodeContains(
+	node: t.Node | null | undefined,
+	predicate: (node: t.Node) => boolean,
+): boolean {
+	if (!node) return false;
+	if (predicate(node)) return true;
+	const keys = VISITOR_KEYS[node.type] ?? [];
+	for (const key of keys) {
+		const value = (node as unknown as Record<string, unknown>)[key];
+		if (Array.isArray(value)) {
+			for (const child of value) {
+				if (child && typeof child === "object" && "type" in child) {
+					if (nodeContains(child as t.Node, predicate)) return true;
+				}
+			}
+		} else if (value && typeof value === "object" && "type" in value) {
+			if (nodeContains(value as t.Node, predicate)) return true;
+		}
+	}
+	return false;
+}
+
+function statementsContain(
+	statements: t.Statement[],
+	predicate: (node: t.Node) => boolean,
+): boolean {
+	return statements.some((statement) => nodeContains(statement, predicate));
+}
+
+function findAssignedCreateElementCall(
+	node: t.Node | null | undefined,
+	targetName: string,
+	cacheGuard?: t.IfStatement,
+): RenderRoot | null {
+	if (!node) return null;
+	if (
+		t.isAssignmentExpression(node) &&
+		node.operator === "=" &&
+		t.isIdentifier(node.left, { name: targetName }) &&
+		isCreateElementCall(node.right)
+	) {
+		return { rootCall: node.right, cacheGuard };
+	}
+	if (
+		t.isVariableDeclarator(node) &&
+		t.isIdentifier(node.id, { name: targetName }) &&
+		isCreateElementCall(node.init)
+	) {
+		return { rootCall: node.init, cacheGuard };
+	}
+	if (t.isIfStatement(node)) {
+		return (
+			findAssignedCreateElementCall(node.consequent, targetName, node) ??
+			findAssignedCreateElementCall(node.alternate, targetName, node)
+		);
+	}
+
+	const keys = VISITOR_KEYS[node.type] ?? [];
+	for (const key of keys) {
+		const value = (node as unknown as Record<string, unknown>)[key];
+		if (Array.isArray(value)) {
+			for (const child of value) {
+				if (!child || typeof child !== "object" || !("type" in child)) {
+					continue;
+				}
+				const found = findAssignedCreateElementCall(
+					child as t.Node,
+					targetName,
+					cacheGuard,
+				);
+				if (found) return found;
+			}
+		} else if (value && typeof value === "object" && "type" in value) {
+			const found = findAssignedCreateElementCall(
+				value as t.Node,
+				targetName,
+				cacheGuard,
+			);
+			if (found) return found;
+		}
+	}
+	return null;
+}
+
+function getReturnedRenderRoot(statements: t.Statement[]): RenderRoot | null {
+	const returnIndex = statements.findIndex((statement) =>
+		t.isReturnStatement(statement),
+	);
+	if (returnIndex === -1) return null;
+	const returnStmt = statements[returnIndex];
+	if (!t.isReturnStatement(returnStmt) || !returnStmt.argument) return null;
+	if (isCreateElementCall(returnStmt.argument)) {
+		return { rootCall: returnStmt.argument };
+	}
+	if (!t.isIdentifier(returnStmt.argument)) return null;
+
+	const targetName = returnStmt.argument.name;
+	for (let i = returnIndex - 1; i >= 0; i--) {
+		const found = findAssignedCreateElementCall(statements[i], targetName);
+		if (found) return found;
+	}
+	return null;
+}
+
+function makeCacheGuardAlwaysRecompute(renderRoot: RenderRoot): void {
+	if (renderRoot.cacheGuard) {
+		renderRoot.cacheGuard.test = t.booleanLiteral(true);
+	}
+}
+
+function isCacheGuardAlwaysRecomputed(renderRoot: RenderRoot): boolean {
+	return (
+		!renderRoot.cacheGuard ||
+		t.isBooleanLiteral(renderRoot.cacheGuard.test, { value: true })
+	);
 }
 
 function isSkillListingAttachment(path: NodePath<t.ObjectExpression>): boolean {
@@ -107,26 +244,22 @@ function isSkillNamesLengthAccess(
 
 function getSkillListingRenderRootCall(
 	path: NodePath<t.SwitchCase>,
-): { attachmentName: string; rootCall: t.CallExpression } | null {
+): { attachmentName: string; renderRoot: RenderRoot } | null {
 	const attachmentName = getSkillListingAttachmentName(path);
 	if (!attachmentName) return null;
 
-	const returnStmt = getSkillListingRenderStatements(path).find(
-		(stmt): stmt is t.ReturnStatement => t.isReturnStatement(stmt),
+	const renderRoot = getReturnedRenderRoot(
+		getSkillListingRenderStatements(path),
 	);
-	if (!returnStmt?.argument) return null;
-	if (!t.isCallExpression(returnStmt.argument)) return null;
+	if (!renderRoot) return null;
 
-	const rootCall = returnStmt.argument;
-	if (!t.isMemberExpression(rootCall.callee)) return null;
-	if (!isMemberPropertyName(rootCall.callee, "createElement")) return null;
-
-	return { attachmentName, rootCall };
+	return { attachmentName, renderRoot };
 }
 
 function isSkillListingRenderLine(
 	rootCall: t.CallExpression,
 	attachmentName: string,
+	statements: t.Statement[] = [],
 ): boolean {
 	const hasSkillCountText = rootCall.arguments.some(
 		(arg) =>
@@ -149,7 +282,27 @@ function isSkillListingRenderLine(
 		(arg) => t.isStringLiteral(arg) && arg.value.includes("available"),
 	);
 
-	return hasSkillCountText && hasPluralSkill && hasAvailableLiteral;
+	if (hasSkillCountText && hasPluralSkill && hasAvailableLiteral) {
+		return true;
+	}
+
+	return (
+		statementsContain(statements, (node) =>
+			isSkillCountAccess(node, attachmentName),
+		) &&
+		statementsContain(
+			statements,
+			(node) =>
+				t.isCallExpression(node) &&
+				node.arguments.length >= 2 &&
+				isSkillCountAccess(node.arguments[0], attachmentName) &&
+				t.isStringLiteral(node.arguments[1], { value: "skill" }),
+		) &&
+		statementsContain(
+			statements,
+			(node) => t.isStringLiteral(node) && node.value.includes("available"),
+		)
+	);
 }
 
 function getDynamicSkillRenderStatements(
@@ -226,28 +379,24 @@ function callContainsDynamicSkillPlural(
 function getDynamicSkillRenderRootCall(path: NodePath<t.SwitchCase>): {
 	attachmentName: string;
 	countName: string;
-	rootCall: t.CallExpression;
+	renderRoot: RenderRoot;
 } | null {
 	const binding = getDynamicSkillCountBinding(path);
 	if (!binding) return null;
 
-	const returnStmt = getDynamicSkillRenderStatements(path).find(
-		(stmt): stmt is t.ReturnStatement => t.isReturnStatement(stmt),
+	const renderRoot = getReturnedRenderRoot(
+		getDynamicSkillRenderStatements(path),
 	);
-	if (!returnStmt?.argument) return null;
-	if (!t.isCallExpression(returnStmt.argument)) return null;
+	if (!renderRoot) return null;
 
-	const rootCall = returnStmt.argument;
-	if (!t.isMemberExpression(rootCall.callee)) return null;
-	if (!isMemberPropertyName(rootCall.callee, "createElement")) return null;
-
-	return { ...binding, rootCall };
+	return { ...binding, renderRoot };
 }
 
 function isDynamicSkillRenderLine(
 	rootCall: t.CallExpression,
 	attachmentName: string,
 	countName: string,
+	statements: t.Statement[] = [],
 ): boolean {
 	const hasLoadedLiteral = rootCall.arguments.some(
 		(arg) => t.isStringLiteral(arg) && arg.value.includes("Loaded"),
@@ -291,12 +440,47 @@ function isDynamicSkillRenderLine(
 			),
 	);
 
-	return (
+	if (
 		hasLoadedLiteral &&
 		hasFromLiteral &&
 		hasSkillCountText &&
 		hasPluralSkill &&
 		hasDisplayPath
+	) {
+		return true;
+	}
+
+	return (
+		statementsContain(
+			statements,
+			(node) => t.isStringLiteral(node) && node.value.includes("Loaded"),
+		) &&
+		statementsContain(
+			statements,
+			(node) => t.isStringLiteral(node) && node.value.includes("from"),
+		) &&
+		statementsContain(statements, (node) =>
+			isDynamicSkillCountAccess(node, attachmentName, countName),
+		) &&
+		statementsContain(
+			statements,
+			(node) =>
+				t.isCallExpression(node) &&
+				node.arguments.length >= 2 &&
+				isDynamicSkillCountAccess(
+					node.arguments[0],
+					attachmentName,
+					countName,
+				) &&
+				t.isStringLiteral(node.arguments[1], { value: "skill" }),
+		) &&
+		statementsContain(
+			statements,
+			(node) =>
+				t.isMemberExpression(node) &&
+				t.isIdentifier(node.object, { name: attachmentName }) &&
+				isMemberPropertyName(node, "displayPath"),
+		)
 	);
 }
 
@@ -307,9 +491,10 @@ function isDynamicSkillRenderCase(path: NodePath<t.SwitchCase>): boolean {
 	const renderRoot = getDynamicSkillRenderRootCall(path);
 	if (!renderRoot) return false;
 	return isDynamicSkillRenderLine(
-		renderRoot.rootCall,
+		renderRoot.renderRoot.rootCall,
 		renderRoot.attachmentName,
 		renderRoot.countName,
+		getDynamicSkillRenderStatements(path),
 	);
 }
 
@@ -381,9 +566,19 @@ function patchSkillListingRenderer(path: NodePath<t.SwitchCase>): boolean {
 	const renderRoot = getSkillListingRenderRootCall(path);
 	if (!renderRoot) return false;
 
-	const { attachmentName, rootCall } = renderRoot;
-	if (!isSkillListingRenderLine(rootCall, attachmentName)) return false;
-	if (hasSkillListingSummaryCall(rootCall)) {
+	const { attachmentName } = renderRoot;
+	const { rootCall } = renderRoot.renderRoot;
+	if (
+		!isSkillListingRenderLine(
+			rootCall,
+			attachmentName,
+			getSkillListingRenderStatements(path),
+		)
+	) {
+		return false;
+	}
+	if (hasSkillListingSummaryCall(rootCall, attachmentName)) {
+		makeCacheGuardAlwaysRecompute(renderRoot.renderRoot);
 		return true;
 	}
 
@@ -392,6 +587,7 @@ function patchSkillListingRenderer(path: NodePath<t.SwitchCase>): boolean {
 			t.identifier(attachmentName),
 		]),
 	);
+	makeCacheGuardAlwaysRecompute(renderRoot.renderRoot);
 	return true;
 }
 
@@ -399,11 +595,20 @@ function patchDynamicSkillRenderer(path: NodePath<t.SwitchCase>): boolean {
 	const renderRoot = getDynamicSkillRenderRootCall(path);
 	if (!renderRoot) return false;
 
-	const { attachmentName, countName, rootCall } = renderRoot;
-	if (!isDynamicSkillRenderLine(rootCall, attachmentName, countName)) {
+	const { attachmentName, countName } = renderRoot;
+	const { rootCall } = renderRoot.renderRoot;
+	if (
+		!isDynamicSkillRenderLine(
+			rootCall,
+			attachmentName,
+			countName,
+			getDynamicSkillRenderStatements(path),
+		)
+	) {
 		return false;
 	}
-	if (hasSkillListingSummaryCall(rootCall)) {
+	if (hasSkillListingSummaryCall(rootCall, attachmentName)) {
+		makeCacheGuardAlwaysRecompute(renderRoot.renderRoot);
 		return true;
 	}
 
@@ -412,6 +617,7 @@ function patchDynamicSkillRenderer(path: NodePath<t.SwitchCase>): boolean {
 			t.identifier(attachmentName),
 		]),
 	);
+	makeCacheGuardAlwaysRecompute(renderRoot.renderRoot);
 	return true;
 }
 
@@ -452,8 +658,9 @@ function createSkillListingUiPasses(): PatchAstPass[] {
 					if (!renderRoot) return;
 					if (
 						isSkillListingRenderLine(
-							renderRoot.rootCall,
+							renderRoot.renderRoot.rootCall,
 							renderRoot.attachmentName,
+							getSkillListingRenderStatements(path),
 						)
 					) {
 						renderCandidates.push(path);
@@ -588,24 +795,27 @@ export const skillListingUi: Patch = {
 					if (
 						renderRoot &&
 						isSkillListingRenderLine(
-							renderRoot.rootCall,
+							renderRoot.renderRoot.rootCall,
 							renderRoot.attachmentName,
+							getSkillListingRenderStatements(path),
 						)
 					) {
-						rendererPatched = hasSkillListingSummaryCall(
-							renderRoot.rootCall,
-							renderRoot.attachmentName,
-						);
+						rendererPatched =
+							hasSkillListingSummaryCall(
+								renderRoot.renderRoot.rootCall,
+								renderRoot.attachmentName,
+							) && isCacheGuardAlwaysRecomputed(renderRoot.renderRoot);
 					}
 				}
 
 				if (isDynamicSkillRenderCase(path)) {
 					const renderRoot = getDynamicSkillRenderRootCall(path);
 					if (renderRoot) {
-						dynamicRendererPatched = hasSkillListingSummaryCall(
-							renderRoot.rootCall,
-							renderRoot.attachmentName,
-						);
+						dynamicRendererPatched =
+							hasSkillListingSummaryCall(
+								renderRoot.renderRoot.rootCall,
+								renderRoot.attachmentName,
+							) && isCacheGuardAlwaysRecomputed(renderRoot.renderRoot);
 					}
 				}
 			},

@@ -71,6 +71,76 @@ function buildAttachment(z, O, Y) {
 }
 `;
 
+const MEMOIZED_SKILL_LISTING_FIXTURE = `
+function renderAttachment(q, $) {
+  switch (q.type) {
+    case "dynamic_skill": {
+      let z = q.skillNames.length,
+        Y;
+      if ($[86] !== z) (Y = R8(z, "skill")), ($[86] = z), ($[87] = Y);
+      else Y = $[87];
+      let O;
+      if ($[88] !== z || $[89] !== Y)
+        (O = yK.default.createElement(y, { bold: !0 }, z, " ", Y)),
+          ($[88] = z),
+          ($[89] = Y),
+          ($[90] = O);
+      else O = $[90];
+      let w;
+      if ($[91] !== q.displayPath)
+        (w = yK.default.createElement(y, { bold: !0 }, q.displayPath)),
+          ($[91] = q.displayPath),
+          ($[92] = w);
+      else w = $[92];
+      let M;
+      if ($[93] !== O || $[94] !== w)
+        (M = yK.default.createElement(nP, null, "Loaded", " ", O, " ", "from ", w)),
+          ($[93] = O),
+          ($[94] = w),
+          ($[95] = M);
+      else M = $[95];
+      return M;
+    }
+    case "skill_listing": {
+      if (q.isInitial) return null;
+      let z;
+      if ($[96] !== q.skillCount)
+        (z = yK.default.createElement(y, { bold: !0 }, q.skillCount)),
+          ($[96] = q.skillCount),
+          ($[97] = z);
+      else z = $[97];
+      let Y;
+      if ($[98] !== q.skillCount)
+        (Y = R8(q.skillCount, "skill")), ($[98] = q.skillCount), ($[99] = Y);
+      else Y = $[99];
+      let O;
+      if ($[100] !== z || $[101] !== Y)
+        (O = yK.default.createElement(nP, null, z, " ", Y, " available")),
+          ($[100] = z),
+          ($[101] = Y),
+          ($[102] = O);
+      else O = $[102];
+      return O;
+    }
+  }
+}
+
+function buildAttachment(H) {
+  let A = H.skills;
+  let Y = H.model;
+  let z = H.initial;
+  return [
+    {
+      type: "skill_listing",
+      content: PS6(A, Y, (w) => VbH(w.name), uW(H.options.mainLoopModel)),
+      skillCount: A.length,
+      isInitial: z,
+      names: A.map((w) => w.name),
+    },
+  ];
+}
+`;
+
 test("verify rejects unpatched code", () => {
 	const ast = parse(SKILL_LISTING_FIXTURE);
 	const code = print(ast);
@@ -106,6 +176,51 @@ test("skill-listing-ui adds skillNames metadata and a visible summary", async ()
 		"skillNames must not reuse the content-call scoring formatter",
 	);
 	assert.equal(skillListingUi.verify(output, ast), true);
+});
+
+test("skill-listing-ui patches memoized 2.1.169 render shape", async () => {
+	const ast = parse(MEMOIZED_SKILL_LISTING_FIXTURE);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		output.includes(
+			"function _claudePatchFormatSkillListingSummary(attachment)",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"skillNames: A.map((_claudePatchSkillItem) => _claudePatchSkillItem.name)",
+		),
+		true,
+	);
+	assert.equal(
+		output.match(/_claudePatchFormatSkillListingSummary\(q\)/g)?.length,
+		2,
+	);
+	assert.equal(output.match(/if \(true\)/g)?.length, 2);
+	assert.equal(skillListingUi.verify(output, ast), true);
+});
+
+test("skill-listing-ui verify rejects memoized summaries with stale cache guards", async () => {
+	const ast = parse(MEMOIZED_SKILL_LISTING_FIXTURE);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+	const mutated = output.replace(
+		"if (true)",
+		"if ($[93] !== O || $[94] !== w)",
+	);
+	assert.notEqual(mutated, output);
+
+	const result = skillListingUi.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes(
+			"dynamic_skill renderer is missing the loaded-skill summary",
+		),
+		true,
+	);
 });
 
 test("skill-listing-ui verify fails when skillNames metadata is removed", async () => {

@@ -5,6 +5,11 @@ import { getVerifyAst, isMemberPropertyName } from "./ast-helpers.js";
 
 const AGENT_LISTING_SUMMARY_HELPER = "_claudePatchFormatAgentListingSummary";
 
+type RenderRoot = {
+	rootCall: t.CallExpression;
+	cacheGuard?: t.IfStatement;
+};
+
 function buildAgentListingSummaryHelper(): t.Statement {
 	return template.statement(
 		`
@@ -22,6 +27,134 @@ function ${AGENT_LISTING_SUMMARY_HELPER}(attachment) {
 `,
 		{ placeholderPattern: false },
 	)();
+}
+
+function isCreateElementCall(
+	node: t.Node | null | undefined,
+): node is t.CallExpression {
+	return (
+		!!node &&
+		t.isCallExpression(node) &&
+		t.isMemberExpression(node.callee) &&
+		isMemberPropertyName(node.callee, "createElement")
+	);
+}
+
+function nodeContains(
+	node: t.Node | null | undefined,
+	predicate: (node: t.Node) => boolean,
+): boolean {
+	if (!node) return false;
+	if (predicate(node)) return true;
+	const keys = t.VISITOR_KEYS[node.type] ?? [];
+	for (const key of keys) {
+		const value = (node as unknown as Record<string, unknown>)[key];
+		if (Array.isArray(value)) {
+			for (const child of value) {
+				if (child && typeof child === "object" && "type" in child) {
+					if (nodeContains(child as t.Node, predicate)) return true;
+				}
+			}
+		} else if (value && typeof value === "object" && "type" in value) {
+			if (nodeContains(value as t.Node, predicate)) return true;
+		}
+	}
+	return false;
+}
+
+function statementsContain(
+	statements: t.Statement[],
+	predicate: (node: t.Node) => boolean,
+): boolean {
+	return statements.some((statement) => nodeContains(statement, predicate));
+}
+
+function findAssignedCreateElementCall(
+	node: t.Node | null | undefined,
+	targetName: string,
+	cacheGuard?: t.IfStatement,
+): RenderRoot | null {
+	if (!node) return null;
+	if (
+		t.isAssignmentExpression(node) &&
+		node.operator === "=" &&
+		t.isIdentifier(node.left, { name: targetName }) &&
+		isCreateElementCall(node.right)
+	) {
+		return { rootCall: node.right, cacheGuard };
+	}
+	if (
+		t.isVariableDeclarator(node) &&
+		t.isIdentifier(node.id, { name: targetName }) &&
+		isCreateElementCall(node.init)
+	) {
+		return { rootCall: node.init, cacheGuard };
+	}
+	if (t.isIfStatement(node)) {
+		return (
+			findAssignedCreateElementCall(node.consequent, targetName, node) ??
+			findAssignedCreateElementCall(node.alternate, targetName, node)
+		);
+	}
+
+	const keys = t.VISITOR_KEYS[node.type] ?? [];
+	for (const key of keys) {
+		const value = (node as unknown as Record<string, unknown>)[key];
+		if (Array.isArray(value)) {
+			for (const child of value) {
+				if (!child || typeof child !== "object" || !("type" in child)) {
+					continue;
+				}
+				const found = findAssignedCreateElementCall(
+					child as t.Node,
+					targetName,
+					cacheGuard,
+				);
+				if (found) return found;
+			}
+		} else if (value && typeof value === "object" && "type" in value) {
+			const found = findAssignedCreateElementCall(
+				value as t.Node,
+				targetName,
+				cacheGuard,
+			);
+			if (found) return found;
+		}
+	}
+	return null;
+}
+
+function getReturnedRenderRoot(statements: t.Statement[]): RenderRoot | null {
+	const returnIndex = statements.findIndex((statement) =>
+		t.isReturnStatement(statement),
+	);
+	if (returnIndex === -1) return null;
+	const returnStmt = statements[returnIndex];
+	if (!t.isReturnStatement(returnStmt) || !returnStmt.argument) return null;
+	if (isCreateElementCall(returnStmt.argument)) {
+		return { rootCall: returnStmt.argument };
+	}
+	if (!t.isIdentifier(returnStmt.argument)) return null;
+
+	const targetName = returnStmt.argument.name;
+	for (let i = returnIndex - 1; i >= 0; i--) {
+		const found = findAssignedCreateElementCall(statements[i], targetName);
+		if (found) return found;
+	}
+	return null;
+}
+
+function makeCacheGuardAlwaysRecompute(renderRoot: RenderRoot): void {
+	if (renderRoot.cacheGuard) {
+		renderRoot.cacheGuard.test = t.booleanLiteral(true);
+	}
+}
+
+function isCacheGuardAlwaysRecomputed(renderRoot: RenderRoot): boolean {
+	return (
+		!renderRoot.cacheGuard ||
+		t.isBooleanLiteral(renderRoot.cacheGuard.test, { value: true })
+	);
 }
 
 function getAgentListingRenderStatements(
@@ -114,7 +247,7 @@ function isAgentCountAccess(
 function getAgentListingRenderRootCall(path: NodePath<t.SwitchCase>): {
 	attachmentName: string;
 	countName: string;
-	rootCall: t.CallExpression;
+	renderRoot: RenderRoot;
 } | null {
 	const attachmentName = getAgentListingAttachmentName(path);
 	if (!attachmentName) return null;
@@ -123,17 +256,10 @@ function getAgentListingRenderRootCall(path: NodePath<t.SwitchCase>): {
 	const countName = getAgentListingCountName(statements, attachmentName);
 	if (!countName) return null;
 
-	const returnStmt = statements.find((stmt): stmt is t.ReturnStatement =>
-		t.isReturnStatement(stmt),
-	);
-	if (!returnStmt?.argument) return null;
-	if (!t.isCallExpression(returnStmt.argument)) return null;
+	const renderRoot = getReturnedRenderRoot(statements);
+	if (!renderRoot) return null;
 
-	const rootCall = returnStmt.argument;
-	if (!t.isMemberExpression(rootCall.callee)) return null;
-	if (!isMemberPropertyName(rootCall.callee, "createElement")) return null;
-
-	return { attachmentName, countName, rootCall };
+	return { attachmentName, countName, renderRoot };
 }
 
 function callContainsAgentCount(
@@ -150,6 +276,7 @@ function isAgentListingRenderLine(
 	rootCall: t.CallExpression,
 	attachmentName: string,
 	countName: string,
+	statements: t.Statement[] = [],
 ): boolean {
 	const hasAgentCountText = rootCall.arguments.some(
 		(arg) =>
@@ -173,8 +300,35 @@ function isAgentListingRenderLine(
 		(arg) => t.isStringLiteral(arg) && arg.value.includes("available"),
 	);
 
+	if (
+		hasAgentCountText &&
+		hasPluralType &&
+		hasAgentLiteral &&
+		hasAvailableLiteral
+	) {
+		return true;
+	}
+
 	return (
-		hasAgentCountText && hasPluralType && hasAgentLiteral && hasAvailableLiteral
+		statementsContain(statements, (node) =>
+			isAgentCountAccess(node, attachmentName, countName),
+		) &&
+		statementsContain(
+			statements,
+			(node) =>
+				t.isCallExpression(node) &&
+				node.arguments.length >= 2 &&
+				isAgentCountAccess(node.arguments[0], attachmentName, countName) &&
+				t.isStringLiteral(node.arguments[1], { value: "type" }),
+		) &&
+		statementsContain(
+			statements,
+			(node) => t.isStringLiteral(node) && node.value.includes("agent"),
+		) &&
+		statementsContain(
+			statements,
+			(node) => t.isStringLiteral(node) && node.value.includes("available"),
+		)
 	);
 }
 
@@ -185,9 +339,10 @@ function isAgentListingRenderCase(path: NodePath<t.SwitchCase>): boolean {
 	const renderRoot = getAgentListingRenderRootCall(path);
 	if (!renderRoot) return false;
 	return isAgentListingRenderLine(
-		renderRoot.rootCall,
+		renderRoot.renderRoot.rootCall,
 		renderRoot.attachmentName,
 		renderRoot.countName,
+		getAgentListingRenderStatements(path),
 	);
 }
 
@@ -221,11 +376,20 @@ function patchAgentListingRenderer(path: NodePath<t.SwitchCase>): boolean {
 	const renderRoot = getAgentListingRenderRootCall(path);
 	if (!renderRoot) return false;
 
-	const { attachmentName, countName, rootCall } = renderRoot;
-	if (!isAgentListingRenderLine(rootCall, attachmentName, countName)) {
+	const { attachmentName, countName } = renderRoot;
+	const { rootCall } = renderRoot.renderRoot;
+	if (
+		!isAgentListingRenderLine(
+			rootCall,
+			attachmentName,
+			countName,
+			getAgentListingRenderStatements(path),
+		)
+	) {
 		return false;
 	}
 	if (hasAgentListingSummaryCall(rootCall, attachmentName)) {
+		makeCacheGuardAlwaysRecompute(renderRoot.renderRoot);
 		return true;
 	}
 
@@ -234,6 +398,7 @@ function patchAgentListingRenderer(path: NodePath<t.SwitchCase>): boolean {
 			t.identifier(attachmentName),
 		]),
 	);
+	makeCacheGuardAlwaysRecompute(renderRoot.renderRoot);
 	return true;
 }
 
@@ -330,10 +495,11 @@ export const agentListingUi: Patch = {
 				if (!isAgentListingRenderCase(path)) return;
 				const renderRoot = getAgentListingRenderRootCall(path);
 				if (!renderRoot) return;
-				rendererPatched = hasAgentListingSummaryCall(
-					renderRoot.rootCall,
-					renderRoot.attachmentName,
-				);
+				rendererPatched =
+					hasAgentListingSummaryCall(
+						renderRoot.renderRoot.rootCall,
+						renderRoot.attachmentName,
+					) && isCacheGuardAlwaysRecomputed(renderRoot.renderRoot);
 			},
 		});
 
