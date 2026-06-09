@@ -1,15 +1,23 @@
 ---
 name: update
 description: >-
-  Run the grounded cc-enhanced upstream-release update lifecycle: resolve the real npm/latest/next target, pull the clean cli.js, run bundle drift and matrix verification before promotion, fix patch or prompt drift, refresh docs and prompt baselines only after review, promote with native:update, and verify the promoted binary. Recommend by name after an upstream Claude Code release, or when the user asks to "update Claude", "update Claude Code", "pull the new version", "fetch latest", "patch the new release", "run native:update", or names a target version. Also use when they ask to check prompt drift as part of an update. Argument is an optional version spec ("latest", "next", "stable", or "X.Y.Z") plus optional pass-through flags ("--dry-run", "--force"). NOT for rollback (use `mise run native:rollback`) and NOT for a read-only drift audit without promotion.
+  Run staged cc-enhanced release maintenance: resolve the real npm latest/next target, pull the clean cli.js, inspect bundle drift, repair patch or prompt drift, optionally promote with native:update, update README/baselines, and verify according to the requested mode. Recommend after an upstream Claude Code release or when the user asks what changed, to inspect prompt drift, patch a release, update/upgrade Claude Code, promote, or names a target version. Supports inspect-only/no-heavy-verifier, repair-only, promote-only, and full update flows. Argument is an optional version spec ("latest", "next", "stable", or "X.Y.Z") plus optional pass-through flags. NOT for rollback or workflow docs.
 disable-model-invocation: true
 ---
 
-# /update [version]
+# /update [version] [mode flags]
 
-Run the full upstream-release update lifecycle. `$ARGUMENTS` is an optional version spec; defaults to `latest`.
+Run the staged upstream-release update lifecycle. `$ARGUMENTS` is an optional version spec; defaults to `latest`. Mode flags can include `--inspect-only`, `--repair-only`, `--promote`, `--dry-run`, or `--force`.
 
 The process is evidence-first: inspect the live registry and clean bundle before changing source, dry-run patches against the target before promotion, and report patch verification, prompt-surface validity, and prompt drift as separate states.
+
+## Mode Selection
+
+- Use **inspect-only** when the user asks "what changed", asks for prompt-drift review first, says no `verify:patches`, says no heavy scripts, or asks to compare the CLI against patches with `rg`/`bat`/`inspect`.
+- Use **repair-only** when the target clean bundle is known and the user asks to patch or fix broken tags, but has not asked to promote the native binary.
+- Use **promote/full update** when the user asks to update, upgrade, promote, or run `native:update`.
+- Use **promote-only** when source patches are already repaired and verified, and the next request is specifically to upgrade the active binary.
+- Do not edit workflow docs or workflow files unless the user explicitly asks for workflows.
 
 ## Steps
 
@@ -47,7 +55,43 @@ The process is evidence-first: inspect the live registry and clean bundle before
 
    Re-run focused diffs for commands, env, prompts, or patches when the matrix output points at those areas.
 
-5. **Dry-run patch verification against the clean target.** This is the first gate for source drift.
+5. **Run the requested pre-promotion verification lane.**
+
+   For **inspect-only** or a user-requested no-heavy-verifier run, do not run `mise run verify:patches`, `mise run verify:patches:matrix`, or `mise run native:update`.
+
+   Inspect the clean bundle and local patches directly:
+
+   ```bash
+   rg -n '<anchor-or-version>' versions_clean/<target>/cli.js src/patches README.md
+   ```
+
+   ```bash
+   bun run inspect search versions_clean/<target>/cli.js '<query>' --scope --breadcrumb-depth 4
+   ```
+
+   Use `bat -r <start>:<end> versions_clean/<target>/cli.js` for line context after `rg` finds candidate anchors. If source changes are needed, run focused tests for the touched patches plus repository hygiene:
+
+   ```bash
+   bun test src/patches/<tag>.test.ts --parallel=1
+   ```
+
+   ```bash
+   bun run typecheck
+   ```
+
+   ```bash
+   bun run lint
+   ```
+
+   Then patch the clean bundle into OS temp without promoting:
+
+   ```bash
+   bun run cli -- --target versions_clean/<target>/cli.js --output <scratch>/patched.js --summary-path <scratch>/summary.json
+   ```
+
+   Read `<scratch>/summary.json` and inspect the patched temp bundle for the expected helper calls, literal replacements, and guards with `rg` or `bun run inspect search`. State clearly that native verification was skipped by request.
+
+   For **full update** or when heavy verification is allowed, dry-run patch verification against the clean target:
 
    ```bash
    SELECTED_VERSION=<target> mise run verify:patches:matrix
@@ -57,8 +101,10 @@ The process is evidence-first: inspect the live registry and clean bundle before
 
 6. **Optionally dispatch anchor-review subagents.** Use this when the drift is broad or the user asks for extra confidence.
 
+   - Spawn the patch-verifier agent at most once per target release unless the user explicitly asks for another independent pass.
+   - Skip the subagent when the clean-bundle dry-run already names a narrow failed-tag list and the parent can inspect the relevant files directly.
    - Pass only paths: `versions_clean/<target>/cli.js` and the assigned patch files.
-   - Require `file:line`, exact query strings, and OK / DRIFT / BROKEN status.
+   - Require `file:line`, exact query strings, OK / DRIFT / BROKEN status, and a test coverage note.
    - Keep subagents read-only; the parent edits and verifies.
    - Do not let subagent evidence replace `verify:patches:matrix`.
 
@@ -110,6 +156,8 @@ The process is evidence-first: inspect the live registry and clean bundle before
    rg -n '<old>|<target>' README.md prompt-surface-baseline.json
    ```
 
+   When the patch count changes, update the README intro and patch-count badge. When only the target version changes, update the README target badge and Compatibility target but leave the patch count unchanged.
+
 10. **Promote the native binary.** Forward `--dry-run` or `--force` only if the user supplied it or a local source fix needs a fresh cached build.
 
     ```bash
@@ -155,6 +203,10 @@ If promotion fails after changing the active binary, surface the exact error, sh
 ## Gotchas
 
 - Clean bundle first. Do not start from the patched promoted bundle when fixing upstream anchor drift.
+- `latest` may lag `next`; state which npm tag supplied the chosen target.
+- No-heavy-verifier mode still needs direct evidence: clean-bundle diff, `rg`/`bat`/`inspect` anchors, focused tests for touched patches, a temp patched bundle summary, and patched-bundle inspection.
 - `native:update` passing does not mean prompt drift was corrected. Drift is corrected only by a source fix or reviewed baseline refresh followed by a passing drift verifier.
 - `prompts:compare` is review evidence, not a pass/fail gate.
 - `verify:patches:matrix` is pre-promotion confidence; `verify:patches` on the real native path is still the completion floor.
+- `native:update` may reuse a cached build; use `--force` after source edits when the promoted bundle still shows the old patch behavior.
+- Memoized renderer patches may need cache guards neutralized so added summaries cannot go stale behind upstream memoization.

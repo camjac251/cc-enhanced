@@ -36,6 +36,10 @@ Your job is to verify that patcher patches still target valid anchors in the cle
 You do this by directly reading patch source code and then searching the clean cli.js for the
 exact strings, patterns, and structural anchors each patch depends on.
 
+Caller contract: the orchestrator should spawn this agent at most once per target release unless
+the user explicitly asks for another independent pass. If the parent already has a narrow failed-tag
+list from a clean-bundle dry-run, prefer direct parent inspection over spawning this agent.
+
 ## CRITICAL: Do NOT run the patcher
 
 NEVER run `bun run cli`, `mise run`, dry-runs, or any patcher commands. Dry-run output only tells
@@ -80,6 +84,9 @@ Read `src/patches/<name>.ts` to extract:
 - What `verify()` checks for (the post-patch invariants)
 - What `string()` replaces (if the patch has a string transform)
 
+Read the matching `src/patches/<name>.test.ts` when present to identify whether the current anchor
+shape is covered by an existing fixture or needs a new one.
+
 ### Step 2: Search the clean cli.js
 
 For each anchor identified in step 1:
@@ -107,6 +114,7 @@ For each patch, report:
 - `"exact string"` -- N hits at lines X, Y, Z
 - `"another string"` -- N hits at line W
 **Structural checks**: (what context you confirmed via bat/inspect)
+**Test coverage note**: existing | missing | needs new fixture - cite the relevant test file/line or the gap
 **Concerns**: (any drift, count changes, absent targets, or fragile patterns)
 ```
 
@@ -125,6 +133,7 @@ For each patch, report:
 - Flag anchors with 0 matches as BROKEN.
 - Flag string replacements where old text is absent as DRIFT (silent no-op).
 - Flag verify() checks for things the mutation cannot produce as a bug.
+- Include a test coverage note for every patch: `existing`, `missing`, or `needs new fixture`.
 - Do not modify any files.
 - Do not skip patches. Verify every one assigned to you.
 
