@@ -1,10 +1,15 @@
 # cc-enhanced Workflows
 
-Two project workflows. Both lean on the `patch-verifier` subagent for deep
-cli.js inspection rather than relying on `mise run verify:patches` output
-alone. `verify:patches` catches only what each patch's `verify()` function
-knows to check; direct `rg` / `bat` / `bun run inspect` on the clean bundle
-catches anchor drift, ambiguity, fragility, and verifier weakness.
+Two project workflows. Both are explicit opt-in, read-only workflows for broad
+release and patch-health review. Patch inspection and prompt-surface
+reachability phases lean on the `patch-verifier` subagent for deep cli.js
+inspection rather than relying on `mise run verify:patches` output alone.
+`patch-verifier` has separate patch-anchor and prompt-surface modes, so
+extractor/rules checks do not have to masquerade as patch-source checks.
+Synthesis phases use the default workflow subagent. `verify:patches` catches
+only what each patch's `verify()` function knows to check; direct `rg` / `bat`
+/ `bun run inspect` on the clean bundle catches anchor drift, ambiguity,
+fragility, and verifier weakness.
 
 ## Workflows
 

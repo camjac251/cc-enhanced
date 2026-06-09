@@ -56,6 +56,8 @@ const PATCH_INSPECTION_SCHEMA = {
     structuralContext: { type: 'string' },
     concerns: { type: 'array', items: { type: 'string' } },
     evidence: { type: 'array', items: { type: 'string' } },
+    testCoverageNote: { enum: ['existing', 'missing', 'needs new fixture'] },
+    testCoverageEvidence: { type: 'string' },
     robustnessNotes: { type: 'array', items: { type: 'string' } },
     testHardening: {
       type: 'object',
@@ -330,9 +332,14 @@ Methodology:
    - fragility: low, medium, or high
 4. Classify the patch as OK, DRIFT, BROKEN, or UNKNOWN.
 5. Note robustness issues in robustnessNotes.
-6. Test-hardening: read src/patches/${p.tag}.test.ts and the verify() function in ${p.sourceFile}, then identify what they do NOT lock down such that a future upstream change could drift undetected (anchor hit-counts, the specific occurrence index, post-mutation invariants, structural context). For each gap, write a concrete node:test assertion matching the conventions already in that test file (node:test + node:assert/strict, the helpers it already imports, no reliance on minified identifier names) that a future mise run verify:patches would catch the drift with. Populate testHardening: currentCoverage (what the existing test plus verify() already lock), gaps, and assertions (each with rationale, the anchor it locks, and paste-ready code).
+6. Set testCoverageNote:
+   - existing: the test file already covers the current target shape or anchor class.
+   - missing: no matching test exists or the relevant behavior is untested.
+   - needs new fixture: tests exist but do not cover the upstream shape being validated.
+   Put file:line evidence or the specific gap in testCoverageEvidence.
+7. Test-hardening: read src/patches/${p.tag}.test.ts and the verify() function in ${p.sourceFile}, then identify what they do NOT lock down such that a future upstream change could drift undetected (anchor hit-counts, the specific occurrence index, post-mutation invariants, structural context). For each gap, write a concrete node:test assertion matching the conventions already in that test file (node:test + node:assert/strict, the helpers it already imports, no reliance on minified identifier names) that a future mise run verify:patches would catch the drift with. Populate testHardening: currentCoverage (what the existing test plus verify() already lock), gaps, and assertions (each with rationale, the anchor it locks, and paste-ready code).
 
-Return anchorsChecked, structuralContext, concerns, evidence, robustnessNotes, testHardening.
+Return anchorsChecked, structuralContext, concerns, evidence, testCoverageNote, testCoverageEvidence, robustnessNotes, testHardening.
 
 Do not run the patcher or verify:patches, do not modify any files.`,
     {
@@ -410,11 +417,10 @@ Steps:
 1. Count actual patches: list files matching src/patches/*.ts excluding *.test.ts, ast-helpers.ts, prompt-policy.ts, and other non-patch helpers. Cross-reference with BY_TAG in src/patch-metadata.ts. Set actualPatchCount.
 2. Find every patch-count number in:
    - README.md (intro paragraph, badge)
-   - CLAUDE.md ("applies N verifiable patches")
-   - GitHub repo description: resolve the repo with \`gh repo view --json nameWithOwner --jq '.nameWithOwner'\` and then \`gh api repos/<owner>/<repo> --jq '.description'\`. Use the dynamic resolution; do not hardcode the owner/repo.
+   - GitHub repo description, if it includes a patch count: resolve the repo with \`gh repo view --json nameWithOwner --jq '.nameWithOwner'\` and then \`gh api repos/<owner>/<repo> --jq '.description'\`. Use the dynamic resolution; do not hardcode the owner/repo.
 3. Compare each found count against actualPatchCount. count-mismatch findings for any divergence.
 4. Find stale references:
-   - Patches mentioned by tag in README.md, CLAUDE.md, or .claude/skills/ that do not exist in src/patches/.
+   - Patches mentioned by tag in README.md, AGENTS.md, CLAUDE.md, or .claude/skills/ that do not exist in src/patches/.
    - Patches that exist in src/patches/ but are not mentioned in BY_TAG.
    - Group names in CLAUDE.md or README.md that do not match groups in src/patch-metadata.ts.
 5. For each finding: kind, location, description, severity, suggestedFix.

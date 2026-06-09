@@ -1,7 +1,7 @@
 export const meta = {
   name: 'patch-update',
-  description: 'Validate every patch against a target clean bundle through deep cli.js inspection, check whether watched prompt surfaces are still reachable upstream, and plan fixes',
-  whenToUse: 'Use in cc-enhanced when there is a new upstream release to validate against, or when planning a patch update. Goes beyond mise run verify:patches by inspecting each patch against the target clean bundle through direct cli.js reading. Default does anchor-existence checks for prompt surfaces; pass patchedExportPath to also validate needles. Read-only.',
+  description: 'Validate every patch against a target clean bundle through deep cli.js inspection, check watched prompt-surface reachability, and plan fixes',
+  whenToUse: 'Use in cc-enhanced when there is a new upstream release to validate against, or when planning a patch update. Goes beyond mise run verify:patches by inspecting patches and watched prompt-surface anchors against the target clean bundle through direct cli.js reading. Prompt-surface checks use patch-verifier prompt-surface mode; pass patchedExportPath to also validate needles. Read-only.',
   phases: [
     { title: 'Versioning', detail: 'identify current and target versions, enumerate patches and watched prompt surfaces, filter by args' },
     { title: 'PatchInspection', detail: 'patches in scope inspected in parallel via patch-verifier against the target bundle' },
@@ -71,6 +71,8 @@ const PATCH_INSPECTION_SCHEMA = {
     structuralContext: { type: 'string' },
     concerns: { type: 'array', items: { type: 'string' } },
     evidence: { type: 'array', items: { type: 'string' } },
+    testCoverageNote: { enum: ['existing', 'missing', 'needs new fixture'] },
+    testCoverageEvidence: { type: 'string' },
     rootCauseHypothesis: { type: 'string' },
     suggestedApproach: {
       type: 'object',
@@ -282,12 +284,18 @@ This is a proactive validation, not a failure diagnosis. Validate every anchor t
 
 Methodology:
 1. Read ${p.sourceFile} in full. Extract every anchor: string literals, object property names, AST structural patterns, what verify() asserts, what string() replaces if present.
-2. For each anchor, search ${targetBundle} with rg -n for hits + line numbers and rg -c for counts. Use bat -r or bun run inspect for structural context when the match could be ambiguous.
-3. Compare hit counts and locations to what the patch expects. A patch that searches for 3 occurrences but finds 5 is DRIFT. A patch whose primary anchor returns 0 hits is BROKEN.
-4. Classify as OK, DRIFT, BROKEN, or UNKNOWN.
-5. If not OK, propose a root cause and a fix approach. Do not write code.
+2. Read the matching test file when present: src/patches/${p.tag}.test.ts.
+3. For each anchor, search ${targetBundle} with rg -n for hits + line numbers and rg -c for counts. Use bat -r or bun run inspect for structural context when the match could be ambiguous.
+4. Compare hit counts and locations to what the patch expects. A patch that searches for 3 occurrences but finds 5 is DRIFT. A patch whose primary anchor returns 0 hits is BROKEN.
+5. Classify as OK, DRIFT, BROKEN, or UNKNOWN.
+6. Set testCoverageNote:
+   - existing: the test file already covers the current target shape or anchor class.
+   - missing: no matching test exists or the relevant behavior is untested.
+   - needs new fixture: tests exist but do not cover the new upstream shape being validated.
+   Put file:line evidence or the specific gap in testCoverageEvidence.
+7. If not OK, propose a root cause and a fix approach. Do not write code.
 
-Return anchorsChecked, structuralContext, concerns, evidence (file:line citations from cli.js), rootCauseHypothesis if not OK, and suggestedApproach if a fix is needed.
+Return anchorsChecked, structuralContext, concerns, evidence (file:line citations from cli.js), testCoverageNote, testCoverageEvidence, rootCauseHypothesis if not OK, and suggestedApproach if a fix is needed.
 
 Do not run the patcher. Do not modify any files.`,
     {
@@ -304,7 +312,7 @@ phase('PromptAnchors')
 const surfacesInScope = mode === 'quick' ? allSurfaces.slice(0, 5) : allSurfaces
 
 const promptFindings = await throttledFanout(surfacesInScope, (surface) => agent(
-    `Validate whether the watched prompt surface \`${surface.path}\` is still REACHABLE in the target clean bundle.
+    `Use prompt-surface mode. Validate whether the watched prompt surface \`${surface.path}\` is still REACHABLE in the target clean bundle.
 
 This is an anchor-existence check on a CLEAN bundle, not a needle validation. Required and forbidden needles describe POST-patch state and cannot be validated against a clean cli.js. ${patchedExportPath ? `A patched export path was provided (${patchedExportPath}); needle validation against that export is enabled below.` : 'No patched export was provided; needle validation is skipped.'}
 
