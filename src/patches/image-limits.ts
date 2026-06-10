@@ -3,10 +3,15 @@ import { type NodePath, traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
-const TARGET_OPUS_KEYS = new Set(["claude-opus-4-7", "claude-opus-4-8"]);
+const TARGET_MODEL_KEYS = new Set([
+	"claude-fable-5",
+	"claude-mythos-5",
+	"claude-opus-4-7",
+	"claude-opus-4-8",
+]);
 const TARGET_PIXELS = 2576;
 
-interface OpusOverrideEntry {
+interface ModelOverrideEntry {
 	key: string;
 	maxWidth: t.ObjectProperty;
 	maxHeight: t.ObjectProperty;
@@ -25,14 +30,14 @@ function getNumericProp(
 	return null;
 }
 
-function getOpusOverrideEntries(
+function getModelOverrideEntries(
 	objectExpr: t.ObjectExpression,
-): OpusOverrideEntry[] {
-	const entries: OpusOverrideEntry[] = [];
+): ModelOverrideEntry[] {
+	const entries: ModelOverrideEntry[] = [];
 	for (const prop of objectExpr.properties) {
 		if (!t.isObjectProperty(prop)) continue;
 		const keyName = getObjectKeyName(prop.key);
-		if (!keyName || !TARGET_OPUS_KEYS.has(keyName)) continue;
+		if (!keyName || !TARGET_MODEL_KEYS.has(keyName)) continue;
 		if (!t.isObjectExpression(prop.value)) continue;
 		const maxWidth = getNumericProp(prop.value, "maxWidth");
 		const maxHeight = getNumericProp(prop.value, "maxHeight");
@@ -46,7 +51,7 @@ function createImageLimitsMutator(): Visitor {
 	let entriesSeen = 0;
 
 	function patchObjectExpression(path: NodePath<t.ObjectExpression>): void {
-		const entries = getOpusOverrideEntries(path.node);
+		const entries = getModelOverrideEntries(path.node);
 		for (const entry of entries) {
 			entriesSeen += 1;
 			const widthVal = (entry.maxWidth.value as t.NumericLiteral).value;
@@ -66,7 +71,7 @@ function createImageLimitsMutator(): Visitor {
 			exit() {
 				if (entriesSeen === 0) {
 					console.warn(
-						"image-limits: Could not find Opus 4.7/4.8 image override table",
+						"image-limits: Could not find the high-res model image override table",
 					);
 				}
 			},
@@ -91,14 +96,16 @@ export const imageLimits: Patch = {
 		let entriesSeen = 0;
 		let downgradedKey: string | null = null;
 		let tablesWithEntries = 0;
+		const seenKeys = new Set<string>();
 
 		traverse(verifyAst, {
 			ObjectExpression(path) {
-				const entries = getOpusOverrideEntries(path.node);
+				const entries = getModelOverrideEntries(path.node);
 				if (entries.length === 0) return;
 				tablesWithEntries++;
 				for (const entry of entries) {
 					entriesSeen++;
+					seenKeys.add(entry.key);
 					const widthVal = (entry.maxWidth.value as t.NumericLiteral).value;
 					const heightVal = (entry.maxHeight.value as t.NumericLiteral).value;
 					if (widthVal !== TARGET_PIXELS || heightVal !== TARGET_PIXELS) {
@@ -109,18 +116,24 @@ export const imageLimits: Patch = {
 		});
 
 		if (entriesSeen === 0) {
-			return "Opus 4.7/4.8 image override entries not found";
+			return "High-res model image override entries not found";
 		}
 		// Upstream is expected to ship a single image-override table that
-		// contains the targeted Opus entries together. Finding the entries
+		// contains the targeted model entries together. Finding the entries
 		// spread across multiple tables means the matcher is too loose or
 		// upstream restructured; either way it should be reviewed before
 		// proceeding.
 		if (tablesWithEntries > 1) {
-			return `Opus image override entries split across ${tablesWithEntries} tables`;
+			return `Image override entries split across ${tablesWithEntries} tables`;
+		}
+		const missingKeys = [...TARGET_MODEL_KEYS].filter(
+			(key) => !seenKeys.has(key),
+		);
+		if (missingKeys.length > 0) {
+			return `Image override entries missing for: ${missingKeys.join(", ")}`;
 		}
 		if (downgradedKey) {
-			return `Opus image override for "${downgradedKey}" is not pinned to ${TARGET_PIXELS}px`;
+			return `Image override for "${downgradedKey}" is not pinned to ${TARGET_PIXELS}px`;
 		}
 		return true;
 	},
