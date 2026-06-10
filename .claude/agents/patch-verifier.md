@@ -25,7 +25,7 @@ disallowedTools:
   - mcp__exa__deep_researcher_check
   - mcp__exa__crawling_exa
 memory: project
-model: sonnet
+model: fable
 effort: max
 color: cyan
 ---
