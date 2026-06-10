@@ -10,14 +10,22 @@ import {
 /**
  * Surfaces a visible notice when a `paths:` / `global-paths:` skill activates
  * because a touched file matched, instead of the stock behavior where the
- * activation only writes a debug log and nothing reaches the model.
+ * activation only writes a debug log and nothing is surfaced to the user.
  *
  * Reuses the existing `dynamic_skill` attachment ("Loaded N skills from <path>",
  * which `skill-listing-ui` enriches with the skill names) rather than inventing
  * a new attachment type, so it needs no new producer/render/type-map wiring.
+ * That attachment type maps to empty model-message content upstream, so the
+ * notice is display/transcript-only and costs no prompt tokens.
+ *
+ * Records are deduplicated per session by (file, sorted skill names): the
+ * skill-cache reset re-buckets path skills as conditional, and the per-cycle
+ * changed-file scanner re-reads watched files through the Read pipeline, so
+ * the same activation can re-fire indefinitely. Without the seen-set the
+ * notice prints on every attachment cycle.
  *
  * Three anchors:
- *   1. a module-level pending list,
+ *   1. a module-level pending list plus a seen-set,
  *   2. the conditional-skill activation matcher records {names, file} whenever it
  *      activates skills (its `q.length > 0` branch, which both the cwd and global
  *      match paths feed, so this is independent of the skill-global-paths patch),
@@ -26,6 +34,8 @@ import {
  */
 
 const STATE = "__ccPathActivations";
+const SEEN = "__ccPathActivationsSeen";
+const KEY_VAR = "__ccPathActivationKey";
 const DRAIN_VAR = "__ccPathActivation";
 
 /** Recursive child scan that does NOT reparent nodes (unlike babel traverse). */
@@ -63,6 +73,32 @@ function buildStateDecl(): t.Statement {
 	return template.statement(`var ${STATE} = [];`, {
 		placeholderPattern: false,
 	})();
+}
+
+function buildSeenDecl(): t.Statement {
+	return template.statement(`var ${SEEN} = new Set();`, {
+		placeholderPattern: false,
+	})();
+}
+
+// NUL both as the file/name separator and as the name joiner: it cannot
+// appear in a path or a skill name, so the key is injective over
+// (file, name set) and a comma inside a single name cannot forge a
+// multi-name key.
+function buildGuardedRecordStatement(
+	qName: string,
+	firstParamName: string,
+): t.Statement {
+	return template.statement(
+		`{
+  let ${KEY_VAR} = ${firstParamName}[0] + "\\u0000" + ${qName}.slice().sort().join("\\u0000");
+  if (!${SEEN}.has(${KEY_VAR})) {
+    ${SEEN}.add(${KEY_VAR});
+    ${STATE}.push({ names: ${qName}.slice(), file: ${firstParamName}[0] });
+  }
+}`,
+		{ placeholderPattern: false },
+	)();
 }
 
 /**
@@ -120,30 +156,7 @@ function tryPatchMatcher(fn: t.Function): boolean {
 		}
 
 		const qName = test.left.object.name;
-		const record = t.expressionStatement(
-			t.callExpression(
-				t.memberExpression(t.identifier(STATE), t.identifier("push")),
-				[
-					t.objectExpression([
-						t.objectProperty(
-							t.identifier("names"),
-							t.callExpression(
-								t.memberExpression(t.identifier(qName), t.identifier("slice")),
-								[],
-							),
-						),
-						t.objectProperty(
-							t.identifier("file"),
-							t.memberExpression(
-								t.cloneNode(firstParam, true),
-								t.numericLiteral(0),
-								true,
-							),
-						),
-					]),
-				],
-			),
-		);
+		const record = buildGuardedRecordStatement(qName, firstParam.name);
 		st.consequent = t.blockStatement([st.consequent, record]);
 		return true;
 	}
@@ -239,8 +252,15 @@ function createSkillActivationNoticePasses(): PatchAstPass[] {
 				},
 				Program: {
 					exit(path) {
-						if (patchedMatcher || patchedProducer) {
-							path.node.body.unshift(buildStateDecl());
+						const alreadyDeclared = path.node.body.some(
+							(st) =>
+								t.isVariableDeclaration(st) &&
+								st.declarations.some((decl) =>
+									t.isIdentifier(decl.id, { name: STATE }),
+								),
+						);
+						if ((patchedMatcher || patchedProducer) && !alreadyDeclared) {
+							path.node.body.unshift(buildStateDecl(), buildSeenDecl());
 						}
 						if (!patchedMatcher) {
 							console.warn(
@@ -261,24 +281,36 @@ function createSkillActivationNoticePasses(): PatchAstPass[] {
 
 function verifySkillActivationNotice(ast: t.File): true | string {
 	let stateDecl = false;
+	let seenDecl = false;
 	let recordCall = false;
 	let drainCall = false;
+	let seenGuardHas = false;
+	let seenGuardAdd = false;
 
 	traverse(ast, {
 		VariableDeclarator(path) {
 			if (t.isIdentifier(path.node.id, { name: STATE })) stateDecl = true;
+			if (t.isIdentifier(path.node.id, { name: SEEN })) seenDecl = true;
 		},
 		CallExpression(path) {
 			const callee = path.node.callee;
 			if (!t.isMemberExpression(callee)) return;
-			if (!t.isIdentifier(callee.object, { name: STATE })) return;
-			if (isMemberPropertyName(callee, "push")) recordCall = true;
-			if (isMemberPropertyName(callee, "splice")) drainCall = true;
+			if (t.isIdentifier(callee.object, { name: STATE })) {
+				if (isMemberPropertyName(callee, "push")) recordCall = true;
+				if (isMemberPropertyName(callee, "splice")) drainCall = true;
+			}
+			if (t.isIdentifier(callee.object, { name: SEEN })) {
+				if (isMemberPropertyName(callee, "has")) seenGuardHas = true;
+				if (isMemberPropertyName(callee, "add")) seenGuardAdd = true;
+			}
 		},
 	});
 
 	if (!stateDecl) return "activation-notice pending list was not injected";
+	if (!seenDecl) return "activation-notice seen-set was not injected";
 	if (!recordCall) return "activation matcher does not record activated skills";
+	if (!seenGuardHas || !seenGuardAdd)
+		return "activation notices are not deduplicated per file and skill set";
 	if (!drainCall)
 		return "dynamic_skill producer does not drain activation notices";
 	return true;
