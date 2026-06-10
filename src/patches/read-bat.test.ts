@@ -148,10 +148,12 @@ function Gc(OLD, NEXT) {
   return OLD === NEXT;
 }
 
-function changedSnippet(ATT, OLD, NEXT) {
+async function changedSnippet(ATT, S, F) {
+  if ((await statMtime(F)) <= S.timestamp) return null;
   if (ATT.type === "text") {
-    if (Gc(OLD, NEXT)) return null;
-    let w = GwA(OLD, NEXT);
+    if (ATT.file.truncatedByTokenCap === !0) return null;
+    if (Gc(S, ATT.file.content)) return null;
+    let w = GwA(S.content, ATT.file.content);
     if (w === "") return null;
     return { snippet: w };
   }
@@ -326,6 +328,24 @@ async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1
   ctx.readFileState.set(filePath, { content: K, timestamp: Date.now(), offset, limit });
   return { type: "text", file: { filePath, numLines: O, totalLines: T, startLine: offset } };
 }
+
+let CURRENT_MTIME = 0;
+function setChangedFileMtime(value) { CURRENT_MTIME = value; }
+async function statMtime(filePath) { return CURRENT_MTIME; }
+function Gc(S, content) { return S.content === content; }
+function GwA(oldContent, newContent) { return oldContent === newContent ? "" : "@@ " + newContent; }
+
+async function changedSnippet(ATT, S, F) {
+  if ((await statMtime(F)) <= S.timestamp) return null;
+  if (ATT.type === "text") {
+    if (ATT.file.truncatedByTokenCap === !0) return null;
+    if (Gc(S, ATT.file.content)) return null;
+    let w = GwA(S.content, ATT.file.content);
+    if (w === "") return null;
+    return { snippet: w };
+  }
+  return null;
+}
 `;
 
 test("verify rejects unpatched code", () => {
@@ -357,7 +377,7 @@ async function loadPatchedReadRuntimeModule() {
 	await fs.writeFile(
 		modulePath,
 		`${output}
-export { ReadTool, helperRead };`,
+export { ReadTool, helperRead, changedSnippet, setChangedFileMtime };`,
 		"utf8",
 	);
 	const mod = await import(pathToFileURL(modulePath).href);
@@ -478,7 +498,53 @@ test("read-bat patches delegated helper calls and appends range/whitespace param
 		output.includes("[TRUNCATED - changed-file diff head+tail summary]"),
 		true,
 	);
+	// The seen bump hoists the observed mtime out of the staleness gate and
+	// records that value, keeping the gate's comparison on the mtime clock.
+	// Layout-agnostic assertions: retainLines may wrap the declaration.
+	assert.equal(output.includes("let __ccChangedFileMtime ="), true);
+	assert.equal(output.includes("await statMtime(F)"), true);
+	assert.equal(output.includes("__ccChangedFileMtime <= S.timestamp"), true);
+	assert.equal(output.includes("S.timestamp = __ccChangedFileMtime"), true);
 	assert.equal(output.includes('var style = "numbers"'), true);
+});
+
+test("read-bat verify fails when content-identical re-reads are not marked seen", async () => {
+	const output = await getPatchedDelegationOutput();
+	const mutated = output.replace("S.timestamp = __ccChangedFileMtime;", "");
+	assert.notEqual(mutated, output);
+
+	const result = readWithBat.verify(mutated);
+	assert.equal(
+		result,
+		"changed-file watcher does not mark content-identical re-reads as seen",
+	);
+});
+
+test("read-bat verify fails when the seen bump uses wall-clock time", async () => {
+	const output = await getPatchedDelegationOutput();
+	const mutated = output.replace(
+		"S.timestamp = __ccChangedFileMtime;",
+		"S.timestamp = Date.now();",
+	);
+	assert.notEqual(mutated, output);
+
+	const result = readWithBat.verify(mutated);
+	assert.equal(
+		result,
+		"changed-file watcher does not mark content-identical re-reads as seen",
+	);
+});
+
+test("read-bat seen bump is idempotent across a double pass", async () => {
+	const ast = parse(READ_DELEGATION_FIXTURE);
+	await runReadWithBatViaPasses(ast);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.split("let __ccChangedFileMtime").length - 1, 1);
+	assert.equal(
+		output.split("S.timestamp = __ccChangedFileMtime").length - 1,
+		1,
+	);
 });
 
 test("read-bat avoids delegated helper parameter name collisions", async () => {
@@ -806,5 +872,42 @@ test("read-bat runtime defaults .output reads to tail range and forwards show_wh
 	} finally {
 		await cleanup();
 		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("read-bat runtime: content-identical re-read bumps timestamp to observed mtime", async () => {
+	const { mod, cleanup } = await loadPatchedReadRuntimeModule();
+	try {
+		mod.setChangedFileMtime(500);
+		const state = { content: "same", timestamp: 100 };
+		const att = {
+			type: "text",
+			file: { content: "same", truncatedByTokenCap: false },
+		};
+		assert.equal(await mod.changedSnippet(att, state, "/tmp/watched.md"), null);
+		// Bumped to the observed mtime, not wall-clock time.
+		assert.equal(state.timestamp, 500);
+		// Marked seen: the same mtime no longer passes the staleness gate.
+		assert.equal(await mod.changedSnippet(att, state, "/tmp/watched.md"), null);
+		assert.equal(state.timestamp, 500);
+
+		// A real change with a newer mtime still produces a snippet and does
+		// not bump the recorded timestamp.
+		mod.setChangedFileMtime(600);
+		const changedState = { content: "same", timestamp: 500 };
+		const changedAtt = {
+			type: "text",
+			file: { content: "different", truncatedByTokenCap: false },
+		};
+		const result = await mod.changedSnippet(
+			changedAtt,
+			changedState,
+			"/tmp/watched.md",
+		);
+		assert.ok(result && typeof result.snippet === "string");
+		assert.ok(result.snippet.length > 0);
+		assert.equal(changedState.timestamp, 500);
+	} finally {
+		await cleanup();
 	}
 });

@@ -1005,6 +1005,52 @@ function hasChangedSnippetReturnBinding(ast: t.File): boolean {
 	return found;
 }
 
+function hasChangedFileSeenTimestampBump(ast: t.File): boolean {
+	let hoistedMtimeDecl = false;
+	let bumpAssignsHoistedMtime = false;
+	traverse(ast, {
+		VariableDeclarator(path) {
+			if (!t.isIdentifier(path.node.id, { name: "__ccChangedFileMtime" }))
+				return;
+			if (!t.isAwaitExpression(path.node.init)) return;
+			if (!t.isCallExpression(path.node.init.argument)) return;
+			hoistedMtimeDecl = true;
+		},
+		IfStatement(path) {
+			const { test, consequent } = path.node;
+			if (!t.isCallExpression(test)) return;
+			if (test.arguments.length !== 2) return;
+			const [stateArg, contentArg] = test.arguments;
+			if (!t.isIdentifier(stateArg)) return;
+			if (
+				!t.isMemberExpression(contentArg) ||
+				contentArg.computed ||
+				!isMemberPropertyName(contentArg, "content")
+			) {
+				return;
+			}
+			if (!t.isBlockStatement(consequent)) return;
+			const bumpsToHoistedMtime = consequent.body.some(
+				(st) =>
+					t.isExpressionStatement(st) &&
+					t.isAssignmentExpression(st.expression, { operator: "=" }) &&
+					t.isMemberExpression(st.expression.left) &&
+					isMemberPropertyName(st.expression.left, "timestamp") &&
+					t.isIdentifier(st.expression.right, {
+						name: "__ccChangedFileMtime",
+					}),
+			);
+			const returnsNull = consequent.body.some(
+				(st) => t.isReturnStatement(st) && t.isNullLiteral(st.argument),
+			);
+			if (bumpsToHoistedMtime && returnsNull) {
+				bumpAssignsHoistedMtime = true;
+			}
+		},
+	});
+	return hoistedMtimeDecl && bumpAssignsHoistedMtime;
+}
+
 function hasRegexLiteral(ast: t.File, pattern: string, flags = ""): boolean {
 	let found = false;
 	traverse(ast, {
@@ -1384,6 +1430,9 @@ function verifyReadStateAndSnippetGuards(
 	}
 	if (!hasChangedSnippetReturnBinding(ast)) {
 		return "changed-file watcher return payload missing capped snippet binding";
+	}
+	if (!hasChangedFileSeenTimestampBump(ast)) {
+		return "changed-file watcher does not mark content-identical re-reads as seen";
 	}
 	if (code.includes("provided offset (")) {
 		return "Read short-file warning still references offset instead of range start line";
@@ -3398,6 +3447,134 @@ export const readWithBat: Patch = {
 									t.returnStatement(updatedReturn),
 								];
 								patchedChangedFileSnippet = true;
+								path.stop();
+							},
+						});
+
+						// === 9. Mark content-identical changed-file re-reads as seen ===
+						// The changed-file scanner re-reads any readFileState entry whose
+						// mtime is newer than the recorded timestamp, through the full Read
+						// pipeline (including conditional-skill path matching). When the
+						// re-read content is identical (mtime-only churn, e.g. from git
+						// operations) it returns null WITHOUT updating the recorded
+						// timestamp, so the same file is re-read on every attachment cycle
+						// for the rest of the session. Hoist the observed mtime out of the
+						// staleness gate and record THAT value before returning, so the
+						// entry counts as seen. Recording the mtime (not wall-clock time)
+						// keeps both sides of the gate's `mtime <= timestamp` comparison on
+						// the same clock: it breaks the loop even for future-dated mtimes
+						// and does not widen the skip window for past-dated writes from
+						// mtime-preserving tools. A later real change still produces a
+						// newer mtime and re-fires the scanner.
+						const CHANGED_FILE_MTIME_VAR = "__ccChangedFileMtime";
+						let patchedChangedFileSeen = false;
+						traverse(ast, {
+							IfStatement(path) {
+								if (patchedChangedFileSeen) return;
+								const { test, consequent } = path.node;
+								if (!t.isCallExpression(test)) return;
+								if (test.arguments.length !== 2) return;
+								const [stateArg, contentArg] = test.arguments;
+								if (!t.isIdentifier(stateArg)) return;
+								if (
+									!t.isMemberExpression(contentArg) ||
+									contentArg.computed ||
+									!isMemberPropertyName(contentArg, "content")
+								) {
+									return;
+								}
+								if (
+									!t.isReturnStatement(consequent) ||
+									!t.isNullLiteral(consequent.argument)
+								) {
+									return;
+								}
+								// Anchor on the sibling token-cap gate in the same block so
+								// no other two-arg predicate-with-null-return matches.
+								const enclosingBlock = path.parentPath?.node;
+								if (!t.isBlockStatement(enclosingBlock)) return;
+								let blockHasTokenCapGate = false;
+								t.traverseFast(enclosingBlock, (node) => {
+									if (t.isIdentifier(node, { name: "truncatedByTokenCap" })) {
+										blockHasTokenCapGate = true;
+									}
+								});
+								if (!blockHasTokenCapGate) return;
+
+								// Locate the staleness gate in the same function:
+								// `if ((await <mtimeOf>(<file>)) <= <state>.timestamp) return null;`
+								// The awaited call is cloned, never matched by name, so the
+								// mtime helper's minified identity is irrelevant.
+								const fnPath = path.getFunctionParent();
+								if (!fnPath) return;
+								type ChangedFileGate = {
+									gatePath: NodePath<t.IfStatement>;
+									awaitExpr: t.AwaitExpression;
+								};
+								let foundGate: ChangedFileGate | null = null;
+								fnPath.traverse({
+									IfStatement(gatePath) {
+										if (foundGate) return;
+										if (gatePath.getFunctionParent() !== fnPath) return;
+										const gateTest = gatePath.node.test;
+										if (!t.isBinaryExpression(gateTest, { operator: "<=" }))
+											return;
+										if (!t.isAwaitExpression(gateTest.left)) return;
+										if (!t.isCallExpression(gateTest.left.argument)) return;
+										const gateRight = gateTest.right;
+										if (
+											!t.isMemberExpression(gateRight) ||
+											gateRight.computed ||
+											!isMemberPropertyName(gateRight, "timestamp") ||
+											!t.isIdentifier(gateRight.object, { name: stateArg.name })
+										) {
+											return;
+										}
+										const gateConsequent = gatePath.node.consequent;
+										if (
+											!t.isReturnStatement(gateConsequent) ||
+											!t.isNullLiteral(gateConsequent.argument)
+										) {
+											return;
+										}
+										foundGate = { gatePath, awaitExpr: gateTest.left };
+									},
+								});
+								// The narrowing reset is deliberate: foundGate is assigned
+								// inside the traversal closure, which TS flow analysis
+								// cannot see.
+								const gate = foundGate as ChangedFileGate | null;
+								if (!gate) return;
+
+								// Drop parenthesization metadata from the clone so the
+								// hoisted initializer prints as a plain await expression.
+								const hoistedInit = t.cloneNode(gate.awaitExpr, true);
+								hoistedInit.extra = undefined;
+								gate.gatePath.insertBefore(
+									t.variableDeclaration("let", [
+										t.variableDeclarator(
+											t.identifier(CHANGED_FILE_MTIME_VAR),
+											hoistedInit,
+										),
+									]),
+								);
+								(gate.gatePath.node.test as t.BinaryExpression).left =
+									t.identifier(CHANGED_FILE_MTIME_VAR);
+
+								path.node.consequent = t.blockStatement([
+									t.expressionStatement(
+										t.assignmentExpression(
+											"=",
+											t.memberExpression(
+												t.cloneNode(stateArg, true),
+												t.identifier("timestamp"),
+											),
+											t.identifier(CHANGED_FILE_MTIME_VAR),
+										),
+									),
+									t.returnStatement(t.nullLiteral()),
+								]);
+								patchedChangedFileSeen = true;
 								path.stop();
 							},
 						});
