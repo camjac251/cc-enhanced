@@ -92,6 +92,102 @@ function functionContainsConditionalSkillLog(
 	);
 }
 
+function isStateMapClearCall(node: t.Node, mapName: string): boolean {
+	return (
+		t.isCallExpression(node) &&
+		t.isMemberExpression(node.callee) &&
+		isMemberPropertyName(node.callee, "clear") &&
+		t.isMemberExpression(node.callee.object) &&
+		isMemberPropertyName(node.callee.object, mapName)
+	);
+}
+
+interface SkillStateResetShape {
+	kind: "cache-reset" | "full-reset";
+	clearsActivatedGuard: boolean;
+}
+
+/**
+ * Two small reset functions clear conditional-skill state: a cache reset
+ * (memoizer caches + conditional bucket + activation guard) and a full
+ * session reset that also clears the dynamic-skill map. Only the cache reset
+ * lacks any dynamic-skill reference, which is what distinguishes them.
+ */
+function getSkillStateResetShape(fn: t.Function): SkillStateResetShape | null {
+	if (!t.isBlockStatement(fn.body)) return null;
+	if (fn.body.body.length > 8) return null;
+
+	let clearsConditional = false;
+	let clearsActivatedGuard = false;
+	let touchesDynamicSkills = false;
+	visitChildNodes(fn.body, (child) => {
+		if (isStateMapClearCall(child, "conditionalSkills")) {
+			clearsConditional = true;
+		}
+		if (isStateMapClearCall(child, "activatedConditionalSkillNames")) {
+			clearsActivatedGuard = true;
+		}
+		if (
+			t.isMemberExpression(child) &&
+			isMemberPropertyName(child, "dynamicSkills")
+		) {
+			touchesDynamicSkills = true;
+		}
+		return false;
+	});
+
+	if (!clearsConditional) return null;
+	return {
+		kind: touchesDynamicSkills ? "full-reset" : "cache-reset",
+		clearsActivatedGuard,
+	};
+}
+
+/**
+ * Keep `activatedConditionalSkillNames` intact across the skill-cache reset.
+ * Clearing it re-buckets every already-activated path skill as conditional,
+ * so the next matching file touch re-activates it, which emits a skill-change
+ * event, which triggers another reload and reset: an endless churn loop that
+ * reloads the skill/command registries on every attachment cycle. Under this
+ * patch path skills are always model-available, so suppressing re-activation
+ * loses nothing. The full session reset (which also clears the dynamic-skill
+ * map) keeps its guard clear.
+ */
+function patchCacheResetActivationGuard(path: NodePath<t.Function>): boolean {
+	const shape = getSkillStateResetShape(path.node);
+	if (shape?.kind !== "cache-reset") return false;
+	if (!shape.clearsActivatedGuard) return true;
+
+	let removed = false;
+	path.traverse({
+		CallExpression(callPath) {
+			if (removed) return;
+			if (
+				!isStateMapClearCall(callPath.node, "activatedConditionalSkillNames")
+			) {
+				return;
+			}
+			removed = true;
+			const parentNode = callPath.parentPath?.node;
+			if (
+				t.isSequenceExpression(parentNode) &&
+				parentNode.expressions.length === 2 &&
+				callPath.parentPath
+			) {
+				const sibling = parentNode.expressions.find(
+					(expr) => expr !== callPath.node,
+				);
+				if (sibling) {
+					callPath.parentPath.replaceWith(sibling);
+					return;
+				}
+			}
+			callPath.remove();
+		},
+	});
+	return removed;
+}
+
 function findSkillBucketNames(
 	path: NodePath<t.Function>,
 ): SkillBucketNames | null {
@@ -210,12 +306,16 @@ function patchConditionalSkillLoader(path: NodePath<t.Function>): boolean {
 function createSkillPathsInvokePasses(): PatchAstPass[] {
 	let foundLoader = false;
 	let patchedLoader = false;
+	let patchedCacheReset = false;
 
 	return [
 		{
 			pass: "mutate",
 			visitor: {
 				Function(path) {
+					if (!patchedCacheReset && patchCacheResetActivationGuard(path)) {
+						patchedCacheReset = true;
+					}
 					if (!functionContainsConditionalSkillLog(path)) return;
 					foundLoader = true;
 					if (patchConditionalSkillLoader(path)) patchedLoader = true;
@@ -231,6 +331,11 @@ function createSkillPathsInvokePasses(): PatchAstPass[] {
 								"skill-paths-invoke: path-scoped skill loader return was not patched",
 							);
 						}
+						if (foundLoader && !patchedCacheReset) {
+							console.warn(
+								"skill-paths-invoke: could not find conditional-skill cache reset",
+							);
+						}
 					},
 				},
 			},
@@ -242,9 +347,22 @@ function verifyConditionalSkillLoader(ast: t.File): true | string {
 	let foundLoader = false;
 	let patchedLoader = false;
 	let stillReturnsOnlyUnconditional = false;
+	let foundCacheReset = false;
+	let cacheResetStillClearsGuard = false;
+	let fullResetMissingGuardClear = false;
 
 	traverse(ast, {
 		Function(path) {
+			const resetShape = getSkillStateResetShape(path.node);
+			if (resetShape?.kind === "cache-reset") {
+				foundCacheReset = true;
+				if (resetShape.clearsActivatedGuard) cacheResetStillClearsGuard = true;
+			} else if (
+				resetShape?.kind === "full-reset" &&
+				!resetShape.clearsActivatedGuard
+			) {
+				fullResetMissingGuardClear = true;
+			}
 			if (!functionContainsConditionalSkillLog(path)) return;
 			foundLoader = true;
 			const buckets = findSkillBucketNames(path);
@@ -280,6 +398,15 @@ function verifyConditionalSkillLoader(ast: t.File): true | string {
 	}
 	if (!patchedLoader) {
 		return "Path-scoped skill loader is missing the merged skill return";
+	}
+	if (!foundCacheReset) {
+		return "Could not find the conditional-skill cache reset";
+	}
+	if (cacheResetStillClearsGuard) {
+		return "Skill-cache reset still clears the conditional-activation guard";
+	}
+	if (fullResetMissingGuardClear) {
+		return "Full skill-state reset no longer clears the conditional-activation guard";
 	}
 
 	return true;
