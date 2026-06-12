@@ -289,6 +289,15 @@ interface GateCandidate {
 	 * combination that forms a guidance conditional's test.
 	 */
 	conditionalToForce?: NodePath<t.ConditionalExpression>;
+	/**
+	 * True when a guarded conditional's branches contain search-guidance text,
+	 * not just a presence/absence shape. Prompt builders also splice in
+	 * optional notices (`gate ? ["", notice] : []` from a zero-arg helper that
+	 * returns null when inapplicable); those match the asymmetric-presence
+	 * shape, so guidance text is the disambiguating signal when several
+	 * declarators qualify.
+	 */
+	hasGuidance: boolean;
 }
 
 function findEmbeddedSearchGateDeclarator(
@@ -306,24 +315,29 @@ function findEmbeddedSearchGateDeclarator(
 			const init = declPath.node.init;
 			if (isGateInitExpression(init)) {
 				let conditionalToForce: NodePath<t.ConditionalExpression> | undefined;
-				const controlsGuidance = binding.referencePaths.some((refPath) => {
+				let qualifies = false;
+				let hasGuidance = false;
+				for (const refPath of binding.referencePaths) {
 					const conditional = findEnclosingConditionalTest(refPath);
-					if (!conditional) return false;
-					const guards =
+					if (!conditional) continue;
+					const guidance =
 						nodeContainsSearchGuidance(conditional.node.consequent) ||
-						nodeContainsSearchGuidance(conditional.node.alternate) ||
-						isAsymmetricPresenceConditional(conditional.node);
-					if (!guards) return false;
-					// If the reference is nested inside a logical wrapper that forms
-					// the conditional test, rewrite the conditional test directly:
-					// the declarator alone is not enough to suppress guidance.
-					if (conditional.node.test !== refPath.node) {
+						nodeContainsSearchGuidance(conditional.node.alternate);
+					if (!guidance && !isAsymmetricPresenceConditional(conditional.node)) {
+						continue;
+					}
+					// If the first qualifying reference is nested inside a logical
+					// wrapper that forms the conditional test, rewrite the
+					// conditional test directly: the declarator alone is not enough
+					// to suppress guidance.
+					if (!qualifies && conditional.node.test !== refPath.node) {
 						conditionalToForce = conditional;
 					}
-					return true;
-				});
-				if (controlsGuidance) {
-					candidates.push({ declPath, conditionalToForce });
+					qualifies = true;
+					if (guidance) hasGuidance = true;
+				}
+				if (qualifies) {
+					candidates.push({ declPath, conditionalToForce, hasGuidance });
 				}
 				return;
 			}
@@ -344,11 +358,13 @@ function findEmbeddedSearchGateDeclarator(
 			) {
 				return;
 			}
-			candidates.push({ declPath });
+			candidates.push({ declPath, hasGuidance: true });
 		},
 	});
 
-	return candidates.length === 1 ? candidates[0] : null;
+	if (candidates.length === 1) return candidates[0];
+	const guided = candidates.filter((candidate) => candidate.hasGuidance);
+	return guided.length === 1 ? (guided[0] ?? null) : null;
 }
 
 function patchGateInFunction(path: NodePath<t.Function>): boolean {

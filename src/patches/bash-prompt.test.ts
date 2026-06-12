@@ -240,6 +240,45 @@ function nl1() {
 	assert.equal(output.includes("appropriate dedicated tool"), false);
 });
 
+test("bash-prompt forces the gate despite a presence-only notice declarator", async () => {
+	// Mirrors the latest upstream Bash prompt builder: alongside the
+	// embedded-search gate, an optional notice helper (null when
+	// inapplicable) is spliced in via `notice ? ["", notice] : []`. That
+	// asymmetric presence shape must not make the gate ambiguous.
+	const fixture = `
+function A4D() {
+  let H = HO(),
+    A = H
+      ? "\`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`"
+      : "\`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`",
+    M = [
+      ...(H
+        ? []
+        : [
+            \`To search for files use \${AK} instead of find or ls\`,
+            \`To search the content of files, use \${V_} instead of grep or rg\`,
+          ]),
+    ],
+    W = platformNotice();
+  return [
+    "Executes a given bash command and returns its output.",
+    ...(W ? ["", W] : []),
+    \`IMPORTANT: Avoid using this tool to run \${A} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\`,
+    ...M,
+  ].join("\\n");
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes("H = !0"), true);
+	assert.equal(output.includes("W = platformNotice()"), true);
+	assert.equal(output.includes("find or ls"), false);
+	assert.equal(output.includes("grep or rg"), false);
+	assert.equal(output.includes("appropriate dedicated tool"), false);
+});
+
 test("bash-prompt patches latest tool-guidance gate routed through an intermediate array", async () => {
 	const fixture = `
 function ES1(H) {
