@@ -346,6 +346,11 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				needle: "Serena or Probe search_code (exact: true)",
 				reason: "Agent tool missing Serena/Probe symbol-lookup routing",
 			},
+			{
+				id: "agent-tool-explicit-fork",
+				needle: 'pass `subagent_type: "fork"` to fork yourself',
+				reason: "Agent tool missing explicit fork-selection guidance",
+			},
 		],
 		forbidden: [
 			{
@@ -353,6 +358,11 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				needle: "`grep` via the Bash tool",
 				reason:
 					"Agent tool still routes a symbol lookup to grep via the Bash tool",
+			},
+			{
+				id: "agent-tool-mangled-fork",
+				needle: "any other type. Or omitting it. Starts",
+				reason: "Agent tool still has malformed fork-selection wording",
 			},
 		],
 	},

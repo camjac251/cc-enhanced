@@ -419,6 +419,9 @@ const WORKFLOW_SUBAGENT_FIXTURE =
 const AGENT_TOOL_LOOKUP_FIXTURE =
 	"If the target is already known, use the direct tool: Read for a known path, `grep` via the Bash tool for a specific symbol or string.";
 
+const AGENT_TOOL_FORK_SELECTION_FIXTURE =
+	'return `${flag ? `When using the ${toolName} tool, specify a subagent_type to select an agent: \\`"fork"\\` forks yourself (the fork inherits your full conversation context and always runs on your model \\u2014 a \\`model\\` override is ignored); any other type \\u2014 or omitting it \\u2014 starts a fresh agent (general-purpose by default).` : `When using the ${toolName} tool, specify a subagent_type parameter to select which agent type to use. If omitted, the general-purpose agent is used.`}`;';
+
 const CLAUDE_NOISY_FIXTURE =
 	"For noisy investigation (grep sweeps, log trawls, broad search), spawn a subagent and keep only the findings here.";
 
@@ -445,6 +448,28 @@ test("built-in-agent-prompt routes the Agent tool symbol lookup to Serena and Pr
 	assert.equal(
 		output.includes(
 			"Serena or Probe search_code (exact: true) for a specific symbol or string",
+		),
+		true,
+	);
+});
+
+test("built-in-agent-prompt rewrites the Agent tool fork-selection wording", () => {
+	const output =
+		builtInAgentPrompt.string?.(AGENT_TOOL_FORK_SELECTION_FIXTURE) ??
+		AGENT_TOOL_FORK_SELECTION_FIXTURE;
+	assert.equal(
+		output.includes("any other type. Or omitting it. Starts"),
+		false,
+	);
+	assert.equal(
+		output.includes(
+			'When using the ${toolName} tool, pass \\`subagent_type: "fork"\\` to fork yourself.',
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"Pass any other subagent_type, or omit subagent_type, to start a fresh agent",
 		),
 		true,
 	);
@@ -510,4 +535,11 @@ test("built-in-agent-prompt verify flags an unpatched Agent tool grep reference"
 		String(result).includes("Agent tool symbol-lookup routing"),
 		true,
 	);
+});
+
+test("built-in-agent-prompt verify flags malformed Agent tool fork-selection wording", () => {
+	const broken = `${patchedSubagentSurfaces()}\n${AGENT_TOOL_FORK_SELECTION_FIXTURE}`;
+	const result = builtInAgentPrompt.verify(broken);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("fork-selection wording"), true);
 });

@@ -271,6 +271,22 @@ const AGENT_TOOL_SYMBOL_LOOKUP_SOURCE = "`grep` via the Bash tool";
 const AGENT_TOOL_SYMBOL_LOOKUP_REPLACEMENT =
 	"Serena or Probe search_code (exact: true)";
 
+const AGENT_TOOL_FORK_SELECTION_RE =
+	/When using the (\$\{[^}]+\}) tool, specify a subagent_type to select an agent: \\`"fork"\\` forks yourself \(the fork inherits your full conversation context and always runs on your model \\u2014 a \\`model\\` override is ignored\); any other type \\u2014 or omitting it \\u2014 starts a fresh agent \(general-purpose by default\)\./g;
+
+const AGENT_TOOL_FORK_SELECTION_PATCHED_RE =
+	/When using the \$\{[^}]+\} tool, pass \\`subagent_type: "fork"\\` to fork yourself\. A fork inherits your full conversation context, always runs on your model, and ignores any \\`model\\` override\. Pass any other subagent_type, or omit subagent_type, to start a fresh agent \(general-purpose by default\)\./;
+
+function agentToolForkSelectionReplacement(toolExpr: string): string {
+	return [
+		`When using the ${toolExpr} tool, pass `,
+		'\\`subagent_type: "fork"\\`',
+		" to fork yourself. A fork inherits your full conversation context, always runs on your model, and ignores any ",
+		"\\`model\\`",
+		" override. Pass any other subagent_type, or omit subagent_type, to start a fresh agent (general-purpose by default).",
+	].join("");
+}
+
 function subagentRoutingInjection(anchor: string): string {
 	return `${anchor}\n\n${MODERN_SUBAGENT_CODE_ROUTING}`;
 }
@@ -493,6 +509,10 @@ export const builtInAgentPrompt: Patch = {
 			escapeNonAscii(AGENT_TOOL_SYMBOL_LOOKUP_SOURCE),
 			AGENT_TOOL_SYMBOL_LOOKUP_REPLACEMENT,
 		);
+		result = result.replace(
+			AGENT_TOOL_FORK_SELECTION_RE,
+			(_match, toolExpr: string) => agentToolForkSelectionReplacement(toolExpr),
+		);
 		result = result.replaceAll(
 			escapeNonAscii(CLAUDE_NOISY_INVESTIGATION_SOURCE),
 			CLAUDE_NOISY_INVESTIGATION_REPLACEMENT,
@@ -700,6 +720,16 @@ export const builtInAgentPrompt: Patch = {
 			"Agent tool symbol-lookup routing",
 		);
 		if (agentToolResult !== true) return agentToolResult;
+		if (new RegExp(AGENT_TOOL_FORK_SELECTION_RE.source).test(code)) {
+			return "Unpatched Agent tool fork-selection wording remains";
+		}
+		if (
+			code.includes('subagent_type: "fork"') &&
+			code.includes("always runs on your model") &&
+			!AGENT_TOOL_FORK_SELECTION_PATCHED_RE.test(code)
+		) {
+			return "Missing rewritten Agent tool fork-selection wording";
+		}
 
 		const claudeNoisyResult = verifyExactReplacement(
 			CLAUDE_NOISY_INVESTIGATION_SOURCE,
