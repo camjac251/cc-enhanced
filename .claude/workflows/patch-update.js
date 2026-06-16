@@ -260,6 +260,14 @@ if (versioning.outcome === 'no-target-bundle') {
   }
 }
 
+if (!versioning.targetBundlePath) {
+  return {
+    status: 'blocked',
+    versioning,
+    summary: 'versioning reported ready but did not provide a targetBundlePath; cannot inspect against an undefined bundle.',
+  }
+}
+
 const allPatches = versioning.patches ?? []
 const allSurfaces = versioning.promptSurfaces ?? []
 const targetBundle = versioning.targetBundlePath
@@ -281,6 +289,8 @@ const patchFindings = await throttledFanout(patchesInScope, (p) => agent(
     `Deep-inspect the cc-enhanced patch \`${p.tag}\` (source: ${p.sourceFile}) against ${targetBundle}.
 
 This is a proactive validation, not a failure diagnosis. Validate every anchor the patch depends on, even if the patch is currently passing verify:patches.
+
+${targetBundle} is a CLEAN, pre-patch bundle: only the OLD/search anchors a patch matches on are expected to be present. Any text that verify() or string() injects, and any post-mutation invariant, is by definition absent from a clean bundle, so its absence is NOT evidence the patch is BROKEN. Judge BROKEN/DRIFT on whether the search anchors the patch keys on still exist and remain unambiguous, not on the absence of post-patch output.
 
 Methodology:
 1. Read ${p.sourceFile} in full. Extract every anchor: string literals, object property names, AST structural patterns, what verify() asserts, what string() replaces if present.

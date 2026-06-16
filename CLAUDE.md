@@ -111,6 +111,7 @@ When orienting in this repo, reach for these by purpose:
 | Bundle inspector (string/AST search with breadcrumbs) | `src/inspector.ts` |
 | Local user skills (slash commands) | `.claude/skills/{new-patch,update}/SKILL.md` |
 | Local subagent (verification-only) | `.claude/agents/patch-verifier.md` |
+| Project workflows (multi-agent, read-only) | `.claude/workflows/{patch-audit,patch-update}.js` (index: `.claude/workflows/README.md`) |
 
 ## Patch Groups
 
@@ -438,3 +439,10 @@ Local slash skills (`disable-model-invocation: true`, recommend by name when con
   review.
 
 Local subagent (`.claude/agents/patch-verifier.md`): adversarial verification of patch anchors against a clean upstream `cli.js`. Read-only (Write and Edit are denied). Returns per-patch OK / DRIFT / BROKEN status with line numbers. Never runs the patcher itself. Useful after an upstream release to confirm anchors before promoting.
+
+Local workflows (`.claude/workflows/`, auto-register as read-only slash skills; explicit opt-in, never auto-run):
+
+- `/patch-update`: validates every patch and watched prompt surface against a target clean bundle through deep `cli.js` inspection, then returns a severity-ordered fix plan. Run when a new upstream release appears.
+- `/patch-audit`: deeper health audit. Adds verifier-robustness, pipeline-interaction, docs-and-counts, and per-patch test-hardening on top of `patch-update`'s anchor inspection. Run as a periodic or pre-push gate.
+
+Both accept `mode` / `group` / `tag` / `focus` through `args` and lean on the `patch-verifier` subagent for inspection. See `.claude/workflows/README.md`. The dynamic-workflow scripting contract lives in the Workflow tool description inside `cli.js` (extract with `mise run prompts:export`); authoring best practices live in the global `workflow-authoring` skill.

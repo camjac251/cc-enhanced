@@ -320,6 +320,14 @@ const patchesInScope = mode === 'quick' && !groupFilter && !tagFilter
 
 const patchesSkipped = allPatches.length - patchesInScope.length
 
+if (patchesInScope.length === 0) {
+  return {
+    status: 'blocked',
+    inventory,
+    summary: `No patches matched the requested scope (group=${groupFilter ?? 'none'}, tag=${tagFilter ? tagFilter.join(',') : 'none'}). Nothing to inspect.`,
+  }
+}
+
 const patchInspections = await throttledFanout(patchesInScope, (p) => agent(
     `Deep-inspect the cc-enhanced patch \`${p.tag}\` (source: ${p.sourceFile}) against ${cleanBundle}. This is a robustness audit, not a failure diagnosis.
 
@@ -378,10 +386,10 @@ You do not need to search cli.js for this audit; you are reasoning about the ver
   confirmedVerifierAudits = (verifierAudits ?? []).filter(Boolean)
 }
 
-let pipeline = null
+let pipelineInteraction = null
 if (runPipelineInteraction) {
   phase('PipelineInteraction')
-  pipeline = await agent(
+  pipelineInteraction = await agent(
     `Analyze cross-patch interactions in the cc-enhanced AST pass pipeline. Find risks where patches could step on each other.
 
 Methodology:
@@ -462,7 +470,7 @@ Verifier audits (empty if skipped in this mode):
 ${JSON.stringify(confirmedVerifierAudits)}
 
 Pipeline interaction analysis (null if skipped in this mode):
-${JSON.stringify(pipeline)}
+${JSON.stringify(pipelineInteraction)}
 
 Docs and counts (null if skipped in this mode):
 ${JSON.stringify(docs)}
@@ -503,7 +511,7 @@ return {
   inventory,
   patchInspections: confirmedInspections,
   verifierAudits: confirmedVerifierAudits,
-  pipeline,
+  pipeline: pipelineInteraction,
   docs,
   audit,
 }

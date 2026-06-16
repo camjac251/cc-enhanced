@@ -37,3 +37,18 @@ fragility, and verifier weakness.
   `patch-audit` is the deeper signal.
 - Either workflow accepts a focus string via `args` (e.g. focus on a
   specific group or a specific version).
+
+## Authoring reference
+
+These are plain dynamic-workflow scripts. To write or change one:
+
+- Best-practice playbook: the global `workflow-authoring` skill
+  (`~/.claude/skills/workflow-authoring/`).
+- Usage, run management, and runtime limits: the official docs at
+  <https://code.claude.com/docs/en/workflows>.
+- The full scripting contract (the `meta` literal; the `agent` / `parallel` /
+  `pipeline` / `phase` / `log` / `workflow` / `budget` / `args` helpers; schema
+  rules; resume semantics) lives in the Workflow tool description inside
+  `cli.js`. Extract it from a clean bundle with
+  `mise run prompts:export -- <version>`, or search it directly with
+  `bun run inspect`.
