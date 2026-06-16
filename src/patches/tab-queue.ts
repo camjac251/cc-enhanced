@@ -2007,31 +2007,28 @@ function buildEditHintStatement(target: FooterHintTarget): t.IfStatement {
 function patchPushCondition(target: FooterHintTarget): boolean {
 	if (hasQueuePartsLengthFallback(target)) return true;
 
+	// Upstream gates the queue-parts spread on the bare showHint identifier
+	// (`else if (showHint) parts.push(...queueParts)`). Widen it to also fire
+	// when the queue has items so the injected queue/edit hints display even
+	// while showHint is false.
 	const test = target.pushIf.node.test;
-	if (
-		t.isLogicalExpression(test, { operator: "&&" }) &&
-		t.isIdentifier(test.right, { name: target.showHint.name })
-	) {
-		target.pushIf.node.test = t.logicalExpression(
-			"&&",
-			t.cloneNode(test.left, true),
-			t.logicalExpression(
-				"||",
-				t.identifier(target.showHint.name),
-				t.binaryExpression(
-					">",
-					t.memberExpression(
-						t.identifier(target.queueParts.name),
-						t.identifier("length"),
-					),
-					t.numericLiteral(0),
-				),
-			),
-		);
-		return true;
+	if (!t.isIdentifier(test, { name: target.showHint.name })) {
+		return false;
 	}
 
-	return false;
+	target.pushIf.node.test = t.logicalExpression(
+		"||",
+		t.identifier(target.showHint.name),
+		t.binaryExpression(
+			">",
+			t.memberExpression(
+				t.identifier(target.queueParts.name),
+				t.identifier("length"),
+			),
+			t.numericLiteral(0),
+		),
+	);
+	return true;
 }
 
 function patchFooterHintTarget(target: FooterHintTarget): boolean {

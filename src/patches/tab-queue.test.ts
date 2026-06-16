@@ -124,7 +124,7 @@ function renderFooterLeft({ showHint, isInputEmpty, isLoading, leftArrowPending 
         format: { keyCase: "lower" },
       }),
     ));
-  } else if (!hasTeammatePills && showHint) {
+  } else if (showHint) {
     parts.push(...hintParts);
   }
   if (!isLoading && isInputEmpty && leftArrowPending) {
