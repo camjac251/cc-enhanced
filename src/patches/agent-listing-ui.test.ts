@@ -147,3 +147,106 @@ test("agent-listing-ui verify fails when the visible summary is removed", async 
 		true,
 	);
 });
+
+test("agent-listing-ui ignores the non-render agent_listing_delta text case", async () => {
+	const TWO_CASE_FIXTURE = `
+function renderAttachment(q, $) {
+  switch (q.type) {
+    case "agent_listing_delta": {
+      if (q.isInitial || q.addedTypes.length === 0) return null;
+      let A = q.addedTypes.length,
+        Y;
+      if ($[104] !== A)
+        (Y = mK.default.createElement(y, { bold: !0 }, A)), ($[104] = A), ($[105] = Y);
+      else Y = $[105];
+      let O;
+      if ($[106] !== A) (O = C8(A, "type")), ($[106] = A), ($[107] = O);
+      else O = $[107];
+      let w;
+      if ($[108] !== Y || $[109] !== O)
+        (w = mK.default.createElement(dW, null, Y, " agent ", O, " available")),
+          ($[108] = Y),
+          ($[109] = O),
+          ($[110] = w);
+      else w = $[110];
+      return w;
+    }
+  }
+}
+function renderTranscript(H) {
+  switch (H.type) {
+    case "agent_listing_delta": {
+      let q = [];
+      if (H.addedLines.length > 0) {
+        let K = H.isInitial
+          ? "Available agent types for the Agent tool:"
+          : "New agent types are now available for the Agent tool:";
+        q.push(K + H.addedLines.join("\\n"));
+      }
+      if (H.removedTypes.length > 0)
+        q.push("The following agent types are no longer available:");
+      return df([F8({ content: q.join("\\n\\n"), isMeta: !0 })]);
+    }
+  }
+}
+`;
+	const ast = parse(TWO_CASE_FIXTURE);
+	await runAgentListingUiViaPasses(ast);
+	const output = print(ast);
+
+	// Exactly one helper injected, and the render case got the summary arg.
+	const helperCount =
+		output.split("function _claudePatchFormatAgentListingSummary(attachment)")
+			.length - 1;
+	assert.equal(helperCount, 1, "helper should be injected exactly once");
+	assert.equal(
+		output.includes("_claudePatchFormatAgentListingSummary(q)"),
+		true,
+		"render case should receive the summary call",
+	);
+	// The text case is untouched: no summary call near addedLines.
+	assert.equal(
+		output.includes("_claudePatchFormatAgentListingSummary(H)"),
+		false,
+		"text-twin case must not be patched",
+	);
+	assert.equal(agentListingUi.verify(output, ast), true);
+});
+
+test("agent-listing-ui is idempotent across a second pass run", async () => {
+	const ast = parse(MEMOIZED_AGENT_LISTING_FIXTURE);
+	await runAgentListingUiViaPasses(ast);
+	await runAgentListingUiViaPasses(ast);
+	const output = print(ast);
+
+	const helperCount =
+		output.split("function _claudePatchFormatAgentListingSummary(attachment)")
+			.length - 1;
+	assert.equal(helperCount, 1, "helper must not be injected twice");
+
+	const summaryArgCount =
+		output.split("_claudePatchFormatAgentListingSummary(q)").length - 1;
+	assert.equal(summaryArgCount, 1, "summary arg must not be appended twice");
+	assert.equal(agentListingUi.verify(output, ast), true);
+});
+
+test("agent-listing-ui verify rejects a summary call with the wrong attachment identifier", async () => {
+	const ast = parse(MEMOIZED_AGENT_LISTING_FIXTURE);
+	await runAgentListingUiViaPasses(ast);
+	const output = print(ast);
+	// q is the case attachment identifier; swap the summary arg to a foreign name.
+	const mutated = output.replace(
+		"_claudePatchFormatAgentListingSummary(q)",
+		"_claudePatchFormatAgentListingSummary(NOT_THE_ATTACHMENT)",
+	);
+	assert.notEqual(mutated, output);
+
+	const result = agentListingUi.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes(
+			"agent_listing_delta renderer is missing the agent-type summary",
+		),
+		true,
+	);
+});

@@ -163,3 +163,72 @@ ${SUBAGENT_PROMPT_FIXTURE.replace("runSubagent", "runSubagentAgain")}
 		true,
 	);
 });
+
+test("subagent-system-prompt ignores object-literal option reads adjacent to the gate", async () => {
+	const withDecoy = `
+async function runSubagent(H, q, P, O, F, jH, zH) {
+  let wH = O?.systemPrompt ? O.systemPrompt : V4(await hx_(H, q, F, jH, zH)),
+    TH =
+      !P &&
+      EH(process.env.CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT) &&
+      q.options.appendSubagentSystemPrompt
+        ? V4([...wH, q.options.appendSubagentSystemPrompt])
+        : wH,
+    nested = {
+      appendSystemPrompt: q.options.appendSystemPrompt,
+      appendSubagentSystemPrompt: q.options.appendSubagentSystemPrompt,
+    };
+  return { systemPrompt: TH, nested };
+}
+`;
+	const ast = parse(withDecoy);
+	await runSubagentSystemPromptViaPasses(ast);
+	const output = print(ast);
+	// The decoy object-literal read must remain untouched...
+	assert.match(
+		output,
+		/appendSubagentSystemPrompt:\s*q\.options\.appendSubagentSystemPrompt/,
+	);
+	// ...and exactly the one real conditional must still be patched.
+	assert.match(output, /\.\.\.\s*wH,\s*__ccEnhancedSubagentSystemPromptAppend/);
+	assert.equal(subagentSystemPrompt.verify(output, ast), true);
+});
+
+test("subagent-system-prompt keeps exactly one patched branch with a decoy option read present", async () => {
+	const withDecoy = `
+async function runSubagent(H, q, P, O, F, jH, zH) {
+  let wH = O?.systemPrompt ? O.systemPrompt : V4(await hx_(H, q, F, jH, zH)),
+    TH =
+      !P &&
+      EH(process.env.CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT) &&
+      q.options.appendSubagentSystemPrompt
+        ? V4([...wH, q.options.appendSubagentSystemPrompt])
+        : wH,
+    nested = { appendSubagentSystemPrompt: q.options.appendSubagentSystemPrompt };
+  return { systemPrompt: TH, nested };
+}
+`;
+	const ast = parse(withDecoy);
+	await runSubagentSystemPromptViaPasses(ast);
+	const output = print(ast);
+	// verify()===true transitively requires zero surviving legacy conditionals
+	// and exactly one patched conditional; the decoy read must not inflate either.
+	assert.equal(subagentSystemPrompt.verify(output, ast), true);
+});
+
+test("subagent-system-prompt ignores env name used as a registry property key", async () => {
+	const withRegistry = `
+const envRegistry = { CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT: () => true };
+${SUBAGENT_PROMPT_FIXTURE}
+`;
+	const ast = parse(withRegistry);
+	await runSubagentSystemPromptViaPasses(ast);
+	const output = print(ast);
+	// Registry key left intact, and the single real gate still patched.
+	assert.match(
+		output,
+		/CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT:\s*\(\)\s*=>\s*true/,
+	);
+	assert.match(output, /\.\.\.\s*wH,\s*__ccEnhancedSubagentSystemPromptAppend/);
+	assert.equal(subagentSystemPrompt.verify(output, ast), true);
+});

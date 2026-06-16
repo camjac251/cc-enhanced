@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as t from "@babel/types";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
+import { traverse } from "../babel.js";
 import { parse, print } from "../loader.js";
 import { disableAutoupdater } from "./no-autoupdate.js";
 
@@ -69,4 +71,100 @@ test("verify rejects unpatched code", () => {
 		"verify should reject unpatched code but got true",
 	);
 	assert.equal(typeof result, "string");
+});
+
+test("no-autoupdate patches plugin gate in logical-return shape", async () => {
+	const fixture = `
+function isEligible() { return true; }
+function wrap(v) { return typeof v === "boolean"; }
+function coreGuard() {
+  if (envFlags.DISABLE_AUTOUPDATER) return "disabled";
+  return null;
+}
+const envFlags = {};
+function pluginForceGate() {
+  return isEligible() && !wrap(process.env.FORCE_AUTOUPDATE_PLUGINS);
+}
+`;
+	const ast = parse(fixture);
+	await runDisableAutoupdaterViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.includes('return "patched";'), true);
+	assert.equal(output.includes('coreGuard() === "patched"'), true);
+	assert.equal(disableAutoupdater.verify(output, ast), true);
+});
+
+test("no-autoupdate does not match a two-arg plugin wrapper call", async () => {
+	const fixture = `
+function wrap(v, opts) { return typeof v === "boolean"; }
+function coreGuard() {
+  if (envFlags.DISABLE_AUTOUPDATER) return "disabled";
+  return null;
+}
+const envFlags = {};
+function pluginForceGate() {
+  return !wrap(process.env.FORCE_AUTOUPDATE_PLUGINS, { strict: true });
+}
+`;
+	const ast = parse(fixture);
+	await runDisableAutoupdaterViaPasses(ast);
+	const output = print(ast);
+	// core guard still patched
+	assert.equal(output.includes('return "patched";'), true);
+	// plugin gate not injected, so verify must fail with a string reason
+	const result = disableAutoupdater.verify(output, ast);
+	assert.notEqual(result, true);
+	assert.equal(typeof result, "string");
+});
+
+test("no-autoupdate targets exactly one guard fn and one plugin gate", async () => {
+	const ast = parse(AUTOUPDATER_FIXTURE);
+	await runDisableAutoupdaterViaPasses(ast);
+	let guardFns = 0;
+	let patchedGuardEntries = 0;
+	let pluginGates = 0;
+	traverse(ast, {
+		Function(path) {
+			const body = path.node.body;
+			if (!t.isBlockStatement(body)) return;
+			let hasDisable = false;
+			path.traverse({
+				IfStatement(p) {
+					const test = p.node.test;
+					if (
+						t.isMemberExpression(test) &&
+						t.isIdentifier(test.property, { name: "DISABLE_AUTOUPDATER" })
+					)
+						hasDisable = true;
+				},
+			});
+			if (hasDisable) {
+				guardFns++;
+				const first = body.body[0];
+				if (
+					t.isReturnStatement(first) &&
+					t.isStringLiteral(first.argument, { value: "patched" })
+				)
+					patchedGuardEntries++;
+			}
+			let hasForce = false;
+			path.traverse({
+				CallExpression(p) {
+					const a = p.node.arguments[0];
+					if (
+						p.node.arguments.length === 1 &&
+						t.isMemberExpression(a) &&
+						t.isIdentifier(a.property, {
+							name: "FORCE_AUTOUPDATE_PLUGINS",
+						})
+					)
+						hasForce = true;
+				},
+			});
+			if (hasForce) pluginGates++;
+		},
+	});
+	assert.equal(guardFns, 1);
+	assert.equal(patchedGuardEntries, 1);
+	assert.equal(pluginGates, 1);
 });

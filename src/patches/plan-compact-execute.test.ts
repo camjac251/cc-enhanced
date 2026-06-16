@@ -327,3 +327,90 @@ function unrelated() {
 		true,
 	);
 });
+
+test("plan-compact-execute verify rejects selector whose visibleOptionCount is not options.length", async () => {
+	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+	// Replace the injected `visibleOptionCount: <ident>.length` with a literal,
+	// simulating an upstream selector that pins a fixed count. verify() must
+	// fail closed because not every matched selector tracks options.length.
+	const regressed = output.replace(
+		/visibleOptionCount:\s*\w+\.length/,
+		"visibleOptionCount: 10",
+	);
+	assert.notEqual(
+		regressed,
+		output,
+		"precondition: visibleOptionCount:X.length present to rewrite",
+	);
+	const result = planCompactExecute.verify(regressed);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("visibleOptionCount does not track options.length"),
+		true,
+	);
+});
+
+test("plan-compact-execute extends an AND-wrapped plan-exit gate", async () => {
+	// Mirror the shipping shape where the value allowlist is nested under an
+	// outer guard: `if (J && (HH === ... || ...)) { let GH = "default"; ... }`.
+	const wrapped = PLAN_COMPACT_EXECUTE_FIXTURE.replace(
+		'    if (\n      HH === "yes-bypass-permissions" ||\n      HH === "yes-accept-edits" ||\n      HH === "yes-auto-clear-context"\n    ) {',
+		'    if (\n      J9 &&\n      (HH === "yes-bypass-permissions" ||\n        HH === "yes-accept-edits" ||\n        HH === "yes-auto-clear-context")\n    ) {',
+	);
+	assert.notEqual(
+		wrapped,
+		PLAN_COMPACT_EXECUTE_FIXTURE,
+		"precondition: gate text rewritten",
+	);
+	const ast = parse(wrapped);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+	const gateMatch = output.match(
+		/if\s*\(([\s\S]*?)\)\s*\{\s*let\s+\w+\s*=\s*"default"/,
+	);
+	assert.ok(
+		gateMatch,
+		"AND-wrapped plan-exit gate not found in patched output",
+	);
+	assert.ok(
+		gateMatch[1].includes('=== "yes-compact-auto"'),
+		`gate must include yes-compact-auto, got: ${gateMatch[1]}`,
+	);
+	assert.ok(
+		gateMatch[1].includes('=== "yes-compact-accept-edits"'),
+		`gate must include yes-compact-accept-edits, got: ${gateMatch[1]}`,
+	);
+	assert.equal(planCompactExecute.verify(output), true);
+});
+
+test("plan-compact-execute handler reads messages ref via .current", async () => {
+	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+	// The injected compact command call passes `<messagesRef>.current` into the
+	// tool-use-context builder. If discovery ever stops requiring the `.current`
+	// member on the messages key, this dereference would be missing.
+	assert.match(
+		output,
+		/\w+\.current,\s*\[\],\s*new AbortController\(\)/,
+		"handler must dereference the messages ref via .current",
+	);
+	assert.equal(planCompactExecute.verify(output), true);
+});
+
+test("plan-compact-execute compact-auto branch keeps the auto-mode runtime guard", async () => {
+	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+	// Fixture's upstream auto branch is `HH === "yes-auto-clear-context" && Th()`.
+	// The injected compact-auto branch must be a conjunction of the compact
+	// value comparison AND the same runtime guard (Th()), not a bare equality.
+	assert.match(
+		output,
+		/===\s*"yes-compact-auto"\s*&&\s*Th\(\)/,
+		"compact-auto branch must preserve the && Th() runtime guard",
+	);
+	assert.equal(planCompactExecute.verify(output), true);
+});

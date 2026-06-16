@@ -107,3 +107,52 @@ test("memory-prompt-soften verify requires team subdirectory guidance", () => {
 	assert.equal(typeof result, "string");
 	assert.equal(String(result).includes("Use \\`eza team/\\` if"), true);
 });
+
+test("memory-prompt-soften rewrites the escaped-backtick template team form", () => {
+	// Forward-insurance branch: if upstream flips the team block from a quoted
+	// string into a template literal, the escaped-backtick form is what the
+	// template-team regex targets. This is the exact shape it matches.
+	const templateForm = [
+		"function f(){ return `# Dream: Memory Consolidation",
+		"",
+		"- **Phase 1:** \\`ls team/\\` and skim it alongside your personal files. A teammate may have already captured something you'd otherwise duplicate.",
+		"`; }",
+	].join("\n");
+	const output = memoryPromptSoften.string?.(templateForm) ?? templateForm;
+	assert.equal(output.includes("\\`ls team/\\`"), false);
+	assert.equal(output.includes("Use \\`eza team/\\`"), true);
+});
+
+test("memory-prompt-soften fixture anchors each occur exactly once", () => {
+	// The team line in the fixture uses the escaped-backtick representation the
+	// bundle stores, so the escaped form is the one that must appear once.
+	const count = (s: string, needle: string) => s.split(needle).length - 1;
+	for (const needle of [
+		"ls, find, grep, cat, stat, wc, head, tail, and similar",
+		"grep narrowly, don't read whole files",
+		"\\`ls team/\\`",
+		"\\`ls\\` the memory directory",
+		"\\`ls -R logs/\\`",
+		"grep the JSONL transcripts",
+		"\\`grep -rn",
+		"-name '*.md'",
+	]) {
+		assert.equal(count(VANILLA_FIXTURE, needle), 1, needle);
+	}
+});
+
+test("memory-prompt-soften string() is idempotent", () => {
+	const once = memoryPromptSoften.string?.(VANILLA_FIXTURE) ?? VANILLA_FIXTURE;
+	const twice = memoryPromptSoften.string?.(once) ?? once;
+	assert.equal(twice, once);
+	assert.equal(memoryPromptSoften.verify(twice), true);
+});
+
+test("memory-prompt-soften preserves path-scoped dynamic command and path fragments", () => {
+	const output =
+		memoryPromptSoften.string?.(PATH_SCOPED_MEMORY_PROMPT_FIXTURE) ??
+		PATH_SCOPED_MEMORY_PROMPT_FIXTURE;
+	assert.equal(output.includes('${isPosix ? "rm" : "Remove-Item"}'), true);
+	assert.equal(output.includes("with all paths inside ${root}"), true);
+	assert.equal(output.includes("are permitted in this context."), true);
+});

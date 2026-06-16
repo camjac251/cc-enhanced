@@ -14,7 +14,6 @@ export { featureFlags } from "./feature-flags.js";
 export { imageLimits } from "./image-limits.js";
 export { getLimitsChanged, limits } from "./limits.js";
 export { lspMultiServer } from "./lsp-multi-server.js";
-export { lspWorkspaceSymbol } from "./lsp-workspace-symbol.js";
 export { mcpServerName } from "./mcp-server-name.js";
 export { memoryPromptSoften } from "./memory-prompt-soften.js";
 export { disableAutoupdater } from "./no-autoupdate.js";
@@ -55,7 +54,6 @@ import { featureFlags } from "./feature-flags.js";
 import { imageLimits } from "./image-limits.js";
 import { limits } from "./limits.js";
 import { lspMultiServer } from "./lsp-multi-server.js";
-import { lspWorkspaceSymbol } from "./lsp-workspace-symbol.js";
 import { mcpServerName } from "./mcp-server-name.js";
 import { memoryPromptSoften } from "./memory-prompt-soften.js";
 import { disableAutoupdater } from "./no-autoupdate.js";
@@ -116,7 +114,6 @@ const basePatches: Patch[] = [
 	agentTools,
 	commandsOff,
 	lspMultiServer,
-	lspWorkspaceSymbol,
 	noCollapse,
 	skillPathsInvoke,
 	skillGlobalPaths,

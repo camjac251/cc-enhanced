@@ -282,3 +282,94 @@ test("skill-listing-ui verify fails when the dynamic skill summary is removed", 
 		true,
 	);
 });
+
+test("skill-listing-ui leaves attachment unpatched when a second skill_listing producer appears", async () => {
+	const twoProducers = MEMOIZED_SKILL_LISTING_FIXTURE.replace(
+		"function buildAttachment(H) {",
+		`function buildDecoyAttachment(H) {
+  return [
+    {
+      type: "skill_listing",
+      content: PS6(H.skills, H.model, (w) => VbH(w.name), uW(H.options.mainLoopModel)),
+      skillCount: H.skills.length,
+      isInitial: H.initial,
+    },
+  ];
+}
+function buildAttachment(H) {`,
+	);
+	const ast = parse(twoProducers);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes("_claudePatchSkillItem"),
+		false,
+		"ambiguous attachment producers must leave skillNames unpatched",
+	);
+	const result = skillListingUi.verify(output, ast);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes(
+			"skill_listing attachment is missing skillNames metadata",
+		),
+		true,
+	);
+});
+
+test("skill-listing-ui verify accepts un-memoized render roots that have no cache guard", async () => {
+	const ast = parse(SKILL_LISTING_FIXTURE);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		/if \(true\)/.test(output),
+		false,
+		"plain fixture has no cache guards to flip",
+	);
+	assert.equal(skillListingUi.verify(output, ast), true);
+});
+
+test("skill-listing-ui adds skillNames alongside the pre-existing upstream names field", async () => {
+	const ast = parse(MEMOIZED_SKILL_LISTING_FIXTURE);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes("names: A.map((w) => w.name)"),
+		true,
+		"original upstream names field must be preserved",
+	);
+	assert.equal(
+		output.includes(
+			"skillNames: A.map((_claudePatchSkillItem) => _claudePatchSkillItem.name)",
+		),
+		true,
+		"patch must inject its own distinct skillNames property",
+	);
+});
+
+test("skill-listing-ui ignores dynamic_skill attachment objects as skill_listing producers", async () => {
+	const withDynamicProducer = MEMOIZED_SKILL_LISTING_FIXTURE.replace(
+		"function buildAttachment(H) {",
+		`function buildDynamicProducer(K) {
+  return [
+    {
+      type: "dynamic_skill",
+      skillDir: K.dir,
+      skillNames: K.files,
+      displayPath: K.rel,
+    },
+  ];
+}
+function buildAttachment(H) {`,
+	);
+	const ast = parse(withDynamicProducer);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+	// The single skill_listing producer is still patched (dynamic object ignored).
+	assert.equal(
+		output.includes(
+			"skillNames: A.map((_claudePatchSkillItem) => _claudePatchSkillItem.name)",
+		),
+		true,
+	);
+	assert.equal(skillListingUi.verify(output, ast), true);
+});

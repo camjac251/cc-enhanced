@@ -337,6 +337,18 @@ function verifySkillGlobalPaths(ast: t.File): true | string {
 	let splitHelper = false;
 	let pathsWrapped = false;
 	let matcherSplit = false;
+	// Structural proof that the activation-loop mutation landed, keyed on the
+	// patch's own injected sentinel bindings rather than on global helper
+	// presence: the cwd matcher rewritten to local-only entries, and the global
+	// activation branch testing the absolute path against the global matcher.
+	let localRewrite = false;
+	let globalActivationIf = false;
+
+	const isSplitMember = (node: t.Node | null | undefined, prop: string) =>
+		!!node &&
+		t.isMemberExpression(node) &&
+		t.isIdentifier(node.object, { name: SPLIT_BINDING }) &&
+		isMemberPropertyName(node, prop);
 
 	traverse(ast, {
 		FunctionDeclaration(path) {
@@ -357,14 +369,45 @@ function verifySkillGlobalPaths(ast: t.File): true | string {
 			if (
 				pathsProp &&
 				t.isCallExpression(pathsProp.value) &&
-				t.isIdentifier(pathsProp.value.callee, { name: MERGE_HELPER })
+				t.isIdentifier(pathsProp.value.callee, { name: MERGE_HELPER }) &&
+				pathsProp.value.arguments.length === 2 &&
+				t.isIdentifier(pathsProp.value.arguments[1])
 			) {
 				pathsWrapped = true;
 			}
 		},
 		CallExpression(path) {
-			if (t.isIdentifier(path.node.callee, { name: SPLIT_HELPER })) {
+			const callee = path.node.callee;
+			if (t.isIdentifier(callee, { name: SPLIT_HELPER })) {
 				matcherSplit = true;
+			}
+			// The cwd matcher's `.add(...)` argument must now be `_claudeGpSplit.local`
+			// (local-only), proving the local/global partition rewrite landed and not
+			// just that the split helper is referenced somewhere.
+			if (
+				t.isMemberExpression(callee) &&
+				isMemberPropertyName(callee, "add") &&
+				isSplitMember(path.node.arguments[0], "local")
+			) {
+				localRewrite = true;
+			}
+		},
+		IfStatement(path) {
+			// The injected global activation branch is `if (_claudeGpIgnore &&
+			// _claudeGpIgnore.ignores(...))`. Match the exact null-guarded shape so a
+			// regression that drops the branch or the guard fails verification.
+			const test = path.node.test;
+			if (!t.isLogicalExpression(test, { operator: "&&" })) return;
+			if (!t.isIdentifier(test.left, { name: GLOBAL_IGNORE_BINDING })) return;
+			if (
+				t.isCallExpression(test.right) &&
+				t.isMemberExpression(test.right.callee) &&
+				t.isIdentifier(test.right.callee.object, {
+					name: GLOBAL_IGNORE_BINDING,
+				}) &&
+				isMemberPropertyName(test.right.callee, "ignores")
+			) {
+				globalActivationIf = true;
 			}
 		},
 	});
@@ -376,6 +419,12 @@ function verifySkillGlobalPaths(ast: t.File): true | string {
 	}
 	if (!matcherSplit) {
 		return "conditional-skill activation matcher was not split for global paths";
+	}
+	if (!localRewrite) {
+		return "conditional-skill cwd matcher was not rewritten to local-only paths";
+	}
+	if (!globalActivationIf) {
+		return "global-paths activation branch for absolute-path matching not injected";
 	}
 	return true;
 }

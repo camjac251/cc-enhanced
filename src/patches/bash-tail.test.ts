@@ -328,3 +328,55 @@ test("bash-tail runtime keeps tail content, fixes preview, and honors max_output
 		await cleanup();
 	}
 });
+
+test("bash-tail eza classifier handles a fixture with a decoy ls/tree/du Set", async () => {
+	const withDecoy = BASH_TAIL_FIXTURE.replace(
+		'const listCommands = new Set(["ls", "tree", "du"]);',
+		'const decoyCommands = new Set(["ls", "tree", "du"]);\nconst listCommands = new Set(["ls", "tree", "du"]);',
+	);
+	const output = await applyBashTailPatch(withDecoy);
+	// Single-shot mutator patches exactly one site; this pins that contract.
+	const patchedCount =
+		output.split('new Set(["ls", "tree", "du", "eza"])').length - 1;
+	assert.equal(patchedCount, 1);
+});
+
+test("bash-tail render injection emits all opts suffix labels", async () => {
+	const output = await applyBashTailPatch(BASH_TAIL_FIXTURE);
+	assert.equal(output.includes('"background"'), true);
+	assert.equal(output.includes('"tail"'), true);
+	assert.equal(output.includes('"max_output: "'), true);
+	assert.equal(output.includes('"timeout: "'), true);
+	assert.equal(output.includes('"no-sandbox"'), true);
+});
+
+test("bash-tail removes all three legacy escape-form warnings", async () => {
+	const output = await applyBashTailPatch(BASH_TAIL_FIXTURE);
+	assert.equal(
+		output.includes("Pipe output through head, tail, or grep"),
+		false,
+	);
+	assert.equal(
+		output.includes("Pipe output through Select-Object -First/-Last"),
+		false,
+	);
+	assert.equal(output.includes("Avoid Get-Content on large files"), false);
+	assert.equal(output.includes("`head` cannot flush at all"), false);
+	assert.equal(
+		output.includes("delivers nothing until N matches accumulate"),
+		false,
+	);
+});
+
+test("bash-tail truncation clamps max_output at 500000", async () => {
+	const { mod, cleanup } = await loadPatchedBashTailRuntimeModule();
+	try {
+		await mod.BashTool.call({ command: "ignored", max_output: 9999999 }, {});
+		const big = "y".repeat(500050);
+		const out = mod.truncateOutput(big);
+		assert.equal(out.truncatedContent.includes("lines truncated"), true);
+		assert.equal(out.truncatedContent.length <= 500000 + 64, true);
+	} finally {
+		await cleanup();
+	}
+});

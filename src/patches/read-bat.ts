@@ -977,6 +977,41 @@ function hasChangedSnippetCap8000(ast: t.File): boolean {
 	return found;
 }
 
+function hasAutoRangeTokenBudget50000(ast: t.File): boolean {
+	let found = false;
+	traverse(ast, {
+		VariableDeclarator(path) {
+			if (!t.isIdentifier(path.node.id, { name: "autoRangeTokenBudget" })) {
+				return;
+			}
+			if (t.isNumericLiteral(path.node.init, { value: 50000 })) {
+				found = true;
+				path.stop();
+			}
+		},
+	});
+	return found;
+}
+
+function hasChangedHeadBudgetMultiplier(ast: t.File): boolean {
+	// The head-budget split is `Math.floor(changedSnippetBudget * 0.65)`. Pin the
+	// 0.65 multiplier so a silent retune of the head/tail balance is caught.
+	let found = false;
+	traverse(ast, {
+		BinaryExpression(path) {
+			if (path.node.operator !== "*") return;
+			if (!t.isIdentifier(path.node.left, { name: "changedSnippetBudget" })) {
+				return;
+			}
+			if (t.isNumericLiteral(path.node.right, { value: 0.65 })) {
+				found = true;
+				path.stop();
+			}
+		},
+	});
+	return found;
+}
+
 function hasSnippetSourceCall(ast: t.File): boolean {
 	let found = false;
 	traverse(ast, {
@@ -1255,6 +1290,9 @@ function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 	if (!code.includes("autoRanged")) {
 		return "Missing auto-range for oversized files without explicit range";
 	}
+	if (!hasAutoRangeTokenBudget50000(ast)) {
+		return "Auto-range token budget is not tuned to 50000";
+	}
 	if (!code.includes("FILE TRUNCATED")) {
 		return "Missing auto-range truncation notice in output";
 	}
@@ -1421,6 +1459,9 @@ function verifyReadStateAndSnippetGuards(
 	}
 	if (!code.includes("changedHeadBudget")) {
 		return "changed-file watcher missing head budget computation";
+	}
+	if (!hasChangedHeadBudgetMultiplier(ast)) {
+		return "changed-file watcher head budget multiplier drifted from 0.65";
 	}
 	if (!code.includes("changedTailBudget")) {
 		return "changed-file watcher missing tail budget computation";

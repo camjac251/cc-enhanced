@@ -524,6 +524,36 @@ function verifyMultiServer(code: string, ast?: t.File): true | string {
 		}
 	}
 
+	// closeFile must untrack the URI from the per-URI tracking map so a later
+	// reopen is not skipped as "already open". Require a `.delete(...)` call on
+	// the discovered tracking map inside closeFile.
+	{
+		const closeFn = (factoryBody as t.Statement[]).find(
+			(s): s is t.FunctionDeclaration =>
+				t.isFunctionDeclaration(s) && s.id?.name === refs.closeFile,
+		);
+		if (closeFn) {
+			let hasTrackMapDelete = false;
+			walkNode(closeFn, (node) => {
+				if (hasTrackMapDelete) return;
+				if (!t.isCallExpression(node)) return;
+				const callee = node.callee;
+				if (!t.isMemberExpression(callee)) return;
+				const propName =
+					(t.isIdentifier(callee.property) && callee.property.name) ||
+					(t.isStringLiteral(callee.property) && callee.property.value) ||
+					null;
+				if (propName !== "delete") return;
+				if (t.isIdentifier(callee.object, { name: refs.trackMap })) {
+					hasTrackMapDelete = true;
+				}
+			});
+			if (!hasTrackMapDelete) {
+				return "closeFile does not delete the closed URI from the tracking map";
+			}
+		}
+	}
+
 	// Verify getServerForFile still returns primary (I[0] pattern intact)
 	const gsf = (factoryBody as t.Statement[]).find(
 		(s): s is t.FunctionDeclaration =>

@@ -387,6 +387,29 @@ function verifyTaskSerializer(ast: t.File | t.Program): true | string {
 		) {
 			serializerError =
 				"output_file does not reference the enclosing task param's .outputFile";
+			return;
+		}
+
+		// output_filename value must be the basename derivation: a logical-and
+		// whose left reads the same <taskParam>.outputFile and whose right is a
+		// .replace() call stripping the path prefix off that same member. A bare
+		// key presence check would pass even if the value were wrong or empty.
+		const filenameValue = outputFilenameProp.value;
+		const isOutputFileMember = (node: t.Node | null | undefined): boolean =>
+			!!node &&
+			t.isMemberExpression(node) &&
+			t.isIdentifier(node.object, { name: taskParam }) &&
+			isMemberPropertyName(node, "outputFile");
+		const isBasenameDerivation =
+			t.isLogicalExpression(filenameValue, { operator: "&&" }) &&
+			isOutputFileMember(filenameValue.left) &&
+			t.isCallExpression(filenameValue.right) &&
+			t.isMemberExpression(filenameValue.right.callee) &&
+			isOutputFileMember(filenameValue.right.callee.object) &&
+			isMemberPropertyName(filenameValue.right.callee, "replace");
+		if (!isBasenameDerivation) {
+			serializerError =
+				"output_filename does not derive the basename from the task param's .outputFile";
 		}
 	};
 

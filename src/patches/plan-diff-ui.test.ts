@@ -157,3 +157,56 @@ function unrelated() {
 	assert.equal(typeof result, "string");
 	assert.equal(String(result).includes("Plan diff anchors not found"), true);
 });
+
+test("plan-diff-ui rewrites both Updated-plan label fns with the correct per-function fallback", async () => {
+	const ast = parse(PLAN_DIFF_FIXTURE);
+	await runPlanDiffUiViaPasses(ast);
+	const output = print(ast);
+	// SyD has a "Write" fallback -> plan branch must become "Write"
+	assert.equal(
+		output.includes('if (H?.file_path?.startsWith(v6())) return "Write";'),
+		true,
+	);
+	// ES$ has only an "Update" fallback -> plan branch must become "Update"
+	assert.equal(
+		output.includes('if (H.file_path?.startsWith(v6())) return "Update";'),
+		true,
+	);
+	// no "Updated plan" literal survives anywhere
+	assert.equal(output.includes("Updated plan"), false);
+});
+
+test("plan-diff-ui neutralizes every previewHint plan ternary", async () => {
+	const ast = parse(PLAN_DIFF_FIXTURE);
+	await runPlanDiffUiViaPasses(ast);
+	const output = print(ast);
+	// fixture has exactly two previewHint plan ternaries (YyD + hyD update branch)
+	const remainingTernaries =
+		output.split('? "/plan to preview" : void 0').length - 1;
+	assert.equal(remainingTernaries, 0);
+	const neutralized = output.split("previewHint: void 0").length - 1;
+	assert.equal(neutralized, 2);
+});
+
+test("plan-diff-ui flips both tool-use-hide guards to a false test", async () => {
+	const ast = parse(PLAN_DIFF_FIXTURE);
+	await runPlanDiffUiViaPasses(ast);
+	const output = print(ast);
+	// fixture has exactly two `startsWith(...) return ""` guards (PyD + jyD)
+	const falseEmptyReturns = output.split('if (false) return "";').length - 1;
+	assert.equal(falseEmptyReturns, 2);
+	assert.equal(output.includes('startsWith(v6())) return "";'), false);
+});
+
+test("plan-diff-ui flips the create-preview guard test to false", async () => {
+	const ast = parse(PLAN_DIFF_FIXTURE);
+	await runPlanDiffUiViaPasses(ast);
+	const output = print(ast);
+	// The create-branch guard `if (H.startsWith(v6()) && !f)` is a LogicalExpression
+	// test (the && form, unique to the create guard). The mutator replaces the
+	// whole test with the boolean literal `false`, so the original && guard is
+	// gone and the create branch (a block body, not a `return ""` guard) now
+	// opens with `if (false) {`, distinct from the flipped tool-use-hide guards.
+	assert.equal(output.includes("if (H.startsWith(v6()) && !f)"), false);
+	assert.equal(output.includes("if (false) {"), true);
+});

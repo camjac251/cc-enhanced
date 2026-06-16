@@ -71,6 +71,22 @@ export const todo: Patch = {
 			if (!code.includes(EXPECTED_USE_SECOND_BULLET)) {
 				return "Missing condensed Todo use second bullet";
 			}
+			// Symmetric surviving-content guard for the USE section: the
+			// condensed use bullets must live BETWEEN the use heading and the
+			// skip heading, and no verbose <example> block may survive there.
+			// Scanning the use slice (rather than the whole bundle) catches a
+			// partial use-section rewrite without tripping on prose elsewhere.
+			const useIndex = code.indexOf(TRIGGER);
+			const skipAfterUseIndex = code.indexOf(SKIP_HEADING, useIndex);
+			if (skipAfterUseIndex !== -1) {
+				const useSectionBody = code.slice(useIndex, skipAfterUseIndex);
+				if (!useSectionBody.includes(EXPECTED_USE_FIRST_BULLET)) {
+					return "Condensed Todo use bullet not located inside the use section";
+				}
+				if (useSectionBody.includes("<example>")) {
+					return "Stale <example> blocks survived in Todo use section";
+				}
+			}
 		}
 		if (code.includes(SKIP_HEADING)) {
 			if (!code.includes(EXPECTED_SKIP_FIRST_BULLET)) {
@@ -79,17 +95,22 @@ export const todo: Patch = {
 			if (!code.includes(EXPECTED_SKIP_SECOND_BULLET)) {
 				return "Missing condensed Todo NOT-to-use second bullet";
 			}
-			for (const stale of STALE_PROSE_SIGNALS) {
-				if (code.includes(stale)) {
-					return `Stale upstream prose survived in Todo NOT-to-use section: ${stale.slice(0, 40)}...`;
-				}
-			}
 			const skipIndex = code.indexOf(SKIP_HEADING);
 			const nextHeadingIndex = code.indexOf(NEXT_SECTION_HEADING, skipIndex);
 			if (nextHeadingIndex === -1) {
 				return "Could not locate next section heading after NOT-to-use section";
 			}
+			// Scope the stale-prose and <example> scans to the skip-section
+			// body slice. The signals (and any verbose example dialogue) the
+			// patch removes only matter inside this section; scanning the whole
+			// bundle would false-positive when the same phrasing appears in an
+			// unrelated prompt surface.
 			const sectionBody = code.slice(skipIndex, nextHeadingIndex);
+			for (const stale of STALE_PROSE_SIGNALS) {
+				if (sectionBody.includes(stale)) {
+					return `Stale upstream prose survived in Todo NOT-to-use section: ${stale.slice(0, 40)}...`;
+				}
+			}
 			if (sectionBody.includes("<example>")) {
 				return "Stale <example> blocks survived in Todo NOT-to-use section";
 			}

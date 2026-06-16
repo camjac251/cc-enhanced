@@ -202,3 +202,83 @@ test("global-only skill (no local paths) still produces a non-empty paths array"
 	assert.equal(out.length, 1);
 	assert.equal(out[0], `${SENTINEL}**/SKILL.md`);
 });
+
+test("global-path check is injected before the cwd-skip guard", async () => {
+	const ast = parse(FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	const idxGlobal = output.indexOf("_claudeGpIgnore.ignores");
+	const idxSkip = output.indexOf('startsWith("..")');
+	assert.notEqual(
+		idxGlobal,
+		-1,
+		"global-path ignores() check must be injected",
+	);
+	assert.notEqual(idxSkip, -1, "cwd-skip guard must still be present");
+	assert.ok(
+		idxGlobal < idxSkip,
+		"global-path check must run before the cwd-skip guard",
+	);
+});
+
+test("global matcher tests the slash-stripped raw loop path", async () => {
+	const ast = parse(FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	assert.ok(
+		/_claudeGpIgnore\.ignores\(\s*z\.replace\(\s*\/\^\\\/\+\/\s*,\s*""\s*\)\s*\)/.test(
+			output,
+		),
+		"global ignores() must receive the raw loop var stripped of leading slashes",
+	);
+});
+
+test("wraps only the identifier-paths skills loader, not a void-paths sibling", async () => {
+	const ast = parse(`
+function loadA(w, name) {
+  let L = extractPaths(w);
+  return makeSkill({ skillName: name, loadedFrom: "skills", paths: L });
+}
+function loadB() {
+  return makeSkill({ skillName: "x", loadedFrom: "skills", paths: void 0 });
+}
+`);
+	await runViaPasses(ast);
+	const output = print(ast);
+	// Count only wrap call sites (`paths: <merge>(...)`), not the injected helper
+	// declaration which also contains the helper name.
+	const wraps = output.match(/paths: _claudePatchMergeGlobalPaths\(/g) ?? [];
+	assert.equal(
+		wraps.length,
+		1,
+		"exactly one loader paths value should be wrapped",
+	);
+	assert.ok(output.includes("_claudePatchMergeGlobalPaths(L, w)"));
+	// The sibling whose paths value is not an identifier is left untouched.
+	assert.ok(output.includes("paths: void 0"));
+});
+
+test("merge helper returns undefined when all entries filter out", async () => {
+	const ast = parse(FIXTURE);
+	await runViaPasses(ast);
+	const merge = evalHelper(print(ast), "_claudePatchMergeGlobalPaths");
+	assert.equal(
+		merge(undefined, { "global-paths": ["   ", "", "!"] }),
+		undefined,
+	);
+	assert.equal(merge([], { "global-paths": [] }), undefined);
+});
+
+test("global matcher is conditional and the inner check is null-guarded", async () => {
+	const ast = parse(FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	assert.ok(
+		/_claudeGpSplit\.global\.length\s*>\s*0\s*\?/.test(output),
+		"global matcher must be built only when split.global is non-empty",
+	);
+	assert.ok(
+		/if\s*\(\s*_claudeGpIgnore\s*&&\s*_claudeGpIgnore\.ignores/.test(output),
+		"inner global check must be guarded by a truthiness test on _claudeGpIgnore",
+	);
+});

@@ -378,6 +378,24 @@ test("tab-queue verify fails when the typeahead bypass is removed", async () => 
 	assert.equal(String(result).includes("typeahead bypass not found"), true);
 });
 
+test("tab-queue verify fails when the typeahead bypass polarity is flipped", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	// Drop only the negation so the queue member still appears in the test but
+	// the bypass no longer suppresses on a non-empty queue. A presence-only
+	// check would accept this; the polarity-aware check must reject it.
+	const mutated = output.replace(
+		" && !(Array.isArray(globalThis.__ccEnhancedTabQueue) && globalThis.__ccEnhancedTabQueue.length > 0)",
+		" && (Array.isArray(globalThis.__ccEnhancedTabQueue) && globalThis.__ccEnhancedTabQueue.length > 0)",
+	);
+	assert.notEqual(mutated, output);
+
+	const result = tabQueue.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("typeahead bypass not found"), true);
+});
+
 test("tab-queue verify fails when the end-turn abort guard is removed", async () => {
 	const ast = parse(TAB_QUEUE_FIXTURE);
 	await runTabQueueViaPasses(ast);

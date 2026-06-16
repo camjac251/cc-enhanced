@@ -96,3 +96,60 @@ test("claudemd-strong verify rejects slim subagent CLAUDE.md omission", () => {
 		true,
 	);
 });
+
+test("claudemd-strong disables every slim subagent CLAUDE.md omission gate", async () => {
+	const twoGates = `
+function a(H, f) {
+  let G1 = H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd", !0);
+  return G1;
+}
+function b(H, f) {
+  let G2 = H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd", !0);
+  return G2;
+}
+`;
+	const ast = parse(twoGates);
+	await runClaudeMdStrongViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.includes("tengu_slim_subagent_claudemd"), false);
+	assert.equal((output.match(/=\s*false/g) ?? []).length >= 2, true);
+	assert.equal(
+		claudeMdSystemPrompt.verify(
+			`${STRONG_DISCLAIMER_LINES.join("\n")}\n${output}`,
+			ast,
+		),
+		true,
+	);
+});
+
+test("claudemd-strong leaves non-gate omitClaudeMd object properties untouched", async () => {
+	const withDecoy = `
+let agent = { model: "haiku", omitClaudeMd: !0, getSystemPrompt: () => x() };
+function launch(H, f) {
+  let G = H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd", !0);
+  return G;
+}
+`;
+	const ast = parse(withDecoy);
+	await runClaudeMdStrongViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.includes("omitClaudeMd: !0"), true);
+	assert.equal(output.includes("tengu_slim_subagent_claudemd"), false);
+});
+
+test("claudemd-strong verify fails when any slim subagent gate survives", () => {
+	const oneLive = `
+let G1 = false;
+let G2 = H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd", !0);
+`;
+	const ast = parse(oneLive);
+	const result = claudeMdSystemPrompt.verify(
+		`${STRONG_DISCLAIMER_LINES.join("\n")}\n${oneLive}`,
+		ast,
+	);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("Slim subagent CLAUDE.md omission gate"),
+		true,
+	);
+});

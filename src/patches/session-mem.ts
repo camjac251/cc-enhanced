@@ -118,44 +118,67 @@ export const sessionMemory: Patch = {
 			return "Unable to parse AST during session-memory verification";
 		}
 
+		// Re-locate the gate the same way the mutator does: an if-statement
+		// with a null/false-return consequent whose immediate next sibling is
+		// an `autoDreamEnabled` member var-decl. Anchoring on the var-decl
+		// sibling (rather than "the test mentions autoDreamEnabled") is what the
+		// mutator keys on, so verifying the same node makes this a "did MY
+		// mutation land" check instead of a looser global-shape check.
+		let targetGateCount = 0;
 		let patchedGateCount = 0;
-		let legacyGateCount = 0;
 
 		traverse(verifyAst, {
 			IfStatement(path) {
-				const { test, consequent } = path.node;
-				if (!isNullOrFalseReturn(consequent)) return;
-				if (!nodeContainsProperty(test, "autoDreamEnabled")) return;
-
-				if (isPatchedAutoDreamGateTest(test)) {
+				if (!isAutoDreamAvailabilityGate(path.node, path.parentPath?.node)) {
+					return;
+				}
+				targetGateCount++;
+				if (isPatchedAutoDreamGateTest(path.node.test)) {
 					patchedGateCount++;
-				} else {
-					legacyGateCount++;
 				}
 			},
 		});
 
-		if (patchedGateCount === 0) {
-			return legacyGateCount > 0
-				? "Auto-dream availability gate present but not force-on (missing `autoDreamEnabled !== true &&` prefix)"
-				: "Missing autoDreamEnabled force-on gate";
+		if (targetGateCount === 0) {
+			return "Missing autoDreamEnabled force-on gate";
 		}
-		if (legacyGateCount > 0) {
-			return `Found ${patchedGateCount} patched gate(s) but ${legacyGateCount} unpatched gate(s) remain`;
+		if (patchedGateCount < targetGateCount) {
+			return "Auto-dream availability gate present but not force-on (missing `autoDreamEnabled !== true &&` prefix)";
 		}
 		return true;
 	},
 };
+
+/**
+ * Mirror the mutator's gate detection: an if-statement whose consequent is a
+ * null/false return and whose immediate next sibling declares an
+ * `autoDreamEnabled` member. The mutator only wraps gates that satisfy this, so
+ * verify must locate gates the same way.
+ */
+function isAutoDreamAvailabilityGate(
+	node: t.IfStatement,
+	parent: t.Node | null | undefined,
+): boolean {
+	if (!isNullOrFalseReturn(node.consequent)) return false;
+	if (!parent || !t.isBlockStatement(parent)) return false;
+	const siblings = parent.body;
+	const nextStatement = siblings[siblings.indexOf(node) + 1];
+	return getAutoDreamEnabledMember(nextStatement) !== null;
+}
 
 function isPatchedAutoDreamGateTest(test: t.Expression): boolean {
 	// Mutator wraps the original test in: (autoDream !== true) && originalTest.
 	// Verify must look for that exact distinctive shape; merely seeing
 	// autoDreamEnabled in the test would also accept the unpatched code.
 	if (!t.isLogicalExpression(test, { operator: "&&" })) return false;
-	const { left } = test;
+	const { left, right } = test;
 	if (!t.isBinaryExpression(left, { operator: "!==" })) return false;
 	if (!t.isBooleanLiteral(left.right, { value: true })) return false;
 	if (!t.isMemberExpression(left.left)) return false;
 	if (getMemberPropertyName(left.left) !== "autoDreamEnabled") return false;
+	// The mutator preserves the original gate condition as the right operand.
+	// A bare boolean right operand would mean the original guard was lost,
+	// so the wrapped condition must be a non-trivial expression.
+	if (t.isBooleanLiteral(right)) return false;
 	return true;
 }

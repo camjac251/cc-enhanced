@@ -449,3 +449,53 @@ function unrelated() {
 	const result = effortStack.verify(print(ast), ast);
 	assert.equal(typeof result, "string");
 });
+
+test("effort-stack marks session override on the expression-body effortUpdate arrow", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	assert.match(
+		output,
+		/api\.setAppState\(\(A\) =>\s*\(globalThis\.__claudeCodeEffortSessionOverride = true,\s*A\.effortValue === _ && \(A\.ultracode \?\? !1\) === z \? A : \{ \.\.\.A, effortValue: _, ultracode: z \}\)/,
+	);
+});
+
+test("effort-stack marks session override as first statement of the block-body effortUpdate arrow", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	assert.match(
+		output,
+		/setState\(\(A\) => \{\s*globalThis\.__claudeCodeEffortSessionOverride = true;\s*if \(A\.effortValue === _ && \(A\.ultracode \?\? !1\) === z\) return A;/,
+	);
+});
+
+test("effort-stack injects the session-override assignment at exactly both effortUpdate sites", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	const occurrences =
+		output.split("globalThis.__claudeCodeEffortSessionOverride = true").length -
+		1;
+	assert.equal(occurrences, 2);
+});
+
+test("effort-stack does not inject the session-only guard into a writer without a top-level unpin call", async () => {
+	const NESTED_WRITER_FIXTURE = `
+function nestedWriter(H) {
+  if (H !== void 0) {
+    let q = saveSettings("userSettings", { effortLevel: H });
+    if (q.error) return q.error;
+  }
+  return;
+}
+`;
+	const ast = parse(NESTED_WRITER_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes("process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0"),
+		false,
+		"writer without a top-level unpin call must not receive the env-scoped session-only guard",
+	);
+});

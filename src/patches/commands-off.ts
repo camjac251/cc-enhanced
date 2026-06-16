@@ -26,6 +26,22 @@ function getCommandNameFromObject(obj: t.ObjectExpression): string | null {
 	return null;
 }
 
+function isInlineCommandObject(node: t.Node): node is t.ObjectExpression {
+	if (!t.isObjectExpression(node)) return false;
+	let hasName = false;
+	let hasCommandMarker = false;
+	for (const prop of node.properties) {
+		if (!t.isObjectProperty(prop) && !t.isObjectMethod(prop)) continue;
+		const key = getObjectKeyName(prop.key);
+		if (key === "name") hasName = true;
+		// Built-in command objects carry at least one of these alongside name.
+		if (key === "type" || key === "source" || key === "description") {
+			hasCommandMarker = true;
+		}
+	}
+	return hasName && hasCommandMarker;
+}
+
 function resolveAssignedCommandExpression(
 	binding: any,
 ): t.ObjectExpression | t.CallExpression | null {
@@ -142,15 +158,38 @@ function verifyCommandRegistry(ast: t.File): true | string {
 		},
 		ArrayExpression(path) {
 			for (const element of path.node.elements) {
-				if (!t.isIdentifier(element)) continue;
-				const commandName = resolveCommandName(path.scope, element.name);
-				if (!commandName) continue;
+				// Identifier elements: resolve the binding to its command name.
+				if (t.isIdentifier(element)) {
+					const commandName = resolveCommandName(path.scope, element.name);
+					if (!commandName) continue;
 
-				foundRegistry = true;
-				if (COMMANDS_TO_DISABLE.has(commandName)) {
-					leakedCommandName = commandName;
-					path.stop();
-					return;
+					foundRegistry = true;
+					if (COMMANDS_TO_DISABLE.has(commandName)) {
+						leakedCommandName = commandName;
+						path.stop();
+						return;
+					}
+					continue;
+				}
+				// Inline command-object elements: a registry may hold object
+				// literals directly. Recognize a command-shaped object so an
+				// all-inline registry is not misreported as "registry not found",
+				// and so an inline disabled command is still caught as a leak.
+				if (element && isInlineCommandObject(element)) {
+					const commandName = getCommandNameFromObject(element);
+					if (!commandName) continue;
+
+					foundRegistry = true;
+					if (COMMANDS_TO_DISABLE.has(commandName)) {
+						// An inline disabled command in the registry is both a
+						// definition and a leak. Record the definition too, since
+						// stopping the traversal here skips the ObjectExpression
+						// visitor that would otherwise set foundDefinitions.
+						foundDefinitions = true;
+						leakedCommandName = commandName;
+						path.stop();
+						return;
+					}
 				}
 			}
 		},

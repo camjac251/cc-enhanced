@@ -29,6 +29,33 @@ function ${AGENT_LISTING_SUMMARY_HELPER}(attachment) {
 	)();
 }
 
+/**
+ * Confirms the injected summary helper still caps the visible list and emits the
+ * overflow suffix, so a corrupted helper body cannot pass on name alone. Checks
+ * behavior (a `slice` with a numeric bound, an `addedTypes` reference, and the
+ * overflow word) rather than the exact expression shape.
+ */
+function isSummaryHelperBodyWellFormed(fn: t.FunctionDeclaration): boolean {
+	const referencesAddedTypes = nodeContains(
+		fn.body,
+		(node) =>
+			t.isMemberExpression(node) && isMemberPropertyName(node, "addedTypes"),
+	);
+	const hasNumericSlice = nodeContains(
+		fn.body,
+		(node) =>
+			t.isCallExpression(node) &&
+			t.isMemberExpression(node.callee) &&
+			isMemberPropertyName(node.callee, "slice") &&
+			node.arguments.some((arg) => t.isNumericLiteral(arg)),
+	);
+	const hasOverflowSuffix = nodeContains(
+		fn.body,
+		(node) => t.isStringLiteral(node) && node.value.includes("more"),
+	);
+	return referencesAddedTypes && hasNumericSlice && hasOverflowSuffix;
+}
+
 function isCreateElementCall(
 	node: t.Node | null | undefined,
 ): node is t.CallExpression {
@@ -479,7 +506,13 @@ export const agentListingUi: Patch = {
 		}
 
 		let helperFound = false;
-		let rendererPatched = false;
+		let helperWellFormed = false;
+		// Count render cases and patched render cases independently so a
+		// multi-case world fails explicitly (mirroring the mutator's
+		// renderCandidates.length === 1 gate) instead of silently reflecting
+		// whichever case the traversal visited last.
+		let renderCaseCount = 0;
+		let patchedCaseCount = 0;
 
 		traverse(verifyAst, {
 			FunctionDeclaration(path) {
@@ -489,24 +522,41 @@ export const agentListingUi: Patch = {
 					})
 				) {
 					helperFound = true;
+					if (isSummaryHelperBodyWellFormed(path.node)) {
+						helperWellFormed = true;
+					}
 				}
 			},
 			SwitchCase(path) {
 				if (!isAgentListingRenderCase(path)) return;
 				const renderRoot = getAgentListingRenderRootCall(path);
 				if (!renderRoot) return;
-				rendererPatched =
+				renderCaseCount++;
+				if (
 					hasAgentListingSummaryCall(
 						renderRoot.renderRoot.rootCall,
 						renderRoot.attachmentName,
-					) && isCacheGuardAlwaysRecomputed(renderRoot.renderRoot);
+					) &&
+					isCacheGuardAlwaysRecomputed(renderRoot.renderRoot)
+				) {
+					patchedCaseCount++;
+				}
 			},
 		});
 
 		if (!helperFound) {
 			return "Agent listing summary helper not found";
 		}
-		if (!rendererPatched) {
+		if (!helperWellFormed) {
+			return "Agent listing summary helper body is malformed";
+		}
+		if (renderCaseCount === 0) {
+			return "agent_listing_delta render case not found";
+		}
+		if (renderCaseCount > 1) {
+			return `agent_listing_delta render case is ambiguous (${renderCaseCount} cases found)`;
+		}
+		if (patchedCaseCount !== 1) {
 			return "agent_listing_delta renderer is missing the agent-type summary";
 		}
 		return true;

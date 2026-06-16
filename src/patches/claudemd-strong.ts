@@ -63,18 +63,17 @@ function isSlimSubagentClaudeMdOmitGate(node: t.Node): boolean {
 	);
 }
 
-function hasSlimSubagentClaudeMdOmitGate(ast: t.File | t.Program): boolean {
+function countSlimSubagentClaudeMdOmitGates(ast: t.File | t.Program): number {
 	const root = t.isFile(ast) ? ast : t.file(ast);
-	let found = false;
+	let count = 0;
 	traverse(root, {
 		VariableDeclarator(path) {
 			if (!path.node.init) return;
 			if (!isSlimSubagentClaudeMdOmitGate(path.node.init)) return;
-			found = true;
-			path.stop();
+			count++;
 		},
 	});
-	return found;
+	return count;
 }
 
 export const STRONG_DISCLAIMER_LINES = STRONG_CLAUDEMD_DISCLAIMER_LINES;
@@ -112,8 +111,15 @@ export const claudeMdSystemPrompt: Patch = {
 			return "Strong CLAUDE.md disclaimer lines are missing";
 		}
 		const verifyAst = getVerifyAst(code, ast);
-		if (verifyAst && hasSlimSubagentClaudeMdOmitGate(verifyAst)) {
-			return "Slim subagent CLAUDE.md omission gate is still present";
+		if (verifyAst) {
+			// Count every surviving gate rather than stopping at the first, so a
+			// partial rewrite (one of several gates left live) is reported
+			// precisely. The mutator neutralizes all matches, so any surviving
+			// gate is a defect.
+			const survivingGates = countSlimSubagentClaudeMdOmitGates(verifyAst);
+			if (survivingGates > 0) {
+				return `Slim subagent CLAUDE.md omission gate is still present (${survivingGates} surviving)`;
+			}
 		}
 		return true;
 	},

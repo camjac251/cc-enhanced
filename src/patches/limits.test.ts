@@ -328,3 +328,135 @@ function getPersistenceThreshold(toolName, maxResultSizeChars, persistenceThresh
 		"readMaxResultSize should be patched via indirect name binding",
 	);
 });
+
+test("limits leaves an already-Infinity maxResultSizeChars untouched and still verifies", async () => {
+	const infinityFixture = `
+var bYC = 262144;
+var ZPA = 50000;
+function getMaxOutputTokens() {
+  let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
+  if (env) { let p = Number(env); if (!Number.isNaN(p) && p > 0) return p; }
+  return;
+}
+var rTI = 25000;
+function checkFileSize(filePath, maxSize = bYC) {
+  return require("fs").statSync(filePath).size <= maxSize;
+}
+var readToolName = "Read";
+var readToolDef = {
+  name: readToolName,
+  searchHint: "read files, images, PDFs, notebooks",
+  maxResultSizeChars: 1 / 0,
+  description: "Read files"
+};
+function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
+  if (!Number.isFinite(maxResultSizeChars)) return maxResultSizeChars;
+  return Math.min(maxResultSizeChars, ceiling);
+}
+`;
+	const ast = parse(infinityFixture);
+	await runLimitsViaPasses(ast);
+	const output = print(ast);
+	// Infinity cap must be preserved (patch records no-op, never writes 250000 here)
+	assert.equal(
+		output.includes("maxResultSizeChars: 1 / 0"),
+		true,
+		"Infinity maxResultSizeChars should be preserved",
+	);
+	assert.equal(
+		output.includes("maxResultSizeChars: 250000"),
+		false,
+		"should not rewrite an already-Infinity cap",
+	);
+	// verify accepts >= target, so an Infinity cap still passes
+	assert.equal(
+		limits.verify(output, ast),
+		true,
+		"verify should pass with Infinity readMaxResultSize",
+	);
+});
+
+test("limits verify passes when the Read prompt has no lineChars phrase", async () => {
+	const noLineCharsFixture = `
+var bYC = 262144;
+var ZPA = 50000;
+var lNC = 2000;
+function getMaxOutputTokens() {
+  let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
+  if (env) { let p = Number(env); if (!Number.isNaN(p) && p > 0) return p; }
+  return;
+}
+var rTI = 25000;
+function checkFileSize(filePath, maxSize = bYC) {
+  return require("fs").statSync(filePath).size <= maxSize;
+}
+var readToolDef = { name: "Read", searchHint: "read files, images, PDFs, notebooks", maxResultSizeChars: 100000, description: "Read files" };
+function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
+  if (!Number.isFinite(maxResultSizeChars)) return maxResultSizeChars;
+  return Math.min(maxResultSizeChars, ceiling);
+}
+var readPromptText = \`Reads a file from the local filesystem.
+The file reads up to \${lNC} lines of content.\`;
+`;
+	const ast = parse(noLineCharsFixture);
+	await runLimitsViaPasses(ast);
+	const output = print(ast);
+	// linesCap still rewritten
+	assert.equal(
+		output.includes("lNC = 5000"),
+		true,
+		"linesCap should still be patched",
+	);
+	// verify must pass even though lineChars never resolved (optional-skip)
+	assert.equal(
+		limits.verify(output, ast),
+		true,
+		"verify should pass with lineChars absent",
+	);
+});
+
+test("limits resultSizeCap ignores a 50000-default function that is not a Math.min clamp", async () => {
+	const decoyFixture = `
+var bYC = 262144;
+var ZPA = 50000;
+var DEC = 50000;
+function getMaxOutputTokens() {
+  let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
+  if (env) { let p = Number(env); if (!Number.isNaN(p) && p > 0) return p; }
+  return;
+}
+var rTI = 25000;
+function checkFileSize(filePath, maxSize = bYC) {
+  return require("fs").statSync(filePath).size <= maxSize;
+}
+var readToolDef = { name: "Read", searchHint: "read files, images, PDFs, notebooks", maxResultSizeChars: 100000, description: "Read files" };
+function decoyCap(a, b, c = DEC) {
+  if (a > c) return c;
+  return b + c;
+}
+function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
+  if (!Number.isFinite(maxResultSizeChars)) return maxResultSizeChars;
+  return Math.min(maxResultSizeChars, ceiling);
+}
+`;
+	const ast = parse(decoyFixture);
+	await runLimitsViaPasses(ast);
+	const output = print(ast);
+	// real persistence ceiling rewritten
+	assert.equal(
+		output.includes("ZPA = 120000"),
+		true,
+		"real resultSizeCap ceiling should be patched",
+	);
+	// decoy 50000-default left untouched
+	assert.equal(
+		output.includes("DEC = 50000"),
+		true,
+		"decoy 50000 default must not be rewritten",
+	);
+	assert.equal(
+		limits.verify(output, ast),
+		true,
+		"verify should pass with the decoy present",
+	);
+});

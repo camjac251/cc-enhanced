@@ -313,3 +313,106 @@ function ES1(H) {
 	assert.equal(output.includes("when one fits ("), false);
 	assert.equal(output.includes("when one fits — reserve"), true);
 });
+
+test("bash-prompt forces a logical (&&) gate test inside an array spread", async () => {
+	// The live tool-guidance gate threads a logical (&&) test through an array
+	// spread: `...(q && K ? [] : [a, b])`. Because the gate reference sits
+	// inside the logical wrapper (not the conditional test directly), the
+	// conditional test itself must be forced, leaving the `q` declarator a call.
+	const fixture = `
+function N3z(H) {
+  let q = UW(),
+    K = H.has(aq),
+    _ = K ? aq : aK,
+    f = [SK, p4, e1, ...(q && K ? [] : [S_, p1])].join(", "),
+    z = [
+      \`Prefer dedicated tools over \${_} when one fits (\${f}) — reserve \${_} for shell-only operations.\`,
+    ];
+  return ["# Using your tools", ...aF(z)].join("\\n");
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+	// The logical gate test is forced; the spread collapses to the empty branch.
+	assert.equal(output.includes("q && K ? []"), false);
+	assert.equal(output.includes("!0 ? []"), true);
+	// The gated-only identifiers survive in the now-dead alternate branch.
+	assert.match(output, /\[\s*S_\s*,\s*p1\s*\]/);
+	// The declarator init itself stays a call (only the conditional test forced).
+	assert.equal(output.includes("q = UW()"), true);
+	assert.equal(output.includes("when one fits ("), false);
+});
+
+test("bash-prompt forces an asymmetric-presence gate whose guidance text is in a sibling node", async () => {
+	// The gate's conditional branches contain NO search-guidance text (empty
+	// array vs plain identifier array); the guidance lives only in a sibling
+	// template. The gate must still qualify via asymmetric presence alone and
+	// be forced. Here the gate reference is the conditional test directly, so
+	// the declarator init is forced.
+	const fixture = `
+function N3z(H) {
+  let q = UW(),
+    list = [aa, bb, ...(q ? [] : [cc, dd])].join(", "),
+    z = [
+      \`Prefer dedicated tools over \${tool} when one fits (\${list}) — reserve \${tool} for shell-only operations.\`,
+    ];
+  return ["# Using your tools", ...z].join("\\n");
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+	// Gate forced even though no branch contains search-guidance fragments.
+	assert.equal(output.includes("q = !0"), true);
+	assert.equal(output.includes("when one fits ("), false);
+});
+
+test("bash-prompt does not force an ambiguous pair of guidance-less presence gates", async () => {
+	// Two asymmetric-presence declarators with no guidance text coexist in the
+	// tool-guidance function. The gate locator cannot disambiguate, so neither
+	// is forced and verify must surface the un-forced gate rather than passing.
+	const fixture = `
+function N3z(H) {
+  let q = UW(),
+    r = OTHER(),
+    a = [x1, ...(q ? [] : [g1])].join(", "),
+    b = [y1, ...(r ? [] : [g2])].join(", "),
+    z = [
+      \`Prefer dedicated tools over \${tool} when one fits (\${a}\${b}) — reserve \${tool} for shell-only operations.\`,
+    ];
+  return ["# Using your tools", ...z].join("\\n");
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+	// Neither presence gate is forced (ambiguous: two guidance-less candidates).
+	assert.equal(output.includes("!0 ? []"), false);
+	// verify() must surface the un-forced gate rather than passing silently.
+	assert.notEqual(bashPrompt.verify(output, ast), true);
+});
+
+test("bash-prompt empties the gated tool list in the tool-guidance surface", async () => {
+	// Assert the structural outcome of the gate force directly: the gated
+	// identifiers survive only in the now-dead alternate branch, never in a
+	// position that renders when the test is forced true. Catches a silent gate
+	// no-op even if the prompt-text rewrite still succeeds.
+	const fixture = `
+function N3z(H) {
+  let q = UW(),
+    K = H.has(aq),
+    f = [SK, p4, e1, ...(q && K ? [] : [GATED_FILE, GATED_CONTENT])].join(", "),
+    z = [
+      \`Prefer dedicated tools over \${tool} when one fits (\${f}) — reserve \${tool} for shell-only operations.\`,
+    ];
+  return ["# Using your tools", ...z].join("\\n");
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.includes("!0 ? []"), true);
+	assert.match(output, /\[\s*GATED_FILE\s*,\s*GATED_CONTENT\s*\]/);
+	assert.equal(output.includes("q && K"), false);
+});

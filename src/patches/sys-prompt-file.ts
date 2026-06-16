@@ -214,20 +214,36 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 	if (!guardedProps.has("appendSystemPromptFile")) return null;
 	if (!guardedProps.has("appendSystemPrompt")) return null;
 
+	// The mutator injects a single wired shape:
+	//   if (existsSync(resolvedVar)) { options.appendSystemPromptFile = resolvedVar; }
+	// inside a try { ... } catch, where resolvedVar = resolve(
+	//   process.env.<ENV> ?? "/etc/claude-code/system-prompt.md"
+	// ). Verify mirrors that wiring rather than checking the four pieces
+	// independently, so a dead env read, a swapped fallback, or a dropped
+	// catch fails instead of passing on incidental presence.
 	let hasEnvOverride = false;
 	let hasDefaultPath = false;
-	let hasAppendAssignment = false;
-	let hasExistsSync = false;
+	let existsSyncArgName: string | null = null;
+	let assignmentName: string | null = null;
+	let assignmentWiredToExists = false;
 
 	path.traverse({
-		StringLiteral(innerPath) {
-			if (innerPath.node.value === "/etc/claude-code/system-prompt.md") {
+		LogicalExpression(innerPath) {
+			if (innerPath.node.operator !== "??") return;
+			if (!isProcessEnvOverrideAccess(innerPath.node.left)) return;
+			hasEnvOverride = true;
+			if (
+				t.isStringLiteral(innerPath.node.right, {
+					value: "/etc/claude-code/system-prompt.md",
+				})
+			) {
 				hasDefaultPath = true;
 			}
 		},
-		MemberExpression(innerPath) {
-			if (!isProcessEnvOverrideAccess(innerPath.node)) return;
-			hasEnvOverride = true;
+		CallExpression(innerPath) {
+			if (!isExistsSyncCall(innerPath.node)) return;
+			const [arg] = innerPath.node.arguments;
+			if (t.isIdentifier(arg)) existsSyncArgName = arg.name;
 		},
 		AssignmentExpression(innerPath) {
 			if (
@@ -239,23 +255,27 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 			) {
 				return;
 			}
-			hasAppendAssignment = true;
-		},
-		CallExpression(innerPath) {
-			const callee = innerPath.node.callee;
-			if (t.isIdentifier(callee) && callee.name.includes("existsSync")) {
-				hasExistsSync = true;
-				return;
-			}
-			if (
-				t.isMemberExpression(callee) &&
-				getObjectKeyName(callee.property as t.Expression | t.Identifier) ===
-					"existsSync"
-			) {
-				hasExistsSync = true;
-			}
+			assignmentName = innerPath.node.right.name;
+			// The assignment must live inside the existsSync guard's consequent
+			// and inside a try-statement, both within this auto-append branch.
+			const insideExistsGuard = Boolean(
+				innerPath.findParent(
+					(parent) =>
+						parent.isIfStatement() && isExistsSyncCall(parent.node.test),
+				),
+			);
+			const insideTry = Boolean(
+				innerPath.findParent((parent) => parent.isTryStatement()),
+			);
+			if (insideExistsGuard && insideTry) assignmentWiredToExists = true;
 		},
 	});
+
+	const hasExistsSync = existsSyncArgName !== null;
+	const hasAppendAssignment =
+		assignmentName !== null &&
+		assignmentName === existsSyncArgName &&
+		assignmentWiredToExists;
 
 	return {
 		hasEnvOverride,
@@ -265,6 +285,22 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 		guardsReplacementPrompt:
 			guardedProps.has("systemPromptFile") || guardedProps.has("systemPrompt"),
 	};
+}
+
+/**
+ * True for an `existsSync(arg)` call, whether invoked bare or as a member
+ * (e.g. `fs.existsSync(arg)`), matching the receiver-agnostic helper the
+ * mutator synthesizes from the readFileSync source object.
+ */
+function isExistsSyncCall(node: t.Node): node is t.CallExpression {
+	if (!t.isCallExpression(node)) return false;
+	const callee = node.callee;
+	if (t.isIdentifier(callee) && callee.name.includes("existsSync")) return true;
+	return (
+		t.isMemberExpression(callee) &&
+		getObjectKeyName(callee.property as t.Expression | t.Identifier) ===
+			"existsSync"
+	);
 }
 
 function findAutoAppendGuardBeforeAppendBranch(ast: t.File): {

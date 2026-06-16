@@ -543,3 +543,84 @@ test("built-in-agent-prompt verify flags malformed Agent tool fork-selection wor
 	assert.equal(typeof result, "string");
 	assert.equal(String(result).includes("fork-selection wording"), true);
 });
+
+test("built-in-agent-prompt rewrites overlapping explore-guidelines and standalone read-only blocks in one pass", () => {
+	// The Explore Guidelines block subsumes a generic read-only block, so
+	// correctness depends on the explore-helper rewrite running before the
+	// cross-platform rewrite. A combined fixture proves both are fully
+	// modernized in one pass, catching a future statement-reorder or a regex
+	// that stops matching after the other consumed its overlap.
+	const combined = `${EXPLORE_PLACEHOLDER_FIXTURE}\n${PLAN_PLACEHOLDER_FIXTURE}`;
+	const output = builtInAgentPrompt.string?.(combined) ?? combined;
+	assert.equal(output.includes("cat, head, tail"), false);
+	assert.equal(output.includes("ONLY for read-only operations ("), false);
+	assert.equal(output.includes("${value_22}"), false);
+	assert.equal(output.includes("${value_23}"), false);
+	assert.equal(output.includes("${FD}"), false);
+	assert.equal(output.includes("${YO()"), false);
+	assert.equal(
+		output.split(
+			"ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+		).length -
+			1 >=
+			2,
+		true,
+	);
+});
+
+test("built-in-agent-prompt leaves no residual legacy read-only block when several are present", () => {
+	const twoBlocks = `${EXPLORE_FIXTURE}\n${PLAN_FIXTURE}`;
+	const output = builtInAgentPrompt.string?.(twoBlocks) ?? twoBlocks;
+	assert.equal(
+		output.includes(
+			"ONLY for read-only operations (ls, git status, git log, git diff, find",
+		),
+		false,
+	);
+	assert.equal(output.includes("cat, head, tail"), false);
+});
+
+test("built-in-agent-prompt rewrites escaped-backtick enhanced search guidance", () => {
+	// The bundle stores these lines with escaped backticks, which is what the
+	// regex alternation targets, not the un-escaped literal that the dead
+	// verify guard checks. A fixture in the escaped form proves the rewrite
+	// still lands, and fails loudly if the regex is simplified to assume
+	// un-escaped backticks.
+	const fixture =
+		"Guidelines:\n- Use \\`find\\` via ${aq} for broad file pattern matching\n- Use \\`grep\\` via ${aq} for searching file contents with regex\n";
+	const output = builtInAgentPrompt.string?.(fixture) ?? fixture;
+	assert.equal(output.includes("Use \\`find\\` via"), false);
+	assert.equal(output.includes("Use \\`grep\\` via"), false);
+	assert.equal(
+		output.includes(
+			"- Use available code/file search tooling for focused discovery",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"- Use available content-search tooling for targeted discovery",
+		),
+		true,
+	);
+});
+
+test("built-in-agent-prompt fork-selection rewrite is escaped-dash specific", () => {
+	// The Biome-formatted bundle stores every non-ASCII character escaped, so
+	// the rewrite must match the escaped-dash form and no-op on the raw form
+	// the bundle never produces. This documents the escapeNonAscii dependency
+	// and prevents a future "simplify the regex" change from accepting a form
+	// the bundle never emits.
+	const escaped = AGENT_TOOL_FORK_SELECTION_FIXTURE;
+	const escapedOut = builtInAgentPrompt.string?.(escaped) ?? escaped;
+	assert.equal(
+		escapedOut.includes('pass \\`subagent_type: "fork"\\` to fork yourself.'),
+		true,
+	);
+	const raw = AGENT_TOOL_FORK_SELECTION_FIXTURE.replaceAll("\\u2014", "—");
+	const rawOut = builtInAgentPrompt.string?.(raw) ?? raw;
+	assert.equal(
+		rawOut.includes("specify a subagent_type to select an agent"),
+		true,
+	);
+});

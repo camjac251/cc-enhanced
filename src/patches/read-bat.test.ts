@@ -911,3 +911,101 @@ test("read-bat runtime: content-identical re-read bumps timestamp to observed mt
 		await cleanup();
 	}
 });
+
+test("read-bat threads range/whitespace through EVERY delegation call site", async () => {
+	const twoCallFixture = READ_DELEGATION_FIXTURE.replace(
+		"    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n  },",
+		"    try {\n      return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n    } catch (E) {\n      return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n    }\n  },",
+	);
+	assert.notEqual(twoCallFixture, READ_DELEGATION_FIXTURE);
+	const ast = parse(twoCallFixture);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+	// Both delegation calls must be threaded with the appended range/whitespace params.
+	assert.equal(
+		output.split(
+			"helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2, R, WSPC)",
+		).length - 1,
+		1,
+		"helper definition param list rewritten exactly once",
+	);
+	assert.equal(
+		output.split(
+			"await helperRead(A, void 0, void 0, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2, R, WSPC)",
+		).length - 1,
+		2,
+		"both delegation call sites must void-0 offset/limit and append R, WSPC",
+	);
+	assert.equal(readWithBat.verify(output), true);
+});
+
+test("read-bat injects startLine: START_LINE a bounded number of times", async () => {
+	const output = await getPatchedDelegationOutput();
+	// The patched delegation helper carries exactly two `startLine: START_LINE`
+	// occurrences: one injected into the read destructuring and one rewritten
+	// into the result object. A third would mean a section double-fired and
+	// re-injected START_LINE somewhere it does not belong.
+	assert.equal(
+		output.split("startLine: START_LINE").length - 1,
+		2,
+		"START_LINE injection/rewrite count drifted from the expected two sites",
+	);
+});
+
+test("read-bat rewrites readFileState.set compat markers at every offset/limit site", async () => {
+	const twoSetFixture = READ_DELEGATION_FIXTURE.replace(
+		"  ctx.readFileState.set(filePath, { content: K, timestamp: Date.now(), offset, limit });",
+		"  ctx.readFileState.set(filePath, { content: K, timestamp: Date.now(), offset, limit });\n  ctx.readFileState.set(filePath, { content: K, timestamp: Date.now() + 1, offset, limit });",
+	);
+	assert.notEqual(twoSetFixture, READ_DELEGATION_FIXTURE);
+	const ast = parse(twoSetFixture);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+	// Neither .set may retain a bare `offset, limit` shorthand; both become compat conditionals + range.
+	assert.equal(
+		output.includes("timestamp: Date.now(), offset, limit }"),
+		false,
+	);
+	assert.equal(
+		output.includes("timestamp: Date.now() + 1, offset, limit }"),
+		false,
+	);
+	// Both state-write sites gain a range compat field.
+	assert.ok(
+		output.split("range: R !== void 0 ? R").length - 1 >= 2,
+		"both state-write sites should gain a range compat field",
+	);
+	assert.equal(readWithBat.verify(output), true);
+});
+
+test("read-bat verify fails when the auto-range token budget is drifted", async () => {
+	const output = await getPatchedDelegationOutput();
+	const mutated = output.replace(
+		"autoRangeTokenBudget = 50000",
+		"autoRangeTokenBudget = 25000",
+	);
+	assert.notEqual(mutated, output);
+	const result = readWithBat.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("Auto-range token budget is not tuned to 50000"),
+		true,
+	);
+});
+
+test("read-bat verify fails when the changed-file head budget multiplier is drifted", async () => {
+	const output = await getPatchedDelegationOutput();
+	const mutated = output.replace(
+		"changedSnippetBudget * 0.65",
+		"changedSnippetBudget * 0.5",
+	);
+	assert.notEqual(mutated, output);
+	const result = readWithBat.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes(
+			"changed-file watcher head budget multiplier drifted from 0.65",
+		),
+		true,
+	);
+});

@@ -159,3 +159,35 @@ test("prompt-dash-style verify rejects unpatched prompt-like dash text", () => {
 	assert.equal(typeof result, "string");
 	assert.match(String(result), /Unicode dash punctuation/);
 });
+
+test("prompt-dash-style leaves short dash-glyph constants intact", async () => {
+	const fixture = `const seps = new Set(["/", "–", "—", "―"]);`;
+	const ast = parse(fixture);
+	await runPromptDashStyleViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.includes("–"), true);
+	assert.equal(output.includes("—"), true);
+	assert.equal(promptDashStyle.verify(output, ast), true);
+});
+
+test("prompt-dash-style verify rejects partially normalized prompt text", () => {
+	const clean = 'const a = "You must always run the agent. Do not stop.";';
+	const dirty = `const b = "You should always restart the tool 1–2 times before giving up on the agent.";`;
+	const ast = parse(`${clean}\n${dirty}`);
+	const result = promptDashStyle.verify(`${clean}\n${dirty}`, ast);
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /Unicode dash punctuation/);
+});
+
+test("prompt-dash-style normalizes dash in non-first template quasi", async () => {
+	const fixture = [
+		'const C3 = "x";',
+		"const p = `# Loop tick\\n\\nWork the tasks. Call ${C3} again \\u2014 otherwise the loop ends and you must restart the agent.`;",
+	].join("\n");
+	const ast = parse(fixture);
+	await runPromptDashStyleViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.includes("again. Otherwise the loop ends"), true);
+	assert.equal(output.includes("\\u2014"), false);
+	assert.equal(promptDashStyle.verify(output, ast), true);
+});

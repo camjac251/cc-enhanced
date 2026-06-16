@@ -224,3 +224,85 @@ test("lsp-multi-server preserves getServerForFile and sendRequest", async () => 
 	assert.equal(output.includes("closeFile:"), true);
 	assert.equal(output.includes("isFileOpen:"), true);
 });
+
+test("lsp-multi-server couples a for-loop to every lifecycle method", async () => {
+	const ast = parse(LSP_FACTORY_FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	for (const method of [
+		"textDocument/didOpen",
+		"textDocument/didChange",
+		"textDocument/didSave",
+		"textDocument/didClose",
+	]) {
+		// The method string must sit after a `for (` in the same function-sized
+		// window, mirroring verify()'s for-loop/sendNotification coupling without
+		// relying on minified names.
+		const idx = output.indexOf(JSON.stringify(method));
+		assert.notEqual(idx, -1, `${method} present`);
+		const forIdx = output.lastIndexOf("for (", idx);
+		assert.notEqual(
+			forIdx,
+			-1,
+			`${method} should be preceded by a for-loop (multi-server fan-out)`,
+		);
+	}
+});
+
+test("lsp-multi-server tolerates an extra (4th) Map in the factory", async () => {
+	// Mirror upstream: add a trailing document-version Map as the 4th declarator.
+	const fourMapFixture = LSP_FACTORY_FIXTURE.replace(
+		"let H = new Map(),\n    $ = new Map(),\n    A = new Map();",
+		"let H = new Map(),\n    $ = new Map(),\n    A = new Map(),\n    VER = new Map();",
+	);
+	assert.notEqual(
+		fourMapFixture,
+		LSP_FACTORY_FIXTURE,
+		"fixture rewrite must apply (Map declaration shape changed)",
+	);
+	const ast = parse(fourMapFixture);
+	await runViaPasses(ast);
+	const output = print(ast);
+	// Discovery must still pick the URI tracker (3rd map) for Set-based tracking.
+	assert.equal(output.includes("instanceof Set"), true);
+	assert.equal(output.includes("new Set()"), true);
+	assert.equal(lspMultiServer.verify(output, ast), true);
+});
+
+test("lsp-multi-server discovers errFn from a non-lifecycle function", async () => {
+	// Strip the direct PH(Error(...)) calls from the lifecycle catches and place
+	// the sole errFn source in an init-style function, matching the real bundle
+	// shape where errFn is resolved from an Error()-first-arg call outside any
+	// lifecycle function.
+	let fixture = LSP_FACTORY_FIXTURE.replaceAll(
+		/throw \(PH\(Error\([^;]*?\)\), Error\("fail"\)\);/g,
+		'throw Error("fail");',
+	).replace("throw (PH(Z), Z);", "throw Z;");
+	// Inject an init function whose only error path calls PH(Error(...)).
+	fixture = fixture.replace(
+		"async function L() {}",
+		'async function L() { try { await Promise.resolve(); } catch (e) { PH(Error("init failed: " + e.message)); } }',
+	);
+	assert.notEqual(fixture, LSP_FACTORY_FIXTURE, "fixture rewrite must apply");
+	const ast = parse(fixture);
+	await runViaPasses(ast);
+	const output = print(ast);
+	// Patch must still have applied (errFn resolved -> builders injected the loops).
+	assert.equal(output.includes('"textDocument/didOpen"'), true);
+	assert.equal(output.includes("instanceof Set"), true);
+	assert.equal(lspMultiServer.verify(output, ast), true);
+});
+
+test("lsp-multi-server verify fails when closeFile stops untracking the URI", async () => {
+	const ast = parse(LSP_FACTORY_FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	assert.equal(lspMultiServer.verify(output), true);
+	// Drop the tracking-map delete from the patched closeFile body. A reopen
+	// would then be skipped as "already open", so verify must reject this.
+	const mutated = output.replace(/A\.delete\([^)]*\);/, "");
+	assert.notEqual(mutated, output, "precondition: closeFile delete present");
+	const result = lspMultiServer.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /closeFile does not delete the closed URI/);
+});

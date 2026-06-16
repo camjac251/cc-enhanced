@@ -174,3 +174,75 @@ test("image-limits leaves non-target entries untouched in a multi-entry table", 
 		/"claude-opus-5-0":\s*\{\s*maxWidth:\s*3000,\s*maxHeight:\s*3000\s*\}/,
 	);
 });
+
+test("verify rejects target entries split across two tables", () => {
+	const SPLIT_FIXTURE = `
+var a1;
+var a2;
+var wE = T(() => {
+  a1 = {
+    "claude-fable-5": { maxWidth: 2576, maxHeight: 2576 },
+    "claude-mythos-5": { maxWidth: 2576, maxHeight: 2576 },
+  };
+  a2 = {
+    "claude-opus-4-7": { maxWidth: 2576, maxHeight: 2576 },
+    "claude-opus-4-8": { maxWidth: 2576, maxHeight: 2576 },
+  };
+});
+`;
+	const ast = parse(SPLIT_FIXTURE);
+	const code = print(ast);
+	const result = imageLimits.verify(code, ast);
+	assert.notEqual(result, true);
+	assert.equal(typeof result, "string");
+	assert.match(result as string, /2 tables/);
+});
+
+test("verify treats a non-literal override value as a missing entry", () => {
+	const NON_LITERAL_FIXTURE = `
+var BASE_W = 2000;
+var kv1;
+var wE = T(() => {
+  kv1 = {
+    "claude-fable-5": { maxWidth: BASE_W, maxHeight: BASE_W },
+    "claude-mythos-5": { maxWidth: 2576, maxHeight: 2576 },
+    "claude-opus-4-7": { maxWidth: 2576, maxHeight: 2576 },
+    "claude-opus-4-8": { maxWidth: 2576, maxHeight: 2576 },
+  };
+});
+`;
+	const ast = parse(NON_LITERAL_FIXTURE);
+	const code = print(ast);
+	const result = imageLimits.verify(code, ast);
+	assert.notEqual(result, true);
+	assert.match(result as string, /claude-fable-5/);
+});
+
+test("image-limits pins only the downgraded entries in a mixed table", async () => {
+	const MIXED_FIXTURE = `
+var kv1;
+var wE = T(() => {
+  kv1 = {
+    "claude-fable-5": { maxWidth: 2000, maxHeight: 2000 },
+    "claude-mythos-5": { maxWidth: 2576, maxHeight: 2576 },
+    "claude-opus-4-7": { maxWidth: 2000, maxHeight: 2000 },
+    "claude-opus-4-8": { maxWidth: 2576, maxHeight: 2576 },
+  };
+});
+`;
+	const ast = parse(MIXED_FIXTURE);
+	await runImageLimitsViaPasses(ast);
+	const output = print(ast);
+	for (const key of TARGET_KEYS) {
+		assertPinnedTo2576(output, key);
+	}
+	assert.equal(imageLimits.verify(output, ast), true);
+});
+
+test("image-limits pins exactly the four target entries", async () => {
+	const ast = parse(DOWNGRADED_FIXTURE);
+	await runImageLimitsViaPasses(ast);
+	const output = print(ast);
+	const pinned = output.match(/maxWidth:\s*2576,\s*maxHeight:\s*2576/g) ?? [];
+	assert.equal(pinned.length, TARGET_KEYS.length);
+});

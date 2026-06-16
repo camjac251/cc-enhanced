@@ -124,6 +124,17 @@ export const memoryPromptSoften: Patch = {
 				return `Dream memory prompt missing modern guidance: ${modernText}`;
 			}
 		}
+		// Symmetric contract: the legacy transcript-search command absence is
+		// checked above (the `grep -rn "<narrow term>"` entry in
+		// LEGACY_DREAM_TEXTS), so require its modern replacement to be present
+		// too. These fragments are interpolation- and backtick-free, so they
+		// match the same regardless of how the template literal renders.
+		if (
+			!code.includes('rg -m 50 "<narrow term>"') ||
+			!code.includes("-g '*.jsonl'")
+		) {
+			return "Dream memory prompt missing modern transcript-search command (rg -m 50)";
+		}
 		return true;
 	},
 };

@@ -152,3 +152,78 @@ test("taskout-ext verify fails when prompt guidance is removed", async () => {
 		`Expected prompt-guidance failure, got: ${result}`,
 	);
 });
+
+test("taskout-ext patches a response method that nests tag pushes inside if(result.task)", async () => {
+	const nestedFixture = `
+function serializeTask(task) {
+  return { task_id: task.taskId, status: task.status, output: task.output };
+}
+const TaskOutputTool = {
+  prompt() {
+    return \`- Retrieves output from a running or completed task (background shell, agent, or remote session)
+- Takes a task_id parameter identifying the task
+- Returns the task output along with status information
+- Use block=true (default) to wait for task completion
+- Use block=false for non-blocking check of current status
+- Task IDs can be found using the /tasks command
+- Works with all task types: background shells, async agents, and remote sessions\`;
+  },
+  mapToolResultToToolResultBlockParam(result) {
+    let output = [];
+    output.push(\`<retrieval_status>\${result.retrieval_status}</retrieval_status>\`);
+    if (result.task) {
+      output.push(\`<task_id>\${result.task.task_id}</task_id>\`);
+      output.push(\`<status>\${result.task.status}</status>\`);
+      if (result.task.error) output.push(\`<error>\${result.task.error}</error>\`);
+    }
+    return output;
+  },
+};
+`;
+	const output = await applyTaskOutputExtPatch(nestedFixture);
+	assert.equal(output.includes("<output_file>"), true);
+	assert.equal(output.includes("<output_filename>"), true);
+	const fileIdx = output.indexOf("<output_file>");
+	const errIdx = output.indexOf("<error>");
+	assert.equal(fileIdx >= 0 && errIdx >= 0 && fileIdx < errIdx, true);
+});
+
+test("taskout-ext injects output_file exactly once per surface", async () => {
+	const output = await applyTaskOutputExtPatch(TASK_OUTPUT_FIXTURE);
+	const serializerKeyCount = output.split("output_file:").length - 1;
+	assert.equal(serializerKeyCount, 1);
+	const openTagCount = output.split("<output_file>").length - 1;
+	assert.equal(openTagCount, 1);
+	const closeTagCount = output.split("</output_file>").length - 1;
+	assert.equal(closeTagCount, 1);
+});
+
+test("taskout-ext runtime basename strips backslash path separators", async () => {
+	const { mod, cleanup } = await loadPatchedTaskOutputRuntimeModule();
+	try {
+		const serialized = mod.serializeTask({
+			taskId: "task-2",
+			status: "done",
+			output: "out",
+			outputFile: "C:\\logs\\run.txt",
+		});
+		assert.equal(serialized.output_filename, "run.txt");
+	} finally {
+		await cleanup();
+	}
+});
+
+test("taskout-ext rewrites the stock TaskOutput prompt body", async () => {
+	const output = await applyTaskOutputExtPatch(TASK_OUTPUT_FIXTURE);
+	assert.equal(
+		output.includes("Returns the task output along with status information"),
+		false,
+	);
+	assert.equal(
+		output.includes(
+			"status, exit_code, error, output, output_file, output_filename",
+		),
+		true,
+	);
+	assert.equal(output.includes('Read the tail first: range "-500:"'), true);
+});

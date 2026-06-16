@@ -197,6 +197,36 @@ function isGlobalQueueMember(node: t.Node | null | undefined): boolean {
 	);
 }
 
+/**
+ * Matches the negated queue-has-items shape the typeahead bypass injects:
+ * `!(Array.isArray(globalThis.<queue>) && globalThis.<queue>.length > 0)`.
+ * Mirrors buildQueueHasItems wrapped in `!`, so the bypass is verified by its
+ * exact polarity rather than merely "the queue member appears in the test",
+ * which a polarity-flipped regression would otherwise satisfy.
+ */
+function isNegatedQueueHasItems(node: t.Node | null | undefined): boolean {
+	if (!node || !t.isUnaryExpression(node, { operator: "!" })) return false;
+	const inner = node.argument;
+	if (!t.isLogicalExpression(inner, { operator: "&&" })) return false;
+
+	const isArrayCheck =
+		t.isCallExpression(inner.left) &&
+		t.isMemberExpression(inner.left.callee) &&
+		t.isIdentifier(inner.left.callee.object, { name: "Array" }) &&
+		getMemberName(inner.left.callee) === "isArray" &&
+		inner.left.arguments.length === 1 &&
+		isGlobalQueueMember(inner.left.arguments[0]);
+
+	const isLengthCheck =
+		t.isBinaryExpression(inner.right, { operator: ">" }) &&
+		t.isMemberExpression(inner.right.left) &&
+		getMemberName(inner.right.left) === "length" &&
+		isGlobalQueueMember(inner.right.left.object) &&
+		t.isNumericLiteral(inner.right.right, { value: 0 });
+
+	return isArrayCheck && isLengthCheck;
+}
+
 function buildTrimCall(input: t.Expression): t.CallExpression {
 	return t.callExpression(
 		t.memberExpression(t.cloneNode(input, true), t.identifier("trim")),
@@ -1246,7 +1276,7 @@ function getTypeaheadThinkingHintTarget(
 }
 
 function hasTypeaheadQueueBypass(target: TypeaheadThinkingHintTarget): boolean {
-	return nodeContains(target.hintIf.node.test, isGlobalQueueMember);
+	return nodeContains(target.hintIf.node.test, isNegatedQueueHasItems);
 }
 
 function patchTypeaheadThinkingHintTarget(

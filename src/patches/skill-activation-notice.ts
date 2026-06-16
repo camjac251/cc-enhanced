@@ -279,6 +279,32 @@ function createSkillActivationNoticePasses(): PatchAstPass[] {
 	];
 }
 
+/** A `STATE.push(<ObjectExpression>)` call, with the pushed object returned. */
+function getStatePushObject(node: t.Node): t.ObjectExpression | null {
+	if (!t.isCallExpression(node)) return null;
+	const callee = node.callee;
+	if (
+		!t.isMemberExpression(callee) ||
+		!t.isIdentifier(callee.object, { name: STATE }) ||
+		!isMemberPropertyName(callee, "push")
+	) {
+		return null;
+	}
+	const arg = node.arguments[0];
+	return t.isObjectExpression(arg) ? arg : null;
+}
+
+function isSeenHasNegation(node: t.Node): boolean {
+	if (!t.isUnaryExpression(node, { operator: "!" })) return false;
+	const inner = node.argument;
+	return (
+		t.isCallExpression(inner) &&
+		t.isMemberExpression(inner.callee) &&
+		t.isIdentifier(inner.callee.object, { name: SEEN }) &&
+		isMemberPropertyName(inner.callee, "has")
+	);
+}
+
 function verifySkillActivationNotice(ast: t.File): true | string {
 	let stateDecl = false;
 	let seenDecl = false;
@@ -286,6 +312,14 @@ function verifySkillActivationNotice(ast: t.File): true | string {
 	let drainCall = false;
 	let seenGuardHas = false;
 	let seenGuardAdd = false;
+	// The record push must live in the dedup-negated branch and carry a
+	// `names` slice plus a `file` index, mirroring the mutator's own emitted
+	// shape so a mis-targeted push or a wrong-variable record fails verify.
+	let guardedRecordShape = false;
+	// The drained attachment must carry the renderer-consumed field names; a
+	// silent upstream rename of those fields would otherwise blank the notice
+	// while still satisfying the loose splice-presence check.
+	let drainAttachmentShape = false;
 
 	traverse(ast, {
 		VariableDeclarator(path) {
@@ -304,6 +338,57 @@ function verifySkillActivationNotice(ast: t.File): true | string {
 				if (isMemberPropertyName(callee, "add")) seenGuardAdd = true;
 			}
 		},
+		IfStatement(path) {
+			// Composite dedup check: `if (!SEEN.has(...)) { SEEN.add(...);
+			// STATE.push({ names: <.slice()>, file: <member[0]> }); }`.
+			if (!isSeenHasNegation(path.node.test)) return;
+			let recordObj: t.ObjectExpression | null = null;
+			nodeContains(path.node.consequent, (n) => {
+				const obj = getStatePushObject(n);
+				if (obj) recordObj = obj;
+				return false;
+			});
+			if (!recordObj) return;
+			const namesProp = getObjectPropertyByName(recordObj, "names");
+			const fileProp = getObjectPropertyByName(recordObj, "file");
+			const namesIsSlice =
+				!!namesProp &&
+				t.isCallExpression(namesProp.value) &&
+				t.isMemberExpression(namesProp.value.callee) &&
+				isMemberPropertyName(namesProp.value.callee, "slice");
+			const fileIsIndexed =
+				!!fileProp &&
+				t.isMemberExpression(fileProp.value) &&
+				fileProp.value.computed &&
+				t.isNumericLiteral(fileProp.value.property, { value: 0 });
+			if (namesIsSlice && fileIsIndexed) guardedRecordShape = true;
+		},
+		ObjectExpression(path) {
+			// Drained attachment shape: the object we push during drain is
+			// `{ type: "dynamic_skill", skillDir/skillNames/displayPath:
+			// <drainVar>.<field> }`. Scope to the drain variable so this matches
+			// our injected attachment rather than the upstream producer's own
+			// dynamic_skill object, while still catching a renderer field rename.
+			const typeProp = getObjectPropertyByName(path.node, "type");
+			if (
+				!typeProp ||
+				!t.isStringLiteral(typeProp.value, { value: "dynamic_skill" })
+			) {
+				return;
+			}
+			const skillNamesProp = getObjectPropertyByName(path.node, "skillNames");
+			const displayPathProp = getObjectPropertyByName(path.node, "displayPath");
+			const referencesDrainVar = (prop: t.ObjectProperty | null) =>
+				!!prop &&
+				t.isMemberExpression(prop.value) &&
+				t.isIdentifier(prop.value.object, { name: DRAIN_VAR });
+			if (
+				referencesDrainVar(skillNamesProp) &&
+				referencesDrainVar(displayPathProp)
+			) {
+				drainAttachmentShape = true;
+			}
+		},
 	});
 
 	if (!stateDecl) return "activation-notice pending list was not injected";
@@ -311,8 +396,12 @@ function verifySkillActivationNotice(ast: t.File): true | string {
 	if (!recordCall) return "activation matcher does not record activated skills";
 	if (!seenGuardHas || !seenGuardAdd)
 		return "activation notices are not deduplicated per file and skill set";
+	if (!guardedRecordShape)
+		return "activation record is not gated by the dedup guard or has the wrong shape";
 	if (!drainCall)
 		return "dynamic_skill producer does not drain activation notices";
+	if (!drainAttachmentShape)
+		return "drained dynamic_skill attachment is missing renderer-consumed fields";
 	return true;
 }
 

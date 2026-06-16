@@ -48,6 +48,8 @@ function verifyShellQuoteFix(code: string, ast?: t.File): true | string {
 	let newBareCount = 0;
 	let newDquoteInReplace = 0;
 	let newBareInReplace = 0;
+	const dquoteReplaceFns = new Set<t.Node>();
+	const bareReplaceFns = new Set<t.Node>();
 
 	const isReplaceCallArg = (path: any): boolean => {
 		const parent = path.parentPath;
@@ -64,11 +66,19 @@ function verifyShellQuoteFix(code: string, ast?: t.File): true | string {
 			if (path.node.pattern === OLD_BARE_PATTERN) hasOldBare = true;
 			if (path.node.pattern === NEW_DQUOTE_PATTERN) {
 				newDquoteCount++;
-				if (isReplaceCallArg(path)) newDquoteInReplace++;
+				if (isReplaceCallArg(path)) {
+					newDquoteInReplace++;
+					const fn = path.getFunctionParent()?.node;
+					if (fn) dquoteReplaceFns.add(fn);
+				}
 			}
 			if (path.node.pattern === NEW_BARE_PATTERN) {
 				newBareCount++;
-				if (isReplaceCallArg(path)) newBareInReplace++;
+				if (isReplaceCallArg(path)) {
+					newBareInReplace++;
+					const fn = path.getFunctionParent()?.node;
+					if (fn) bareReplaceFns.add(fn);
+				}
 			}
 		},
 	});
@@ -78,23 +88,36 @@ function verifyShellQuoteFix(code: string, ast?: t.File): true | string {
 	if (newDquoteCount === 0) return "shell-quote double-quote fix not found";
 	if (newBareCount === 0) return "shell-quote bare-word fix not found";
 
-	// Count assertions: the upstream shell-quote module has exactly one
-	// instance of each pattern. More than one is suspicious (the patch
-	// landed in multiple places, or coincidental RegExpLiterals elsewhere
-	// match the same character classes).
-	if (newDquoteCount !== 1) {
-		return `Expected exactly one patched double-quote RegExpLiteral, found ${newDquoteCount}`;
+	// The OLD-absence checks above already guarantee no unpatched escape site
+	// survives, so an extra RegExpLiteral matching the same character class
+	// elsewhere in the bundle is not a defect. Require at least one of each
+	// patched pattern rather than exactly one.
+	if (newDquoteCount < 1) {
+		return `Expected at least one patched double-quote RegExpLiteral, found ${newDquoteCount}`;
 	}
-	if (newBareCount !== 1) {
-		return `Expected exactly one patched bare-word RegExpLiteral, found ${newBareCount}`;
+	if (newBareCount < 1) {
+		return `Expected at least one patched bare-word RegExpLiteral, found ${newBareCount}`;
 	}
 
-	// Anchor at least one of the patched RegExpLiterals to a .replace()
-	// callsite. If the shell-quote module gets refactored to no longer use
-	// String.prototype.replace, neither pattern would be inside a .replace
-	// argument and we should fail loudly rather than silently no-op.
-	if (newDquoteInReplace === 0 && newBareInReplace === 0) {
-		return "Patched shell-quote RegExpLiterals exist but neither is the first argument to a .replace() call";
+	// Per-pattern anchor: each patched pattern must independently be the first
+	// argument to a .replace() call, so both fixes are proven wired into an
+	// escape callsite. If the quoting helper is ever refactored away from
+	// String.prototype.replace, fail loudly rather than silently no-op.
+	if (newDquoteInReplace === 0) {
+		return "Patched double-quote RegExpLiteral exists but is not the first argument to a .replace() call";
+	}
+	if (newBareInReplace === 0) {
+		return "Patched bare-word RegExpLiteral exists but is not the first argument to a .replace() call";
+	}
+
+	// Locality: both patched escape callsites live in the same quoting helper
+	// upstream. Require a shared enclosing function so a stray pattern in
+	// unrelated code cannot stand in for the real escape site.
+	const sharesEnclosingFn = [...dquoteReplaceFns].some((fn) =>
+		bareReplaceFns.has(fn),
+	);
+	if (!sharesEnclosingFn) {
+		return "Patched shell-quote RegExpLiterals are not anchored in a shared enclosing function";
 	}
 
 	return true;

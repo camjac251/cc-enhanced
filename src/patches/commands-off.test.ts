@@ -120,3 +120,138 @@ const COMMANDS = memoize(() => [
 	const ast = parse(alreadyAbsentFixture);
 	assert.equal(commandsOff.verify(alreadyAbsentFixture, ast), true);
 });
+
+test("commands-off removes a command whose binding is assigned via a constant violation (var + later assignment)", async () => {
+	const constViolationFixture = `
+function makeBuiltinCommand({ name: H, description: $, getPromptWhileMarketplaceIsPrivate: f }) {
+  return { type: "prompt", name: H, description: $, source: "builtin", async getPromptForCommand(_, M) { return f(_, M); } };
+}
+var keepCmd, dropCmd;
+function init() {
+  (keepCmd = makeBuiltinCommand({ name: "review", description: "Review a pull request", async getPromptWhileMarketplaceIsPrivate(H) { return [{ type: "text", text: H }]; } }));
+  (dropCmd = makeBuiltinCommand({ name: "security-review", description: "Complete a security review", async getPromptWhileMarketplaceIsPrivate(H) { return [{ type: "text", text: H }]; } }));
+}
+const COMMANDS = memoize(() => [keepCmd, dropCmd]);
+`;
+	const ast = parse(constViolationFixture);
+	await runCommandsOffViaPasses(ast);
+	const output = print(ast);
+	// keepCmd's binding stays in the bundle; the registry array drops dropCmd.
+	// The dropCmd assignment statement legitimately survives, so assert on the
+	// registry array contents directly rather than the whole-file token set.
+	const registry = output.match(/memoize\(\(\) => (\[[\s\S]*?\])\)/);
+	assert.ok(registry, "registry array not found in patched output");
+	assert.equal(registry[1].includes("keepCmd"), true);
+	assert.equal(
+		/\bdropCmd\b/.test(registry[1]),
+		false,
+		"dropCmd identifier must be removed from the registry array",
+	);
+	assert.equal(commandsOff.verify(output, ast), true);
+});
+
+test("commands-off verify flags a constant-violation-bound disabled command left in the registry", () => {
+	const leakFixture = `
+function makeBuiltinCommand({ name: H, description: $ }) {
+  return { type: "prompt", name: H, description: $, source: "builtin" };
+}
+var dropCmd;
+function init() { (dropCmd = makeBuiltinCommand({ name: "security-review", description: "Complete a security review" })); }
+const COMMANDS = memoize(() => [dropCmd]);
+`;
+	const ast = parse(leakFixture);
+	const result = commandsOff.verify(leakFixture, ast);
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /security-review/);
+});
+
+test("commands-off preserves spread and call-expression registry elements while removing the target", async () => {
+	const mixedFixture = `
+function makeBuiltinCommand({ name: H, description: $ }) {
+  return { type: "prompt", name: H, description: $, source: "builtin" };
+}
+var dropCmd, keepCmd;
+function init() {
+  (keepCmd = makeBuiltinCommand({ name: "review", description: "Review a pull request" }));
+  (dropCmd = makeBuiltinCommand({ name: "security-review", description: "Complete a security review" }));
+}
+const extra = [];
+const flag = true;
+function buildOne() { return { type: "prompt", name: "built", source: "builtin" }; }
+const COMMANDS = memoize(() => [keepCmd, dropCmd, buildOne(), ...(flag ? [keepCmd] : []), ...extra]);
+`;
+	const ast = parse(mixedFixture);
+	await runCommandsOffViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes("buildOne()"),
+		true,
+		"call-expression element must survive",
+	);
+	assert.equal(
+		output.includes("...extra"),
+		true,
+		"spread element must survive",
+	);
+	assert.equal(
+		output.includes("flag ?"),
+		true,
+		"spread-conditional must survive",
+	);
+	assert.equal(commandsOff.verify(output, ast), true);
+});
+
+test("commands-off leaves alias-form registry identifiers intact and still removes the target", async () => {
+	// A resolvable command (keepCmd) keeps the registry recognizable to verify
+	// after the target is removed; alias-form bindings (aliasCmd = base) resolve
+	// to null and must be left untouched rather than chased or thrown on.
+	const aliasFixture = `
+function makeBuiltinCommand({ name: H, description: $ }) {
+  return { type: "prompt", name: H, description: $, source: "builtin" };
+}
+var base, aliasCmd, keepCmd, dropCmd;
+function init() {
+  (base = { type: "local-jsx", name: "add-dir", description: "Add a new working directory" });
+  (aliasCmd = base);
+  (keepCmd = makeBuiltinCommand({ name: "review", description: "Review a pull request" }));
+  (dropCmd = makeBuiltinCommand({ name: "security-review", description: "Complete a security review" }));
+}
+const COMMANDS = memoize(() => [aliasCmd, keepCmd, dropCmd]);
+`;
+	const ast = parse(aliasFixture);
+	await runCommandsOffViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes("aliasCmd"),
+		true,
+		"alias-form element must be preserved",
+	);
+	const registry = output.match(/memoize\(\(\) => (\[[\s\S]*?\])\)/);
+	assert.ok(registry, "registry array not found in patched output");
+	assert.equal(
+		registry[1].includes("aliasCmd"),
+		true,
+		"alias element must survive in the registry",
+	);
+	assert.equal(
+		/\bdropCmd\b/.test(registry[1]),
+		false,
+		"dropCmd must be removed from the array",
+	);
+	assert.equal(commandsOff.verify(output, ast), true);
+});
+
+test("commands-off verify flags an inline-object disabled command in the registry", () => {
+	// Some registries hold command object literals directly rather than
+	// identifier references. An inline disabled command must still be caught.
+	const inlineLeakFixture = `
+const COMMANDS = memoize(() => [
+  { type: "prompt", name: "review", description: "Review a pull request", source: "builtin" },
+  { type: "prompt", name: "security-review", description: "Complete a security review", source: "builtin" },
+]);
+`;
+	const ast = parse(inlineLeakFixture);
+	const result = commandsOff.verify(inlineLeakFixture, ast);
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /security-review/);
+});

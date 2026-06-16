@@ -1063,7 +1063,16 @@ export const planCompactExecute: Patch = {
 						"compactionResult",
 					) &&
 					nodeContainsMemberProperty(path.node.consequent, "boundaryMarker") &&
-					nodeContainsMemberProperty(path.node.consequent, "messagesToKeep")
+					nodeContainsMemberProperty(path.node.consequent, "messagesToKeep") &&
+					// Require the compact-failure recovery path inside the same
+					// compactContext-guarded block. This unique injected key only
+					// exists when the full try/catch handler (run compact command,
+					// expand the result, notify on failure) was inserted, not when
+					// the member-property names merely appear in some other shape.
+					nodeContainsText(
+						path.node.consequent,
+						COMPACT_FAILED_NOTIFICATION_KEY,
+					)
 				) {
 					compactInitialMessageHandler = true;
 					if (nodeContainsMessagesToKeepArrayFallback(path.node.consequent)) {

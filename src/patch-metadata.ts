@@ -191,11 +191,6 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "LSP multi-server",
 		group: "Tooling",
 	},
-	"lsp-workspace-symbol": {
-		tag: "lsp-workspace-symbol",
-		label: "LSP workspaceSymbol query",
-		group: "Tooling",
-	},
 	limits: {
 		tag: "limits",
 		label: "Limits",

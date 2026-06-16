@@ -280,3 +280,85 @@ function other(H) {
 	const output = print(ast);
 	assert.equal(output.includes("__ccPathActivations.splice(0)"), false);
 });
+
+test("matcher record is injected inside the conditionalSkills function body", async () => {
+	const ast = parse(FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	// Isolate the `activate` function body and assert the dedup push lives there,
+	// not in some unrelated function the global verify() check would also accept.
+	const start = output.indexOf("function activate(");
+	assert.notEqual(start, -1);
+	const next = output.indexOf("async function produce(", start);
+	const activateBody = output.slice(start, next === -1 ? undefined : next);
+	assert.ok(activateBody.includes("conditionalSkills"));
+	assert.ok(activateBody.includes("__ccPathActivations.push("));
+	assert.ok(activateBody.includes("__ccPathActivationsSeen.has("));
+});
+
+test("dedup record sits alongside the activation emit in the same branch", async () => {
+	const ast = parse(FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	// The record-and-emit must be co-located: between the emit() call and the
+	// record push there should be no intervening function boundary.
+	const emitIdx = output.indexOf("emitter.emit()");
+	const pushIdx = output.indexOf("__ccPathActivations.push(");
+	assert.notEqual(emitIdx, -1);
+	assert.notEqual(pushIdx, -1);
+	const between = output.slice(
+		Math.min(emitIdx, pushIdx),
+		Math.max(emitIdx, pushIdx),
+	);
+	assert.equal(between.includes("function "), false);
+});
+
+test("drained dynamic_skill attachment carries renderer-consumed fields", async () => {
+	const ast = parse(FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	// Locate the injected drain loop and assert its pushed object uses the field
+	// names the upstream renderer reads, so a renderer rename is caught here.
+	const drainIdx = output.indexOf("__ccPathActivations.splice(0)");
+	assert.notEqual(drainIdx, -1);
+	const drainTail = output.slice(drainIdx, drainIdx + 400);
+	assert.ok(drainTail.includes('type: "dynamic_skill"'));
+	assert.ok(drainTail.includes("skillNames:"));
+	assert.ok(drainTail.includes("displayPath:"));
+	assert.ok(drainTail.includes(".names"));
+	assert.ok(drainTail.includes(".file"));
+});
+
+test("matcher wrap targets only the conditionalSkills function among decoys", async () => {
+	const ast = parse(
+		`
+function decoy(H) {
+  let q = [];
+  for (let z of H) if (z) q.push(z);
+  if (q.length > 0) emitter.emit();
+  return q;
+}
+${FIXTURE}`,
+	);
+	await runViaPasses(ast);
+	const output = print(ast);
+	// Exactly one record injection, and it is in the real matcher, not the decoy.
+	assert.equal(output.split("__ccPathActivations.push(").length - 1, 1);
+	const decoyStart = output.indexOf("function decoy(");
+	const decoyEnd = output.indexOf("function activate(");
+	const decoyBody = output.slice(decoyStart, decoyEnd);
+	assert.equal(decoyBody.includes("__ccPathActivations.push("), false);
+});
+
+test("dedup key uses NUL separators for injectivity", async () => {
+	const ast = parse(FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	// The key must separate file/name and join names with a NUL escape, never a
+	// comma, so a name containing a comma cannot forge a multi-name key. The
+	// generator emits the separator as the escaped text "\\u0000".
+	const keyIdx = output.indexOf("q.slice().sort().join(");
+	assert.notEqual(keyIdx, -1);
+	const keyExpr = output.slice(keyIdx - 80, keyIdx + 40);
+	assert.ok(keyExpr.includes("\\u0000"));
+});

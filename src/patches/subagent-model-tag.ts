@@ -125,6 +125,22 @@ function testContainsSubagentModelEnvGuard(test: t.Expression): boolean {
 	return false;
 }
 
+/**
+ * Stricter verify-side shape: the mutator emits `(originalTest) &&
+ * !process.env.CLAUDE_CODE_SUBAGENT_MODEL`, so the guard is always the right
+ * operand of a top-level `&&`. Requiring that position (rather than accepting
+ * the guard anywhere among the flattened operands) closes the gap where an
+ * unrelated top-level operand could satisfy the looser presence check.
+ */
+function isRightmostSubagentModelEnvGuard(test: t.Expression): boolean {
+	if (!t.isLogicalExpression(test, { operator: "&&" })) return false;
+	const right = test.right;
+	return (
+		t.isUnaryExpression(right, { operator: "!" }) &&
+		isProcessEnvMember(right.argument, "CLAUDE_CODE_SUBAGENT_MODEL")
+	);
+}
+
 function flattenLogicalAnd(node: t.Expression): t.Expression[] {
 	if (t.isLogicalExpression(node, { operator: "&&" })) {
 		return [...flattenLogicalAnd(node.left), ...flattenLogicalAnd(node.right)];
@@ -227,14 +243,24 @@ export const subagentModelTag: Patch = {
 
 		let patchedCount = 0;
 		let unpatchedCount = 0;
+		// Patched branches whose guard sits in the exact position the mutator
+		// emits it (rightmost operand of a top-level &&), distinguishing a real
+		// mutation from a guard that merely appears somewhere in the test.
+		let rightShapeCount = 0;
 
 		traverse(verifyAst, {
 			IfStatement(path) {
 				if (!isCandidate(path)) return;
 
 				const isGuarded = testContainsSubagentModelEnvGuard(path.node.test);
-				if (isGuarded) patchedCount++;
-				else unpatchedCount++;
+				if (isGuarded) {
+					patchedCount++;
+					if (isRightmostSubagentModelEnvGuard(path.node.test)) {
+						rightShapeCount++;
+					}
+				} else {
+					unpatchedCount++;
+				}
 			},
 		});
 
@@ -247,6 +273,9 @@ export const subagentModelTag: Patch = {
 		}
 		if (patchedCount === 0) {
 			return "Agent model tag branch found but not patched";
+		}
+		if (rightShapeCount !== 1) {
+			return "Agent model tag guard is not in the expected position";
 		}
 		return true;
 	},

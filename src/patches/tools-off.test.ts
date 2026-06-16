@@ -308,3 +308,121 @@ const remoteRoutineExample = {
 	);
 	assert.equal(disableTools.verify(output, ast), true);
 });
+
+// ---------------------------------------------------------------------------
+// Variable-indirection tool resolution (the shape the live bundle uses)
+// ---------------------------------------------------------------------------
+
+test("tools-off disables tools whose name resolves through a variable binding", async () => {
+	const input = `
+var TOOL_GREP = "Grep";
+var TOOL_GLOB = "Glob";
+var TOOL_WS = "WebSearch";
+var TOOL_WF = "WebFetch";
+var TOOL_NB = "NotebookEdit";
+const builtinTools = [
+  { name: TOOL_GREP, description: "d", inputSchema: {}, prompt: "p", call() {} },
+  { name: TOOL_GLOB, description: "d", inputSchema: {}, prompt: "p", call() {} },
+  { name: TOOL_WS, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return true; }, call() {} },
+  { name: TOOL_WF, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return true; }, call() {} },
+  { name: TOOL_NB, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return true; }, call() {} },
+];
+const skillConfig = { filePatternTools: ["Read", "Bash"] };
+`;
+	const stringPatched = disableTools.string?.(input) ?? input;
+	const ast = parse(stringPatched);
+	await runToolsOffViaPasses(ast);
+	// verify() resolves names via the same var-binding path the live bundle needs.
+	assert.equal(disableTools.verify(print(ast), ast), true);
+});
+
+test("tools-off appends isEnabled when absent and replaces a truthy isEnabled (var-indirection)", async () => {
+	const input = `
+var TOOL_GREP = "Grep";
+var TOOL_WS = "WebSearch";
+const builtinTools = [
+  // No isEnabled -> mutator must APPEND a disabled one.
+  { name: TOOL_GREP, description: "d", inputSchema: {}, prompt: "p", call() {} },
+  // Live-gate truthy isEnabled -> mutator must REPLACE with return false.
+  { name: TOOL_WS, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return someGate() && otherGate(); }, call() {} },
+];
+`;
+	const ast = parse(disableTools.string?.(input) ?? input);
+	await runToolsOffViaPasses(ast);
+	const out = print(ast);
+	// Both tool objects must now expose a hard-false isEnabled and no truthy gate survives.
+	assert.doesNotMatch(out, /isEnabled\(\)\s*\{\s*return someGate/);
+	// Exactly two disabled isEnabled bodies (one appended, one replaced).
+	const disabledCount = (
+		out.match(/isEnabled\(\)\s*\{\s*return\s+(?:false|!1)\s*;?\s*\}/g) ?? []
+	).length;
+	assert.ok(
+		disabledCount >= 2,
+		`expected >=2 disabled isEnabled bodies, got ${disabledCount}`,
+	);
+});
+
+test("tools-off strips disabled tools from inline comma-separated allowed-tools lines", () => {
+	const input = [
+		"allowed-tools: ${Z8z}, Read, Glob, Grep, LS, Task",
+		"allowed-tools: Read, Grep, Bash(git:*)",
+	].join("\n");
+	const out = disableTools.string?.(input) ?? input;
+	// Disabled tools gone from inline allowed-tools lines.
+	assert.doesNotMatch(out, /allowed-tools:[^\n]*\bGlob\b/);
+	assert.doesNotMatch(out, /allowed-tools:[^\n]*\bGrep\b/);
+	// Surrounding tools and the interpolation are preserved.
+	assert.equal(out.includes("allowed-tools: ${Z8z}, Read, LS, Task"), true);
+	assert.equal(out.includes("allowed-tools: Read, Bash(git:*)"), true);
+});
+
+test("tools-off verify rejects a target tool left enabled (var-indirection, mutator skipped)", () => {
+	// All five target tools are present; only Glob is left enabled. The other
+	// four are already disabled so verify's tool loop reaches Glob and fails on
+	// it. The string phase runs but the AST mutator does not, so Glob stays on.
+	const input = `
+var TOOL_GREP = "Grep";
+var TOOL_GLOB = "Glob";
+var TOOL_WS = "WebSearch";
+var TOOL_WF = "WebFetch";
+var TOOL_NB = "NotebookEdit";
+const builtinTools = [
+  { name: TOOL_GREP, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+  { name: TOOL_GLOB, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return true; }, call() {} },
+  { name: TOOL_WS, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+  { name: TOOL_WF, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+  { name: TOOL_NB, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+];
+const skillConfig = { filePatternTools: ["Read", "Bash"] };
+`;
+	// Run only the string phase; do NOT run the AST mutator, so Glob stays enabled.
+	const ast = parse(disableTools.string?.(input) ?? input);
+	const result = disableTools.verify(print(ast), ast);
+	assert.notEqual(result, true);
+	// The per-object disablement check reports the enabled Glob registration.
+	assert.match(
+		String(result),
+		/Glob (?:is not disabled|has an enabled registration)/,
+	);
+});
+
+test("tools-off verify rejects a second still-enabled registration of an already-disabled tool", () => {
+	// Glob is registered twice: one disabled, one still enabled. A name-keyed
+	// check would pass (it saw a disabled Glob), but the live tool must be off
+	// everywhere it is registered.
+	const input = `
+const builtinTools = [
+  { name: "Grep", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+  { name: "WebSearch", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+  { name: "WebFetch", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+  { name: "NotebookEdit", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+  { name: "Glob", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+  { name: "Glob", description: "d2", inputSchema: {}, prompt: "p", isEnabled() { return true; }, call() {} },
+];
+const skillConfig = { filePatternTools: ["Read", "Bash"] };
+`;
+	const ast = parse(disableTools.string?.(input) ?? input);
+	const result = disableTools.verify(print(ast), ast);
+	assert.notEqual(result, true);
+	assert.match(String(result), /Glob has an enabled registration/);
+});

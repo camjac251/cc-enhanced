@@ -94,3 +94,60 @@ test("sys-prompt-file is idempotent when auto-append guard already exists", asyn
 	assert.equal(firstPass, secondPass);
 	assert.equal(systemPromptFile.verify(secondPass, ast2), true);
 });
+
+test("sys-prompt-file injects exactly one auto-append guard", async () => {
+	const ast = parse(SYS_PROMPT_FILE_FIXTURE);
+	await runSystemPromptFileViaPasses(ast);
+	const output = print(ast);
+	const guardCount =
+		output.split("process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE").length -
+		1;
+	assert.equal(guardCount, 1);
+	const assignCount =
+		output.split("M.appendSystemPromptFile = resolvedSystemPromptFile").length -
+		1;
+	assert.equal(assignCount, 1);
+});
+
+test("sys-prompt-file existsSync guard uses the readFileSync source object", async () => {
+	const ast = parse(SYS_PROMPT_FILE_FIXTURE);
+	await runSystemPromptFileViaPasses(ast);
+	const output = print(ast);
+	// The fixture reads via `fs.readFileSync`; the synthesized guard must call
+	// existsSync on that same object, not a bare/global existsSync.
+	assert.equal(
+		output.includes("fs.existsSync(resolvedSystemPromptFile)"),
+		true,
+	);
+	assert.equal(output.includes(" existsSync(resolvedSystemPromptFile)"), false);
+});
+
+test("sys-prompt-file patches the bare-call readFileSync form", async () => {
+	const bareCallFixture = `
+function handleAppend(M) {
+  let GH;
+  if (M.appendSystemPromptFile) {
+    if (M.appendSystemPrompt) throw new Error("conflict");
+    try {
+      let V$ = path.resolve(M.appendSystemPromptFile);
+      fs.readFileSync(V$, "utf8");
+    } catch (V$) {
+      throw V$;
+    }
+  }
+  return GH;
+}
+`;
+	const ast = parse(bareCallFixture);
+	await runSystemPromptFileViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes("process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE"),
+		true,
+	);
+	assert.equal(
+		output.includes("fs.existsSync(resolvedSystemPromptFile)"),
+		true,
+	);
+	assert.equal(systemPromptFile.verify(output, ast), true);
+});

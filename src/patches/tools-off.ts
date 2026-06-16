@@ -574,7 +574,12 @@ export const disableTools: Patch = {
 	verify: (code, ast) => {
 		if (!ast) return "Missing AST for tools-off verification";
 
-		const disabledTools = new Set<string>();
+		// Track disablement per tool-object, not just per name. A name-keyed Set
+		// would pass if any single registration of a tool is disabled, masking a
+		// second still-enabled registration of the same tool. Require that every
+		// tool-shaped object carrying a target name is disabled.
+		const toolObjectTotals = new Map<string, number>();
+		const toolObjectDisabled = new Map<string, number>();
 		traverse(ast, {
 			ObjectExpression(path: any) {
 				const nameProp = path.node.properties.find(
@@ -586,6 +591,11 @@ export const disableTools: Patch = {
 				if (!toolName || !TARGET_TOOLS.has(toolName)) return;
 				if (!isLikelyToolObject(path.node)) return;
 
+				toolObjectTotals.set(
+					toolName,
+					(toolObjectTotals.get(toolName) ?? 0) + 1,
+				);
+
 				const isEnabledProp = path.node.properties.find(
 					(p: any) =>
 						(t.isObjectProperty(p) || t.isObjectMethod(p)) &&
@@ -593,13 +603,21 @@ export const disableTools: Patch = {
 				) as t.ObjectProperty | t.ObjectMethod | undefined;
 
 				if (isIsEnabledDisabled(isEnabledProp)) {
-					disabledTools.add(toolName);
+					toolObjectDisabled.set(
+						toolName,
+						(toolObjectDisabled.get(toolName) ?? 0) + 1,
+					);
 				}
 			},
 		});
 		for (const tool of TARGET_TOOLS) {
-			if (!disabledTools.has(tool)) {
+			const total = toolObjectTotals.get(tool) ?? 0;
+			if (total === 0) {
 				return `Tool ${tool} is not disabled via isEnabled`;
+			}
+			const disabled = toolObjectDisabled.get(tool) ?? 0;
+			if (disabled < total) {
+				return `Tool ${tool} has an enabled registration (${total - disabled} of ${total} not disabled via isEnabled)`;
 			}
 		}
 

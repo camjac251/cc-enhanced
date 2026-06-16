@@ -168,3 +168,123 @@ function renderMemoryWriteResult(H, A) {
 		`Expected classification preservation failure, got: ${result}`,
 	);
 });
+
+test("no-collapse mutator is single-shot: a second guard site is left unpatched", async () => {
+	const twoGuardFixture = `
+function classifyToolResult(H, $, A) {
+  var obj = { type: H.type, name: H.name };
+  return {
+    isSearch: obj.isSearch,
+    isRead: obj.isRead,
+    isREPL: obj.isREPL,
+    isMemoryWrite: obj.isMemoryWrite,
+    isCollapsible: obj.isSearch || obj.isRead
+  };
+}
+function guardOne(H) {
+  var A = classifyToolResult(H, null, null);
+  if (A.isCollapsible || A.isREPL) {
+    return { isSearch: A.isSearch, isRead: A.isRead, isREPL: A.isREPL, isMemoryWrite: A.isMemoryWrite };
+  }
+  return null;
+}
+function guardTwo(B) {
+  if (B.isCollapsible || B.isREPL) {
+    return { isSearch: B.isSearch, isRead: B.isRead, isREPL: B.isREPL, isMemoryWrite: B.isMemoryWrite };
+  }
+  return null;
+}
+function renderMemoryWriteResult(H, A) {
+  return { filePath: A, isCollapsible: !0, isMemoryWrite: !0, isSearch: !1, isRead: !1, isREPL: !1 };
+}
+`;
+	const ast = parse(twoGuardFixture);
+	await runNoCollapseViaPasses(ast);
+	const output = print(ast);
+	// Exactly one guard is rewritten; the second original guard survives.
+	const patchedCount = output.split("isREPL || ").length - 1;
+	const originalCount = output.split("isCollapsible || ").length - 1;
+	assert.equal(
+		patchedCount,
+		1,
+		"only the first guard should be rewritten (single-shot)",
+	);
+	assert.equal(
+		originalCount,
+		1,
+		"the second guard is left in its original shape (documents the limitation)",
+	);
+});
+
+test("no-collapse verify tolerates a conditional-expression factory isCollapsible value", async () => {
+	const conditionalValueFixture = `
+function classifyToolResult(H, $, A) {
+  var obj = { type: H.type, name: H.name };
+  return {
+    isSearch: obj.isSearch,
+    isRead: obj.isRead,
+    isList: obj.isList,
+    isREPL: obj.isREPL,
+    isMemoryWrite: obj.isMemoryWrite,
+    isCollapsible: obj.isSearch ? !0 : obj.isRead
+  };
+}
+function getCollapseMetadata(H) {
+  if (H && H.type === "tool_use" && H.name) {
+    var A = classifyToolResult(H, null, null);
+    if (A.isCollapsible || A.isREPL) {
+      return { isSearch: A.isSearch, isRead: A.isRead, isREPL: A.isREPL, isMemoryWrite: A.isMemoryWrite };
+    }
+  }
+  return null;
+}
+function renderMemoryWriteResult(H, A) {
+  return { filePath: A, isCollapsible: !0, isMemoryWrite: !0, isSearch: !1, isRead: !1, isREPL: !1 };
+}
+`;
+	const ast = parse(conditionalValueFixture);
+	await runNoCollapseViaPasses(ast);
+	const output = print(ast);
+	// Conditional-valued isCollapsible is preserved verbatim (not mutated).
+	assert.equal(
+		output.includes("isCollapsible: obj.isSearch ? !0 : obj.isRead"),
+		true,
+	);
+	// And verify accepts it: non-literal value plus four sibling props.
+	assert.equal(noCollapse.verify(output, ast), true);
+});
+
+test("no-collapse verify rejects a literal factory isCollapsible value even with all sibling props present", () => {
+	const literalValueFixture = `
+function classifyToolResult(H, $, A) {
+  return {
+    isSearch: !1,
+    isRead: !1,
+    isList: !1,
+    isREPL: !1,
+    isMemoryWrite: !1,
+    isCollapsible: !0
+  };
+}
+function getCollapseMetadata(H) {
+  if (H && H.type === "tool_use" && H.name) {
+    var A = classifyToolResult(H, null, null);
+    if (A.isREPL || A.isMemoryWrite) {
+      return { isSearch: A.isSearch, isRead: A.isRead, isREPL: A.isREPL, isMemoryWrite: A.isMemoryWrite };
+    }
+  }
+  return null;
+}
+function renderMemoryWriteResult(H, A) {
+  return { filePath: A, isCollapsible: !1, isMemoryWrite: !1, isSearch: !1, isRead: !1, isREPL: !1 };
+}
+`;
+	const ast = parse(literalValueFixture);
+	const result = noCollapse.verify(literalValueFixture, ast);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("Result-object factory isCollapsible"),
+		true,
+		`Expected factory-preservation failure for literal value, got: ${result}`,
+	);
+});

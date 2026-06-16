@@ -12,8 +12,6 @@ const MODERN_FIND_GREP_TOOL =
 const MODERN_BROAD_EXPLORATION =
 	"For broad codebase exploration or research that'll take more than $1 queries, spawn $2 with subagent_type=$3. Otherwise choose by intent: Serena for known symbols, ChunkHound for conceptual search, Probe for known terms, ast-grep MCP/sg for structural patterns and code rewrites, and \\`rg\\` only for non-code text directly.";
 
-const LEGACY_BROAD_EXPLORATION_SIGNAL =
-	"For broad codebase exploration or research that'll take more than";
 const LEGACY_OTHERWISE_TAIL_RE = /Otherwise use \$\{[^}]+\} directly\./;
 const LEGACY_FIND_GREP_TOOL_SIGNAL_RE =
 	/\\`find\\` or \\`grep\\` via the \$\{[^}]+\} tool/;
@@ -37,15 +35,23 @@ export const sessionGuidance: Patch = {
 		const MODERN_FIND_GREP_TOOL_FULL =
 			/`code-search routing \(Serena, ChunkHound, Probe, ast-grep MCP\/sg\) or \\`rg\\` for non-code text via the \$\{[^}]+\} tool`/;
 
-		const hasLegacySentenceStart = code.includes(
-			LEGACY_BROAD_EXPLORATION_SIGNAL,
-		);
+		// Trigger detection per surface. The legacy broad-exploration sentence
+		// is uniquely identified by its "Otherwise use ${...} directly." tail
+		// (the modern sentence keeps the shared prefix but rewrites this tail),
+		// so the tail is the precise legacy signal. Keying the trigger on the
+		// full legacy/modern surfaces rather than the shared prefix substring
+		// avoids tripping on incidental prose that merely reuses the prefix.
 		const hasLegacyOtherwiseTail = LEGACY_OTHERWISE_TAIL_RE.test(code);
 		const hasLegacyFindGrepTool = LEGACY_FIND_GREP_TOOL_SIGNAL_RE.test(code);
 		const hasModernFull = MODERN_BROAD_EXPLORATION_FULL.test(code);
 		const hasModernFindGrepFull = MODERN_FIND_GREP_TOOL_FULL.test(code);
 
-		if (!hasLegacySentenceStart && !hasModernFull && !hasModernFindGrepFull) {
+		const touchesGuidanceSurface =
+			hasLegacyOtherwiseTail ||
+			hasLegacyFindGrepTool ||
+			hasModernFull ||
+			hasModernFindGrepFull;
+		if (!touchesGuidanceSurface) {
 			return true;
 		}
 

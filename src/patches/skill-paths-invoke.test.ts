@@ -203,3 +203,67 @@ function unrelated() {
 		"Could not find the path-scoped skill loader",
 	);
 });
+
+test("only the final unconditional return is merged, early returns untouched", async () => {
+	const MULTI_RETURN_LOADER = `
+function loadSkills() {
+  let discovered = discoverSkills();
+  if (reducedMode()) return [];
+  let unconditional = [], conditional = [];
+  for (let entry of discovered)
+    if (
+      entry.type === "prompt" &&
+      entry.paths &&
+      entry.paths.length > 0 &&
+      !state.activatedConditionalSkillNames.has(entry.name)
+    )
+      conditional.push(entry);
+    else unconditional.push(entry);
+  if (conditional.length > 0)
+    log(\`\${conditional.length} conditional skills stored (activated when matching files are touched)\`);
+  return unconditional;
+}
+`;
+	const ast = parse(MULTI_RETURN_LOADER);
+	await runSkillPathsInvokeViaPasses(ast);
+	const output = print(ast);
+	// Final return is merged exactly once; the early empty-array return is left alone.
+	assert.equal(
+		output.includes("return [...unconditional, ...conditional]"),
+		true,
+	);
+	assert.equal(
+		output.split("[...unconditional, ...conditional]").length - 1,
+		1,
+	);
+	assert.match(output, /if \(reducedMode\(\)\)\s*return \[\];/);
+});
+
+test("ambiguous double path-bucket if/else leaves the loader unpatched", async () => {
+	const AMBIGUOUS_LOADER = `
+function loadSkills() {
+  let discovered = discoverSkills();
+  let unconditional = [], conditional = [];
+  for (let entry of discovered)
+    if (entry.paths && entry.paths.length > 0 && !state.activatedConditionalSkillNames.has(entry.name))
+      conditional.push(entry);
+    else unconditional.push(entry);
+  let extraA = [], extraB = [];
+  for (let entry of discovered)
+    if (entry.paths && !state.activatedConditionalSkillNames.has(entry.name))
+      extraA.push(entry);
+    else extraB.push(entry);
+  if (conditional.length > 0)
+    log(\`\${conditional.length} conditional skills stored (activated when matching files are touched)\`);
+  return unconditional;
+}
+`;
+	const ast = parse(AMBIGUOUS_LOADER);
+	await runSkillPathsInvokeViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.includes("[...unconditional, ...conditional]"), false);
+	assert.equal(
+		skillPathsInvoke.verify(output, ast),
+		"Path-scoped skill loader is missing the merged skill return",
+	);
+});

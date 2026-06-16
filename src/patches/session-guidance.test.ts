@@ -66,3 +66,53 @@ test("session-guidance is idempotent across runs", () => {
 	const second = sessionGuidance.string?.(first) ?? first;
 	assert.equal(first, second);
 });
+
+test("session-guidance produces exactly one modern surface of each kind", () => {
+	const output = sessionGuidance.string?.(VANILLA_FIXTURE) ?? VANILLA_FIXTURE;
+	const broadCount =
+		output.split("Otherwise choose by intent: Serena for known symbols")
+			.length - 1;
+	const helperCount =
+		output.split(
+			"code-search routing (Serena, ChunkHound, Probe, ast-grep MCP/sg)",
+		).length - 1;
+	assert.equal(broadCount, 1);
+	assert.equal(helperCount, 1);
+});
+
+test("session-guidance converts every legacy occurrence, not just the first", () => {
+	const doubled = `${VANILLA_FIXTURE}\n${VANILLA_FIXTURE}`;
+	const output = sessionGuidance.string?.(doubled) ?? doubled;
+	assert.equal(output.includes("Otherwise use ${z} directly."), false);
+	assert.equal(
+		output.includes("\\`find\\` or \\`grep\\` via the ${Wq} tool"),
+		false,
+	);
+	const broadCount =
+		output.split("Otherwise choose by intent: Serena for known symbols")
+			.length - 1;
+	assert.equal(broadCount, 2);
+});
+
+test("session-guidance modern find/grep helper preserves the captured tool placeholder", () => {
+	const output = sessionGuidance.string?.(VANILLA_FIXTURE) ?? VANILLA_FIXTURE;
+	assert.equal(
+		output.includes(
+			"code-search routing (Serena, ChunkHound, Probe, ast-grep MCP/sg) or \\`rg\\` for non-code text via the ${Wq} tool",
+		),
+		true,
+	);
+});
+
+test("session-guidance verify flags legacy find/grep helper when broad sentence already modern", () => {
+	const patched = sessionGuidance.string?.(VANILLA_FIXTURE) ?? VANILLA_FIXTURE;
+	const halfReverted = patched.replace(
+		"code-search routing (Serena, ChunkHound, Probe, ast-grep MCP/sg) or \\`rg\\` for non-code text via the ${Wq} tool",
+		"\\`find\\` or \\`grep\\` via the ${Wq} tool",
+	);
+	const result = sessionGuidance.verify(halfReverted);
+	assert.equal(
+		result,
+		"Session guidance still routes fallback exploration through find/grep",
+	);
+});

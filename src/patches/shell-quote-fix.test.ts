@@ -53,3 +53,70 @@ test("shell-quote-fix is idempotent", async () => {
 	const twice = await applyShellQuoteFix(once);
 	assert.equal(once, twice);
 });
+
+test("shell-quote-fix verify rejects patched patterns outside a .replace() call", () => {
+	const NO_REPLACE = `
+function quote(s) {
+  const a = ${NEW_DQUOTE_SOURCE};
+  const b = ${NEW_BARE_SOURCE};
+  return a.test(s) || b.test(s);
+}
+`;
+	const ast = parse(NO_REPLACE);
+	const result = shellQuoteFix.verify(print(ast), ast);
+	assert.equal(typeof result, "string");
+	assert.match(
+		result as string,
+		/is not the first argument to a \.replace\(\) call/,
+	);
+});
+
+test("shell-quote-fix verify requires the patched regex to be the first .replace() argument", () => {
+	const SECOND_ARG = `
+function quote(s) {
+  s.replace("x", ${NEW_DQUOTE_SOURCE});
+  s.replace("y", ${NEW_BARE_SOURCE});
+}
+`;
+	const ast = parse(SECOND_ARG);
+	const result = shellQuoteFix.verify(print(ast), ast);
+	assert.equal(typeof result, "string");
+	assert.match(
+		result as string,
+		/is not the first argument to a \.replace\(\) call/,
+	);
+});
+
+test("shell-quote-fix verify requires both patched callsites in a shared enclosing function", () => {
+	const SPLIT_FNS = `
+function quoteDouble(s) {
+  return s.replace(${NEW_DQUOTE_SOURCE}, "\\\\$1");
+}
+function quoteBare(s) {
+  return s.replace(${NEW_BARE_SOURCE}, "$1\\\\$2");
+}
+`;
+	const ast = parse(SPLIT_FNS);
+	const result = shellQuoteFix.verify(print(ast), ast);
+	assert.equal(typeof result, "string");
+	assert.match(result as string, /shared enclosing function/);
+});
+
+test("shell-quote-fix verify accepts extra coincidental matched literals", () => {
+	// A second RegExpLiteral matching the same character class elsewhere is
+	// not a defect: the OLD-absence checks already guarantee no unpatched
+	// escape site survives, and the real quoting helper still anchors both
+	// fixes in a shared function.
+	const EXTRA = `
+function quote(s) {
+  s.replace(${NEW_DQUOTE_SOURCE}, "\\\\$1");
+  s.replace(${NEW_BARE_SOURCE}, "$1\\\\$2");
+}
+function unrelated(x) {
+  const decoy = ${NEW_DQUOTE_SOURCE};
+  return decoy.test(x);
+}
+`;
+	const ast = parse(EXTRA);
+	assert.equal(shellQuoteFix.verify(print(ast), ast), true);
+});

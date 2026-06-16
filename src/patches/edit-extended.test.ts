@@ -90,6 +90,15 @@ function readStateGuardSkipped() {
   return false;
 }
 
+function editReadStatePrecondition({ absoluteFilePath: H, fileContents: F, lastRead: q, oldString: K, replaceAll: R, model: M }) {
+  if (!q) {
+    if (readStateGuardSkipped()) return false;
+    throw new FileStateError("File must be read first");
+  }
+  if (Date.now() <= q.timestamp) return false;
+  throw new FileStateError("File content has changed since it was last read.");
+}
+
 const WriteTool = {
   name: "Write",
   validateInput({ file_path: A, content: B }, context) {
@@ -387,6 +396,33 @@ test("edit-extended bypasses ideDiffSupport.getConfig for structured edit confir
 			"ideDiffSupport ? _claudeEditHasExtendedFields(_claudeDecodeExtendedEditTransport(parsed)) ? null : ideDiffSupport.getConfig(parsed) : null",
 		),
 		true,
+	);
+});
+
+test("edit-extended neutralizes the relocated read-state helper's not-read throw", async () => {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const out: any = parse(print(ast));
+
+	const helper = out.program.body.find(
+		(s: any) =>
+			s.type === "FunctionDeclaration" &&
+			s.params[0]?.type === "ObjectPattern" &&
+			s.params[0].properties.some((p: any) => p.key?.name === "lastRead"),
+	);
+	assert.ok(helper, "fixture must model the relocated read-state helper");
+
+	const notRead = helper.body.body.find(
+		(s: any) =>
+			s.type === "IfStatement" &&
+			s.test.type === "UnaryExpression" &&
+			s.test.operator === "!",
+	);
+	assert.ok(notRead, "helper must have an if(!lastRead) guard");
+	assert.equal(
+		JSON.stringify(notRead.consequent).includes("ThrowStatement"),
+		false,
+		"not-read branch must not throw after patching",
 	);
 });
 

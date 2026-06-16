@@ -599,6 +599,94 @@ test("cache-tail-policy caps cache_control blocks in the live request builder an
 	);
 });
 
+test("cache-tail-policy does not match a request object whose tools/tool_choice are conditional spreads", async () => {
+	const SPREAD_KEY_BUILDER = `
+function buildSpreadRequest(model, messages, system, tools, toolChoice) {
+  return {
+    model,
+    messages,
+    system,
+    metadata: {},
+    max_tokens: 1024,
+    ...(tools && { tools }),
+    ...(toolChoice && { tool_choice: toolChoice }),
+  };
+}
+`;
+	const ast = parse(CACHE_TAIL_FIXTURE + SPREAD_KEY_BUILDER);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	// The spread-key builder must NOT receive the cache_control cap injection.
+	assert.equal(
+		output.includes("cacheControlExcess"),
+		false,
+		"object with conditional-spread tools/tool_choice must not be treated as the live request builder",
+	);
+});
+
+test("cache-tail-policy injects the live request builder cap exactly once even with a second request-shaped object", async () => {
+	const SECOND_BUILDER = `
+function buildRequestTwo(messages, system, tools, model, maxTokens) {
+  return {
+    model: model,
+    messages: messages,
+    system: system,
+    tools: tools,
+    tool_choice: undefined,
+    metadata: {},
+    max_tokens: maxTokens,
+  };
+}
+`;
+	const ast = parse(
+		CACHE_TAIL_FIXTURE + CACHE_CONTROL_BLOCK_CAP_FIXTURE + SECOND_BUILDER,
+	);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	// Clamp helper (1) + first live request builder (1) = 2; the injector stops
+	// on the first request-builder match, so the second must stay un-injected.
+	assert.equal(
+		(output.match(/let cacheControlExcess = -4;/g) ?? []).length,
+		2,
+		"exactly one live-request-builder injection plus one clamp injection",
+	);
+	// The block-cap verifier alone must accept this output: the live builder and
+	// clamp helper each carry exactly one fixed cap, and the second request
+	// object stays un-injected. (Full verify() is not used here because this
+	// fixture intentionally omits the sysprompt/TTL surfaces.)
+	const blockCapResult = cacheTailPolicy.verify(output, parse(output));
+	assert.equal(
+		typeof blockCapResult === "string"
+			? !blockCapResult.toLowerCase().includes("cachecontrolexcess") &&
+					!blockCapResult.toLowerCase().includes("request builder") &&
+					!blockCapResult.toLowerCase().includes("request clamp")
+			: blockCapResult === true,
+		true,
+		`block-cap surface must not be the failing check, got: ${blockCapResult}`,
+	);
+});
+
+test("cache-tail-policy verify rejects sysprompt rewrite that clobbers the later org scope", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	let output = print(ast);
+	assert.equal(
+		cacheTailPolicy.verify(output, parse(output)),
+		true,
+		"fully patched passes",
+	);
+	// Force BOTH cacheScope pushes to global (the later org block is now gone).
+	output = output.replaceAll('cacheScope: "org"', 'cacheScope: "global"');
+	const result = cacheTailPolicy.verify(output, parse(output));
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes('cacheScope: "org"') ||
+			String(result).includes("org"),
+		true,
+		`Expected later-org preservation failure, got: ${result}`,
+	);
+});
+
 const NESTED_MARKER_FIXTURE = `
 function outer() {
   function nested() {

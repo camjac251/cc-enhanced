@@ -534,6 +534,61 @@ function patchReadStateGuards(ast: any): { wrappedCount: number } {
 	return { wrappedCount };
 }
 
+// Bypass the not-read throw inside the relocated Edit call-path read-state
+// precondition helper. On current upstream the Edit call delegates its
+// not-read / modified-since checks to a standalone top-level helper that takes a
+// destructured options object (absoluteFilePath, fileContents, lastRead,
+// oldString, replaceAll, model) and throws when lastRead is absent. We turn the
+// not-read branch into `return false` (not stale-recovered) so plain Edits apply
+// without a prior Read. The modified-since throw later in the helper is left to
+// upstream's own stale-recovery, which preserves concurrent-edit protection.
+function patchReadStateHelper(ast: t.File): { bypassed: number } {
+	let bypassed = 0;
+
+	traverse(ast, {
+		FunctionDeclaration(path) {
+			const [param] = path.node.params;
+			if (path.node.params.length !== 1 || !t.isObjectPattern(param)) return;
+			const keys = getObjectPatternKeySet(param);
+			if (
+				!keys.has("lastRead") ||
+				!keys.has("oldString") ||
+				!keys.has("replaceAll")
+			) {
+				return;
+			}
+			const lastReadBinding = getObjectPatternBindingName(param, "lastRead");
+			if (!lastReadBinding) return;
+
+			for (const stmt of path.node.body.body) {
+				if (!t.isIfStatement(stmt)) continue;
+				if (!t.isUnaryExpression(stmt.test, { operator: "!" })) continue;
+				if (!t.isIdentifier(stmt.test.argument, { name: lastReadBinding })) {
+					continue;
+				}
+
+				const consequent = stmt.consequent;
+				if (t.isThrowStatement(consequent)) {
+					stmt.consequent = t.returnStatement(t.booleanLiteral(false));
+					bypassed++;
+				} else if (t.isBlockStatement(consequent)) {
+					let replaced = false;
+					consequent.body = consequent.body.map((inner) => {
+						if (t.isThrowStatement(inner)) {
+							replaced = true;
+							return t.returnStatement(t.booleanLiteral(false));
+						}
+						return inner;
+					});
+					if (replaced) bypassed++;
+				}
+			}
+		},
+	});
+
+	return { bypassed };
+}
+
 // Match `if (callExpr > stateVar.timestamp)` with consequent free to be a
 // returned error or a thrown error. Idempotent: skip already-wrapped guards.
 function tryWrapMtimeGuard(ifPath: any): boolean {
@@ -1553,6 +1608,7 @@ Error recovery:
 
 	patchApprovalDialog(ast);
 	patchReadStateGuards(ast);
+	patchReadStateHelper(ast);
 	patchWriteReadStateGuards(ast);
 	patchIdeDiffConfigGuards(ast);
 
@@ -1918,24 +1974,12 @@ function hasLegacyIdeDiffConfigGuard(ast: t.File): boolean {
 	return found;
 }
 
-function hasExtendedEditPreviewPatch(ast: t.File): boolean {
-	let found = false;
-
-	traverse(ast, {
-		StringLiteral(path) {
-			if (path.node.value !== "EXTENDED_EDIT_PREVIEW_v1") return;
-			found = true;
-			path.stop();
-		},
-	});
-
-	return found;
-}
-
 function hasIdeDiffConfigGuard(ast: t.File): boolean {
 	if (hasLegacyIdeDiffConfigGuard(ast)) return true;
-	if (hasLegacyIdeDiffConfigCall(ast)) return false;
-	return hasExtendedEditPreviewPatch(ast);
+	// A present unpatched getConfig ternary is a real miss. Otherwise either our
+	// nested guard is in place or upstream has no such routing at all, and
+	// extended payloads are not sent to ideDiff.getConfig.
+	return !hasLegacyIdeDiffConfigCall(ast);
 }
 
 function hasStructuredEditInputNormalization(ast: t.File): {
@@ -2134,6 +2178,52 @@ function verifyReadStateGuards(ctx: EditVerifyContext): string | null {
 		}
 	}
 
+	return null;
+}
+
+// Positive landed-mutation check for the relocated call-path read-state helper.
+// The helper is identified by its destructured options param (lastRead +
+// oldString + replaceAll). It must exist (a loud failure if upstream reshapes
+// it, so patchReadStateHelper gets retargeted) and its not-read branch must no
+// longer throw (so the call-path read-before-edit bypass is confirmed landed,
+// not inferred from the absence of an in-body guard).
+function verifyReadStateHelper(ctx: EditVerifyContext): string | null {
+	let helperFound = false;
+	let stillThrows = false;
+
+	traverse(ctx.ast, {
+		FunctionDeclaration(path) {
+			const [param] = path.node.params;
+			if (path.node.params.length !== 1 || !t.isObjectPattern(param)) return;
+			const keys = getObjectPatternKeySet(param);
+			if (
+				!keys.has("lastRead") ||
+				!keys.has("oldString") ||
+				!keys.has("replaceAll")
+			) {
+				return;
+			}
+			const lastReadBinding = getObjectPatternBindingName(param, "lastRead");
+			if (!lastReadBinding) return;
+			helperFound = true;
+
+			for (const stmt of path.node.body.body) {
+				if (!t.isIfStatement(stmt)) continue;
+				if (!t.isUnaryExpression(stmt.test, { operator: "!" })) continue;
+				if (!t.isIdentifier(stmt.test.argument, { name: lastReadBinding })) {
+					continue;
+				}
+				if (nodeContainsReadStateThrow(stmt.consequent)) stillThrows = true;
+			}
+		},
+	});
+
+	if (!helperFound) {
+		return "Edit read-state precondition helper not found (expected a top-level options helper destructuring lastRead/oldString/replaceAll); upstream shape changed, retarget patchReadStateHelper";
+	}
+	if (stillThrows) {
+		return "Edit read-state helper still throws on not-read (call-path read-before-edit bypass did not land)";
+	}
 	return null;
 }
 
@@ -2485,6 +2575,7 @@ export const editTool: Patch = {
 			verifyEditAliasNormalization,
 			verifyIdeDiffConfigGuard,
 			verifyReadStateGuards,
+			verifyReadStateHelper,
 			verifyWriteReadStateGuards,
 			verifyEditRenderOpts,
 			verifyEditSchemaBatchEdits,
