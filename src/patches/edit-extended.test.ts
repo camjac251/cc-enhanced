@@ -33,7 +33,7 @@ async function loadPatchedEditRuntimeModule() {
 		`const toolChoice = { name: "Other" };
 const incoming = {};
 ${output}
-export { EditTool, WriteTool, EditRenderer, GenericRenderer, renderEditDialog, renderEditMessage, _claudeEditNormalizeEdits, _claudeApplyExtendedFileEdits, _claudeDecodeExtendedEditTransport, kB, Pj, S6_, yD7, jM_, v58 };`,
+export { EditTool, WriteTool, EditRenderer, GenericRenderer, editReadStatePrecondition, renderEditDialog, renderEditMessage, _claudeEditNormalizeEdits, _claudeApplyExtendedFileEdits, _claudeDecodeExtendedEditTransport, kB, Pj, S6_, yD7, jM_, v58 };`,
 		"utf8",
 	);
 
@@ -643,6 +643,43 @@ test("edit-extended runtime bypasses plain string call read-state guards", async
 			structuredPatch: [],
 		});
 		assert.deepEqual(callResult.observed, {
+			old_string: "alpha",
+			new_string: "beta",
+			replace_all: undefined,
+		});
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended runtime lets stale plain Edit proceed to content matching", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const input = {
+			file_path: "/tmp/example.txt",
+			old_string: "alpha",
+			new_string: "beta",
+			structuredPatch: [],
+		};
+		const context = {
+			readFileState: new Map([[input.file_path, { timestamp: 0 }]]),
+		};
+
+		assert.deepEqual(mod.EditTool.validateInput(input, context), {
+			result: true,
+		});
+		assert.equal(
+			mod.editReadStatePrecondition({
+				absoluteFilePath: input.file_path,
+				fileContents: "alpha",
+				lastRead: { timestamp: 0 },
+				oldString: input.old_string,
+				replaceAll: false,
+				model: "test",
+			}),
+			false,
+		);
+		assert.deepEqual(mod.EditTool.call(input, context).observed, {
 			old_string: "alpha",
 			new_string: "beta",
 			replace_all: undefined,

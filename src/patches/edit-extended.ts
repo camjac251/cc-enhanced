@@ -480,16 +480,11 @@ function resolveToolName(path: any): string | null {
 // We bypass the not-read guards UNCONDITIONALLY (test -> false) so plain
 // Edits work without a prior Read tool call -- canonicalization and the
 // edit application both read file contents from disk via
-// _claudeFs.readFileSync, not from the readFileState cache. The mtime
-// guards keep the existing batch-mode bypass via _claudeEditHasExtendedFields:
-// non-batch flows still see modified-since-read failures when a prior Read
-// is on file, which catches concurrent external edits.
-//
-// For the call form, removing the not-read throw leaves the readFileState
-// entry potentially undefined when the mtime sibling runs. We prepend
-// `IDENT &&` to the mtime test so accessing `.timestamp` short-circuits
-// safely. validateInput's mtime is already inside `if (w) { ... }` upstream,
-// so no extra guard is needed there.
+// _claudeFs.readFileSync, not from the readFileState cache. Edit is
+// content-addressed, so we also bypass the mtime-only stale-read guards and
+// let the later exact-match / ambiguity checks against current file contents
+// provide the concurrency protection. Write keeps its stale-read guard because
+// it has no old_string anchor.
 function patchReadStateGuards(ast: any): { wrappedCount: number } {
 	let wrappedCount = 0;
 
@@ -534,14 +529,15 @@ function patchReadStateGuards(ast: any): { wrappedCount: number } {
 	return { wrappedCount };
 }
 
-// Bypass the not-read throw inside the relocated Edit call-path read-state
+// Bypass the read-state throws inside the relocated Edit call-path read-state
 // precondition helper. On current upstream the Edit call delegates its
 // not-read / modified-since checks to a standalone top-level helper that takes a
 // destructured options object (absoluteFilePath, fileContents, lastRead,
 // oldString, replaceAll, model) and throws when lastRead is absent. We turn the
 // not-read branch into `return false` (not stale-recovered) so plain Edits apply
-// without a prior Read. The modified-since throw later in the helper is left to
-// upstream's own stale-recovery, which preserves concurrent-edit protection.
+// without a prior Read, and turn the direct modified-since throw into
+// `return false` so the normal current-file content checks decide whether the
+// Edit applies.
 function patchReadStateHelper(ast: t.File): { bypassed: number } {
 	let bypassed = 0;
 
@@ -583,6 +579,15 @@ function patchReadStateHelper(ast: t.File): { bypassed: number } {
 					if (replaced) bypassed++;
 				}
 			}
+
+			const body = path.node.body.body;
+			path.node.body.body = body.map((stmt, idx) => {
+				if (!isHelperStaleReadTailThrow(body, idx, lastReadBinding)) {
+					return stmt;
+				}
+				bypassed++;
+				return t.returnStatement(t.booleanLiteral(false));
+			});
 		},
 	});
 
@@ -590,11 +595,13 @@ function patchReadStateHelper(ast: t.File): { bypassed: number } {
 }
 
 // Match `if (callExpr > stateVar.timestamp)` with consequent free to be a
-// returned error or a thrown error. Idempotent: skip already-wrapped guards.
+// returned error or a thrown error. Replace the test with literal `false` so
+// stale read state never blocks Edit before current-content matching runs.
+// Idempotent: skip already-bypassed guards.
 function tryWrapMtimeGuard(ifPath: any): boolean {
 	const test = ifPath.node.test;
 
-	if (isAlreadyWrappedWithExtendedBypass(test)) return false;
+	if (t.isBooleanLiteral(test, { value: false })) return false;
 
 	if (!t.isBinaryExpression(test, { operator: ">" })) return false;
 	if (!t.isCallExpression(test.left)) return false;
@@ -602,7 +609,7 @@ function tryWrapMtimeGuard(ifPath: any): boolean {
 	if (!t.isIdentifier(test.right.object)) return false;
 	if (!isMemberPropertyName(test.right, "timestamp")) return false;
 
-	wrapIfTestWithExtendedBypass(ifPath);
+	ifPath.node.test = t.booleanLiteral(false);
 	return true;
 }
 
@@ -678,6 +685,38 @@ function nodeContainsReadStateErrorReturn(
 		return false;
 	});
 	return found;
+}
+
+function nodeContainsTimestampRead(
+	node: t.Node,
+	stateVarName: string,
+): boolean {
+	let found = false;
+	visitNodeValues(node, (candidate) => {
+		if (
+			t.isMemberExpression(candidate) &&
+			t.isIdentifier(candidate.object, { name: stateVarName }) &&
+			isMemberPropertyName(candidate, "timestamp")
+		) {
+			found = true;
+			return true;
+		}
+		return false;
+	});
+	return found;
+}
+
+function isHelperStaleReadTailThrow(
+	body: t.Statement[],
+	idx: number,
+	stateVarName: string,
+): boolean {
+	if (idx !== body.length - 1) return false;
+	if (!t.isThrowStatement(body[idx])) return false;
+	const priorStatements = body.slice(0, idx);
+	return priorStatements.some((stmt) =>
+		nodeContainsTimestampRead(stmt, stateVarName),
+	);
 }
 
 function prependStateGuardToIfTest(
@@ -895,14 +934,6 @@ function isAlreadyWrappedWithExtendedBypass(test: any): boolean {
 		return isAlreadyWrappedWithExtendedBypass(test.right);
 	}
 	return false;
-}
-
-function wrapIfTestWithExtendedBypass(ifPath: any): void {
-	ifPath.node.test = t.logicalExpression(
-		"&&",
-		t.cloneNode(ifPath.node.test),
-		t.unaryExpression("!", buildHasExtendedFieldsCall("_input")),
-	);
 }
 
 function patchIdeDiffConfigGuards(ast: t.File): void {
@@ -1603,7 +1634,7 @@ Examples:
 Error recovery:
 - "old_string matches N locations": add surrounding context or use replace_all:true
 - "String not found": re-read file and copy exact text
-- "File modified since read": run Read again, then retry Edit
+- If the file changed, re-read and update old_string to match current content
 - For large multi-site changes, prefer batch edits or multiple targeted calls`;
 
 	patchApprovalDialog(ast);
@@ -2115,7 +2146,10 @@ function verifyReadStateGuards(ctx: EditVerifyContext): string | null {
 				const test = ifPath.node.test;
 
 				if (t.isBooleanLiteral(test, { value: false })) return;
-				if (isAlreadyWrappedWithExtendedBypass(test)) return;
+				if (isAlreadyWrappedWithExtendedBypass(test)) {
+					unwrappedFound = "mtime-extended-only";
+					return;
+				}
 
 				if (
 					t.isBinaryExpression(test, { operator: ">" }) &&
@@ -2189,7 +2223,8 @@ function verifyReadStateGuards(ctx: EditVerifyContext): string | null {
 // not inferred from the absence of an in-body guard).
 function verifyReadStateHelper(ctx: EditVerifyContext): string | null {
 	let helperFound = false;
-	let stillThrows = false;
+	let stillThrowsOnNotRead = false;
+	let stillThrowsOnStaleRead = false;
 
 	traverse(ctx.ast, {
 		FunctionDeclaration(path) {
@@ -2213,7 +2248,16 @@ function verifyReadStateHelper(ctx: EditVerifyContext): string | null {
 				if (!t.isIdentifier(stmt.test.argument, { name: lastReadBinding })) {
 					continue;
 				}
-				if (nodeContainsReadStateThrow(stmt.consequent)) stillThrows = true;
+				if (nodeContainsReadStateThrow(stmt.consequent)) {
+					stillThrowsOnNotRead = true;
+				}
+			}
+
+			const body = path.node.body.body;
+			for (const [idx] of body.entries()) {
+				if (isHelperStaleReadTailThrow(body, idx, lastReadBinding)) {
+					stillThrowsOnStaleRead = true;
+				}
 			}
 		},
 	});
@@ -2221,8 +2265,11 @@ function verifyReadStateHelper(ctx: EditVerifyContext): string | null {
 	if (!helperFound) {
 		return "Edit read-state precondition helper not found (expected a top-level options helper destructuring lastRead/oldString/replaceAll); upstream shape changed, retarget patchReadStateHelper";
 	}
-	if (stillThrows) {
+	if (stillThrowsOnNotRead) {
 		return "Edit read-state helper still throws on not-read (call-path read-before-edit bypass did not land)";
+	}
+	if (stillThrowsOnStaleRead) {
+		return "Edit read-state helper still throws on stale read (content-addressed stale-read bypass did not land)";
 	}
 	return null;
 }
