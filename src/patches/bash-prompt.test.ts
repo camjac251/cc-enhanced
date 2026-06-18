@@ -311,7 +311,7 @@ function ES1(H) {
 	assert.equal(output.includes("let q = !0"), true);
 	assert.equal(output.includes("Prefer dedicated tools over"), true);
 	assert.equal(output.includes("when one fits ("), false);
-	assert.equal(output.includes("when one fits — reserve"), true);
+	assert.equal(output.includes("when one fits \\u2014 reserve"), true);
 });
 
 test("bash-prompt forces a logical (&&) gate test inside an array spread", async () => {

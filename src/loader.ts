@@ -32,6 +32,40 @@ const GENERATOR_OPTIONS = {
 	compact: false,
 } satisfies GeneratorOptions;
 
+function escapeNonAsciiForBundle(code: string): string {
+	let result = "";
+	let segmentStart = 0;
+
+	for (let index = 0; index < code.length; index += 1) {
+		const codeUnit = code.charCodeAt(index);
+		if (codeUnit <= 0x7f) {
+			continue;
+		}
+
+		result += code.slice(segmentStart, index);
+
+		if (codeUnit >= 0xd800 && codeUnit <= 0xdbff && index + 1 < code.length) {
+			const nextCodeUnit = code.charCodeAt(index + 1);
+			if (nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
+				result += `\\u${codeUnit.toString(16).padStart(4, "0")}`;
+				result += `\\u${nextCodeUnit.toString(16).padStart(4, "0")}`;
+				index += 1;
+				segmentStart = index + 1;
+				continue;
+			}
+		}
+
+		result += `\\u${codeUnit.toString(16).padStart(4, "0")}`;
+		segmentStart = index + 1;
+	}
+
+	if (!result) {
+		return code;
+	}
+
+	return result + code.slice(segmentStart);
+}
+
 function parseWithSourceType(
 	code: string,
 	sourceType: ParseSourceType,
@@ -76,5 +110,5 @@ export function parse(code: string, options: ParseOptions = {}): t.File {
 }
 
 export function print(ast: t.Node | t.File): string {
-	return generator(ast, GENERATOR_OPTIONS).code;
+	return escapeNonAsciiForBundle(generator(ast, GENERATOR_OPTIONS).code);
 }

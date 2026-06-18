@@ -368,6 +368,14 @@ async function getPatchedDelegationOutput(): Promise<string> {
 	return output;
 }
 
+test("read-bat verifies escaped render option labels", async () => {
+	const output = await getPatchedDelegationOutput();
+
+	assert.equal(output.includes("\\u00b7 pages "), true);
+	assert.equal(output.includes("\\u00b7 range: "), true);
+	assert.equal(readWithBat.verify(output), true);
+});
+
 async function loadPatchedReadRuntimeModule() {
 	const ast = parse(READ_RUNTIME_FIXTURE);
 	await runReadWithBatViaPasses(ast);

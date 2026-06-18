@@ -278,7 +278,7 @@ test("effort-stack wraps ultracode description in env-aware conditional", async 
 	const output = print(ast);
 	assert.equal(
 		output.includes(
-			'String(process.env.CLAUDE_CODE_EFFORT_LEVEL).toLowerCase() === "max" ? `${ULTRACODE_ICON} ultracode · max effort + dynamic workflows for maximum thoroughness` : `${ULTRACODE_ICON} ultracode · xhigh effort + dynamic workflows for maximum thoroughness`',
+			'String(process.env.CLAUDE_CODE_EFFORT_LEVEL).toLowerCase() === "max" ? `${ULTRACODE_ICON} ultracode \\u00b7 max effort + dynamic workflows for maximum thoroughness` : `${ULTRACODE_ICON} ultracode \\u00b7 xhigh effort + dynamic workflows for maximum thoroughness`',
 		),
 		true,
 	);

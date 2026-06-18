@@ -33,6 +33,20 @@ test("loader round-trips parsed output", () => {
 	assert.equal(output.includes("const answer = 42;"), true);
 });
 
+test("loader prints escaped non-ASCII bundle output", () => {
+	const ast = parse(
+		'const español = "français"; const labels = { 日本語: "한국어", rocket: "🚀" };',
+	);
+	const output = print(ast);
+
+	assert.equal(/[^\x00-\x7f]/.test(output), false);
+	assert.equal(output.includes("\\u00f1"), true);
+	assert.equal(output.includes("\\u00e7"), true);
+	assert.equal(output.includes("\\u65e5\\u672c\\u8a9e"), true);
+	assert.equal(output.includes("\\ud83d\\ude80"), true);
+	assert.doesNotThrow(() => parse(output));
+});
+
 test("loader can parse a detected installed Claude bundle when available", (t) => {
 	const detected = detectInstalledClaudeTarget();
 	if (!detected) {

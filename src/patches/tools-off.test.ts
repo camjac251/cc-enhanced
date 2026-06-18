@@ -165,10 +165,11 @@ test("tools-off rewrites REPL disabled-tool examples", () => {
 	const input = [
 		"const prompt = `",
 		"const { filenames } = await Glob({ pattern: 'src/**/*.ts' })",
-		"All tools work as async functions: \\`Read\\`, \\`Write\\`, \\`Edit\\`, \\`Glob\\`, \\`Grep\\`, \\`${q}\\`, etc.",
+		"All tools work as async functions: \\`Read\\`, \\`Write\\`, \\`Edit\\`, \\`Glob\\`, \\`Grep\\`, \\`${bashTool}\\`, etc.",
 		"const { filenames } = await Glob({ pattern: '*.ts' })",
 		"const { file } = await Read({ file_path: 'config.json' })",
-		"For filesystem access use \\`Read\\`/\\`Write\\`/\\`Glob\\`; for shell use \\`${q}\\`.",
+		"const { stdout } = await ${bashTool}({ command: 'git status' })",
+		"For filesystem access use \\`Read\\`/\\`Write\\`/\\`Glob\\`; for shell use \\`${bashTool}\\`.",
 		"`;",
 	].join("\n");
 
@@ -179,7 +180,16 @@ test("tools-off rewrites REPL disabled-tool examples", () => {
 	assert.equal(output.includes("split('\\\\n')"), true);
 	assert.equal(output.includes("fd -e ts . --max-results 20"), true);
 	assert.equal(
-		output.includes("prefer MCP code-search tools or \\`sg\\`"),
+		output.includes(
+			"const { stdout } = await ${bashTool}({ command: 'fd -e ts src' })",
+		),
+		true,
+	);
+	assert.equal(output.includes("${q}"), false);
+	assert.equal(
+		output.includes(
+			"prefer MCP code-search tools or \\`sg\\` through \\`${bashTool}\\`",
+		),
 		true,
 	);
 });

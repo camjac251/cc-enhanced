@@ -132,32 +132,44 @@ const AGENT_TOOL_TEXT_REWRITES: Array<{
 	},
 ];
 
-const REPL_PROMPT_REWRITES: Array<{ pattern: RegExp; replacement: string }> = [
-	{
-		pattern:
-			/const \{ filenames \} = await Glob\(\{ pattern: 'src\/\*\*\/\*\.ts' \}\)/g,
-		replacement:
-			"const { stdout } = await ${q}({ command: 'fd -e ts src' })\nconst filenames = stdout.trim().split('\\\\n').filter(Boolean)",
-	},
-	{
-		pattern:
-			/All tools work as async functions: (?:\\?`Read\\?`, \\?`Write\\?`, \\?`Edit\\?`, \\?`Glob\\?`, \\?`Grep\\?`, \\?`\$\{q\}\\?`, etc\.)/g,
-		replacement:
-			"All enabled tools work as async functions: \\`Read\\`, \\`Write\\`, \\`Edit\\`, \\`${q}\\`, etc.",
-	},
-	{
-		pattern:
-			/const \{ filenames \} = await Glob\(\{ pattern: '\*\.ts' \}\)\nconst \{ file \} = await Read\(\{ file_path: 'config\.json' \}\)/g,
-		replacement:
-			"const { stdout } = await ${q}({ command: 'fd -e ts . --max-results 20' })\nconst { file } = await Read({ file_path: 'config.json' })",
-	},
-	{
-		pattern:
-			/For filesystem access use \\?`Read\\?`\/\\?`Write\\?`\/\\?`Glob\\?`; for shell use \\?`\$\{q\}\\?`\./g,
-		replacement:
-			"For filesystem access use \\`Read\\`/\\`Write\\`/\\`Edit\\`; for file discovery use \\`${q}\\` with \\`fd\\`, and for source code search prefer MCP code-search tools or \\`sg\\` through \\`${q}\\` before broad Read loops.",
-	},
-];
+const REPL_SHELL_EXPRESSION_PATTERN = /\$\{[A-Za-z0-9_$]+\}/;
+const REPL_SHELL_USAGE_PATTERN =
+	/const \{ stdout \} = await (\$\{[A-Za-z0-9_$]+\})\(\{ command: 'git status' \}\)/;
+
+function rewriteReplPromptReferences(code: string): string {
+	const shellToolExpr = code.match(REPL_SHELL_USAGE_PATTERN)?.[1];
+	if (!shellToolExpr || !REPL_SHELL_EXPRESSION_PATTERN.test(shellToolExpr)) {
+		return code;
+	}
+
+	const shellToolCodeSpan = `\\\`${shellToolExpr}\\\``;
+	let result = code;
+
+	result = result.replace(
+		/const \{ filenames \} = await Glob\(\{ pattern: 'src\/\*\*\/\*\.ts' \}\)/g,
+		`const { stdout } = await ${shellToolExpr}({ command: 'fd -e ts src' })\nconst filenames = stdout.trim().split('\\\\n').filter(Boolean)`,
+	);
+	result = result.replace(
+		/All tools work as async functions: (?:\\?`Read\\?`, \\?`Write\\?`, \\?`Edit\\?`, \\?`Glob\\?`, \\?`Grep\\?`, \\?`\$\{[A-Za-z0-9_$]+\}\\?`, etc\.)/g,
+		"All enabled tools work as async functions: \\`Read\\`, \\`Write\\`, \\`Edit\\`, " +
+			shellToolCodeSpan +
+			", etc.",
+	);
+	result = result.replace(
+		/const \{ filenames \} = await Glob\(\{ pattern: '\*\.ts' \}\)\nconst \{ file \} = await Read\(\{ file_path: 'config\.json' \}\)/g,
+		`const { stdout } = await ${shellToolExpr}({ command: 'fd -e ts . --max-results 20' })\nconst { file } = await Read({ file_path: 'config.json' })`,
+	);
+	result = result.replace(
+		/For filesystem access use \\?`Read\\?`\/\\?`Write\\?`\/\\?`Glob\\?`; for shell use \\?`\$\{[A-Za-z0-9_$]+\}\\?`\./g,
+		"For filesystem access use \\`Read\\`/\\`Write\\`/\\`Edit\\`; for file discovery use " +
+			shellToolCodeSpan +
+			" with \\`fd\\`, and for source code search prefer MCP code-search tools or \\`sg\\` through " +
+			shellToolCodeSpan +
+			" before broad Read loops.",
+	);
+
+	return result;
+}
 
 const TOOLSEARCH_PROMPT_REWRITES: Array<{
 	pattern: RegExp;
@@ -513,9 +525,7 @@ export const disableTools: Patch = {
 		for (const { pattern, replacement } of AGENT_TOOL_TEXT_REWRITES) {
 			result = result.replace(pattern, replacement);
 		}
-		for (const { pattern, replacement } of REPL_PROMPT_REWRITES) {
-			result = result.replace(pattern, replacement);
-		}
+		result = rewriteReplPromptReferences(result);
 		for (const { pattern, replacement } of TOOLSEARCH_PROMPT_REWRITES) {
 			result = result.replace(pattern, replacement);
 		}

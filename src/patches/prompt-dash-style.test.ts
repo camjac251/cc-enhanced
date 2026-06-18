@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
+import { traverse } from "../babel.js";
 import { parse, print } from "../loader.js";
 import { countForbiddenPromptDashStyle } from "../prompt-dash-style.js";
 import {
@@ -19,6 +20,16 @@ async function runPromptDashStyleViaPasses(ast: any): Promise<void> {
 			throw error;
 		},
 	);
+}
+
+function stringLiteralValues(code: string): string[] {
+	const values: string[] = [];
+	traverse(parse(code), {
+		StringLiteral(path) {
+			values.push(path.node.value);
+		},
+	});
+	return values;
 }
 
 const PROMPT_DASH_FIXTURE = [
@@ -126,7 +137,9 @@ test("prompt-dash-style leaves non-prompt dash-bearing strings alone", async () 
 	await runPromptDashStyleViaPasses(ast);
 	const output = print(ast);
 
-	assert.equal(output.includes("cache-key—v1"), true);
+	assert.equal(output.includes("cache-key\\u2014v1"), true);
+	assert.equal(output.includes("cache-key—v1"), false);
+	assert.equal(stringLiteralValues(output).includes("cache-key—v1"), true);
 });
 
 test("prompt-dash-style preserves non-prompt dash regexes and glyph maps", async () => {
@@ -165,8 +178,15 @@ test("prompt-dash-style leaves short dash-glyph constants intact", async () => {
 	const ast = parse(fixture);
 	await runPromptDashStyleViaPasses(ast);
 	const output = print(ast);
-	assert.equal(output.includes("–"), true);
-	assert.equal(output.includes("—"), true);
+	assert.equal(output.includes("–"), false);
+	assert.equal(output.includes("—"), false);
+	assert.equal(output.includes("\\u2013"), true);
+	assert.equal(output.includes("\\u2014"), true);
+	assert.equal(output.includes("\\u2015"), true);
+	const values = stringLiteralValues(output);
+	assert.equal(values.includes("–"), true);
+	assert.equal(values.includes("—"), true);
+	assert.equal(values.includes("―"), true);
 	assert.equal(promptDashStyle.verify(output, ast), true);
 });
 

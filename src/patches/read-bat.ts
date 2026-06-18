@@ -1376,6 +1376,14 @@ function verifyReadLineAccounting(ctx: ReadVerifyContext): string | null {
 	return null;
 }
 
+function hasMiddleDotLabel(code: string, label: string): boolean {
+	return (
+		code.includes(` · ${label}`) ||
+		code.includes(`\\xB7 ${label}`) ||
+		code.includes(`\\u00b7 ${label}`)
+	);
+}
+
 function verifyReadExamplesAndValidate(ctx: ReadVerifyContext): string | null {
 	const { code, validateKeys } = ctx;
 	// input_examples may be absent in newer bundles. Skip checks when absent.
@@ -1410,10 +1418,10 @@ function verifyReadExamplesAndValidate(ctx: ReadVerifyContext): string | null {
 	if (!code.includes('opts.push("whitespace")')) {
 		return "renderToolUseMessage not showing whitespace option";
 	}
-	if (!code.includes(" · pages ") && !code.includes("\\xB7 pages ")) {
+	if (!hasMiddleDotLabel(code, "pages ")) {
 		return "renderToolUseMessage missing pages display";
 	}
-	if (!code.includes(" · range: ") && !code.includes("\\xB7 range: ")) {
+	if (!hasMiddleDotLabel(code, "range: ")) {
 		return "renderToolUseMessage not showing range on agent-output reads";
 	}
 	return null;

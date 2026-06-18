@@ -34,9 +34,9 @@ test("signature decorates composite UI title and version, leaves marketplace err
 	const output = print(ast);
 
 	// Composite title's outer last quasi gets the patched marker appended.
-	// The original last quasi is " " (a space), so concatenation yields "  • patched".
+	// The original last quasi is " " (a space), so print() emits "  \u2022 patched".
 	assert.equal(
-		output.includes('Eq("inactive", e)(`v${I}`)}  • patched`'),
+		output.includes('Eq("inactive", e)(`v${I}`)}  \\u2022 patched`'),
 		true,
 		`title not decorated; output:\n${output}`,
 	);
@@ -50,12 +50,12 @@ test("signature decorates composite UI title and version, leaves marketplace err
 
 	// Marketplace error template stays untouched.
 	assert.equal(
-		output.includes("• patched' and re-add"),
+		output.includes("\\u2022 patched' and re-add"),
 		false,
 		"marketplace error template was polluted with patched marker",
 	);
 	assert.equal(
-		output.includes("• patched.`"),
+		output.includes("\\u2022 patched.`"),
 		false,
 		"marketplace error template's trailing quasi was polluted",
 	);
@@ -108,7 +108,7 @@ test("signature postApply is idempotent on composite title", () => {
 	signature.postApply?.(ast, ["alpha"]);
 	const output = print(ast);
 
-	const matches = output.match(/ • patched/g) ?? [];
+	const matches = output.match(/ \\u2022 patched/g) ?? [];
 	assert.equal(
 		matches.length,
 		1,
@@ -122,5 +122,6 @@ test("signature postApply is a no-op when no tags applied", () => {
 	const output = print(ast);
 
 	assert.equal(output.includes("• patched"), false);
+	assert.equal(output.includes("\\u2022 patched"), false);
 	assert.equal(output.includes("patched:"), false);
 });
