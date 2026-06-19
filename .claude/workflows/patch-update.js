@@ -295,7 +295,7 @@ ${targetBundle} is a CLEAN, pre-patch bundle: only the OLD/search anchors a patc
 Methodology:
 1. Read ${p.sourceFile} in full. Extract every anchor: string literals, object property names, AST structural patterns, what verify() asserts, what string() replaces if present.
 2. Read the matching test file when present: src/patches/${p.tag}.test.ts.
-3. For each anchor, search ${targetBundle} with rg -n for hits + line numbers and rg -c for counts. Use bat -r or bun run inspect for structural context when the match could be ambiguous.
+3. For each anchor, search ${targetBundle} with rg -n for hits + line numbers and rg -c for counts. This rg use is the cc-enhanced cli.js exception for minified bundle anchor text; do not generalize it to ordinary source-code search. Use bat -r or bun run inspect for structural context when the match could be ambiguous.
 4. Compare hit counts and locations to what the patch expects. A patch that searches for 3 occurrences but finds 5 is DRIFT. A patch whose primary anchor returns 0 hits is BROKEN.
 5. Classify as OK, DRIFT, BROKEN, or UNKNOWN.
 6. Set testCoverageNote:
@@ -330,7 +330,7 @@ Extractor anchors (the literal strings scripts/export-prompts.ts uses to locate 
 Optional flag: ${surface.optional === true ? 'true (surface may legitimately be filtered out by tools-off / agents-off)' : 'false (surface should exist)'}
 
 Anchor-existence steps:
-1. Search ${targetBundle} with rg -n for each extractor anchor. Record anchorsChecked (anchor text, hits, line numbers).
+1. Search ${targetBundle} with rg -n for each extractor anchor. This is the cc-enhanced cli.js exception for minified bundle anchor text, not general source-code routing. Record anchorsChecked (anchor text, hits, line numbers).
 2. Status:
    - anchor-present: every extractor anchor is found with the expected uniqueness.
    - anchor-drifted: anchors found but counts changed or context shifted in a way that may affect extraction.

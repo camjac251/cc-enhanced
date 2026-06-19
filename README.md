@@ -131,7 +131,7 @@ Prompt text sent to the model.
 | [`memory-prompt-soften`](src/patches/memory-prompt-soften.ts) | Memory/init and dream-memory prompt text stops presenting `ls`, `find`, `grep`, `cat`, `head`, and `tail` as the canonical inspection set. Memory consolidation/pruning examples now use `eza`, `fd`, and `rg -m 50` instead. |
 | [`prompt-dash-style`](src/patches/prompt-dash-style.ts) | Prompt-like strings and template text normalize Unicode en/em dash punctuation to ASCII sentence, label, or numeric-range forms so bundled guidance does not demonstrate dash-heavy prose style. |
 | [`session-guidance`](src/patches/session-guidance.ts) | Session-specific exploration guidance no longer renders fallback `find`/`grep` helper text. Broad exploration falls back through the same intent order as the rest of the prompt stack: Serena, ChunkHound, Probe, ast-grep MCP/sg for structural search and code rewrites, then `rg` only for non-code text. |
-| [`subagent-system-prompt`](src/patches/subagent-system-prompt.ts) | Agent-tool subagents inherit the normal appended system prompt as a fallback when no subagent-specific append prompt is set, so `/etc/claude-code/system-prompt.md` policy reaches standard non-forked subagents too. |
+| [`subagent-system-prompt`](src/patches/subagent-system-prompt.ts) | Agent-tool subagents inherit the normal appended system prompt as a fallback when no subagent-specific append prompt is set, and startup options copy that same resolved append prompt into the subagent-specific field instead of leaving it empty. This keeps `/etc/claude-code/system-prompt.md` policy available to standard non-forked subagents and downstream subagent-like paths. |
 | [`todo-use`](src/patches/todo-use.ts) | Todo guidance is compressed to a short, high-signal set of bullets. |
 
 ### Agent
@@ -398,7 +398,7 @@ Several prompt patches intentionally route Claude Code away from the stock `find
 
 | Tool | Why it matters |
 |------|----------------|
-| `bat` | File viewing and Read-style range examples use `bat -r START:END`. |
+| `bat` | Shell-side file range viewing uses `bat -r START:END`; Read handles non-code files and known code ranges after symbol lookup. |
 | `fd` | File discovery replaces `find`. |
 | `eza` | Directory listing replaces routine `ls`. |
 | `rg` | Exact search in non-code text, logs, config, comments, and prompt artifacts. |

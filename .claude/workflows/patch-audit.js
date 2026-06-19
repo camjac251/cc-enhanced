@@ -333,7 +333,7 @@ const patchInspections = await throttledFanout(patchesInScope, (p) => agent(
 
 Methodology:
 1. Read ${p.sourceFile} in full. Extract every anchor.
-2. For each anchor, search ${cleanBundle} with rg -n for hits + line numbers.
+2. For each anchor, search ${cleanBundle} with rg -n for hits + line numbers. This rg use is the cc-enhanced cli.js exception for minified bundle anchor text; do not generalize it to ordinary source-code search.
 3. For each anchor, evaluate:
    - hits: total matches in the clean bundle
    - ambiguity: none, multiple-matches, or context-dependent

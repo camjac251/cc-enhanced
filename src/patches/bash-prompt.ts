@@ -102,6 +102,22 @@ function rewriteLegacyText(text: string): string {
 			"If your command will create new directories or files, first use this tool to run `eza` or `fd` to verify the parent directory exists and is the correct location.",
 		)
 		.replace(
+			/When running `find`, search from `\.` \(or a specific path\), not `\/`(?:\.|\s+(?:\u2014|\\u2014))\s+[Ss]canning the full filesystem can exhaust system resources on large trees\./g,
+			"Use `fd` for file discovery. If an explicit user request or portability constraint requires `find`, search from `.` (or a specific path), not `/`.",
+		)
+		.replace(
+			/gh pr create --title "([^"]+)" --body "\$\(cat <<'EOF'\n## Summary\n<1-3 bullet points>\n\n## Test plan\n[\s\S]*?\nEOF\n\)"/g,
+			`pr_body=$(mktemp)
+tee "$pr_body" >/dev/null <<'EOF'
+## Summary
+<1-3 bullet points>
+
+## Test plan
+[Bulleted markdown checklist of TODOs for testing the pull request...]
+EOF
+gh pr create --title "$1" --body-file "$pr_body"`,
+		)
+		.replace(
 			"Communication: Output text directly (NOT echo/printf)",
 			"Communication: Output text directly",
 		)
@@ -411,7 +427,7 @@ function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 						createSingleExpressionTemplate(
 							templatePath.node.expressions[0],
 							"To read files use ",
-							"; for shell-native viewing use `bat`.",
+							" for non-code files or known code ranges; use `bat -r START:END` for shell file slices.",
 						),
 					);
 					return;
@@ -450,7 +466,7 @@ function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 						createSingleExpressionTemplate(
 							templatePath.node.expressions[0],
 							"Read files: Use ",
-							" or `bat` for shell-native viewing",
+							" for non-code files or known code ranges; use `bat -r START:END` for shell file slices",
 						),
 					);
 					return;
@@ -608,7 +624,13 @@ export const bashPrompt: Patch = {
 			code.includes("(NOT sed/awk)") ||
 			code.includes("(NOT echo >/cat <<EOF)") ||
 			code.includes("find -regex") ||
+			code.includes("When running `find`") ||
 			code.includes("run `ls` to verify") ||
+			code.includes("--body \"$(cat <<'EOF'") ||
+			code.includes("for shell-native viewing use `bat`") ||
+			code.includes("for shell-native viewing use \\`bat\\`") ||
+			code.includes("or `bat` for shell-native viewing") ||
+			code.includes("or \\`bat\\` for shell-native viewing") ||
 			code.includes("appropriate dedicated tool") ||
 			code.includes("when one fits (")
 		) {

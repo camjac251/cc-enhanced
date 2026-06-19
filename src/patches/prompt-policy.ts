@@ -15,7 +15,7 @@ export const MODERN_READONLY_OPS =
 
 /** Tool preference line shared by Bash, Explore, and Plan prompts. */
 export const MODERN_TOOL_PREFERENCE =
-	"Prefer fd for file discovery, eza for directory listings, bat ranges for file viewing, sg for structural code search/rewrites, and rg only for non-code text/logs/config/comments";
+	"Prefer fd for file discovery, eza for directory listings, Read for non-code files and known code ranges after symbol lookup, bat -r for shell file ranges, sg for structural code search/rewrites, and rg only for non-code text/logs/config/comments";
 
 /** Source-code tool-choice self-check shared by prompt surfaces. */
 export const MODERN_CODE_TOOL_SELF_CHECK =
@@ -45,7 +45,7 @@ export const MODERN_BASH_SEARCH_GUIDANCE = MODERN_CODE_SEARCH_DECISION_TREE;
 
 /** Stdout caps line: prefer tool-level limits over shell pipeline truncation. */
 export const MODERN_STDOUT_CAP =
-	"Use producer-native caps first: rg -m N for non-code text, fd --max-results N for bounded file lists, and bat -r START:END for file slices. Use Bash tool caps (max_output, output_tail: true) when the command has no useful native cap or when you need a bounded inline preview. For eza directory listings, use plain eza with max_output only when you need eza metadata/layout; use fd --max-results N when entry-count bounds matter. Avoid head/tail pipelines for output capping; they discard everything past the cap, while producer-native flags preserve the full result up to the limit.";
+	"Use producer-native caps first: rg -m N for non-code text, fd --max-results N for bounded file lists, Read ranges for non-code files or known code ranges after symbol lookup, and bat -r START:END for shell file slices. Use Bash tool caps (max_output, output_tail: true) when the command has no useful native cap or when you need a bounded inline preview. For eza directory listings, use plain eza with max_output only when you need eza metadata/layout; use fd --max-results N when entry-count bounds matter. Avoid head/tail pipelines for output capping; they discard everything past the cap, while producer-native flags preserve the full result up to the limit.";
 
 /** Alias for the stdout-cap text, retained for surfaces that previously imported a distinct constant. */
 export const MODERN_OUTPUT_LIMIT_WARNING = MODERN_STDOUT_CAP;
@@ -64,7 +64,7 @@ export const PROHIBITED_BASH_OPS =
  */
 export const MODERN_SUBAGENT_CODE_ROUTING = [
 	"When the task involves code, route search by intent: Serena for symbols, definitions, and references; ChunkHound for conceptual or architecture questions; Probe search_code for known terms or boolean search (exact: true for symbol-precise); ast-grep MCP or sg for structural patterns and code rewrites (preview before applying).",
-	"Use rg only for non-code text such as logs, config, comments, and prose, never to search code files. Use fd to find files, eza to list directories, bat -r START:END to view file ranges, and Write or Edit to change files. For GitHub URLs, file content, and metadata use gh api.",
+	"Use rg only for non-code text such as logs, config, comments, and prose, never to search code files. Use Read for non-code files, or for code only after symbol/range lookup; use bat -r START:END for shell file ranges. Use fd to find files, eza to list directories, and Write or Edit to change files. For GitHub URLs, file content, and metadata use gh api.",
 	"Cap output at the producer (rg -m N, fd --max-results N, git log -n N) rather than piping through head or tail. Put temporary files in the session scratchpad or $TMPDIR, never /tmp.",
 ].join("\n");
 
@@ -97,7 +97,7 @@ export function buildModernReadonlyReplacement(
 	// so normalize to the literal name.
 	const normalized = /^\$\{[^}]+\}$/.test(toolExpr) ? "Bash" : toolExpr;
 	return [
-		"- Use Read when you know the specific file path you need to read",
+		"- Use Read for non-code files, or for code only after symbol/range lookup",
 		`- ${MODERN_CODE_TOOL_SELF_CHECK}`,
 		MODERN_CODE_SEARCH_POLICY,
 		"- For multi-file architecture questions, prefer semantic codebase research and deep cross-file analysis when available before ad hoc searching",

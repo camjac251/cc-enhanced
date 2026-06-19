@@ -223,7 +223,7 @@ Notes:
 
 ## Prompt Policy Layering
 
-Detailed global behavior belongs in runtime-managed policy files under `/etc/claude-code/`, plus the auto-appended `/etc/claude-code/system-prompt.md` layer. The auto-append layer is intended to survive replacement-mode `--system-prompt` launches unless the caller supplies its own append prompt, and `CLAUDE.md` user context is intended to remain available to subagent contexts.
+Detailed global behavior belongs in runtime-managed policy files under `/etc/claude-code/`, plus the auto-appended `/etc/claude-code/system-prompt.md` layer. The auto-append layer is intended to survive replacement-mode `--system-prompt` launches unless the caller supplies its own append prompt. Subagent contexts should receive the same resolved append prompt both through the runtime fallback and through startup option propagation, and `CLAUDE.md` user context is intended to remain available to subagent contexts.
 
 Short bundle-level routing language shared by prompt patches lives in `src/patches/prompt-policy.ts`. Surface-specific patches own their upstream anchors but pull shared wording (Serena/LSP/ChunkHound/Probe/ast-grep routing, modern CLI preference, stdout caps) from this module.
 

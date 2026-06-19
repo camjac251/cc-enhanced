@@ -57,6 +57,11 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 		reason: "Missing code-file tool-choice self-check",
 	},
 	{
+		id: "prompt-policy-read-non-code-known-code-range",
+		needle: "Read for non-code files and known code ranges after symbol lookup",
+		reason: "Missing Read/code-file routing distinction",
+	},
+	{
 		id: "prompt-policy-head-tail-cap",
 		needle: "Avoid head/tail pipelines for output capping",
 		reason: "Missing head/tail pipeline cap guidance",
@@ -108,6 +113,61 @@ export const FORBIDDEN_LEGACY_PROMPT_NEEDLES: readonly PromptPolicyNeedle[] = [
 		id: "legacy-using-tools-grep-tool",
 		needle: "To search the content of files, use Grep instead of grep or rg",
 		reason: "Legacy Using-your-tools Grep guidance still present",
+	},
+	{
+		id: "legacy-grep-tool-always-use",
+		needle: "ALWAYS use Grep for search tasks",
+		reason: "Disabled Grep tool prompt still directs search to Grep",
+	},
+	{
+		id: "legacy-read-known-file-paths",
+		needle: "Read for known file paths",
+		reason: "Prompt still omits code-file routing before Read",
+	},
+	{
+		id: "legacy-read-ranges-known-files",
+		needle: "Read ranges for known files",
+		reason: "Prompt still omits non-code or known-code-range Read scope",
+	},
+	{
+		id: "legacy-subagent-read-known-file-paths",
+		needle: "Use Read for known file paths when available",
+		reason: "Subagent prompt still omits code-file routing before Read",
+	},
+	{
+		id: "legacy-skill-grep-description",
+		needle: "grep -Hm1 '^description:'",
+		reason: "Bundled skill prompt still uses grep to discover skills",
+	},
+	{
+		id: "legacy-design-sync-grep-recursive",
+		needle: "grep -r ASSUMPTION",
+		reason: "Design-sync skill prompt still uses grep recursively",
+	},
+	{
+		id: "legacy-design-sync-grep-verb",
+		needle: "Grep classes/tokens",
+		reason: "Design-sync skill prompt still uses Grep as an instruction",
+	},
+	{
+		id: "legacy-design-sync-grep-verb-lower",
+		needle: "grep classes/tokens",
+		reason: "Design-sync skill prompt still uses grep as an instruction",
+	},
+	{
+		id: "legacy-permission-skill-grep-these",
+		needle: "grep these files rather than guessing",
+		reason: "Permission skill prompt still tells the model to grep files",
+	},
+	{
+		id: "legacy-pr-body-cat-heredoc",
+		needle: "--body \"$(cat <<'EOF'",
+		reason: "Bash PR example still uses cat heredoc in command substitution",
+	},
+	{
+		id: "legacy-bash-read-or-bat",
+		needle: "Read files: Use Read or `bat` for shell-native viewing",
+		reason: "Bash prompt still gives overly broad Read/bat guidance",
 	},
 	{
 		id: "legacy-memory-readonly-list",

@@ -31,6 +31,29 @@ async function runSubagent(H, q, P, O, F, jH, zH) {
 }
 `;
 
+const PATCHED_SUBAGENT_PROMPT_FIXTURE = `
+async function runSubagent(H, q, P, O, F, jH, zH) {
+  let wH = O?.systemPrompt ? O.systemPrompt : V4(await hx_(H, q, F, jH, zH)),
+    __ccEnhancedSubagentSystemPromptAppend =
+      q.options.appendSubagentSystemPrompt ?? q.options.appendSystemPrompt,
+    TH =
+      !P && __ccEnhancedSubagentSystemPromptAppend
+        ? V4([...wH, __ccEnhancedSubagentSystemPromptAppend])
+        : wH,
+    WH = O?.abortController ? O.abortController : q.abortController;
+  return { systemPrompt: TH, abortController: WH };
+}
+`;
+
+const STARTUP_OPTIONS_FIXTURE = `
+function startCli(ke) {
+  return hd("messages", {
+    appendSystemPrompt: ke,
+    appendSubagentSystemPrompt: void 0,
+  });
+}
+`;
+
 test("verify rejects unpatched subagent append branch", () => {
 	const ast = parse(SUBAGENT_PROMPT_FIXTURE);
 	const code = print(ast);
@@ -58,6 +81,53 @@ test("subagent-system-prompt bridges main append prompt into subagents", async (
 	);
 	assert.match(output, /\.\.\.\s*wH,\s*__ccEnhancedSubagentSystemPromptAppend/);
 	assert.equal(subagentSystemPrompt.verify(output, ast), true);
+});
+
+test("subagent-system-prompt copies startup append prompt into subagent option", async () => {
+	const ast = parse(`${SUBAGENT_PROMPT_FIXTURE}\n${STARTUP_OPTIONS_FIXTURE}`);
+	await runSubagentSystemPromptViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /appendSystemPrompt:\s*ke/);
+	assert.match(output, /appendSubagentSystemPrompt:\s*ke/);
+	assert.equal(output.includes("appendSubagentSystemPrompt: void 0"), false);
+	assert.equal(subagentSystemPrompt.verify(output, ast), true);
+});
+
+test("subagent-system-prompt leaves explicit startup subagent override alone", async () => {
+	const explicitOverride = `
+function startCli(ke, subagentKe) {
+  return hd("messages", {
+    appendSystemPrompt: ke,
+    appendSubagentSystemPrompt: subagentKe,
+  });
+}
+`;
+	const ast = parse(`${SUBAGENT_PROMPT_FIXTURE}\n${explicitOverride}`);
+	await runSubagentSystemPromptViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /appendSubagentSystemPrompt:\s*subagentKe/);
+	assert.equal(subagentSystemPrompt.verify(output, ast), true);
+});
+
+test("subagent-system-prompt verify rejects startup subagent void default", () => {
+	const ast = parse(
+		`${PATCHED_SUBAGENT_PROMPT_FIXTURE}\n${STARTUP_OPTIONS_FIXTURE}`,
+	);
+	const code = print(ast);
+	const result = subagentSystemPrompt.verify(code, ast);
+
+	assert.notEqual(
+		result,
+		true,
+		"verify must reject startup options that drop the subagent append prompt",
+	);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("Subagent append prompt still defaults to void 0"),
+		true,
+	);
 });
 
 test("subagent-system-prompt preserves explicit subagent override precedence", async () => {

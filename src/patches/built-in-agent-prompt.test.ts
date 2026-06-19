@@ -321,7 +321,7 @@ test("built-in-agent-prompt rewrites placeholder-backed read-only bash guidance"
 	assert.equal(output.includes(MODERN_TOOL_PREFERENCE), true);
 	assert.equal(
 		output.includes(
-			"- Use Read when you know the specific file path you need to read",
+			"- Use Read for non-code files, or for code only after symbol/range lookup",
 		),
 		true,
 	);

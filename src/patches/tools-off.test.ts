@@ -214,6 +214,20 @@ test("tools-off rewrites remote planning disabled-tool guidance", () => {
 	);
 });
 
+test("tools-off neutralizes disabled Grep tool prompt text", async () => {
+	const input = [
+		TOOL_FIXTURE,
+		'const grepPrompt = "  - ALWAYS use ${Uc} for search tasks. NEVER invoke \\`grep\\` or \\`rg\\` as a ${ns} command. The ${Uc} tool has been optimized for correct permissions and access.";',
+	].join("\n");
+	const { output, ast } = await applyFullPatch(input);
+
+	assert.equal(output.includes("ALWAYS use"), false);
+	assert.equal(output.includes("NEVER invoke \\`grep\\`"), false);
+	assert.equal(output.includes("Local policy disables this tool"), true);
+	assert.equal(output.includes("Route code search by intent"), true);
+	assert.equal(disableTools.verify(output, ast), true);
+});
+
 test("tools-off scrubs the PowerShell search bullets and leaves the Bash-builder shape for bash-prompt", () => {
 	// Two shapes ship in the bundle: "- " bullets in the PowerShell prompt (scrubbed
 	// here) and no-marker backtick array elements in the Bash prompt builder, which
@@ -316,6 +330,47 @@ const remoteRoutineExample = {
 		),
 		false,
 	);
+	assert.equal(disableTools.verify(output, ast), true);
+});
+
+test("tools-off rewrites actionable legacy command examples in bundled skills", async () => {
+	const input = [
+		TOOL_FIXTURE,
+		'const runSkill = `d=$PWD; while :; do\n  grep -Hm1 \'^description:\' "$d"/.claude/skills/*/SKILL.md 2>/dev/null\n  [ -e "$d/.git" ] || [ "$d" = / ] && break\n  d=$(dirname "$d")\ndone`;',
+		'const designSync = "after the sub-skill stages the scripts: \\`grep -r ASSUMPTION .ds-sync/*.mjs .ds-sync/lib/*.mjs\\` lists them.\\ngrep classes/tokens against the compiled stylesheets in the output dir.";',
+		"const permissionSkill = \"These don't need an allowlist entry \\u2014 they never prompt. If you see any of these in the transcripts, skip them; don't suggest them to the user.\\nIf the user is in this repo and you're unsure whether a command is covered, grep these files rather than guessing.\";",
+		'const sendUserFile = "When unsure of a path, verify with ls first; absolute paths avoid ambiguity about the working directory.";',
+		`const prPrompt = \`gh pr create --title "Short, descriptive title" --body "$(cat <<'EOF'
+## Summary
+<1-3 bullet points>
+
+## Test plan
+[Bulleted markdown checklist of TODOs for testing the pull request...]
+EOF
+)"\`;`,
+	].join("\n");
+	const { output, ast } = await applyFullPatch(input);
+
+	assert.equal(output.includes("grep -Hm1"), false);
+	assert.equal(output.includes("2>/dev/null"), false);
+	assert.equal(output.includes("grep -r ASSUMPTION"), false);
+	assert.equal(output.includes("Grep classes/tokens"), false);
+	assert.equal(output.includes("grep classes/tokens"), false);
+	assert.equal(output.includes("grep these files rather than guessing"), false);
+	assert.equal(output.includes("verify with ls first"), false);
+	assert.equal(output.includes("--body \"$(cat <<'EOF'"), false);
+	assert.equal(output.includes("fd -a SKILL.md"), true);
+	assert.equal(output.includes("rg -n -m 1"), true);
+	assert.equal(output.includes("rg -n 'ASSUMPTION'"), true);
+	assert.equal(
+		output.includes("\\`rg\\` against generated CSS/text artifacts"),
+		true,
+	);
+	assert.equal(output.includes("permission-classification data only"), true);
+	assert.equal(output.includes("\\`rg -n\\` rather than guessing"), true);
+	assert.equal(output.includes("\\`fd\\` or \\`eza\\` first"), true);
+	assert.equal(output.includes("pr_body=$(mktemp)"), true);
+	assert.equal(output.includes('--body-file "$pr_body"'), true);
 	assert.equal(disableTools.verify(output, ast), true);
 });
 

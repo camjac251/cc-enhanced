@@ -1,4 +1,7 @@
-import { MODERN_READ_CODE_FILE_CAVEAT } from "../patches/prompt-policy.js";
+import {
+	MODERN_READ_CODE_FILE_CAVEAT,
+	MODERN_TOOL_PREFERENCE,
+} from "../patches/prompt-policy.js";
 import { EXPLORE_PROMPT_POLICY_REQUIRED_NEEDLES } from "./prompt-policy-contract.js";
 
 export interface PromptSurfaceNeedle {
@@ -130,6 +133,34 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 		],
 	},
 	{
+		file: "tools/builtin/grep.md",
+		presence: "optional",
+		required: [
+			{
+				id: "grep-disabled-policy",
+				needle: "Local policy disables this tool.",
+				reason: "Disabled Grep prompt missing local-policy warning",
+			},
+			{
+				id: "grep-code-routing",
+				needle: "Route code search by intent",
+				reason: "Disabled Grep prompt missing code-search routing",
+			},
+		],
+		forbidden: [
+			{
+				id: "grep-always-use",
+				needle: "ALWAYS use Grep for search tasks",
+				reason: "Disabled Grep prompt still tells the model to use Grep",
+			},
+			{
+				id: "grep-never-rg",
+				needle: "NEVER invoke `grep` or `rg`",
+				reason: "Disabled Grep prompt still fights rg policy",
+			},
+		],
+	},
+	{
 		file: "tools/builtin/edit.md",
 		presence: "optional",
 		required: [
@@ -211,6 +242,85 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				needle: "(Dynamic prompt: not statically resolved from cli.js AST.)",
 				reason: "design-sync skill still exports a dynamic prompt marker",
 			},
+			{
+				id: "design-sync-grep-recursive",
+				needle: "grep -r ASSUMPTION",
+				reason: "design-sync skill still uses grep recursively",
+			},
+			{
+				id: "design-sync-grep-verb",
+				needle: "Grep classes/tokens",
+				reason: "design-sync skill still uses Grep as an instruction",
+			},
+			{
+				id: "design-sync-grep-verb-lower",
+				needle: "grep classes/tokens",
+				reason: "design-sync skill still uses grep as an instruction",
+			},
+		],
+	},
+	{
+		file: "skills/run.md",
+		presence: "optional",
+		required: [
+			{
+				id: "run-skill-fd-rg-discovery",
+				needle: "fd -a SKILL.md",
+				reason: "run skill missing fd-based skill discovery",
+			},
+		],
+		forbidden: [
+			{
+				id: "run-skill-grep-description",
+				needle: "grep -Hm1 '^description:'",
+				reason: "run skill still uses grep to discover skills",
+			},
+			{
+				id: "run-skill-stderr-suppression",
+				needle: "2>/dev/null",
+				reason: "run skill still suppresses discovery errors",
+			},
+		],
+	},
+	{
+		file: "skills/run-skill-generator.md",
+		presence: "optional",
+		required: [
+			{
+				id: "run-skill-generator-fd-rg-discovery",
+				needle: "fd -a SKILL.md",
+				reason: "run-skill-generator missing fd-based skill discovery",
+			},
+		],
+		forbidden: [
+			{
+				id: "run-skill-generator-grep-description",
+				needle: "grep -Hm1 '^description:'",
+				reason: "run-skill-generator still uses grep to discover skills",
+			},
+			{
+				id: "run-skill-generator-stderr-suppression",
+				needle: "2>/dev/null",
+				reason: "run-skill-generator still suppresses discovery errors",
+			},
+		],
+	},
+	{
+		file: "skills/fewer-permission-prompts.md",
+		presence: "optional",
+		required: [
+			{
+				id: "fewer-permission-classification-only",
+				needle: "permission-classification data only",
+				reason: "permission skill missing classification-only caveat",
+			},
+		],
+		forbidden: [
+			{
+				id: "fewer-permission-grep-these",
+				needle: "grep these files rather than guessing",
+				reason: "permission skill still tells the model to grep files",
+			},
 		],
 	},
 	{
@@ -225,8 +335,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			...EXPLORE_PROMPT_POLICY_REQUIRED_NEEDLES,
 			{
 				id: "explore-sg-policy",
-				needle:
-					"Prefer fd for file discovery, eza for directory listings, bat ranges for file viewing, sg for structural code search/rewrites, and rg only for non-code text/logs/config/comments",
+				needle: MODERN_TOOL_PREFERENCE,
 				reason: "Explore surface missing sg/fd/bat policy guidance",
 			},
 		],
@@ -266,6 +375,58 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				needle: "Use `grep` via",
 				reason:
 					"Explore surface still routes enhanced-mode content search through grep",
+			},
+		],
+	},
+	{
+		file: "tools/builtin/senduserfile.md",
+		presence: "optional",
+		required: [
+			{
+				id: "senduserfile-fd-eza-path-check",
+				needle: "verify with `fd` or `eza` first",
+				reason: "SendUserFile prompt missing modern path-check guidance",
+			},
+		],
+		forbidden: [
+			{
+				id: "senduserfile-ls-first",
+				needle: "verify with ls first",
+				reason: "SendUserFile prompt still routes path checks through ls",
+			},
+		],
+	},
+	{
+		file: "tools/builtin/bash.md",
+		presence: "optional",
+		allowLiteralTemplatePlaceholders: true,
+		required: [
+			{
+				id: "bash-read-code-scope",
+				needle: "known code ranges",
+				reason: "Bash prompt missing scoped Read guidance",
+			},
+			{
+				id: "bash-pr-body-file",
+				needle: '--body-file "$pr_body"',
+				reason: "Bash PR example missing body-file workflow",
+			},
+		],
+		forbidden: [
+			{
+				id: "bash-read-or-bat",
+				needle: "Read files: Use Read or `bat` for shell-native viewing",
+				reason: "Bash prompt still gives overly broad Read/bat guidance",
+			},
+			{
+				id: "bash-pr-cat-heredoc",
+				needle: "--body \"$(cat <<'EOF'",
+				reason: "Bash PR example still uses cat heredoc command substitution",
+			},
+			{
+				id: "bash-find-normalized",
+				needle: "When running `find`, search from `.`",
+				reason: "Bash prompt still normalizes find as a routine path",
 			},
 		],
 	},

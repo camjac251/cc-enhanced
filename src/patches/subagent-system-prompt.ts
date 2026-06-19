@@ -1,7 +1,11 @@
 import * as t from "@babel/types";
 import { type NodePath, traverse } from "../babel.js";
 import type { Patch, PatchAstPass } from "../types.js";
-import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
+import {
+	getObjectKeyName,
+	getObjectPropertyByName,
+	getVerifyAst,
+} from "./ast-helpers.js";
 
 const APPEND_VAR_NAME = "__ccEnhancedSubagentSystemPromptAppend";
 const SUBAGENT_APPEND_ENV = "CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT";
@@ -142,6 +146,40 @@ function isAppendVar(node: t.Node): boolean {
 	return t.isIdentifier(node, { name: APPEND_VAR_NAME });
 }
 
+function isVoidZero(node: t.Node | null | undefined): boolean {
+	return (
+		t.isUnaryExpression(node, { operator: "void" }) &&
+		t.isNumericLiteral(node.argument, { value: 0 })
+	);
+}
+
+function getStartupAppendDefault(
+	node: t.ObjectExpression,
+): { appendValue: t.Expression; subagentProp: t.ObjectProperty } | null {
+	const appendProp = getObjectPropertyByName(node, "appendSystemPrompt");
+	const subagentProp = getObjectPropertyByName(
+		node,
+		"appendSubagentSystemPrompt",
+	);
+	if (!appendProp || !subagentProp) return null;
+	if (!t.isExpression(appendProp.value)) return null;
+	if (!isVoidZero(subagentProp.value)) return null;
+
+	return { appendValue: appendProp.value, subagentProp };
+}
+
+function hasMatchingStartupAppendDefault(node: t.ObjectExpression): boolean {
+	const appendProp = getObjectPropertyByName(node, "appendSystemPrompt");
+	const subagentProp = getObjectPropertyByName(
+		node,
+		"appendSubagentSystemPrompt",
+	);
+	if (!appendProp || !subagentProp) return false;
+	if (!t.isExpression(appendProp.value) || !t.isExpression(subagentProp.value))
+		return false;
+	return t.isNodesEquivalent(appendProp.value, subagentProp.value);
+}
+
 function isFallbackAppendDeclarator(node: t.VariableDeclarator): boolean {
 	if (!t.isIdentifier(node.id, { name: APPEND_VAR_NAME })) return false;
 	const init = node.init;
@@ -163,6 +201,22 @@ function hasFallbackAppendDeclarator(ast: t.File | t.Program): boolean {
 		},
 	});
 	return found;
+}
+
+function countStartupAppendDefaults(ast: t.File | t.Program): {
+	legacy: number;
+	patched: number;
+} {
+	let legacy = 0;
+	let patched = 0;
+	const root = t.isFile(ast) ? ast : t.file(ast);
+	traverse(root, {
+		ObjectExpression(path) {
+			if (getStartupAppendDefault(path.node)) legacy++;
+			if (hasMatchingStartupAppendDefault(path.node)) patched++;
+		},
+	});
+	return { legacy, patched };
 }
 
 function isCallWithPromptAppend(
@@ -347,6 +401,13 @@ function createSubagentSystemPromptPasses(): PatchAstPass[] {
 						patched = true;
 					},
 				},
+				ObjectExpression(path) {
+					const startupDefault = getStartupAppendDefault(path.node);
+					if (!startupDefault) return;
+					startupDefault.subagentProp.value = t.cloneNode(
+						startupDefault.appendValue,
+					);
+				},
 			},
 		},
 		{
@@ -383,6 +444,7 @@ export const subagentSystemPrompt: Patch = {
 
 		let patchedCount = 0;
 		let legacyCount = 0;
+		const startupDefaults = countStartupAppendDefaults(verifyAst);
 
 		traverse(verifyAst, {
 			ConditionalExpression(path) {
@@ -396,6 +458,9 @@ export const subagentSystemPrompt: Patch = {
 		}
 		if (!hasFallbackAppendDeclarator(verifyAst)) {
 			return "Missing subagent prompt fallback from appendSubagentSystemPrompt to appendSystemPrompt";
+		}
+		if (startupDefaults.legacy > 0) {
+			return `Subagent append prompt still defaults to void 0 (${startupDefaults.legacy} surviving)`;
 		}
 		if (patchedCount !== 1) {
 			return `Expected exactly one patched subagent system prompt branch, found ${patchedCount}`;

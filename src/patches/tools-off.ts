@@ -214,6 +214,64 @@ const GUIDE_REWRITES: Array<{ pattern: RegExp; replacement: string }> = [
 	},
 ];
 
+const ACTIONABLE_PROMPT_REWRITES: Array<{
+	pattern: RegExp;
+	replacement: string;
+}> = [
+	{
+		pattern:
+			/ {2}- ALWAYS use \$\{[^}]+\} for search tasks\. NEVER invoke \\`grep\\` or \\`rg\\` as a \$\{[^}]+\} command\. The \$\{[^}]+\} tool has been optimized for correct permissions and access\./g,
+		replacement:
+			"  - Local policy disables this tool. Route code search by intent through symbol, semantic, or structural tools; use rg only for non-code text/logs/config/comments.",
+	},
+	{
+		pattern:
+			/grep -Hm1 '\^description:' "\$d"\/\.claude\/skills\/\*\/SKILL\.md 2>\/dev\/null/g,
+		replacement:
+			'[ -d "$d/.claude/skills" ] && fd -a SKILL.md "$d/.claude/skills" -x rg -n -m 1 \'^description:\' {}',
+	},
+	{
+		pattern: /grep -r ASSUMPTION \.ds-sync\/\*\.mjs \.ds-sync\/lib\/\*\.mjs/g,
+		replacement: "rg -n 'ASSUMPTION' .ds-sync/*.mjs .ds-sync/lib/*.mjs",
+	},
+	{
+		pattern: /[Gg]rep classes\/tokens against the compiled stylesheets/g,
+		replacement:
+			"search classes/tokens with \\`rg\\` against generated CSS/text artifacts",
+	},
+	{
+		pattern:
+			/gh pr create --title "([^"]+)" --body "\$\(cat <<'EOF'\n## Summary\n<1-3 bullet points>\n\n## Test plan\n[\s\S]*?\nEOF\n\)"/g,
+		replacement: `pr_body=$(mktemp)
+tee "$pr_body" >/dev/null <<'EOF'
+## Summary
+<1-3 bullet points>
+
+## Test plan
+[Bulleted markdown checklist of TODOs for testing the pull request...]
+EOF
+gh pr create --title "$1" --body-file "$pr_body"`,
+	},
+	{
+		pattern:
+			/If the user is in this repo and you're unsure whether a command is covered, grep these files rather than guessing\./g,
+		replacement:
+			"If the user is in this repo and you're unsure whether a command is covered, search these files with \\`rg -n\\` rather than guessing.",
+	},
+	{
+		pattern:
+			/These don't need an allowlist entry(?:\.| (?:\u2014|\\u2014)) they never prompt\. If you see any of these in the transcripts, skip them; don't suggest them to the user\./g,
+		replacement:
+			"These don't need an allowlist entry: they never prompt. This is permission-classification data only, not preferred workflow guidance. If you see any of these in the transcripts, skip them; don't suggest them to the user.",
+	},
+	{
+		pattern:
+			/When unsure of a path, verify with ls first; absolute paths avoid ambiguity about the working directory\./g,
+		replacement:
+			"When unsure of a path, verify with \\`fd\\` or \\`eza\\` first; absolute paths avoid ambiguity about the working directory.",
+	},
+];
+
 const PROMPT_REWRITE_SOURCE_SIGNALS = [
 	"for broad file pattern matching",
 	"for searching file contents with regex",
@@ -225,6 +283,10 @@ const PROMPT_REWRITE_PATCHED_SIGNALS = [
 ];
 
 const DISABLED_TOOL_PROMPT_LEAKS = [
+	{
+		needle: "ALWAYS use Grep for search tasks.",
+		reason: "Disabled Grep tool prompt still tells the model to use Grep",
+	},
 	{
 		needle: "const { filenames } = await Glob({ pattern: 'src/**/*.ts' })",
 		reason: "REPL prompt still demonstrates disabled Glob",
@@ -246,6 +308,37 @@ const DISABLED_TOOL_PROMPT_LEAKS = [
 		needle: "Explore the codebase directly with Glob, Grep, and Read.",
 		reason:
 			"Remote planning prompt still routes exploration through disabled Glob/Grep",
+	},
+] as const;
+
+const ACTIONABLE_LEGACY_COMMAND_PROMPT_LEAKS = [
+	{
+		needle: "grep -Hm1 '^description:'",
+		reason: "Bundled skill prompt still uses grep to discover skills",
+	},
+	{
+		needle: "grep -r ASSUMPTION",
+		reason: "Design-sync skill prompt still uses grep recursively",
+	},
+	{
+		needle: "Grep classes/tokens",
+		reason: "Design-sync skill prompt still uses Grep as an instruction",
+	},
+	{
+		needle: "grep classes/tokens",
+		reason: "Design-sync skill prompt still uses grep as an instruction",
+	},
+	{
+		needle: "--body \"$(cat <<'EOF'",
+		reason: "PR prompt still uses cat heredoc command substitution",
+	},
+	{
+		needle: "grep these files rather than guessing",
+		reason: "Permission skill prompt still tells the model to grep files",
+	},
+	{
+		needle: "verify with ls first",
+		reason: "SendUserFile prompt still routes path checks through ls",
 	},
 ] as const;
 
@@ -535,6 +628,9 @@ export const disableTools: Patch = {
 		for (const { pattern, replacement } of GUIDE_REWRITES) {
 			result = result.replace(pattern, replacement);
 		}
+		for (const { pattern, replacement } of ACTIONABLE_PROMPT_REWRITES) {
+			result = result.replace(pattern, replacement);
+		}
 
 		// --- Skill allowed-tools and doc table cleanup ---
 		const hasSkillMarkers =
@@ -699,6 +795,18 @@ function verifyPromptRewrite(code: string): true | string {
 		return "Legacy Task-tool subagent description still present";
 	}
 	for (const leak of DISABLED_TOOL_PROMPT_LEAKS) {
+		if (code.includes(leak.needle)) {
+			return leak.reason;
+		}
+	}
+	if (
+		/ALWAYS use \$\{[^}]+\} for search tasks\. NEVER invoke \\`grep\\`/.test(
+			code,
+		)
+	) {
+		return "Disabled Grep tool prompt still tells the model to use Grep";
+	}
+	for (const leak of ACTIONABLE_LEGACY_COMMAND_PROMPT_LEAKS) {
 		if (code.includes(leak.needle)) {
 			return leak.reason;
 		}

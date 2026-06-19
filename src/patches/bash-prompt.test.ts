@@ -50,8 +50,10 @@ function A4D() {
     "Executes a given bash command and returns its output.",
     \`IMPORTANT: Avoid using this tool to run \${A} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\`,
     "If your command will create new directories or files, first use this tool to run \`ls\` to verify the parent directory exists and is the correct location.",
+    "gh pr create --title \\"the pr title\\" --body \\"$(cat <<'EOF'\\n## Summary\\n<1-3 bullet points>\\n\\n## Test plan\\n[Bulleted markdown checklist of TODOs for testing the pull request...]\\n\\n\`file viewing, editing, creation, or output formatting\`\\nEOF\\n)\\"",
     ...(H
       ? [
+          "When running \`find\`, search from \`.\` (or a specific path), not \`/\` \u2014 scanning the full filesystem can exhaust system resources on large trees.",
           "When using \`find -regex\` with alternation, put the longest alternative first. Example: use '.*\\\\.\\\\(tsx\\\\|ts\\\\)' not '.*\\\\.\\\\(ts\\\\|tsx\\\\)' — the second form silently skips .tsx files.",
         ]
       : []),
@@ -129,8 +131,18 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 		),
 		true,
 	);
-	assert.equal(output.includes("shell-native viewing use"), true);
 	assert.equal(output.includes("bat"), true);
+	assert.equal(
+		output.includes(
+			"for non-code files or known code ranges; use `bat -r START:END` for shell file slices",
+		) ||
+			output.includes(
+				"for non-code files or known code ranges; use \\`bat -r START:END\\` for shell file slices",
+			),
+		true,
+	);
+	assert.equal(output.includes("or `bat` for shell-native viewing"), false);
+	assert.equal(output.includes("or \\`bat\\` for shell-native viewing"), false);
 	assert.equal(output.includes("code rewrites use"), true);
 	assert.equal(
 		output.includes("use `sd` only for non-code text") ||
@@ -158,7 +170,15 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 	assert.equal(output.includes("Communication: Output text directly"), true);
 	assert.equal(output.includes("find or ls"), false);
 	assert.equal(output.includes("grep or rg"), false);
+	assert.equal(output.includes("--body \"$(cat <<'EOF'"), false);
+	assert.equal(output.includes("pr_body=$(mktemp)"), true);
+	assert.equal(
+		output.includes('--body-file "$pr_body"') ||
+			output.includes('--body-file \\"$pr_body\\"'),
+		true,
+	);
 	assert.equal(output.includes("(NOT cat/head/tail)"), false);
+	assert.equal(output.includes("When running `find`"), false);
 	assert.equal(output.includes("find -regex"), false);
 	assert.equal(bashPrompt.verify(output, ast), true);
 });

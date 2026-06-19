@@ -52,7 +52,7 @@ Usage:
 - For text files or narrow known code ranges, specify an optional range for partial reads
 - You can read multiple files in parallel when needed
 - If the user provides a screenshot path, use this tool to view it
-- This tool can only read files, not directories. Use Bash for directory listings.
+- This tool can only read files, not directories. Use Bash with \`eza\` for directory listings or \`fd\` for scoped discovery.
 - If a file exists but is empty, the tool may return a warning placeholder instead of file contents.
 
 Supported file types:
@@ -271,7 +271,7 @@ function ${READ_PROMPT_PATCH_HELPER}(prompt) {
     missingNotes.push(${JSON.stringify("- This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs, combining code, text, and visualizations.")});
   }
   if (!updated.includes("can only read files, not directories")) {
-    missingNotes.push(${JSON.stringify("- This tool can only read files, not directories. Use Bash for directory listings.")});
+    missingNotes.push(${JSON.stringify("- This tool can only read files, not directories. Use Bash with `eza` for directory listings or `fd` for scoped discovery.")});
   }
   if (!updated.includes("does not exist")) {
     missingNotes.push(${JSON.stringify("- If a file does not exist, the read will return an error.")});

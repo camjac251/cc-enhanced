@@ -8,6 +8,7 @@ import {
 	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
 	MODERN_CODE_TOOL_SELF_CHECK,
 	MODERN_STDOUT_CAP,
+	MODERN_TOOL_PREFERENCE,
 	STRONG_CLAUDEMD_DISCLAIMER_LINES,
 } from "../patches/prompt-policy.js";
 import { verifyCliAnchors } from "./verify-cli-anchors.js";
@@ -112,6 +113,7 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 		"CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE",
 		"appendSystemPromptFile === void 0",
 		"appendSubagentSystemPrompt ??",
+		MODERN_TOOL_PREFERENCE,
 		MODERN_STDOUT_CAP,
 		'return "patched";',
 		"if (A.offset !== void 0 || A.limit !== void 0 || A.range !== void 0) return null;",
