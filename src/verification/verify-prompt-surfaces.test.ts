@@ -216,6 +216,11 @@ test("verifyPromptSurfaces rejects legacy live prompt guidance", async () => {
 		);
 		await writeSurface(
 			tempDir,
+			"agents/worker.md",
+			contentWithForbiddenNeedles("agents/worker.md"),
+		);
+		await writeSurface(
+			tempDir,
 			"tools/builtin/repl.md",
 			contentWithForbiddenNeedles("tools/builtin/repl.md"),
 		);
@@ -275,6 +280,9 @@ test("verifyPromptSurfaces rejects legacy live prompt guidance", async () => {
 		);
 		assert.ok(
 			result.failures.some((failure) => failure.id === "explore-stray-command"),
+		);
+		assert.ok(
+			result.failures.some((failure) => failure.id === "worker-auto-commit"),
 		);
 		assert.ok(
 			result.failures.some(

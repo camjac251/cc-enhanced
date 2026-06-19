@@ -411,7 +411,10 @@ test("built-in-agent-prompt verify flags partial corpus rewrite", () => {
 });
 
 const WORKER_AGENT_FIXTURE =
-	"return `You are a worker agent executing a task assigned by the coordinator. Report the commit hash.`;";
+	"return `You are a worker agent executing a task assigned by the coordinator.\n\n## Scope\n\n- If you changed any files, commit your changes when done. Use a clear, descriptive commit message. Only stage files you actually changed \\u2014 never use \\`git add .\\` or \\`git add -A\\`. Report the commit hash in your summary.`;";
+
+const WORKER_AGENT_ROUTING_ONLY_FIXTURE =
+	"return `You are a worker agent executing a task assigned by the coordinator. Report back to the coordinator.`;";
 
 const WORKFLOW_SUBAGENT_FIXTURE =
 	"g0_ = `You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task. Return verbatim.`; l0_ = `You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task. Call the tool.`;";
@@ -485,6 +488,13 @@ test("built-in-agent-prompt injects modern routing into the worker agent prompt"
 		),
 		true,
 	);
+	assert.equal(output.includes("commit your changes when done"), false);
+	assert.equal(
+		output.includes(
+			"Do not commit unless the coordinator explicitly asked you to commit.",
+		),
+		true,
+	);
 });
 
 test("built-in-agent-prompt injects modern routing into both workflow-subagent variants", () => {
@@ -521,10 +531,22 @@ test("built-in-agent-prompt verify passes with patched sub-agent surfaces", () =
 });
 
 test("built-in-agent-prompt verify flags an unpatched worker prompt", () => {
-	const broken = `${patchedSubagentSurfaces()}\n${WORKER_AGENT_FIXTURE}`;
+	const broken = `${patchedSubagentSurfaces()}\n${WORKER_AGENT_ROUTING_ONLY_FIXTURE}`;
 	const result = builtInAgentPrompt.verify(broken);
 	assert.equal(typeof result, "string");
 	assert.equal(String(result).includes("missing modern-tooling routing"), true);
+});
+
+test("built-in-agent-prompt verify flags worker auto-commit guidance", () => {
+	const badWorker = [
+		"You are a worker agent executing a task assigned by the coordinator.",
+		MODERN_SUBAGENT_CODE_ROUTING,
+		"- If you changed any files, commit your changes when done. Use a clear, descriptive commit message. Only stage files you actually changed \\u2014 never use \\`git add .\\` or \\`git add -A\\`. Report the commit hash in your summary.",
+	].join("\n\n");
+	const broken = `${patchedSubagentSurfaces()}\n${badWorker}`;
+	const result = builtInAgentPrompt.verify(broken);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("worker no-auto-commit guidance"), true);
 });
 
 test("built-in-agent-prompt verify flags an unpatched Agent tool grep reference", () => {

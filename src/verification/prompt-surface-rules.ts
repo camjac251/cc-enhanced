@@ -297,6 +297,13 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				reason: "Worker agent missing scratchpad-over-/tmp temp-file guidance",
 			},
 		],
+		forbidden: [
+			{
+				id: "worker-auto-commit",
+				needle: "commit your changes when done",
+				reason: "Worker agent should not commit unless the coordinator asks",
+			},
+		],
 	},
 	{
 		file: "agents/workflow-subagent.md",

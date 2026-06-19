@@ -3,13 +3,13 @@ import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 
 /**
- * Relaxes the serverName regex in allowedMcpServers and deniedMcpServers schemas
- * to allow colons and dots, so plugin server names (plugin:name:key) can be matched.
+ * Relaxes the serverName regex in the managed allowedMcpServers schema to allow
+ * colons and dots, so plugin server names (plugin:name:key) can be matched.
  *
- * Without this, deniedMcpServers cannot target plugin MCP servers because their names
- * use the format `plugin:<pluginName>:<serverKey>` which contains colons.
- * The original regex /^[a-zA-Z0-9_-]+$/ rejects colons, causing the entire settings
- * file to be skipped on validation failure.
+ * Without this, allowedMcpServers cannot target plugin MCP servers because their
+ * names use the format `plugin:<pluginName>:<serverKey>` which contains colons.
+ * The restrictive regex rejects colons, causing managed settings validation to
+ * drop entries that should match plugin servers.
  */
 
 const OLD_PATTERN = "^[a-zA-Z0-9_-]+$";
@@ -87,12 +87,11 @@ export const mcpServerName: Patch = {
 		if (mismatchedShape) {
 			return "MCP serverName regex pattern was updated but the validator message does not match the patched wording";
 		}
-		// Anchor the site count. Upstream ships exactly two schemas that share
-		// this validator (allowedMcpServers and deniedMcpServers). A drop to
-		// one means our mutation only landed in half the call sites; a single
-		// updated site silently lets the other schema reject plugin names.
-		if (updatedCount < 2) {
-			return `Expected MCP serverName regex updates on both allowedMcpServers and deniedMcpServers schemas; found ${updatedCount}`;
+		// Current upstream has one restrictive server-name regex site; the deny
+		// schema uses non-empty string validation instead and no longer needs
+		// regex relaxation.
+		if (updatedCount !== 1) {
+			return `Expected exactly one MCP serverName regex update; found ${updatedCount}`;
 		}
 
 		return true;

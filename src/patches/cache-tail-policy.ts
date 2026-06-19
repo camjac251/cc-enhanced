@@ -1228,23 +1228,30 @@ function createCacheControlBlockCapRequestBuilderInjector(): Visitor {
 
 			for (let index = 0; index < body.length; index++) {
 				const stmt = body[index];
-				if (!t.isReturnStatement(stmt)) continue;
-				if (!stmt.argument || !t.isExpression(stmt.argument)) continue;
-				const obj = getObjectExpressionFromExpression(stmt.argument);
-				if (!obj || !isMainRequestObjectExpression(obj)) continue;
+				if (!t.isVariableDeclaration(stmt)) continue;
+				for (const decl of stmt.declarations) {
+					if (!t.isIdentifier(decl.id)) continue;
+					if (!t.isExpression(decl.init)) continue;
+					const requestName = decl.id.name;
+					const obj = getObjectExpressionFromExpression(decl.init);
+					if (!obj || !isMainRequestObjectExpression(obj)) continue;
+					if (
+						!body.some(
+							(bodyStmt) =>
+								t.isReturnStatement(bodyStmt) &&
+								t.isIdentifier(bodyStmt.argument, { name: requestName }),
+						)
+					) {
+						continue;
+					}
 
-				const requestId = path.scope.generateUidIdentifier(
-					"cacheControlledRequest",
-				);
-				const requestDeclaration = t.variableDeclaration("let", [
-					t.variableDeclarator(requestId, stmt.argument),
-				]);
-				const injected = createCacheControlCapStatements(requestId);
-
-				stmt.argument = t.cloneNode(requestId);
-				body.splice(index, 0, requestDeclaration, ...injected);
-				patched = true;
-				return;
+					const injected = createCacheControlCapStatements(
+						t.identifier(requestName),
+					);
+					body.splice(index + 1, 0, ...injected);
+					patched = true;
+					return;
+				}
 			}
 		},
 		Program: {

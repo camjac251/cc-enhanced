@@ -260,6 +260,12 @@ const SUBAGENT_ROUTING_ANCHORS = [
 	WORKFLOW_SUBAGENT_OPENER,
 ] as const;
 
+const WORKER_AGENT_AUTO_COMMIT_SOURCE =
+	"- If you changed any files, commit your changes when done. Use a clear, descriptive commit message. Only stage files you actually changed \\u2014 never use \\`git add .\\` or \\`git add -A\\`. Report the commit hash in your summary.";
+
+const WORKER_AGENT_AUTO_COMMIT_REPLACEMENT =
+	"- If you changed files, report the changed paths and verification results. Do not commit unless the coordinator explicitly asked you to commit.";
+
 const CLAUDE_NOISY_INVESTIGATION_SOURCE =
 	"For noisy investigation (grep sweeps, log trawls, broad search), spawn a subagent and keep only the findings here.";
 
@@ -517,6 +523,10 @@ export const builtInAgentPrompt: Patch = {
 			escapeNonAscii(CLAUDE_NOISY_INVESTIGATION_SOURCE),
 			CLAUDE_NOISY_INVESTIGATION_REPLACEMENT,
 		);
+		result = result.replaceAll(
+			escapeNonAscii(WORKER_AGENT_AUTO_COMMIT_SOURCE),
+			WORKER_AGENT_AUTO_COMMIT_REPLACEMENT,
+		);
 		for (const anchor of SUBAGENT_ROUTING_ANCHORS) {
 			const injected = subagentRoutingInjection(anchor);
 			if (!result.includes(injected)) {
@@ -737,6 +747,12 @@ export const builtInAgentPrompt: Patch = {
 			"claude background-job investigation routing",
 		);
 		if (claudeNoisyResult !== true) return claudeNoisyResult;
+		const workerCommitResult = verifyExactReplacement(
+			WORKER_AGENT_AUTO_COMMIT_SOURCE,
+			WORKER_AGENT_AUTO_COMMIT_REPLACEMENT,
+			"worker no-auto-commit guidance",
+		);
+		if (workerCommitResult !== true) return workerCommitResult;
 
 		for (const anchor of SUBAGENT_ROUTING_ANCHORS) {
 			const anchorCount = countOccurrences(code, anchor);

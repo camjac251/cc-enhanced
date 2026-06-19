@@ -509,19 +509,19 @@ function clampRequest(H, $) {
 }
 
 function buildRequest(messages, system, tools, model, maxTokens, betas, cacheEnabled, ttl, cacheEdits, pinnedEdits, skipCacheWrite) {
-  return (
-    betas = [],
-    {
-      model: model,
-      messages: buildCacheBreakpoints(messages, cacheEnabled, ttl, true, cacheEdits, pinnedEdits, skipCacheWrite),
-      system: system,
-      tools: tools,
-      tool_choice: undefined,
-      metadata: {},
-      max_tokens: maxTokens,
-      ...(betas.length > 0 && { betas }),
-    }
-  );
+  betas = [];
+  let requestPayload = {
+    model: model,
+    messages: buildCacheBreakpoints(messages, cacheEnabled, ttl, true, cacheEdits, pinnedEdits, skipCacheWrite),
+    system: system,
+    tools: tools,
+    tool_choice: undefined,
+    metadata: {},
+    max_tokens: maxTokens,
+    ...(betas.length > 0 && { betas }),
+  };
+  if (requestPayload.thinking?.type === "enabled") requestPayload.thinking = { ...requestPayload.thinking };
+  return requestPayload;
 }
 
 async function sendNonStream(client, request) {
@@ -579,8 +579,8 @@ test("cache-tail-policy caps cache_control blocks in the live request builder an
 	);
 	assert.match(
 		output,
-		/let _cacheControlledRequest =/,
-		"live request builder should materialize the request before stripping excess cache_control blocks",
+		/let requestPayload =/,
+		"live request builder should patch the materialized request object",
 	);
 	assert.equal(
 		output.indexOf(".messages = ") < output.indexOf(".system = "),
@@ -593,7 +593,8 @@ test("cache-tail-policy caps cache_control blocks in the live request builder an
 		"system breakpoints should be evicted before tool breakpoints",
 	);
 	assert.equal(
-		output.includes("Array.isArray(L.tools)"),
+		output.includes("Array.isArray(L.tools)") &&
+			output.includes("Array.isArray(requestPayload.tools)"),
 		true,
 		"tools array should be counted for cache_control blocks",
 	);
@@ -627,7 +628,7 @@ function buildSpreadRequest(model, messages, system, tools, toolChoice) {
 test("cache-tail-policy injects the live request builder cap exactly once even with a second request-shaped object", async () => {
 	const SECOND_BUILDER = `
 function buildRequestTwo(messages, system, tools, model, maxTokens) {
-  return {
+  let requestPayloadTwo = {
     model: model,
     messages: messages,
     system: system,
@@ -636,6 +637,7 @@ function buildRequestTwo(messages, system, tools, model, maxTokens) {
     metadata: {},
     max_tokens: maxTokens,
   };
+  return requestPayloadTwo;
 }
 `;
 	const ast = parse(
