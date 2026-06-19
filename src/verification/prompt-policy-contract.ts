@@ -165,6 +165,11 @@ export const FORBIDDEN_LEGACY_PROMPT_NEEDLES: readonly PromptPolicyNeedle[] = [
 		reason: "Bash PR example still uses cat heredoc in command substitution",
 	},
 	{
+		id: "legacy-pr-body-etc-heredoc-line",
+		needle: "tee \"$pr_body\" >/dev/null <<'EOF'",
+		reason: "Bash PR example still shares an exact /etc policy line",
+	},
+	{
 		id: "legacy-bash-read-or-bat",
 		needle: "Read files: Use Read or `bat` for shell-native viewing",
 		reason: "Bash prompt still gives overly broad Read/bat guidance",

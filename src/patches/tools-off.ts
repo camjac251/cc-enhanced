@@ -243,13 +243,13 @@ const ACTIONABLE_PROMPT_REWRITES: Array<{
 		pattern:
 			/gh pr create --title "([^"]+)" --body "\$\(cat <<'EOF'\n## Summary\n<1-3 bullet points>\n\n## Test plan\n[\s\S]*?\nEOF\n\)"/g,
 		replacement: `pr_body=$(mktemp)
-tee "$pr_body" >/dev/null <<'EOF'
+tee "$pr_body" >/dev/null <<'PR_BODY'
 ## Summary
 <1-3 bullet points>
 
 ## Test plan
 [Bulleted markdown checklist of TODOs for testing the pull request...]
-EOF
+PR_BODY
 gh pr create --title "$1" --body-file "$pr_body"`,
 	},
 	{

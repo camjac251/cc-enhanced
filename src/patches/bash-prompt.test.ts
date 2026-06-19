@@ -171,6 +171,16 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 	assert.equal(output.includes("find or ls"), false);
 	assert.equal(output.includes("grep or rg"), false);
 	assert.equal(output.includes("--body \"$(cat <<'EOF'"), false);
+	assert.equal(output.includes("tee \"$pr_body\" >/dev/null <<'EOF'"), false);
+	assert.equal(
+		output.includes("tee \\\"$pr_body\\\" >/dev/null <<'EOF'"),
+		false,
+	);
+	assert.equal(
+		output.includes("tee \"$pr_body\" >/dev/null <<'PR_BODY'") ||
+			output.includes("tee \\\"$pr_body\\\" >/dev/null <<'PR_BODY'"),
+		true,
+	);
 	assert.equal(output.includes("pr_body=$(mktemp)"), true);
 	assert.equal(
 		output.includes('--body-file "$pr_body"') ||

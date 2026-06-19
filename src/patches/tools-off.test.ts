@@ -359,6 +359,15 @@ EOF
 	assert.equal(output.includes("grep these files rather than guessing"), false);
 	assert.equal(output.includes("verify with ls first"), false);
 	assert.equal(output.includes("--body \"$(cat <<'EOF'"), false);
+	assert.equal(output.includes("tee \"$pr_body\" >/dev/null <<'EOF'"), false);
+	assert.equal(
+		output.includes("tee \\\"$pr_body\\\" >/dev/null <<'EOF'"),
+		false,
+	);
+	assert.equal(
+		output.includes("tee \"$pr_body\" >/dev/null <<'PR_BODY'"),
+		true,
+	);
 	assert.equal(output.includes("fd -a SKILL.md"), true);
 	assert.equal(output.includes("rg -n -m 1"), true);
 	assert.equal(output.includes("rg -n 'ASSUMPTION'"), true);

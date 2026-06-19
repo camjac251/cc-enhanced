@@ -424,6 +424,11 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				reason: "Bash PR example still uses cat heredoc command substitution",
 			},
 			{
+				id: "bash-pr-etc-heredoc-line",
+				needle: "tee \"$pr_body\" >/dev/null <<'EOF'",
+				reason: "Bash PR example still shares an exact /etc policy line",
+			},
+			{
 				id: "bash-find-normalized",
 				needle: "When running `find`, search from `.`",
 				reason: "Bash prompt still normalizes find as a routine path",
