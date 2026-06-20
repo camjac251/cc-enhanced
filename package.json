@@ -1,7 +1,7 @@
 {
 	"name": "patcher",
 	"version": "1.0.0",
-	"description": "",
+	"description": "Power-user local CLI patcher with verifiable bundle patches for tool ergonomics, prompt cleanup, workflow controls, runtime guards, and native repacking.",
 	"main": "index.js",
 	"scripts": {
 		"cli": "bun src/index.ts",
@@ -41,7 +41,7 @@
 	},
 	"keywords": [],
 	"author": "",
-	"license": "ISC",
+	"license": "MIT",
 	"packageManager": "bun@1.3.14",
 	"devDependencies": {
 		"@babel/template": "^7.29.7",
