@@ -8,6 +8,7 @@ import {
 	getObjectPropertyByName,
 	getVerifyAst,
 	hasObjectKeyName,
+	isElementCall,
 	isMemberPropertyName,
 	resolveStringValue,
 } from "./ast-helpers.js";
@@ -3070,15 +3071,21 @@ export const readWithBat: Patch = {
 										t.identifier("WSPC"),
 									),
 								]);
-								path.node.params[0] = newFirstParam;
 
-								// Find createElement identifier, abbreviation function, check function, and component
-								// by analyzing the function body
+								// Find element factory, abbreviation function, check function,
+								// and file-path component by analyzing the function body. Discovery
+								// must fully succeed before any mutation: defaulting to stale
+								// minified guesses (the old behavior) produced a render that called
+								// a non-existent factory and broke the Read tool chip once upstream
+								// moved rendering to the JSX runtime.
 								let createElementId = "A3";
 								let abbrFunc = "j6";
 								let checkFunc = "C51";
 								let filePathComp = "sk";
 								let displayVar = "Z";
+								let foundFactory = false;
+								let foundDisplay = false;
+								let foundCheck = false;
 
 								traverse(
 									path.node.body,
@@ -3092,6 +3099,7 @@ export const readWithBat: Patch = {
 											if (t.isIdentifier(declPath.node.id)) {
 												displayVar = declPath.node.id.name;
 												abbrFunc = init.alternate.callee.name;
+												foundDisplay = true;
 											}
 										},
 										// Find: if (C51(A)) return ""
@@ -3106,13 +3114,15 @@ export const readWithBat: Patch = {
 											)
 												return;
 											checkFunc = test.callee.name;
+											foundCheck = true;
 										},
-										// Find: X.createElement(sk, { filePath: ... })
+										// Find the file-path component render, runtime-agnostic:
+										// X.createElement(sk, { filePath: ... }) or X.jsx(sk, { filePath: ... }).
 										CallExpression(callPath) {
+											if (foundFactory) return;
 											const callee = callPath.node.callee;
 											if (!t.isMemberExpression(callee)) return;
-											if (!isMemberPropertyName(callee, "createElement"))
-												return;
+											if (!isElementCall(callPath.node)) return;
 											if (!t.isIdentifier(callee.object)) return;
 
 											const args = callPath.node.arguments;
@@ -3126,6 +3136,7 @@ export const readWithBat: Patch = {
 												) {
 													createElementId = callee.object.name;
 													filePathComp = args[0].name;
+													foundFactory = true;
 												}
 											}
 										},
@@ -3134,6 +3145,21 @@ export const readWithBat: Patch = {
 									path,
 								);
 
+								// Discovery must have resolved the real factory, component,
+								// abbreviation function, and empty-return guard. If any is missing
+								// (e.g. an upstream render-shape change), leave the function fully
+								// unpatched so the stock chip still renders and verify fails loudly
+								// instead of emitting a render that calls a non-existent factory.
+								if (!foundFactory || !foundDisplay || !foundCheck) {
+									console.warn(
+										"Read with bat: renderToolUseMessage factory/component not found; leaving Read render unpatched",
+									);
+									path.stop();
+									return;
+								}
+
+								path.node.params[0] = newFirstParam;
+
 								// Build new function body with options display
 								const newBody = t.blockStatement(
 									template.statements(
@@ -3141,14 +3167,14 @@ export const readWithBat: Patch = {
 					if (!FILE_PATH) return null;
 					if (CHECK_FN(FILE_PATH)) return R ? " · range: " + R : "";
 					let DISPLAY = VERBOSE ? FILE_PATH : ABBR_FN(FILE_PATH);
-					if (PAGES) return CE.createElement(CE.Fragment, null, CE.createElement(COMP, { filePath: FILE_PATH }, DISPLAY), " · pages " + PAGES);
+					if (PAGES) return CE.jsx(CE.Fragment, { children: [CE.jsx(COMP, { filePath: FILE_PATH, children: DISPLAY }), " · pages " + PAGES] });
 					var opts = [];
 					if (R) opts.push("range: " + R);
 					if (WSPC) opts.push("whitespace");
 					if (opts.length > 0) {
-						return CE.createElement(CE.Fragment, null, CE.createElement(COMP, { filePath: FILE_PATH }, DISPLAY), " · " + opts.join(", "));
+						return CE.jsx(CE.Fragment, { children: [CE.jsx(COMP, { filePath: FILE_PATH, children: DISPLAY }), " · " + opts.join(", ")] });
 					}
-					return CE.createElement(COMP, { filePath: FILE_PATH }, DISPLAY);
+					return CE.jsx(COMP, { filePath: FILE_PATH, children: DISPLAY });
 				`,
 										{
 											placeholderPattern:

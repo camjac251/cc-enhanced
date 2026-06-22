@@ -164,8 +164,7 @@ function renderToolUseMessage({ file_path: A, offset: Q, limit: B, pages: Y }, {
   if (!A) return null;
   if (eG1(A)) return "";
   let Z = G ? A : eG1(A);
-  if (Y) return A + " pages " + Y;
-  return A;
+  return RC.jsx(FileComp, { filePath: A, children: Z });
 }
 `;
 
@@ -396,6 +395,38 @@ export { ReadTool, helperRead, changedSnippet, setChangedFileMtime };`,
 		},
 	};
 }
+
+test("read-bat render uses the discovered element factory, never a stale default", async () => {
+	const output = await getPatchedDelegationOutput();
+	// The rebuilt renderToolUseMessage must call the factory/component it actually
+	// found in the function body (RC.jsx / FileComp), via the automatic JSX
+	// runtime. Emitting the hardcoded fallback guesses would reference a
+	// non-existent factory and crash the Read tool chip at runtime.
+	assert.match(output, /RC\.jsx\(FileComp,\s*\{[\s\S]*?filePath:/);
+	assert.match(output, /RC\.jsx\(RC\.Fragment,\s*\{[\s\S]*?children:/);
+	assert.doesNotMatch(output, /A3\.createElement/);
+	assert.doesNotMatch(output, /\.createElement\(/);
+});
+
+test("read-bat leaves the render unpatched and fails verify when no element factory is found", async () => {
+	// Strip the element factory from the render so discovery cannot resolve a real
+	// factory/component. The patch must refuse to rebuild the render (rather than
+	// emit a stale-guess factory) and verify must fail loudly. This guards the
+	// regression where a factory-less render still passed verify on string checks.
+	const fixture = READ_DELEGATION_FIXTURE.replace(
+		"  return RC.jsx(FileComp, { filePath: A, children: Z });",
+		"  return A;",
+	);
+	assert.notEqual(fixture, READ_DELEGATION_FIXTURE);
+	const ast = parse(fixture);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+	// Render left stock: no rebuilt option label and no stale-default factory.
+	assert.doesNotMatch(output, /opts\.push\("whitespace"\)/);
+	assert.doesNotMatch(output, /A3\.createElement/);
+	const result = readWithBat.verify(output);
+	assert.equal(typeof result, "string");
+});
 
 test("read-bat migrates schema and prompt from offset/limit to range/show_whitespace", async () => {
 	const ast = parse(READ_SCHEMA_FIXTURE);

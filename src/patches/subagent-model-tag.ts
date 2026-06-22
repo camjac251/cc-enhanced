@@ -1,7 +1,12 @@
 import * as t from "@babel/types";
 import { type NodePath, traverse } from "../babel.js";
 import type { Patch, PatchAstPass } from "../types.js";
-import { getObjectKeyName, getVerifyAst, isTrueLike } from "./ast-helpers.js";
+import {
+	getObjectKeyName,
+	getVerifyAst,
+	isElementCall,
+	isTrueLike,
+} from "./ast-helpers.js";
 
 /**
  * Identify if a node is a MemberExpression accessing the ".model" property.
@@ -53,13 +58,13 @@ function isModelTagPush(node: t.Node): boolean {
 	const arg = node.arguments[0];
 	if (!t.isExpression(arg)) return false;
 
-	// Look for key: "model" AND dimColor: true (current Agent-era row shape)
+	// The Agent-era model row is a keyed element whose React key is "model".
+	// Under the automatic JSX runtime the key is the third positional argument
+	// of the element-factory call: jsx(type, props, "model").
 	const hasModelKey = nodeContains(
 		arg,
 		(n) =>
-			t.isObjectProperty(n) &&
-			getObjectKeyName(n.key) === "key" &&
-			t.isStringLiteral(n.value, { value: "model" }),
+			isElementCall(n) && t.isStringLiteral(n.arguments[2], { value: "model" }),
 	);
 	if (!hasModelKey) return false;
 

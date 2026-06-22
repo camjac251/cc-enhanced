@@ -17,10 +17,13 @@ async function runSubagentModelTagViaPasses(ast: any): Promise<void> {
 	);
 }
 
+// Agent-era model row under the automatic JSX runtime: a keyed element whose
+// React key ("model") is the third positional argument of the element-factory
+// call, with the dimColor signal carried on a nested text element.
 const SUBAGENT_FIXTURE = `
 function renderRows(entry, rows) {
   if (entry.model) {
-    rows.push(renderRow({ key: "model", dimColor: true, value: formatModel(entry.model) }));
+    rows.push(R.jsx(Box, { flexWrap: "nowrap", marginLeft: 1, children: R.jsx(Text, { dimColor: true, children: formatModel(entry.model) }) }, "model"));
   }
 }
 `;
@@ -54,10 +57,10 @@ test("subagent-model-tag fails closed on ambiguous Agent model branches", async 
 	const input = `
 function renderRows(entry, rows) {
   if (entry.model) {
-    rows.push(renderRow({ key: "model", dimColor: true, value: formatModel(entry.model) }));
+    rows.push(R.jsx(Box, { children: R.jsx(Text, { dimColor: true, children: formatModel(entry.model) }) }, "model"));
   }
   if (entry.model) {
-    rows.push(renderRow({ key: "model", dimColor: true, value: formatModel(entry.model) }));
+    rows.push(R.jsx(Box, { children: R.jsx(Text, { dimColor: true, children: formatModel(entry.model) }) }, "model"));
   }
 }
 `;
@@ -74,13 +77,13 @@ function renderRows(entry, rows) {
 	assert.equal(String(verifyResult).includes("ambiguous"), true);
 });
 
-test("subagent-model-tag patches modern model-row branch without Task label", async () => {
+test("subagent-model-tag patches modern model-row branch behind a memo guard", async () => {
 	const input = `
 function renderRows(entry, rows) {
   if (entry.model) {
     let A = normalizeModel(entry.model), L = currentModel();
     if (A !== L) {
-      rows.push(renderRow({ key: "model", dimColor: true, value: formatModel(A) }));
+      rows.push(R.jsx(Box, { children: R.jsx(Text, { dimColor: true, children: formatModel(A) }) }, "model"));
     }
   }
 }
@@ -96,11 +99,11 @@ function renderRows(entry, rows) {
 	assert.equal(subagentModelTag.verify(output, ast), true);
 });
 
-test("subagent-model-tag ignores legacy Task-label-only model rows", async () => {
+test("subagent-model-tag ignores a keyed model row without the dimColor signal", async () => {
 	const input = `
 function renderRows(entry, rows) {
   if (entry.model) {
-    rows.push(renderRow({ key: "model", label: "Task", value: formatModel(entry.model) }));
+    rows.push(R.jsx(Box, { flexWrap: "nowrap", children: R.jsx(Text, { children: formatModel(entry.model) }) }, "model"));
   }
 }
 `;
@@ -122,7 +125,7 @@ test("subagent-model-tag ignores local CLAUDE_CODE_SUBAGENT_MODEL identifiers", 
 function renderRows(entry, rows) {
   const CLAUDE_CODE_SUBAGENT_MODEL = false;
   if (entry.model && !CLAUDE_CODE_SUBAGENT_MODEL) {
-    rows.push(renderRow({ key: "model", dimColor: true, value: formatModel(entry.model) }));
+    rows.push(R.jsx(Box, { children: R.jsx(Text, { dimColor: true, children: formatModel(entry.model) }) }, "model"));
   }
 }
 `;
@@ -137,14 +140,14 @@ function renderRows(entry, rows) {
 	assert.equal(subagentModelTag.verify(output, ast), true);
 });
 
-test("subagent-model-tag matches nested-createElement dimColor and !0 truthy form", async () => {
+test("subagent-model-tag matches a nested dimColor written as !0 truthy form", async () => {
 	const input = `
 function renderRows(H) {
   let q = [];
   if (H.model && H.model !== "inherit") {
     let K = current();
     if (K) {
-      q.push(C.createElement(P, { key: "model", flexWrap: "nowrap", marginLeft: 1 }, C.createElement(Y, { dimColor: !0 }, label(K))));
+      q.push(C.jsx(P, { flexWrap: "nowrap", marginLeft: 1, children: C.jsx(Y, { dimColor: !0, children: label(K) }) }, "model"));
     }
   }
 }
@@ -188,12 +191,12 @@ test("subagent-model-tag is idempotent on already-guarded code", async () => {
 	assert.equal(subagentModelTag.verify(twice, ast2), true);
 });
 
-test("subagent-model-tag ignores a key:model push with no dimColor in its element tree", async () => {
+test("subagent-model-tag ignores a model push with no dimColor in its element tree", async () => {
 	const input = `
 function renderRows(H) {
   let q = [];
   if (H.model && H.model !== "inherit") {
-    q.push(C.createElement(P, { key: "model", flexWrap: "nowrap" }, C.createElement(Y, null, label(H.model))));
+    q.push(C.jsx(P, { flexWrap: "nowrap", children: C.jsx(Y, { children: label(H.model) }) }, "model"));
   }
 }
 `;
@@ -233,7 +236,7 @@ test("subagent-model-tag verify rejects a wrong-polarity guard with no negation"
 	const input = `
 function renderRows(entry, rows) {
   if (entry.model && process.env.CLAUDE_CODE_SUBAGENT_MODEL) {
-    rows.push(renderRow({ key: "model", dimColor: true, value: formatModel(entry.model) }));
+    rows.push(R.jsx(Box, { children: R.jsx(Text, { dimColor: true, children: formatModel(entry.model) }) }, "model"));
   }
 }
 `;
@@ -252,12 +255,12 @@ test("subagent-model-tag fails closed on two structurally-distinct model-tag row
 	const input = `
 function renderHeaderRow(entry, rows) {
   if (entry.model && entry.model !== "inherit") {
-    rows.push(C.createElement(B, { key: "model", flexWrap: "nowrap" }, C.createElement(w, { dimColor: !0 }, label(entry.model))));
+    rows.push(C.jsx(B, { flexWrap: "nowrap", children: C.jsx(w, { dimColor: !0, children: label(entry.model) }) }, "model"));
   }
 }
 function renderFooterRow(item, out) {
   if (item.model) {
-    out.push(renderRow({ key: "model", dimColor: true, value: fmt(item.model) }));
+    out.push(R.jsx(Box, { children: R.jsx(Text, { dimColor: true, children: fmt(item.model) }) }, "model"));
   }
 }
 `;

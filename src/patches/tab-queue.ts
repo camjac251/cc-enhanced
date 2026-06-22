@@ -2,9 +2,11 @@ import * as t from "@babel/types";
 import { type NodePath, traverse } from "../babel.js";
 import type { Patch, PatchAstPass } from "../types.js";
 import {
+	getElementChildren,
 	getObjectKeyName,
 	getObjectPropertyByName,
 	getVerifyAst,
+	isElementCall,
 } from "./ast-helpers.js";
 
 type FunctionLike =
@@ -132,17 +134,6 @@ function isCallToMember(
 		t.isMemberExpression(node.callee) &&
 		t.isIdentifier(node.callee.object, { name: objectName }) &&
 		getMemberName(node.callee) === propertyName
-	);
-}
-
-function isCreateElementCall(
-	node: t.Node | null | undefined,
-): node is t.CallExpression {
-	return (
-		!!node &&
-		t.isCallExpression(node) &&
-		t.isMemberExpression(node.callee) &&
-		getMemberName(node.callee) === "createElement"
 	);
 }
 
@@ -886,7 +877,7 @@ function patchSubmitForward(target: DraftQueueTarget): boolean {
 }
 
 function getCreateElementFactory(node: t.CallExpression): t.Expression | null {
-	if (!isCreateElementCall(node) || !t.isMemberExpression(node.callee)) {
+	if (!isElementCall(node) || !t.isMemberExpression(node.callee)) {
 		return null;
 	}
 	return t.isExpression(node.callee.object) ? node.callee.object : null;
@@ -909,7 +900,7 @@ function getCreateElementProps(
 function isTextInputChoice(node: t.Node | null | undefined): boolean {
 	if (!t.isConditionalExpression(node)) return false;
 	return [node.consequent, node.alternate].every((branch) => {
-		if (!isCreateElementCall(branch)) return false;
+		if (!isElementCall(branch)) return false;
 		const props = getCreateElementProps(branch);
 		return !!props && props.properties.some((prop) => t.isSpreadElement(prop));
 	});
@@ -929,7 +920,7 @@ function findPromptBarBoxComponent(
 				if (path.node !== functionNode) path.skip();
 			},
 			CallExpression(path) {
-				if (component || !isCreateElementCall(path.node)) return;
+				if (component || !isElementCall(path.node)) return;
 				const props = getCreateElementProps(path.node);
 				if (
 					!props ||
@@ -939,9 +930,9 @@ function findPromptBarBoxComponent(
 					return;
 				}
 				if (
-					!path.node.arguments
-						.slice(2)
-						.some((arg) => t.isIdentifier(arg, { name: textInputId.name }))
+					!getElementChildren(path.node).some((arg) =>
+						t.isIdentifier(arg, { name: textInputId.name }),
+					)
 				) {
 					return;
 				}
@@ -968,11 +959,11 @@ function findPromptBarTextComponent(
 				if (path.node !== functionNode) path.skip();
 			},
 			CallExpression(path) {
-				if (component || !isCreateElementCall(path.node)) return;
+				if (component || !isElementCall(path.node)) return;
 				const props = getCreateElementProps(path.node);
 				if (!props || !hasObjectProperty(props, "dimColor")) return;
 				if (
-					!path.node.arguments.slice(2).some((arg) => t.isStringLiteral(arg))
+					!getElementChildren(path.node).some((arg) => t.isStringLiteral(arg))
 				) {
 					return;
 				}
@@ -1029,10 +1020,7 @@ function getPromptBarPreviewTarget(
 	if (!t.isIdentifier(textInputId)) return null;
 
 	const init = textInputDeclaration.node.init;
-	if (
-		!t.isConditionalExpression(init) ||
-		!isCreateElementCall(init.alternate)
-	) {
+	if (!t.isConditionalExpression(init) || !isElementCall(init.alternate)) {
 		return null;
 	}
 	const react = getCreateElementFactory(init.alternate);
@@ -1057,9 +1045,23 @@ function buildReactElementCall(
 	props: t.Expression | null,
 	children: t.Expression[],
 ): t.CallExpression {
+	// The bundle renders through the automatic JSX runtime, so build elements as
+	// `react.jsx(component, props)` with children folded into the props
+	// `children` slot rather than passed as positional arguments. The captured
+	// `react` factory exposes `jsx`, which accepts a single child or an array.
+	const propsObject =
+		props && t.isObjectExpression(props) ? props : t.objectExpression([]);
+	if (children.length > 0) {
+		propsObject.properties.push(
+			t.objectProperty(
+				t.identifier("children"),
+				children.length === 1 ? children[0] : t.arrayExpression(children),
+			),
+		);
+	}
 	return t.callExpression(
-		t.memberExpression(t.cloneNode(react, true), t.identifier("createElement")),
-		[t.cloneNode(component, true), props ?? t.nullLiteral(), ...children],
+		t.memberExpression(t.cloneNode(react, true), t.identifier("jsx")),
+		[t.cloneNode(component, true), propsObject],
 	);
 }
 
@@ -1738,16 +1740,16 @@ function findQueueFactories(functionNode: FunctionLike): HintFactories | null {
 				if (path.node !== functionNode) path.skip();
 			},
 			CallExpression(path) {
-				if (factories || !isCreateElementCall(path.node)) return;
+				if (factories || !isElementCall(path.node)) return;
 				if (
 					!expressionHasStringProp(path.node, "action", "return to team lead")
 				) {
 					return;
 				}
-				const shortcutCall = path.node.arguments.find(
+				const shortcutCall = getElementChildren(path.node).find(
 					(arg): arg is t.CallExpression =>
 						t.isCallExpression(arg) &&
-						isCreateElementCall(arg) &&
+						isElementCall(arg) &&
 						expressionHasStringProp(arg, "action", "return to team lead"),
 				);
 				if (!shortcutCall) return;
@@ -1920,41 +1922,30 @@ function buildShortcutHintElement(
 	key: string,
 	action: string,
 ): t.CallExpression {
-	const react = t.cloneNode(target.factories.react, true);
-	const text = t.cloneNode(target.factories.text, true);
-	const shortcut = t.cloneNode(target.factories.shortcut, true);
-
-	return t.callExpression(
-		t.memberExpression(react, t.identifier("createElement")),
-		[
-			text,
-			t.objectExpression([
-				t.objectProperty(t.identifier("dimColor"), t.booleanLiteral(true)),
-				t.objectProperty(t.identifier("key"), t.stringLiteral(key)),
-			]),
-			t.callExpression(
-				t.memberExpression(
-					t.cloneNode(target.factories.react, true),
-					t.identifier("createElement"),
-				),
-				[
-					shortcut,
-					t.objectExpression([
-						t.objectProperty(t.identifier("chord"), t.stringLiteral("tab")),
-						t.objectProperty(t.identifier("action"), t.stringLiteral(action)),
-						t.objectProperty(
-							t.identifier("format"),
-							t.objectExpression([
-								t.objectProperty(
-									t.identifier("keyCase"),
-									t.stringLiteral("lower"),
-								),
-							]),
-						),
-					]),
-				],
+	const shortcutElement = buildReactElementCall(
+		target.factories.react,
+		target.factories.shortcut,
+		t.objectExpression([
+			t.objectProperty(t.identifier("chord"), t.stringLiteral("tab")),
+			t.objectProperty(t.identifier("action"), t.stringLiteral(action)),
+			t.objectProperty(
+				t.identifier("format"),
+				t.objectExpression([
+					t.objectProperty(t.identifier("keyCase"), t.stringLiteral("lower")),
+				]),
 			),
-		],
+		]),
+		[],
+	);
+
+	return buildReactElementCall(
+		target.factories.react,
+		target.factories.text,
+		t.objectExpression([
+			t.objectProperty(t.identifier("dimColor"), t.booleanLiteral(true)),
+			t.objectProperty(t.identifier("key"), t.stringLiteral(key)),
+		]),
+		[shortcutElement],
 	);
 }
 

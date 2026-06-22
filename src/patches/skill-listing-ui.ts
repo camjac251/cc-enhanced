@@ -2,9 +2,12 @@ import * as t from "@babel/types";
 import { type NodePath, template, traverse } from "../babel.js";
 import type { Patch, PatchAstPass } from "../types.js";
 import {
+	appendElementChild,
+	getElementChildren,
 	getObjectKeyName,
 	getObjectPropertyByName,
 	getVerifyAst,
+	isElementCall,
 	isMemberPropertyName,
 } from "./ast-helpers.js";
 
@@ -32,17 +35,6 @@ function ${SKILL_LISTING_SUMMARY_HELPER}(attachment) {
 `,
 		{ placeholderPattern: false },
 	)();
-}
-
-function isCreateElementCall(
-	node: t.Node | null | undefined,
-): node is t.CallExpression {
-	return (
-		!!node &&
-		t.isCallExpression(node) &&
-		t.isMemberExpression(node.callee) &&
-		isMemberPropertyName(node.callee, "createElement")
-	);
 }
 
 const VISITOR_KEYS = (
@@ -88,14 +80,14 @@ function findAssignedCreateElementCall(
 		t.isAssignmentExpression(node) &&
 		node.operator === "=" &&
 		t.isIdentifier(node.left, { name: targetName }) &&
-		isCreateElementCall(node.right)
+		isElementCall(node.right)
 	) {
 		return { rootCall: node.right, cacheGuard };
 	}
 	if (
 		t.isVariableDeclarator(node) &&
 		t.isIdentifier(node.id, { name: targetName }) &&
-		isCreateElementCall(node.init)
+		isElementCall(node.init)
 	) {
 		return { rootCall: node.init, cacheGuard };
 	}
@@ -140,7 +132,7 @@ function getReturnedRenderRoot(statements: t.Statement[]): RenderRoot | null {
 	if (returnIndex === -1) return null;
 	const returnStmt = statements[returnIndex];
 	if (!t.isReturnStatement(returnStmt) || !returnStmt.argument) return null;
-	if (isCreateElementCall(returnStmt.argument)) {
+	if (isElementCall(returnStmt.argument)) {
 		return { rootCall: returnStmt.argument };
 	}
 	if (!t.isIdentifier(returnStmt.argument)) return null;
@@ -502,7 +494,7 @@ function hasSkillListingSummaryCall(
 	rootCall: t.CallExpression,
 	attachmentName?: string,
 ): boolean {
-	for (const arg of rootCall.arguments) {
+	for (const arg of getElementChildren(rootCall)) {
 		if (!t.isCallExpression(arg)) continue;
 		if (
 			!t.isIdentifier(arg.callee, {
@@ -582,7 +574,8 @@ function patchSkillListingRenderer(path: NodePath<t.SwitchCase>): boolean {
 		return true;
 	}
 
-	rootCall.arguments.push(
+	appendElementChild(
+		rootCall,
 		t.callExpression(t.identifier(SKILL_LISTING_SUMMARY_HELPER), [
 			t.identifier(attachmentName),
 		]),
@@ -612,7 +605,8 @@ function patchDynamicSkillRenderer(path: NodePath<t.SwitchCase>): boolean {
 		return true;
 	}
 
-	rootCall.arguments.push(
+	appendElementChild(
+		rootCall,
 		t.callExpression(t.identifier(SKILL_LISTING_SUMMARY_HELPER), [
 			t.identifier(attachmentName),
 		]),

@@ -23,14 +23,14 @@ function renderAttachment(H) {
     case "agent_listing_delta": {
       if (H.isInitial || H.addedTypes.length === 0) return null;
       let A = H.addedTypes.length;
-      return Nq.default.createElement(
-        xw,
-        null,
-        Nq.default.createElement(v, { bold: !0 }, A),
-        " agent ",
-        Y6(A, "type"),
-        " available",
-      );
+      return Nq.jsxs(xw, {
+        children: [
+          Nq.jsx(v, { bold: !0, children: A }),
+          " agent ",
+          Y6(A, "type"),
+          " available",
+        ],
+      });
     }
   }
 }
@@ -44,14 +44,14 @@ function renderAttachment(q, $) {
       let z = q.addedTypes.length,
         Y;
       if ($[103] !== z)
-        (Y = yK.default.createElement(y, { bold: !0 }, z)), ($[103] = z), ($[104] = Y);
+        (Y = yK.jsx(y, { bold: !0, children: z })), ($[103] = z), ($[104] = Y);
       else Y = $[104];
       let O;
       if ($[105] !== z) (O = R8(z, "type")), ($[105] = z), ($[106] = O);
       else O = $[106];
       let w;
       if ($[107] !== Y || $[108] !== O)
-        (w = yK.default.createElement(nP, null, Y, " agent ", O, " available")),
+        (w = yK.jsxs(nP, { children: [Y, " agent ", O, " available"] })),
           ($[107] = Y),
           ($[108] = O),
           ($[109] = w);
@@ -89,7 +89,7 @@ test("agent-listing-ui adds a visible agent type summary", async () => {
 	assert.equal(agentListingUi.verify(output, ast), true);
 });
 
-test("agent-listing-ui patches memoized 2.1.169 render shape", async () => {
+test("agent-listing-ui patches the memoized render shape", async () => {
 	const ast = parse(MEMOIZED_AGENT_LISTING_FIXTURE);
 	await runAgentListingUiViaPasses(ast);
 	const output = print(ast);
@@ -157,14 +157,14 @@ function renderAttachment(q, $) {
       let A = q.addedTypes.length,
         Y;
       if ($[104] !== A)
-        (Y = mK.default.createElement(y, { bold: !0 }, A)), ($[104] = A), ($[105] = Y);
+        (Y = mK.jsx(y, { bold: !0, children: A })), ($[104] = A), ($[105] = Y);
       else Y = $[105];
       let O;
       if ($[106] !== A) (O = C8(A, "type")), ($[106] = A), ($[107] = O);
       else O = $[107];
       let w;
       if ($[108] !== Y || $[109] !== O)
-        (w = mK.default.createElement(dW, null, Y, " agent ", O, " available")),
+        (w = mK.jsxs(dW, { children: [Y, " agent ", O, " available"] })),
           ($[108] = Y),
           ($[109] = O),
           ($[110] = w);
@@ -251,19 +251,19 @@ test("agent-listing-ui verify rejects a summary call with the wrong attachment i
 	);
 });
 
-test("agent-listing-ui appends the summary call as the last createElement argument", async () => {
+test("agent-listing-ui appends the summary call as the last render child", async () => {
 	const ast = parse(MEMOIZED_AGENT_LISTING_FIXTURE);
 	await runAgentListingUiViaPasses(ast);
 	const output = print(ast);
 
-	// The summary call must sit at the tail of the render-root createElement
-	// argument list, so its closing paren is immediately followed by the
-	// createElement closing paren. A non-terminal insertion would be followed
-	// by a comma instead, which this assertion rejects.
+	// The summary call must sit at the tail of the render-root children array,
+	// so it is immediately followed by the array's closing bracket. A
+	// non-terminal insertion would be followed by a comma instead, which this
+	// assertion rejects.
 	assert.match(
 		output,
-		/_claudePatchFormatAgentListingSummary\(q\)\s*\)/,
-		"summary call must be the final createElement argument",
+		/_claudePatchFormatAgentListingSummary\(q\)\s*\]/,
+		"summary call must be the final render child",
 	);
 });
 

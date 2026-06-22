@@ -156,6 +156,119 @@ export function getObjectPropertyByName(
 }
 
 /**
+ * Recognized React element-factory member names across the classic runtime
+ * (`X.createElement(type, props, ...children)`) and the automatic JSX runtime
+ * (`X.jsx(type, props)` / `X.jsxs(type, props)`). The bundle is transpiled with
+ * the automatic runtime, so render code uses `jsx`/`jsxs`; `createElement`
+ * stays recognized purely as a generic AST shape, not a per-patch fallback.
+ */
+const ELEMENT_FACTORY_NAMES = new Set(["createElement", "jsx", "jsxs"]);
+
+/**
+ * Check whether a node is a React element-factory call, runtime-agnostic.
+ * Anchors on the callee's member-property name only; the receiving object is
+ * minified and must never be matched on.
+ */
+export function isElementCall(
+	node: t.Node | null | undefined,
+): node is t.CallExpression {
+	if (!t.isCallExpression(node)) return false;
+	const callee = node.callee;
+	if (!t.isMemberExpression(callee) && !t.isOptionalMemberExpression(callee)) {
+		return false;
+	}
+	const name = getMemberPropertyName(callee);
+	return name !== null && ELEMENT_FACTORY_NAMES.has(name);
+}
+
+/**
+ * The element type/component argument (arguments[0]) of an element-factory call.
+ */
+export function getElementType(node: t.CallExpression): t.Node | null {
+	return node.arguments[0] ?? null;
+}
+
+/**
+ * The props ObjectExpression (arguments[1]) of an element-factory call, if it is
+ * an object literal. Returns null for spread-only or absent props.
+ */
+export function getElementProps(
+	node: t.CallExpression,
+): t.ObjectExpression | null {
+	const props = node.arguments[1];
+	return t.isObjectExpression(props) ? props : null;
+}
+
+/**
+ * Children of an element-factory call, normalized across runtimes:
+ *  - createElement(type, props, ...children): positional arguments after props.
+ *  - jsx/jsxs(type, props): the `children` property of props, flattened when it
+ *    is an array literal (the `jsxs` multi-child form), else the single value.
+ */
+export function getElementChildren(node: t.CallExpression): t.Expression[] {
+	const callee = node.callee;
+	const name =
+		t.isMemberExpression(callee) || t.isOptionalMemberExpression(callee)
+			? getMemberPropertyName(callee)
+			: null;
+	if (name === "createElement") {
+		return node.arguments
+			.slice(2)
+			.filter((a): a is t.Expression => t.isExpression(a));
+	}
+	const props = getElementProps(node);
+	if (!props) return [];
+	const childrenProp = getObjectPropertyByName(props, "children");
+	if (!childrenProp) return [];
+	const value = childrenProp.value;
+	if (t.isArrayExpression(value)) {
+		return value.elements.filter(
+			(e): e is t.Expression => e != null && t.isExpression(e),
+		);
+	}
+	return t.isExpression(value) ? [value] : [];
+}
+
+/**
+ * Append a child expression to an element-factory call, runtime-agnostic:
+ *  - createElement(type, props, ...children): push as a trailing positional arg.
+ *  - jsx/jsxs(type, props): push into the props `children` array, promoting a
+ *    single `children` value to an array first, or adding a `children` property
+ *    when absent. Returns false when props is not an object literal.
+ */
+export function appendElementChild(
+	call: t.CallExpression,
+	child: t.Expression,
+): boolean {
+	const callee = call.callee;
+	const name =
+		t.isMemberExpression(callee) || t.isOptionalMemberExpression(callee)
+			? getMemberPropertyName(callee)
+			: null;
+	if (name === "createElement") {
+		call.arguments.push(child);
+		return true;
+	}
+	const props = getElementProps(call);
+	if (!props) return false;
+	const childrenProp = getObjectPropertyByName(props, "children");
+	if (!childrenProp) {
+		props.properties.push(t.objectProperty(t.identifier("children"), child));
+		return true;
+	}
+	const value = childrenProp.value;
+	if (t.isArrayExpression(value)) {
+		value.elements.push(child);
+		return true;
+	}
+	if (t.isExpression(value)) {
+		childrenProp.value = t.arrayExpression([value, child]);
+		return true;
+	}
+	return false;
+}
+
+/**
  * Parse code into AST, returning null on parse failure. Convenience for verifiers.
  */
 export function getVerifyAst(code: string, ast?: t.File): t.File | null {

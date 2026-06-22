@@ -43,7 +43,7 @@ function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, se
         event.preventDefault();
         addNotification({
           key: "thinking-toggle-hint",
-          jsx: React.createElement(Text, { dimColor: true }, "Use ctrl+t to toggle thinking"),
+          jsx: React.jsx(Text, { dimColor: true, children: "Use ctrl+t to toggle thinking" }),
           priority: "immediate",
           timeoutMs: 3000,
         });
@@ -87,23 +87,23 @@ function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, se
     inputFilter: filterInput,
   };
   if (isExternalEditorActive) {
-    return React.createElement(Box, { flexDirection: "row", borderStyle: "round" },
-      React.createElement(Text, { dimColor: true, italic: true }, "Save and close editor to continue...")
-    );
+    return React.jsx(Box, { flexDirection: "row", borderStyle: "round",
+      children: React.jsx(Text, { dimColor: true, italic: true, children: "Save and close editor to continue..." })
+    });
   }
   let textInputElement = isVimModeEnabled()
-    ? React.createElement(VimTextInput, { ...inputProps, initialMode: vimMode, onModeChange: setVimMode })
-    : React.createElement(TextInput, { ...inputProps });
-  return React.createElement(Box, { flexDirection: "column" },
-    React.createElement(Box, { borderColor: "promptBorder", borderStyle: "round", width: "100%" },
-      React.createElement(ModeIndicator, { mode: "prompt", isLoading }),
-      React.createElement(Box, { flexGrow: 1, flexShrink: 1, onClick: handleInputClick }, textInputElement)
-    ),
-    React.createElement(Footer, {
+    ? React.jsx(VimTextInput, { ...inputProps, initialMode: vimMode, onModeChange: setVimMode })
+    : React.jsx(TextInput, { ...inputProps });
+  return React.jsxs(Box, { flexDirection: "column", children: [
+    React.jsxs(Box, { borderColor: "promptBorder", borderStyle: "round", width: "100%", children: [
+      React.jsx(ModeIndicator, { mode: "prompt", isLoading }),
+      React.jsx(Box, { flexGrow: 1, flexShrink: 1, onClick: handleInputClick, children: textInputElement })
+    ] }),
+    React.jsx(Footer, {
       suppressHint: input.length > 0,
       isLoading,
     })
-  );
+  ] });
 }
 
 function renderFooterLeft({ showHint, isInputEmpty, isLoading, leftArrowPending }) {
@@ -115,22 +115,23 @@ function renderFooterLeft({ showHint, isInputEmpty, isLoading, leftArrowPending 
   let hasRunningAgent = false;
   let hintParts = showHint ? getHintParts(isLoading, escShortcut, toggleShortcut, hasToggle, mode) : [];
   if (viewingCompletedTeammate) {
-    parts.push(React.createElement(
+    parts.push(React.jsx(
       Text,
-      { dimColor: true, key: "esc-return" },
-      React.createElement(KeyboardShortcutHint, {
-        chord: escShortcut,
-        action: "return to team lead",
-        format: { keyCase: "lower" },
-      }),
+      { dimColor: true, key: "esc-return",
+        children: React.jsx(KeyboardShortcutHint, {
+          chord: escShortcut,
+          action: "return to team lead",
+          format: { keyCase: "lower" },
+        }),
+      },
     ));
   } else if (showHint) {
     parts.push(...hintParts);
   }
   if (!isLoading && isInputEmpty && leftArrowPending) {
-    parts.push(React.createElement(Text, { dimColor: true, key: "fg-agents" }, "left for agents"));
+    parts.push(React.jsx(Text, { dimColor: true, key: "fg-agents", children: "left for agents" }));
   }
-  return React.createElement(Box, null, parts);
+  return React.jsx(Box, { children: parts });
 }
 
 async function replSubmit(input, helpers, speculation, options) {
@@ -470,10 +471,11 @@ function renderSecondInput({ input, isLoading, setPastedContents }) {
     disableEscapeDoublePress: false,
     inputFilter: filterInput,
   };
-  return React.createElement(Footer, {
+  return React.jsx(Footer, {
     suppressHint: input.length > 0,
     isLoading,
-  }, React.createElement(TextInput, inputProps));
+    children: React.jsx(TextInput, inputProps),
+  });
 }
 `;
 	const ast = parse(input);
@@ -493,10 +495,10 @@ test("tab-queue fails closed when footer hint targets are ambiguous", async () =
 function renderSecondFooter({ showHint, isInputEmpty, isLoading }) {
   let parts = showHint ? getHintParts(isLoading) : [];
   if (viewingCompletedTeammate) {
-    parts.push(React.createElement(Text, { dimColor: true, key: "esc-return" },
-      React.createElement(KeyboardShortcutHint, { chord: "esc", action: "return to team lead", format: { keyCase: "lower" } })));
+    parts.push(React.jsx(Text, { dimColor: true, key: "esc-return",
+      children: React.jsx(KeyboardShortcutHint, { chord: "esc", action: "return to team lead", format: { keyCase: "lower" } }) }));
   } else if (showHint) { parts.push(...parts); }
-  return React.createElement(Box, null, parts);
+  return React.jsx(Box, { children: parts });
 }
 `;
 	const ast = parse(input);
