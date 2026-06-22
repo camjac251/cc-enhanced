@@ -59,7 +59,7 @@ const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 	},
 	{
 		id: "bash-token-warning",
-		needle: "Avoid head/tail pipelines for output capping",
+		needle: "Never cap output with a head/tail pipe",
 		reason: "Missing modern oversized-output warning",
 	},
 	{

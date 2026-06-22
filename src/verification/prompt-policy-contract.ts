@@ -63,12 +63,12 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 	},
 	{
 		id: "prompt-policy-head-tail-cap",
-		needle: "Avoid head/tail pipelines for output capping",
+		needle: "Never cap output with a head/tail pipe",
 		reason: "Missing head/tail pipeline cap guidance",
 	},
 	{
 		id: "prompt-policy-producer-native-caps",
-		needle: "Use producer-native caps first",
+		needle: "Cap at the producer instead",
 		reason: "Missing producer-native output-cap preference",
 	},
 	{

@@ -35,7 +35,7 @@ const PROMPT_ADDITION = `\
   - Long-running diagnostics: for slow builds or tests, pair \`run_in_background: true\` with \`output_tail: true\` so later checks show final diagnostics.
   - Directory listings: for \`eza\`, use plain \`eza\` with \`max_output: N\` only when you need metadata/layout. Use \`fd --max-results N\` when entry-count bounds matter.
   - Examples: bounded filenames -> \`fd . /path --max-results 50\`; directory metadata preview -> Bash command \`eza -la /path\` with \`max_output: 8000\`; build/test diagnostics -> Bash command \`bun test\` with \`output_tail: true\` and \`max_output: 20000\`.
-  - **IMPORTANT**: Do not add shell pipeline truncation just to shorten output. Never add a head or tail pipeline as an output cap. Never pipe listing output through head or tail.`;
+  - **IMPORTANT**: Do not add shell pipeline truncation just to shorten output. Never add a head or tail pipeline as an output cap. Never pipe listing output through head or tail. These caps are blocked (head/tail, sed/awk first-N, bare rg catch-all); cap at the producer instead (rg -m N, fd --max-results N, git log -n N). Allowed: top-N rankings where sort feeds head/tail, tail -f via the Monitor tool, and head/tail inside $(...).`;
 
 const LEGACY_TOKEN_WARNING_RE =
 	/Pipe output through head, tail, or grep to reduce result size\. Avoid cat on large files (?:—|\\u2014) use Read with offset\/limit instead\./g;
