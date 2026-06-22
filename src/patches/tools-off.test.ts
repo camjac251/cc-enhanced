@@ -500,3 +500,55 @@ const skillConfig = { filePatternTools: ["Read", "Bash"] };
 	assert.notEqual(result, true);
 	assert.match(String(result), /Glob has an enabled registration/);
 });
+
+test("tools-off does not duplicate isEnabled on a tool that already has a disabled one", async () => {
+	const input = `
+var TOOL_GREP = "Grep";
+const builtinTools = [
+  { name: TOOL_GREP, description: "d", inputSchema: {}, prompt: "p", isEnabled: false, call() {} },
+];
+`;
+	const { output } = await applyFullPatch(input);
+	const isEnabledCount = (output.match(/isEnabled/g) ?? []).length;
+	assert.equal(
+		isEnabledCount,
+		1,
+		`expected exactly one isEnabled on the already-disabled tool, got ${isEnabledCount}`,
+	);
+});
+
+test("tools-off leaves a non-tool-shaped object alone even if its name resolves to a target tool", async () => {
+	const input = `
+var TOOL_GREP = "Grep";
+const notATool = { name: TOOL_GREP, label: "Searching" };
+`;
+	const { output } = await applyFullPatch(input);
+	assert.equal(
+		output.includes("isEnabled"),
+		false,
+		"non-tool object (no call/description/inputSchema/userFacingName/prompt) must not get an isEnabled",
+	);
+});
+
+test("tools-off fully overwrites a gated isEnabled body with return false (replace path)", async () => {
+	// WebFetch carries a runtime-gated isEnabled in the live bundle, so the
+	// mutator must REPLACE the whole body with `return false`, leaving no
+	// original gate identifiers. All five target tools are present so verify()
+	// (which requires every target tool to be registered) can stay green.
+	const input = `
+var TOOL_WF = "WebFetch";
+const builtinTools = [
+  { name: TOOL_WF, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return allowFetchGate("x") && otherGate(); }, call() {} },
+  { name: "Grep", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+  { name: "Glob", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+  { name: "WebSearch", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+  { name: "NotebookEdit", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+];
+const skillConfig = { filePatternTools: ["Read", "Bash"] };
+`;
+	const { output, ast } = await applyFullPatch(input);
+	assert.doesNotMatch(output, /allowFetchGate/);
+	assert.doesNotMatch(output, /otherGate/);
+	assert.match(output, /isEnabled\(\)\s*\{\s*return\s+(?:false|!1)\s*;?\s*\}/);
+	assert.equal(disableTools.verify(output, ast), true);
+});

@@ -376,7 +376,7 @@ test("built-in-agent-prompt verify rejects missing agent prompt sections", () =>
 
 const CORPUS_EXAMPLE_FIXTURE = `
 return \`3. **Transcript search** - grep the JSONL transcripts for narrow terms:
-   \\\`grep -rn "<narrow term>" \${$}/ --include="*.jsonl" | tail -50\\\`
+   \\\`grep -rn "<narrow term>" \${t}/ --include="*.jsonl" | tail -50\\\`
 
 ## Verifying a server change
 
@@ -393,7 +393,7 @@ test("built-in-agent-prompt rewrites upstream corpus head/tail examples", () => 
 	assert.equal(output.includes("| tail -50"), false);
 	assert.equal(output.includes("| head -20"), false);
 	assert.equal(
-		output.includes(`rg -m 50 "<narrow term>" \${$}/ -g '*.jsonl'`),
+		output.includes(`rg -m 50 "<narrow term>" \${t}/ -g '*.jsonl'`),
 		true,
 	);
 	assert.equal(output.includes("curl -sI localhost:3000/api/thing"), true);
@@ -408,6 +408,13 @@ test("built-in-agent-prompt verify flags partial corpus rewrite", () => {
 			String(result).includes("Missing rewritten corpus example"),
 		true,
 	);
+});
+
+test("built-in-agent-prompt verify rejects a surviving tail -50 corpus example", () => {
+	const withDriftedCorpus = `${patchedSubagentSurfaces()}\nreturn \`grep -rn "<narrow term>" \${t}/ --include="*.jsonl" | tail -50\``;
+	const result = builtInAgentPrompt.verify(withDriftedCorpus);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("tail -50"), true);
 });
 
 const WORKER_AGENT_FIXTURE =

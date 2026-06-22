@@ -246,3 +246,62 @@ test("image-limits pins exactly the four target entries", async () => {
 	const pinned = output.match(/maxWidth:\s*2576,\s*maxHeight:\s*2576/g) ?? [];
 	assert.equal(pinned.length, TARGET_KEYS.length);
 });
+
+test("verify does not count the base default object as an override table", () => {
+	const BASE_DEFAULT_ONLY_FIXTURE = `
+var nQ;
+var wE = T(() => {
+  nQ = { maxWidth: 2000, maxHeight: 2000, maxBase64Size: 5242880, targetRawSize: 3932160 };
+});
+`;
+	const ast = parse(BASE_DEFAULT_ONLY_FIXTURE);
+	const code = print(ast);
+	const result = imageLimits.verify(code, ast);
+	// The base default object has numeric maxWidth/maxHeight but no model-key
+	// wrapper, so it must be structurally excluded from the override table.
+	assert.notEqual(result, true);
+	assert.match(result as string, /not found/);
+});
+
+test("image-limits pins exactly four entries and never the adjacent base default object", async () => {
+	const ast = parse(DOWNGRADED_FIXTURE);
+	await runImageLimitsViaPasses(ast);
+	const output = print(ast);
+
+	const pinned = output.match(/maxWidth:\s*2576,\s*maxHeight:\s*2576/g) ?? [];
+	assert.equal(
+		pinned.length,
+		TARGET_KEYS.length,
+		"expected exactly the four model entries pinned to 2576",
+	);
+
+	// The base default object lives in an adjacent initializer; the matcher must
+	// not leak into it, so its dimensions stay at 2000.
+	const baseDefault = output.match(
+		/maxWidth:\s*(\d+),\s*maxHeight:\s*(\d+),\s*maxBase64Size/,
+	);
+	assert.ok(baseDefault, "base default object not found");
+	assert.equal(baseDefault[1], "2000");
+	assert.equal(baseDefault[2], "2000");
+});
+
+test("verify accepts a single override table even with a co-located base default object", () => {
+	const CO_LOCATED_FIXTURE = `
+var nQ;
+var kv1;
+var wE = T(() => {
+  nQ = { maxWidth: 2000, maxHeight: 2000, maxBase64Size: 5242880, targetRawSize: 3932160 };
+  kv1 = {
+    "claude-fable-5": { maxWidth: 2576, maxHeight: 2576 },
+    "claude-mythos-5": { maxWidth: 2576, maxHeight: 2576 },
+    "claude-opus-4-7": { maxWidth: 2576, maxHeight: 2576 },
+    "claude-opus-4-8": { maxWidth: 2576, maxHeight: 2576 },
+  };
+});
+`;
+	const ast = parse(CO_LOCATED_FIXTURE);
+	const code = print(ast);
+	// The base default object has numeric maxWidth/maxHeight but no model keys,
+	// so it must not be miscounted as a second table by the split-table guard.
+	assert.equal(imageLimits.verify(code, ast), true);
+});

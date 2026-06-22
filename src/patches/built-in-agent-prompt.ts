@@ -224,10 +224,6 @@ const GENERAL_PURPOSE_SECTION_REPLACEMENTS: Array<[string, string]> = [
 
 const CORPUS_EXAMPLE_REPLACEMENTS: Array<[string, string]> = [
 	[
-		'grep -rn "<narrow term>" ${$}/ --include="*.jsonl" | tail -50',
-		"rg -m 50 \"<narrow term>\" ${$}/ -g '*.jsonl'",
-	],
-	[
 		"curl -si localhost:3000/api/thing | head -20",
 		"curl -sI localhost:3000/api/thing",
 	],
@@ -504,6 +500,14 @@ export const builtInAgentPrompt: Patch = {
 		for (const [source, replacement] of CORPUS_EXAMPLE_REPLACEMENTS) {
 			result = result.replaceAll(escapeNonAscii(source), replacement);
 		}
+		// Transcript-search corpus example. The path token (${...}) is a minified
+		// name that changes between releases, so match it generically and re-emit
+		// the captured token rather than hardcoding it.
+		result = result.replace(
+			/grep -rn "<narrow term>" (\$\{[^}]+\})\/ --include="\*\.jsonl" \| tail -50/g,
+			(_match, token: string) =>
+				`rg -m 50 "<narrow term>" ${token}/ -g '*.jsonl'`,
+		);
 		for (const [
 			pattern,
 			replacement,
@@ -610,6 +614,13 @@ export const builtInAgentPrompt: Patch = {
 			if (!hasReplacement) {
 				return `Missing rewritten corpus example: ${replacement}`;
 			}
+		}
+		// Token-independent transcript-search guard. The grep corpus example
+		// interpolates a minified path token that changes between releases, so a
+		// surviving "| tail -50" means the rewrite no-oped regardless of which
+		// token the bundle used. Catch the behavior, not the exact source string.
+		if (code.includes("| tail -50")) {
+			return "Unpatched transcript-search corpus example remains (| tail -50 survived)";
 		}
 
 		const exploreScope = extractPromptSlice(

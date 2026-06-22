@@ -125,3 +125,58 @@ test("signature postApply is a no-op when no tags applied", () => {
 	assert.equal(output.includes("\\u2022 patched"), false);
 	assert.equal(output.includes("patched:"), false);
 });
+
+test("signature base fixture has exactly one composite title and decorates it once", () => {
+	const ast = parse(SIGNATURE_FIXTURE);
+	signature.postApply?.(ast, ["alpha"]);
+	const output = print(ast);
+
+	// print() escapes the U+2022 bullet to the literal text "•".
+	const markers = output.match(/\\u2022 patched/g) ?? [];
+	assert.equal(
+		markers.length,
+		1,
+		`base fixture should yield exactly one decorated composite title, got ${markers.length}: ${output}`,
+	);
+});
+
+test("signature decorates every composite UI title when more than one exists", () => {
+	// Two composite-title-shaped templates: both wrap a sole-arg helper call
+	// on the literal "Claude Code", so both must be decorated and verify must
+	// require all of them signed (patchedTitleCount === compositeTitleCount).
+	const twoTitles = `
+function titleA(e, I) { return \` \${Eq("claude", e)("Claude Code")} \${Eq("inactive", e)(\`v\${I}\`)} \`; }
+function titleB(e, I) { return \`[\${Eq("claude", e)("Claude Code")}] v\${I} \`; }
+function versionText(VERSION) { return \`\${VERSION} (Claude Code)\${suffix()}\`; }
+`;
+	const ast = parse(twoTitles);
+	signature.postApply?.(ast, ["alpha"]);
+	const output = print(ast);
+
+	const markers = output.match(/\\u2022 patched/g) ?? [];
+	assert.equal(
+		markers.length,
+		2,
+		`expected both composite titles decorated, got ${markers.length}: ${output}`,
+	);
+	assert.equal(signature.verify(output, ast), true);
+});
+
+test("signature verify rejects bundle with an unsigned leftover version template", () => {
+	// Two version-suffix templates where one stays unsigned: the boolean-OR
+	// hasPatchedVersion is true via the signed one, but hasLegacyVersionTemplate
+	// must still reject because an unsigned " (Claude Code)" template remains.
+	const partial = `
+function titleX(e, I) { return \` \${Eq("claude", e)("Claude Code")} \${Eq("inactive", e)(\`v\${I}\`)} • patched \`; }
+function versionA(V) { return \`\${V} (Claude Code; patched: alpha)\${s()}\`; }
+function versionB(V) { return \`\${V} (Claude Code)\${s()}\`; }
+`;
+	const ast = parse(partial);
+	const result = signature.verify(partial, ast);
+	assert.notEqual(
+		result,
+		true,
+		"verify must reject when a version template is left unsigned",
+	);
+	assert.equal(typeof result, "string");
+});

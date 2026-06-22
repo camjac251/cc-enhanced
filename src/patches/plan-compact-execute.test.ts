@@ -414,3 +414,81 @@ test("plan-compact-execute compact-auto branch keeps the auto-mode runtime guard
 	);
 	assert.equal(planCompactExecute.verify(output), true);
 });
+
+test("plan-compact-execute injects visibleOptionCount into every predicate-matching selector (multi-selector all-or-nothing)", async () => {
+	// The real bundle has more than one selector matching the predicate, and the
+	// verifier requires EVERY match to carry visibleOptionCount: options.length.
+	// A third selector in its own function exercises the all-or-nothing coupling
+	// so a regression where one matched selector is not injected fails here
+	// instead of only against the live bundle.
+	const extra = `
+function OtherSelector({ opts }) {
+  let pe = opts;
+  return P4.default.createElement(R8, {
+    options: pe,
+    onChange: () => {},
+    onCancel: () => {},
+    onImagePaste: () => {},
+    pastedContents: {},
+    onRemoveImage: () => {},
+  });
+}
+`;
+	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE + extra);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+	const matches = output.match(/visibleOptionCount:\s*\w+\.length/g) ?? [];
+	assert.ok(
+		matches.length >= 2,
+		`every predicate-matching selector must get visibleOptionCount:<ident>.length, found ${matches.length}`,
+	);
+	assert.equal(planCompactExecute.verify(output), true);
+});
+
+test("plan-compact-execute compactContext value gates on both compact selection values", async () => {
+	// verify() only checks compactContext presence, so a regression emitting
+	// compactContext: void 0 (compaction never triggers) would still pass. Pin
+	// the injected value to reference both compact selection values.
+	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+	const m = output.match(/compactContext:\s*([^,]*?(?:\|\|[^,]*?)*?)(?:,|\n)/);
+	assert.ok(m, "compactContext property not found in patched output");
+	assert.ok(
+		m[1].includes('"yes-compact-auto"') &&
+			m[1].includes('"yes-compact-accept-edits"'),
+		`compactContext value must reference both compact selection values, got: ${m[1]}`,
+	);
+});
+
+test("plan-compact-execute accept-edits compact branch sets mode to acceptEdits", async () => {
+	// The accept-edits runtime effect is the point of the second compact option,
+	// but no other test asserts the spliced branch assigns the mode variable to
+	// "acceptEdits" when the selection equals yes-compact-accept-edits.
+	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+	assert.match(
+		output,
+		/===\s*"yes-compact-accept-edits"\)\s*\w+\s*=\s*"acceptEdits"/,
+		"compact-accept branch must assign the mode variable to 'acceptEdits'",
+	);
+	assert.equal(planCompactExecute.verify(output), true);
+});
+
+test("plan-compact-execute inserts compact handler before reading message content", async () => {
+	// The compact try/catch block is spliced at the index of the message content
+	// var-decl so compaction runs before the plan executes. Pin the ordering so
+	// an insertion-index regression (block lands after the content read) fails.
+	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+	const handlerIdx = output.indexOf("__ccEnhancedPlanCompactCommand");
+	const contentReadIdx = output.search(/=\s*\w+\.message\.message\.content/);
+	assert.ok(handlerIdx >= 0, "compact handler not injected");
+	assert.ok(contentReadIdx >= 0, "message content read not found");
+	assert.ok(
+		handlerIdx < contentReadIdx,
+		"compact handler must be spliced before the message content read",
+	);
+});

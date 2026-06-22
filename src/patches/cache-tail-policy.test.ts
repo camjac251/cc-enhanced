@@ -668,6 +668,93 @@ function buildRequestTwo(messages, system, tools, model, maxTokens) {
 	);
 });
 
+test("cache-tail-policy caps a live request builder declared as the first of multiple declarators", async () => {
+	// The real bundle's live builder shares its `let` with a trailing
+	// non-request declarator: `let req = {7 keys}, sanitized = req.thinking`
+	// then `return req`. Every other builder fixture is single-declarator, so
+	// this locks that the injector's per-declarator loop + splice-after-stmt
+	// correctly caps a request object that is the first of several declarators.
+	const MULTI_DECL_BUILDER = `
+function buildRequestMulti(messages, system, tools, model, maxTokens) {
+  let requestMulti = {
+    model: model,
+    messages: buildCacheBreakpoints(messages, true, undefined, true),
+    system: system,
+    tools: tools,
+    tool_choice: undefined,
+    metadata: {},
+    max_tokens: maxTokens,
+  },
+    sanitized = requestMulti.thinking;
+  if (sanitized !== requestMulti.thinking) requestMulti.thinking = sanitized;
+  return requestMulti;
+}
+`;
+	const ast = parse(
+		CACHE_TAIL_FIXTURE + CACHE_CONTROL_BLOCK_CAP_FIXTURE + MULTI_DECL_BUILDER,
+	);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	// The injector stops on the first request-builder match (requestPayload),
+	// so requestMulti stays un-injected here; assert the first builder is still
+	// capped against its own var.
+	assert.match(
+		output,
+		/let cacheControlExcess = -4;[\s\S]*requestPayload\.messages = requestPayload\.messages\.map/,
+		"single-declarator builder is still capped against its own var",
+	);
+	// Prove the multi-declarator-first object is itself a valid injection target
+	// by running it as the only request builder present.
+	const soloAst = parse(CACHE_TAIL_FIXTURE + MULTI_DECL_BUILDER);
+	await runCacheTailViaPasses(soloAst);
+	const soloOutput = print(soloAst);
+	assert.match(
+		soloOutput,
+		/requestMulti\.messages = requestMulti\.messages\.map/,
+		"multi-declarator-first request object must receive the cache_control cap when it is the first matched builder",
+	);
+});
+
+test("cache-tail-policy caps only the first of two distinct 7-key request builders", async () => {
+	// The mutator and verifier both rely on a 7-key SUBSET match; the only guard
+	// against mis-targeting a different 7-key object is that the injector stops
+	// on the first match. Pin that a second distinct request-shaped builder stays
+	// structurally un-capped by name.
+	const SECOND_REQUEST_BUILDER = `
+function buildRequestAlt(messages, system, tools, model, maxTokens) {
+  let requestAlt = {
+    model: model,
+    messages: messages,
+    system: system,
+    tools: tools,
+    tool_choice: undefined,
+    metadata: {},
+    max_tokens: maxTokens,
+  };
+  return requestAlt;
+}
+`;
+	const ast = parse(
+		CACHE_TAIL_FIXTURE +
+			CACHE_CONTROL_BLOCK_CAP_FIXTURE +
+			SECOND_REQUEST_BUILDER,
+	);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	// Clamp helper (1) + first live builder requestPayload (1) = 2, never 3.
+	assert.equal(
+		(output.match(/let cacheControlExcess = -4;/g) ?? []).length,
+		2,
+		"only the first matched request builder is capped",
+	);
+	// The second builder must remain structurally un-capped.
+	assert.equal(
+		output.includes("requestAlt.messages = requestAlt.messages.map"),
+		false,
+		"second 7-key builder must not receive a cache_control cap",
+	);
+});
+
 test("cache-tail-policy verify rejects sysprompt rewrite that clobbers the later org scope", async () => {
 	const ast = parse(FULL_VERIFY_FIXTURE);
 	await runCacheTailViaPasses(ast);
@@ -687,6 +774,26 @@ test("cache-tail-policy verify rejects sysprompt rewrite that clobbers the later
 		true,
 		`Expected later-org preservation failure, got: ${result}`,
 	);
+});
+
+test("cache-tail-policy sysprompt rewrite yields global identity block and a preserved org block", async () => {
+	// The other sysprompt tests prove later-org preservation only via a negative
+	// clobber. Positively assert the real post-state: the identity push becomes
+	// global while a later org push survives, and the combined output verifies.
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes('cacheScope: "global"'),
+		true,
+		"identity block rewritten to global",
+	);
+	assert.equal(
+		output.includes('cacheScope: "org"'),
+		true,
+		"later org block preserved (not over-rewritten to global)",
+	);
+	assert.equal(cacheTailPolicy.verify(output, parse(output)), true);
 });
 
 const NESTED_MARKER_FIXTURE = `

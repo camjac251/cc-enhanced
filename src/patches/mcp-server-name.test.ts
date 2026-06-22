@@ -147,3 +147,47 @@ test("mcp-server-name mutator patches exactly one site on the canonical fixture"
 		"the regex schema in the fixture must be rewritten",
 	);
 });
+
+test("mcp-server-name leaves prefix-preserving reworded message unpatched and verify flags it", async () => {
+	const input = `
+const allowedSchema = z.string().regex(/^[a-zA-Z0-9_-]+$/, "Server name can only contain letters, numbers, hyphens, underscores and dots");
+`;
+	const ast = parse(input);
+	await runMcpServerNameViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes("^[a-zA-Z0-9_:./-]+$"),
+		false,
+		"prefix-reworded message not mutated",
+	);
+	const result = mcpServerName.verify(output, ast);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes(
+			"Old MCP serverName regex validation still present",
+		),
+		true,
+	);
+});
+
+test("mcp-server-name ignores .test() and bare-assignment occurrences of the old pattern", async () => {
+	const input = `
+const probe = /^[a-zA-Z0-9_-]+$/;
+if (/^[a-zA-Z0-9_-]+$/.test(x)) y();
+const allowedSchema = z.string().regex(/^[a-zA-Z0-9_-]+$/, "Server name can only contain letters, numbers, hyphens, and underscores");
+`;
+	const ast = parse(input);
+	await runMcpServerNameViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		(output.match(/\^\[a-zA-Z0-9_-\]\+\$/g) ?? []).length,
+		2,
+		"the .test() and bare-assignment patterns remain",
+	);
+	assert.equal(
+		(output.match(/\^\[a-zA-Z0-9_:\.\/-\]\+\$/g) ?? []).length,
+		1,
+		"only the validator is widened",
+	);
+	assert.equal(mcpServerName.verify(output, ast), true);
+});

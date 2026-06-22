@@ -25,3 +25,12 @@ test("feature-flags verify() passes unconditionally for the no-op slot", () => {
 	assert.equal(featureFlags.verify(""), true);
 	assert.equal(featureFlags.verify("any arbitrary code body"), true);
 });
+
+test("feature-flags exposes only tag and verify (no mutation hooks of any kind)", () => {
+	const keys = Object.keys(featureFlags).sort();
+	assert.deepEqual(
+		keys,
+		["tag", "verify"],
+		`reserved slot must define only tag+verify, got: ${keys.join(",")}`,
+	);
+});

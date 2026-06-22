@@ -373,3 +373,67 @@ function buildAttachment(H) {`,
 	);
 	assert.equal(skillListingUi.verify(output, ast), true);
 });
+
+test("skill-listing-ui injects a skillNames map that projects .name", async () => {
+	const ast = parse(MEMOIZED_SKILL_LISTING_FIXTURE);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+	assert.match(
+		output,
+		/skillNames:[^;]*\.map\(\(_claudePatchSkillItem\) => _claudePatchSkillItem\.name\)/,
+		"injected skillNames map must project the skill item .name member",
+	);
+});
+
+test("skill-listing-ui flips the guard wrapping each memoized render root", async () => {
+	const ast = parse(MEMOIZED_SKILL_LISTING_FIXTURE);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+	// dynamic_skill root ("Loaded" ... "from ") and skill_listing root (" available") each
+	// carry the summary call and live under an always-recompute guard.
+	assert.match(
+		output,
+		/"Loaded"[\s\S]*?_claudePatchFormatSkillListingSummary\(q\)/,
+	);
+	assert.match(
+		output,
+		/" available"[\s\S]*?_claudePatchFormatSkillListingSummary\(q\)/,
+	);
+	assert.equal(
+		output.match(/if \(true\)/g)?.length,
+		2,
+		"exactly the two render-root guards flip",
+	);
+	assert.equal(
+		output.match(/_claudePatchFormatSkillListingSummary\(q\)/g)?.length,
+		2,
+		"exactly one summary call per render case",
+	);
+});
+
+test("skill-listing-ui does not treat a dynamic_skill producer as a second skill_listing producer", async () => {
+	const withDynamicProducer = MEMOIZED_SKILL_LISTING_FIXTURE.replace(
+		"function buildAttachment(H) {",
+		`function buildDynamicProducer(K) {
+  let drained = K.pending;
+  return [
+    {
+      type: "dynamic_skill",
+      skillDir: K.dir,
+      skillNames: drained.map((x) => x.name),
+      displayPath: K.rel,
+    },
+  ];
+}
+function buildAttachment(H) {`,
+	);
+	const ast = parse(withDynamicProducer);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.match(/skillNames: A\.map\(\(_claudePatchSkillItem\)/g)?.length,
+		1,
+		"only the skill_listing producer gets the injected skillNames; dynamic_skill object untouched",
+	);
+	assert.equal(skillListingUi.verify(output, ast), true);
+});

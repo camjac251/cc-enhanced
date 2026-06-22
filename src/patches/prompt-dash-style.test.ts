@@ -199,6 +199,45 @@ test("prompt-dash-style verify rejects partially normalized prompt text", () => 
 	assert.match(String(result), /Unicode dash punctuation/);
 });
 
+test("normalizePromptDashText output is always dash-free", () => {
+	const inputs = [
+		"Plain prose with an em dash — and more.",
+		"Range 1–2 then a stray – mid-clause word.",
+		"Mixed — and – in one line of guidance.",
+		"trailing dash at end —",
+	];
+	for (const input of inputs) {
+		assert.deepEqual(
+			countForbiddenPromptDashStyle(normalizePromptDashText(input)),
+			{
+				enDash: 0,
+				emDash: 0,
+				total: 0,
+			},
+		);
+	}
+});
+
+test("prompt-dash-style rewrites prose-shaped dash strings even without a prompt key", async () => {
+	const fixture = `
+const errLine = "Bridge keepalive timeout — connection dead and not recoverable.";
+`;
+	const ast = parse(fixture);
+	await runPromptDashStyleViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes("\\u2014"), false);
+	assert.equal(output.includes("—"), false);
+	assert.equal(output.includes("timeout. Connection dead"), true);
+	assert.equal(promptDashStyle.verify(output, ast), true);
+});
+
+test("prompt-dash-style does not flag a sub-threshold non-prompt-keyed dash fragment", () => {
+	const fixture = `const x = { tooltip: "a – b" };`;
+	const ast = parse(fixture);
+	assert.equal(promptDashStyle.verify(fixture, ast), true);
+});
+
 test("prompt-dash-style normalizes dash in non-first template quasi", async () => {
 	const fixture = [
 		'const C3 = "x";',

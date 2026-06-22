@@ -255,3 +255,110 @@ const COMMANDS = memoize(() => [
 	assert.equal(typeof result, "string");
 	assert.match(String(result), /security-review/);
 });
+
+test("commands-off removes exactly the target and no adjacent registry element", async () => {
+	// Pin the removal COUNT, not just the absence of the target. An over-removal
+	// regression (dropping an adjacent identifier element) or a multi-match
+	// regression would still satisfy the "target absent" checks; counting the
+	// surviving elements in the printed registry catches it.
+	const twoKeepFixture = `
+function makeBuiltinCommand({ name: H, description: $ }) {
+  return { type: "prompt", name: H, description: $, source: "builtin" };
+}
+var a, b, c;
+function init() {
+  (a = makeBuiltinCommand({ name: "review", description: "Review a pull request" }));
+  (b = makeBuiltinCommand({ name: "security-review", description: "Complete a security review" }));
+  (c = makeBuiltinCommand({ name: "compact", description: "Compact the conversation" }));
+}
+const COMMANDS = memoize(() => [a, b, c]);
+`;
+	const ast = parse(twoKeepFixture);
+	await runCommandsOffViaPasses(ast);
+	const output = print(ast);
+	const registry = output.match(/memoize\(\(\) => (\[[\s\S]*?\])\)/);
+	assert.ok(registry, "registry array not found in patched output");
+	const elementCount = (registry[1].match(/\b[abc]\b/g) ?? []).length;
+	assert.equal(
+		elementCount,
+		2,
+		"exactly one element (security-review) must be removed, leaving two",
+	);
+	assert.equal(/\ba\b/.test(registry[1]), true, "review binding must survive");
+	assert.equal(
+		/\bb\b/.test(registry[1]),
+		false,
+		"security-review binding must be removed",
+	);
+	assert.equal(/\bc\b/.test(registry[1]), true, "compact binding must survive");
+	assert.equal(commandsOff.verify(output, ast), true);
+});
+
+test("commands-off keeps verify recognizing the registry when only an inline-object sibling resolves after removal", async () => {
+	// Reproduce the real bundle survival path: the removed command and an alias
+	// sibling are constant-violation / alias forms (resolve to null after
+	// removal), while the registry stays recognizable ONLY because a
+	// directly-assigned inline-object command resolves to a non-null name.
+	const inlineSurvivorFixture = `
+function makeBuiltinCommand({ name: H, description: $ }) {
+  return { type: "prompt", name: H, description: $, source: "builtin" };
+}
+var base, aliasCmd, inlineCmd, dropCmd;
+function init() {
+  (base = { type: "local-jsx", name: "add-dir", description: "Add a new working directory" });
+  (aliasCmd = base);
+  (inlineCmd = { type: "local-jsx", name: "autocompact", description: "Set how full the context gets" });
+  (dropCmd = makeBuiltinCommand({ name: "security-review", description: "Complete a security review" }));
+}
+const COMMANDS = memoize(() => [aliasCmd, inlineCmd, dropCmd]);
+`;
+	const ast = parse(inlineSurvivorFixture);
+	await runCommandsOffViaPasses(ast);
+	const output = print(ast);
+	const registry = output.match(/memoize\(\(\) => (\[[\s\S]*?\])\)/);
+	assert.ok(registry, "registry array not found in patched output");
+	assert.equal(
+		/\bdropCmd\b/.test(registry[1]),
+		false,
+		"security-review element must be removed",
+	);
+	assert.equal(
+		registry[1].includes("inlineCmd"),
+		true,
+		"inline-object sibling must survive",
+	);
+	// Load-bearing: verify must return true (registry recognized via the
+	// inline-object sibling), not "Built-in command registry not found".
+	assert.equal(commandsOff.verify(output, ast), true);
+});
+
+test("commands-off post-removal registry recognition does not depend on the removed command", async () => {
+	const mixedSurvivorFixture = `
+function makeBuiltinCommand({ name: H, description: $ }) {
+  return { type: "prompt", name: H, description: $, source: "builtin" };
+}
+var base, aliasCmd, keepCmd, dropCmd;
+function init() {
+  (base = { type: "local-jsx", name: "add-dir", description: "Add a new working directory" });
+  (aliasCmd = base);
+  (keepCmd = makeBuiltinCommand({ name: "review", description: "Review a pull request" }));
+  (dropCmd = makeBuiltinCommand({ name: "security-review", description: "Complete a security review" }));
+}
+const COMMANDS = memoize(() => [aliasCmd, keepCmd, dropCmd]);
+`;
+	const ast = parse(mixedSurvivorFixture);
+	// Pre-removal: verify must already FAIL (definition present + target in registry).
+	assert.notEqual(commandsOff.verify(mixedSurvivorFixture, ast), true);
+	await runCommandsOffViaPasses(ast);
+	const output = print(ast);
+	// Post-removal: the security-review definition survives outside the array, so
+	// the definition signal stays true; verify must pass via registry recognition
+	// plus no leak, exercising the load-bearing branch rather than a
+	// fully-absent short-circuit.
+	assert.match(
+		output,
+		/name: "security-review"/,
+		"definition statement must survive outside the registry",
+	);
+	assert.equal(commandsOff.verify(output, ast), true);
+});

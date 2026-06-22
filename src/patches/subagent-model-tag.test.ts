@@ -208,3 +208,68 @@ function renderRows(H) {
 	assert.equal(typeof verifyResult, "string");
 	assert.equal(String(verifyResult).includes("not found"), true);
 });
+
+test("subagent-model-tag emits the guard as the rightmost top-level && operand", async () => {
+	const ast = parse(SUBAGENT_FIXTURE);
+	await runSubagentModelTagViaPasses(ast);
+	const output = print(ast);
+	// The original test is `entry.model`; the guard must be appended on the RIGHT,
+	// i.e. the whole test reads `entry.model && !process.env.CLAUDE_CODE_SUBAGENT_MODEL`,
+	// never `!process.env.CLAUDE_CODE_SUBAGENT_MODEL && entry.model`.
+	assert.equal(
+		output.includes("entry.model && !process.env.CLAUDE_CODE_SUBAGENT_MODEL"),
+		true,
+		"guard must be the rightmost operand of the if test",
+	);
+	assert.equal(
+		output.includes("!process.env.CLAUDE_CODE_SUBAGENT_MODEL && entry.model"),
+		false,
+		"guard must not be prepended as the left operand",
+	);
+	assert.equal(subagentModelTag.verify(output, ast), true);
+});
+
+test("subagent-model-tag verify rejects a wrong-polarity guard with no negation", () => {
+	const input = `
+function renderRows(entry, rows) {
+  if (entry.model && process.env.CLAUDE_CODE_SUBAGENT_MODEL) {
+    rows.push(renderRow({ key: "model", dimColor: true, value: formatModel(entry.model) }));
+  }
+}
+`;
+	const ast = parse(input);
+	const code = print(ast);
+	const result = subagentModelTag.verify(code, ast);
+	assert.notEqual(
+		result,
+		true,
+		"a guard without ! must not be accepted as patched",
+	);
+	assert.equal(typeof result, "string");
+});
+
+test("subagent-model-tag fails closed on two structurally-distinct model-tag rows", async () => {
+	const input = `
+function renderHeaderRow(entry, rows) {
+  if (entry.model && entry.model !== "inherit") {
+    rows.push(C.createElement(B, { key: "model", flexWrap: "nowrap" }, C.createElement(w, { dimColor: !0 }, label(entry.model))));
+  }
+}
+function renderFooterRow(item, out) {
+  if (item.model) {
+    out.push(renderRow({ key: "model", dimColor: true, value: fmt(item.model) }));
+  }
+}
+`;
+	const ast = parse(input);
+	await runSubagentModelTagViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes("!process.env.CLAUDE_CODE_SUBAGENT_MODEL"),
+		false,
+		"must not guess between two distinct candidate rows",
+	);
+	const verifyResult = subagentModelTag.verify(output, ast);
+	assert.equal(typeof verifyResult, "string");
+	assert.equal(String(verifyResult).includes("ambiguous"), true);
+});

@@ -380,3 +380,56 @@ test("bash-tail truncation clamps max_output at 500000", async () => {
 		await cleanup();
 	}
 });
+
+test("bash-tail truncation body consumes the __bashTailOpts bridge", async () => {
+	const output = await applyBashTailPatch(BASH_TAIL_FIXTURE);
+	// The replaced truncation body must READ the bridge global, not just write it.
+	// The setter only writes (`__bashTailOpts = {...}`); the read (`= globalThis.__bashTailOpts`)
+	// lives in the truncation body and is what hasTruncationBridge actually guards.
+	assert.equal(output.includes("globalThis.__bashTailOpts"), true);
+	const readCount = output.split("= globalThis.__bashTailOpts").length - 1;
+	assert.ok(
+		readCount >= 1,
+		"expected at least one __bashTailOpts read (truncation body)",
+	);
+});
+
+test("bash-tail truncation patches exactly one function when a decoy truncation fn precedes it", async () => {
+	const withDecoy = BASH_TAIL_FIXTURE.replace(
+		"function truncateOutput(text) {",
+		[
+			"function truncateDecoy(text) {",
+			"  let image = detectImage(text);",
+			"  let limit = getDefaultThreshold();",
+			"  if (text.length <= limit) return { totalLines: 1, truncatedContent: text, isImage: image };",
+			"  let dropped = text.slice(limit).split('\\n').length;",
+			"  return { totalLines: 1, truncatedContent: `${text}\\n\\n... [${dropped} lines truncated] ...`, isImage: image };",
+			"}",
+			"function truncateOutput(text) {",
+		].join("\n"),
+	);
+	const output = await applyBashTailPatch(withDecoy);
+	// Single-shot truncation replaces exactly one body; only one truncation
+	// function should end up reading the bridge global.
+	const readCount = output.split("= globalThis.__bashTailOpts").length - 1;
+	assert.equal(readCount, 1);
+});
+
+test("bash-tail render patches only the filePath-bearing verbose/theme renderer", async () => {
+	const withSecondRenderer = BASH_TAIL_FIXTURE.replace(
+		"function renderBashMessage(input, { verbose, theme }) {",
+		[
+			"function renderOtherMessage(input, { verbose, theme }) {",
+			"  let { command } = input;",
+			"  if (!command) return null;",
+			"  return command;",
+			"}",
+			"function renderBashMessage(input, { verbose, theme }) {",
+		].join("\n"),
+	);
+	const output = await applyBashTailPatch(withSecondRenderer);
+	// Only the renderer whose body references filePath gets the helper; a
+	// second verbose/theme renderer without a filePath branch must be skipped.
+	const helperDecls = output.split("function _bashAppendOpts(").length - 1;
+	assert.equal(helperDecls, 1);
+});

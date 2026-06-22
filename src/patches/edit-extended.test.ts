@@ -985,3 +985,69 @@ test("edit-extended runtime surfaces batch and replace_all opts in tool chip", a
 		await cleanup();
 	}
 });
+
+test("edit-extended verify passes when no ideDiff getConfig ternary exists (live-bundle shape)", async () => {
+	const fixtureWithoutTernary = EDIT_FIXTURE.replace(
+		"const diffConfig = ideDiffSupport ? ideDiffSupport.getConfig(parsed) : null;",
+		"const diffConfig = null;",
+	);
+	assert.notEqual(fixtureWithoutTernary, EDIT_FIXTURE);
+	const ast = parse(fixtureWithoutTernary);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+	// Mutator must be a no-op: no patched guard string is produced.
+	assert.equal(
+		output.includes(
+			"_claudeEditHasExtendedFields(_claudeDecodeExtendedEditTransport(parsed))",
+		),
+		false,
+		"no getConfig ternary present means no ideDiff guard should be injected",
+	);
+	// And verify still accepts the result via the absent-routing branch.
+	assert.equal(editTool.verify(output, parse(output)), true);
+});
+
+test("edit-extended injects structured-edit normalization into exactly one switch-case", async () => {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+	// The normalization conditional must appear, and only in the switch-case whose
+	// edits[] is derived from parsed input, not the transcript-cleanup case.
+	const occurrences =
+		output.split("_claudeEditHasExtendedFields(L) ? L.edits :").length - 1;
+	assert.equal(
+		occurrences,
+		1,
+		"normalization conditional must be injected into exactly one switch-case",
+	);
+	// The transcript-cleanup case must remain a plain destructure-and-strip with no injection.
+	assert.equal(
+		output.includes(
+			"const { old_string, new_string, replace_all, ...rest } = input;",
+		),
+		true,
+		"transcript-cleanup case must remain unmutated",
+	);
+});
+
+test("edit-extended approval-dialog preview injection is idempotent", async () => {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+	const markerCount = output.split("EXTENDED_EDIT_PREVIEW_v1").length - 1;
+	assert.ok(
+		markerCount > 0,
+		"first pass must inject at least one preview marker",
+	);
+	// Re-run the full pass on the already-patched output; the per-function
+	// double-patch check must prevent any additional marker injection.
+	const ast2 = parse(output);
+	await runEditToolViaPasses(ast2);
+	const output2 = print(ast2);
+	const markerCount2 = output2.split("EXTENDED_EDIT_PREVIEW_v1").length - 1;
+	assert.equal(
+		markerCount2,
+		markerCount,
+		"re-running the pass must not inject additional preview markers",
+	);
+});

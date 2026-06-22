@@ -240,6 +240,37 @@ test("effort-stack makes the ultracode env override message state-aware", async 
 	);
 });
 
+test("effort-stack rewrites the ultracode command effortUpdate value to stack max", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	// The ultracode command's effortUpdate.value carries the env-stacking
+	// conditional so selecting ultracode while CLAUDE_CODE_EFFORT_LEVEL=max
+	// resolves to max.
+	assert.match(
+		output,
+		/effortUpdate: \{ value: \w+ === "max" \? "max" : "xhigh", ultracode: !0 \}/,
+	);
+});
+
+test("effort-stack verify rejects a command effortUpdate value that lost the max stacking", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const patched = print(ast);
+	// Regress only the command effortUpdate.value back to a plain literal while
+	// leaving the stacked message intact, mimicking the value mutation silently
+	// no-oping while the message rewrite still lands. verify() must catch it.
+	const regressed = patched.replace(
+		/effortUpdate: \{ value: \w+ === "max" \? "max" : "xhigh", ultracode: !0 \}/g,
+		'effortUpdate: { value: "xhigh", ultracode: !0 }',
+	);
+	assert.notEqual(regressed, patched, "regression replacement must apply");
+	const regressedAst = parse(regressed);
+	const result = effortStack.verify(regressed, regressedAst);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("effortUpdate value"), true);
+});
+
 test("effort-stack rewrites effort env override warnings into session overrides", async () => {
 	const ast = parse(EFFORT_STACK_FIXTURE);
 	await runEffortStackViaPasses(ast);

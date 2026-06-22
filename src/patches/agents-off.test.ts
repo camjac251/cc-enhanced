@@ -171,3 +171,66 @@ function getBuiltInAgents() {
 	assert.notEqual(result, true);
 	assert.equal(String(result).includes("expected kept agents"), true);
 });
+
+test("verify rejects a registry that only exposes agents via a directly-returned array literal", async () => {
+	// A registry function that returns an array literal directly (rather than a
+	// returned variable) is not recognized as a registry, so a disabled agent in
+	// it is never filtered. verify must not pass this shape: with no detectable
+	// registry it reports failure, which correctly fails the patch run instead of
+	// silently shipping a leaked agent.
+	const fixture = `
+const generalPurposeAgent = { agentType: "general-purpose", source: "built-in" };
+const statuslineSetupAgent = { agentType: "statusline-setup", source: "built-in" };
+const claudeCodeGuideAgent = { agentType: "claude-code-guide", source: "built-in" };
+function getBuiltInAgents() {
+  return [generalPurposeAgent, statuslineSetupAgent];
+}
+`;
+	const ast = parse(fixture);
+	await runAgentToolsViaPasses(ast);
+	const output = print(ast);
+	const result = agentTools.verify(output, ast);
+	assert.notEqual(result, true);
+});
+
+test("verify fails and names the single disabled agent still present in the registry", () => {
+	const fixture = `
+const generalPurposeAgent = { agentType: "general-purpose", source: "built-in" };
+const statuslineSetupAgent = { agentType: "statusline-setup", source: "built-in" };
+const claudeCodeGuideAgent = { agentType: "claude-code-guide", source: "built-in" };
+function getBuiltInAgents() {
+  const agents = [generalPurposeAgent];
+  agents.push(statuslineSetupAgent);
+  return agents;
+}
+`;
+	const ast = parse(fixture);
+	const result = agentTools.verify(print(ast), ast);
+	assert.notEqual(result, true);
+	assert.equal(String(result).includes("still present"), true);
+	assert.equal(String(result).includes("statusline-setup"), true);
+});
+
+test("agents-off filters the main registry and leaves a coexisting coordinator registry intact", async () => {
+	const fixture = `
+const generalPurposeAgent = { agentType: "general-purpose", source: "built-in" };
+const statuslineSetupAgent = { agentType: "statusline-setup", source: "built-in" };
+const claudeCodeGuideAgent = { agentType: "claude-code-guide", source: "built-in" };
+const workerAgent = { agentType: "worker", source: "built-in" };
+function getBuiltInAgents() {
+  const agents = [generalPurposeAgent];
+  agents.push(statuslineSetupAgent);
+  return agents;
+}
+function getCoordinatorAgents() {
+  const team = [workerAgent];
+  return team;
+}
+`;
+	const ast = parse(fixture);
+	await runAgentToolsViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.includes("agents.push(statuslineSetupAgent)"), false);
+	assert.equal(output.includes("const team = [workerAgent]"), true);
+	assert.equal(agentTools.verify(output, ast), true);
+});

@@ -267,3 +267,69 @@ function loadSkills() {
 		"Path-scoped skill loader is missing the merged skill return",
 	);
 });
+
+test("skill-paths-invoke merges the sequence-wrapped final return exactly once", async () => {
+	const ast = parse(SKILL_PATHS_FIXTURE);
+	await runSkillPathsInvokeViaPasses(ast);
+	const output = print(ast);
+
+	// The fixture's loader returns (log(...), unconditional); after patching the
+	// final sequence element becomes the merged array, and only there.
+	assert.equal(
+		output.split("[...unconditional, ...conditional]").length - 1,
+		1,
+	);
+	// The merged array is the last element of the sequence-wrapped return.
+	assert.match(
+		output,
+		/return \(\s*[\s\S]*?,\s*\[\.\.\.unconditional, \.\.\.conditional\]\s*\)/,
+	);
+	assert.equal(skillPathsInvoke.verify(output, ast), true);
+});
+
+test("skill-paths-invoke removes a standalone (non-sequence) cache-reset guard clear", async () => {
+	const STANDALONE_GUARD = `
+function resetSkillCaches() {
+  loaderMemo.cache?.clear?.();
+  let snapshot = getState();
+  if (snapshot) {
+    snapshot.conditionalSkills.clear();
+    snapshot.activatedConditionalSkillNames.clear();
+  }
+}
+function resetAllSkillState() {
+  let s = getState();
+  if (!s) return;
+  s.dynamicSkills.clear(), s.conditionalSkills.clear(), s.activatedConditionalSkillNames.clear();
+}
+function loadSkills() {
+  let unconditional = [], conditional = [];
+  for (let entry of discoverSkills())
+    if (entry.type === "prompt" && entry.paths && entry.paths.length > 0 && !state.activatedConditionalSkillNames.has(entry.name)) conditional.push(entry);
+    else unconditional.push(entry);
+  if (conditional.length > 0)
+    log(\`\${conditional.length} conditional skills stored (activated when matching files are touched)\`);
+  return unconditional;
+}
+`;
+	const ast = parse(STANDALONE_GUARD);
+	await runSkillPathsInvokeViaPasses(ast);
+	const output = print(ast);
+	const cacheReset = output.slice(
+		output.indexOf("function resetSkillCaches"),
+		output.indexOf("function resetAllSkillState"),
+	);
+	// The guard clear is a standalone ExpressionStatement here (not a 2-element
+	// sequence), so removal goes through the plain-removal branch.
+	assert.equal(
+		cacheReset.includes("activatedConditionalSkillNames.clear()"),
+		false,
+		"standalone guard clear must be removed from the cache reset",
+	);
+	assert.equal(
+		cacheReset.includes("conditionalSkills.clear()"),
+		true,
+		"conditional bucket clear must remain",
+	);
+	assert.equal(skillPathsInvoke.verify(output, ast), true);
+});

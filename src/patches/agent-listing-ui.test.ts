@@ -250,3 +250,48 @@ test("agent-listing-ui verify rejects a summary call with the wrong attachment i
 		true,
 	);
 });
+
+test("agent-listing-ui appends the summary call as the last createElement argument", async () => {
+	const ast = parse(MEMOIZED_AGENT_LISTING_FIXTURE);
+	await runAgentListingUiViaPasses(ast);
+	const output = print(ast);
+
+	// The summary call must sit at the tail of the render-root createElement
+	// argument list, so its closing paren is immediately followed by the
+	// createElement closing paren. A non-terminal insertion would be followed
+	// by a comma instead, which this assertion rejects.
+	assert.match(
+		output,
+		/_claudePatchFormatAgentListingSummary\(q\)\s*\)/,
+		"summary call must be the final createElement argument",
+	);
+});
+
+test("agent-listing-ui verify reports ambiguity when two render-shaped cases exist", async () => {
+	// Patch a single render case first to obtain a well-formed helper plus one
+	// patched render function, then duplicate the patched render function so
+	// verify sees two render-shaped agent_listing_delta cases with the helper
+	// already present. This drives verify past the helper gate into the
+	// renderCaseCount > 1 fail-closed branch.
+	const single = parse(MEMOIZED_AGENT_LISTING_FIXTURE);
+	await runAgentListingUiViaPasses(single);
+	const patched = print(single);
+
+	const fnStart = patched.indexOf("function renderAttachment");
+	const helperPart = patched.slice(0, fnStart);
+	const renderFn = patched.slice(fnStart);
+	const renderFnTwin = renderFn.replace(
+		"renderAttachment",
+		"renderAttachmentTwin",
+	);
+	const combined = `${helperPart}${renderFn}\n${renderFnTwin}`;
+	assert.notEqual(combined, patched);
+
+	const result = agentListingUi.verify(combined);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("ambiguous"),
+		true,
+		"two render-shaped cases must fail verify with the ambiguity message",
+	);
+});

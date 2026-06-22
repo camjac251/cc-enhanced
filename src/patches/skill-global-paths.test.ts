@@ -282,3 +282,33 @@ test("global matcher is conditional and the inner check is null-guarded", async 
 		"inner global check must be guarded by a truthiness test on _claudeGpIgnore",
 	);
 });
+
+test("activation matcher is split exactly once", async () => {
+	const ast = parse(FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	const splitCalls = output.match(/_claudePatchSplitPaths\(_\.paths\)/g) ?? [];
+	assert.equal(splitCalls.length, 1, "matcher should be split exactly once");
+});
+
+test("wraps the identifier-paths loader even when a void-paths sibling comes first", async () => {
+	const ast = parse(`
+function loadB() {
+  return makeSkill({ skillName: "x", loadedFrom: "skills", paths: void 0 });
+}
+function loadA(w, name) {
+  let L = extractPaths(w);
+  return makeSkill({ skillName: name, loadedFrom: "skills", paths: L });
+}
+`);
+	await runViaPasses(ast);
+	const output = print(ast);
+	const wraps = output.match(/paths: _claudePatchMergeGlobalPaths\(/g) ?? [];
+	assert.equal(
+		wraps.length,
+		1,
+		"exactly the identifier-paths loader is wrapped",
+	);
+	assert.ok(output.includes("_claudePatchMergeGlobalPaths(L, w)"));
+	assert.ok(output.includes("paths: void 0"));
+});

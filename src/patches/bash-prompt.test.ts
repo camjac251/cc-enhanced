@@ -446,3 +446,132 @@ function N3z(H) {
 	assert.match(output, /\[\s*GATED_FILE\s*,\s*GATED_CONTENT\s*\]/);
 	assert.equal(output.includes("q && K"), false);
 });
+
+test("bash-prompt forces a logical-&& conditional-init guide-agent gate and verify accepts it", async () => {
+	// The live guide-agent gate is a conditional-init declarator whose test is a
+	// logical && of two zero-arg calls, with a `find`, and `grep` consequent.
+	// Forcing the test true selects that consequent, which rewriteLegacyText then
+	// modernizes to the shared finding-tools list. verify() must still accept the
+	// result, which only holds because the modern list itself counts as
+	// search-guidance. The fixture carries all three gate anchors so verify's
+	// per-anchor forced-gate check has every surface it requires.
+	const fixture = `
+function A4D() {
+  let H = HO(),
+    A = H
+      ? "\`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`"
+      : "\`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`",
+    M = [
+      \`To read files use \${wf} instead of cat, head, tail, or sed\`,
+      \`To edit files use \${ef} instead of sed or awk\`,
+      \`To create files use \${s9} instead of cat with heredoc or echo redirection\`,
+      ...(H
+        ? []
+        : [
+            \`To search for files use \${AK} instead of find or ls\`,
+            \`To search the content of files, use \${V_} instead of grep or rg\`,
+          ]),
+    ];
+  return [
+    "Executes a given bash command and returns its output.",
+    \`IMPORTANT: Avoid using this tool to run \${A} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\`,
+    ...M,
+  ].join("\\n");
+}
+
+function nl1() {
+  let unrelated = keepMe(),
+    H = HO() && B7() ? \`\${z8}, \\\`find\\\`, and \\\`grep\\\`\` : \`\${z8}, \${hM}, and \${B_}\`;
+  return [
+    \`You are the Claude guide agent. Reference local project files when relevant using \${H}\`,
+    ...(HO()
+      ? []
+      : [
+          \`File search: Use \${AK} (NOT find or ls)\`,
+          \`Content search: Use \${V_} (NOT grep or rg)\`,
+        ]),
+    \`Read files: Use \${wf} (NOT cat/head/tail)\`,
+    \`Edit files: Use \${ef} (NOT sed/awk)\`,
+    \`Write files: Use \${s9} (NOT echo >/cat <<EOF)\`,
+    "Communication: Output text directly (NOT echo/printf)",
+  ].join("\\n");
+}
+
+function js6(H, $) {
+  let f = jO(),
+    K = [
+      \`Prefer dedicated tools over \${u6} when one fits (\${[mq, DK, ...(f ? [] : [N9, s_])].join(", ")}) — reserve \${u6} for shell-only operations.\`,
+    ];
+  return ["# Using your tools", ...K].join("\\n");
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+	// The logical && conditional-init test is forced true; the declarator keeps
+	// its conditional form.
+	assert.equal(output.includes("HO() && B7()"), false);
+	assert.match(output, /H = !0 \?/);
+	// The find/grep consequent is modernized to the shared finding-tools list.
+	assert.equal(output.includes("`find`, and `grep`"), false);
+	assert.equal(
+		output.includes("`fd`, `rg`, `sg`, `eza`, and `bat`") ||
+			output.includes("\\`fd\\`, \\`rg\\`, \\`sg\\`, \\`eza\\`, and \\`bat\\`"),
+		true,
+	);
+	// verify's forced-anchor check depends on the modern list itself counting as
+	// search-guidance, so this round-trip locks that coupling end to end.
+	assert.equal(bashPrompt.verify(output, ast), true);
+});
+
+test("bash-prompt leaves a gh-pr-create heredoc in an unanchored function, so verify still rejects it", async () => {
+	// bash-prompt only rewrites functions carrying a prompt anchor. A gh-pr-create
+	// heredoc lives in an unanchored helper, so bash-prompt's own pass never
+	// touches it and the legacy bare-quote form survives. verify forbids that
+	// form globally, so it depends on another patch's string phase to clear the
+	// block before the bundle reaches verify. This pins that cross-patch
+	// dependency: dropping it would force this test to be updated.
+	const fixture = `
+function IFp(e) {
+  return [
+    \`gh pr create --title "the pr title" --body "$(cat <<'EOF'
+## Summary
+<1-3 bullet points>
+
+## Test plan
+[Bulleted markdown checklist of TODOs for testing the pull request...]
+EOF
+)"\`,
+  ].join("\\n");
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.includes("--body \"$(cat <<'EOF'"), true);
+	assert.notEqual(bashPrompt.verify(output, ast), true);
+});
+
+test("bash-prompt forces the short Bash builder gate even though verify does not inspect it", async () => {
+	// The short Bash builder's anchor is a prompt-text anchor but not an
+	// embedded-search gate anchor, so verify's forced-gate scan never inspects it.
+	// Pin the mutator-level outcome (the conditional-init gate is forced and the
+	// legacy guidance is gone) so a future drift that makes the force a silent
+	// no-op is caught here, where verify would miss it.
+	const fixture = `
+function kFp(e) {
+  let o = Qw()
+      ? "\`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`"
+      : "\`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`";
+  return [
+    "Executes a bash command and returns its output.",
+    \`- IMPORTANT: Avoid using this tool to run \${o} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.\`,
+  ].join("\\n");
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+	assert.match(output, /o = !0 \?/);
+	assert.equal(output.includes("appropriate dedicated tool"), false);
+});

@@ -147,3 +147,74 @@ function toggle(on, current) {
 	assert.equal(typeof result, "string");
 	assert.equal(String(result).includes("Missing autoDreamEnabled"), true);
 });
+
+test("session-memory does not wrap when a statement separates the guard from the autoDreamEnabled read", async () => {
+	const SEPARATED_FIXTURE = `
+function settings() { return { autoDreamEnabled: true }; }
+function hasDreamRollout() { return false; }
+function autoDreamEnabled() {
+  if (!hasDreamRollout()) return !1;
+  let probe = checkSomething();
+  let enabled = settings().autoDreamEnabled;
+  if (enabled !== void 0) return enabled;
+  return false;
+}
+`;
+	const ast = parse(SEPARATED_FIXTURE);
+	await runSessionMemoryViaPasses(ast);
+	const output = print(ast);
+	const wrapped = output.match(/autoDreamEnabled !== true &&/g) ?? [];
+	assert.equal(
+		wrapped.length,
+		0,
+		"separated read must not be detected as the immediate gate sibling",
+	);
+	assert.equal(typeof sessionMemory.verify(output, ast), "string");
+});
+
+test("session-memory wraps a gate that has extra statements after the autoDreamEnabled read", async () => {
+	const TRAILING_FIXTURE = `
+function settings() { return { autoDreamEnabled: true }; }
+function hasDreamRollout() { return false; }
+function onyx() { return { enabled: true }; }
+function fallback() { return false; }
+function autoDreamEnabled() {
+  if (!hasDreamRollout()) return !1;
+  let enabled = settings().autoDreamEnabled;
+  if (enabled !== void 0) return enabled;
+  if (onyx()?.enabled === true) return true;
+  return fallback();
+}
+`;
+	const ast = parse(TRAILING_FIXTURE);
+	await runSessionMemoryViaPasses(ast);
+	const output = print(ast);
+	assert.match(
+		output,
+		/settings\(\)\.autoDreamEnabled !== true && !hasDreamRollout\(\)\) return !1;/,
+	);
+	const wrapped = output.match(/autoDreamEnabled !== true &&/g) ?? [];
+	assert.equal(
+		wrapped.length,
+		1,
+		"exactly one wrap even with trailing gate statements",
+	);
+	assert.equal(sessionMemory.verify(output, ast), true);
+});
+
+test("session-memory ignores a bare argumentless return guard preceding an autoDreamEnabled read", () => {
+	const BARE_RETURN_FIXTURE = `
+function settings() { return { autoDreamEnabled: true }; }
+function handler(active) {
+  if (!active) return;
+  let firstEnable = !active, flag = firstEnable && settings().autoDreamEnabled === void 0;
+  save({ autoDreamEnabled: active });
+  return flag;
+}
+`;
+	const ast = parse(BARE_RETURN_FIXTURE);
+	const code = print(ast);
+	const result = sessionMemory.verify(code, ast);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("Missing autoDreamEnabled"), true);
+});

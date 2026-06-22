@@ -102,6 +102,32 @@ function quoteBare(s) {
 	assert.match(result as string, /shared enclosing function/);
 });
 
+test("shell-quote-fix converts both escape patterns in one function, not just one", async () => {
+	const output = await applyShellQuoteFix(FIXTURE);
+
+	assert.equal(
+		output.split(NEW_DQUOTE_SOURCE).length - 1,
+		1,
+		"exactly one patched double-quote pattern",
+	);
+	assert.equal(
+		output.split(NEW_BARE_SOURCE).length - 1,
+		1,
+		"exactly one patched bare-word pattern",
+	);
+	assert.equal(output.includes(OLD_DQUOTE_SOURCE), false);
+	assert.equal(output.includes(OLD_BARE_SOURCE), false);
+});
+
+test("shell-quote-fix preserves the .replace() replacement arguments", async () => {
+	const output = await applyShellQuoteFix(FIXTURE);
+	assert.equal(
+		output.includes('"\\\\$1"'),
+		true,
+		"replacement argument retained",
+	);
+});
+
 test("shell-quote-fix verify accepts extra coincidental matched literals", () => {
 	// A second RegExpLiteral matching the same character class elsewhere is
 	// not a defect: the OLD-absence checks already guarantee no unpatched

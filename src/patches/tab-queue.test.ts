@@ -236,6 +236,42 @@ test("tab-queue adds busy-only Tab queue handler, preview, edit, and footer hint
 	assert.equal(tabQueue.verify(output, ast), true);
 });
 
+test("tab-queue receiver guard pushes the trimmed draft and resets the buffer", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	assert.match(output, /globalThis\.__ccEnhancedTabQueue \?\?/);
+	assert.match(output, /\.push\(input\.trim\(\)\)/);
+	assert.match(output, /helpers\.setCursorOffset\(0\)/);
+	assert.match(output, /helpers\.clearBuffer\(\)/);
+	assert.equal(tabQueue.verify(output, ast), true);
+});
+
+test("tab-queue widens the footer push without dropping the showHint branch", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	assert.match(output, /showHint \|\| hintParts\.length > 0/);
+	assert.doesNotMatch(output, /else if \(hintParts\.length > 0\) parts\.push/);
+});
+
+test("tab-queue end-turn drain is inserted once and stays once", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const firstOutput = print(ast);
+	const reparsed = parse(firstOutput);
+	await runTabQueueViaPasses(reparsed);
+	const secondOutput = print(reparsed);
+	assert.equal(
+		countOccurrences(firstOutput, /mode: "prompt", priority: "later"/g),
+		1,
+	);
+	assert.equal(
+		countOccurrences(secondOutput, /mode: "prompt", priority: "later"/g),
+		1,
+	);
+});
+
 test("tab-queue keeps autocomplete ahead of queue handling", async () => {
 	const ast = parse(TAB_QUEUE_FIXTURE);
 	await runTabQueueViaPasses(ast);
@@ -448,6 +484,29 @@ function renderSecondInput({ input, isLoading, setPastedContents }) {
 		output.includes('submit(input, "__cc_enhanced_tab_queue")'),
 		false,
 	);
+	const result = tabQueue.verify(output, ast);
+	assert.equal(typeof result, "string");
+});
+
+test("tab-queue fails closed when footer hint targets are ambiguous", async () => {
+	const input = `${TAB_QUEUE_FIXTURE}
+function renderSecondFooter({ showHint, isInputEmpty, isLoading }) {
+  let parts = showHint ? getHintParts(isLoading) : [];
+  if (viewingCompletedTeammate) {
+    parts.push(React.createElement(Text, { dimColor: true, key: "esc-return" },
+      React.createElement(KeyboardShortcutHint, { chord: "esc", action: "return to team lead", format: { keyCase: "lower" } })));
+  } else if (showHint) { parts.push(...parts); }
+  return React.createElement(Box, null, parts);
+}
+`;
+	const ast = parse(input);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+
+	// Two footer targets gate the mutator off (it only fires on exactly one),
+	// so neither footer is widened and verify must refuse the write instead of
+	// silently patching the wrong one.
+	assert.equal(output.includes('action: "queue"'), false);
 	const result = tabQueue.verify(output, ast);
 	assert.equal(typeof result, "string");
 });

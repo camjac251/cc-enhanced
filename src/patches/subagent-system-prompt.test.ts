@@ -302,3 +302,37 @@ ${SUBAGENT_PROMPT_FIXTURE}
 	assert.match(output, /\.\.\.\s*wH,\s*__ccEnhancedSubagentSystemPromptAppend/);
 	assert.equal(subagentSystemPrompt.verify(output, ast), true);
 });
+
+test("subagent-system-prompt copies every startup void-0 subagent default", async () => {
+	const twoObjects = `
+function startA(ke) {
+  return hd("messages", { appendSystemPrompt: ke, appendSubagentSystemPrompt: void 0 });
+}
+function startB(kx) {
+  return hd("messages", { appendSystemPrompt: kx, appendSubagentSystemPrompt: void 0 });
+}
+`;
+	const ast = parse(`${SUBAGENT_PROMPT_FIXTURE}\n${twoObjects}`);
+	await runSubagentSystemPromptViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /appendSubagentSystemPrompt:\s*ke/);
+	assert.match(output, /appendSubagentSystemPrompt:\s*kx/);
+	assert.equal(output.includes("appendSubagentSystemPrompt: void 0"), false);
+	assert.equal(subagentSystemPrompt.verify(output, ast), true);
+});
+
+test("subagent-system-prompt leaves a null startup subagent default untouched", async () => {
+	const nullDefault = `
+function startCli(ke) {
+  return hd("messages", { appendSystemPrompt: ke, appendSubagentSystemPrompt: null });
+}
+`;
+	const ast = parse(`${SUBAGENT_PROMPT_FIXTURE}\n${nullDefault}`);
+	await runSubagentSystemPromptViaPasses(ast);
+	const output = print(ast);
+	// A null subagent default is not a void-0 default: it is neither copied nor
+	// flagged by the surviving-default guard, so verify still passes.
+	assert.match(output, /appendSubagentSystemPrompt:\s*null/);
+	assert.equal(subagentSystemPrompt.verify(output, ast), true);
+});

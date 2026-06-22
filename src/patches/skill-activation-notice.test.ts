@@ -362,3 +362,47 @@ test("dedup key uses NUL separators for injectivity", async () => {
 	const keyExpr = output.slice(keyIdx - 80, keyIdx + 40);
 	assert.ok(keyExpr.includes("\\u0000"));
 });
+
+test("drain targets the dynamic_skill return even with an earlier early-return", async () => {
+	const ast = parse(`
+async function produce(H) {
+  let early = [];
+  if (H.bail) return early;
+  let attachments = [];
+  let triggers = H.dynamicSkillDirTriggers;
+  if (triggers && triggers.length > 0) {
+    for (let dir of triggers) {
+      attachments.push({ type: "dynamic_skill", skillDir: dir, skillNames: ["x"], displayPath: dir });
+    }
+  }
+  return attachments;
+}
+${FIXTURE.slice(FIXTURE.indexOf("function activate"))}`);
+	await runViaPasses(ast);
+	const output = print(ast);
+	const earlyIdx = output.indexOf("return early");
+	const spliceIdx = output.indexOf("__ccPathActivations.splice(0)");
+	const attachReturnIdx = output.indexOf("return attachments");
+	assert.notEqual(spliceIdx, -1, "drain must be injected");
+	assert.ok(spliceIdx > earlyIdx, "drain must not precede the early return");
+	assert.ok(
+		spliceIdx < attachReturnIdx,
+		"drain must precede the attachments return",
+	);
+});
+
+test("recorded file index targets the matcher first parameter", async () => {
+	const ast = parse(FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	// activate(H, $) -> first param is H; record must read H[0], not $ or another id.
+	assert.ok(
+		output.includes("file: H[0]"),
+		"record file must be H[0] (first param)",
+	);
+	assert.equal(
+		output.includes("file: $[0]"),
+		false,
+		"record must not read the cwd param",
+	);
+});

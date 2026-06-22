@@ -1112,6 +1112,28 @@ function patchUltracodeCommandEffortUpdateValue(
 	);
 }
 
+function isPatchedUltracodeCommandEffortUpdateValue(
+	returnNode: t.ReturnStatement,
+): boolean {
+	const arg = returnNode.argument;
+	if (!arg || !t.isObjectExpression(arg)) return false;
+	const effortUpdateProp = getObjectProp(arg, "effortUpdate");
+	if (!effortUpdateProp || !t.isObjectExpression(effortUpdateProp.value)) {
+		return false;
+	}
+	const valueProp = getObjectProp(effortUpdateProp.value, "value");
+	if (!valueProp) return false;
+	const value = valueProp.value;
+	return (
+		t.isConditionalExpression(value) &&
+		t.isBinaryExpression(value.test, { operator: "===" }) &&
+		t.isIdentifier(value.test.left) &&
+		t.isStringLiteral(value.test.right, { value: "max" }) &&
+		t.isStringLiteral(value.consequent, { value: "max" }) &&
+		t.isStringLiteral(value.alternate, { value: "xhigh" })
+	);
+}
+
 function patchUltracodeCommandEnvMessage(
 	path: NodePath<t.ReturnStatement>,
 ): boolean | null {
@@ -1442,6 +1464,7 @@ export const effortStack: Patch = {
 		let hasPatchedResolver = false;
 		let hasMaxNotification = false;
 		let hasPatchedByz = false;
+		let hasPatchedCommandEffortValue = false;
 		let hasLegacyByz = false;
 		let hasPatchedUyz = false;
 		let hasLegacyUyz = false;
@@ -1570,6 +1593,9 @@ export const effortStack: Patch = {
 					isUltracodeCommandStackedMessage(messageProp.value)
 				) {
 					hasPatchedByz = true;
+					if (isPatchedUltracodeCommandEffortUpdateValue(path.node)) {
+						hasPatchedCommandEffortValue = true;
+					}
 				}
 				if (isPatchedUltracodeMenuReturn(path.node)) {
 					hasPatchedUltracodeMenu = true;
@@ -1603,6 +1629,9 @@ export const effortStack: Patch = {
 		}
 		if (!hasPatchedByz) {
 			return "Did not find env-aware ultracode command message";
+		}
+		if (!hasPatchedCommandEffortValue) {
+			return "Did not find stacked-max ultracode command effortUpdate value";
 		}
 		if (!hasPatchedEnvResolver) {
 			return "Did not find session override guard in env effort resolver";

@@ -254,6 +254,88 @@ function renderMemoryWriteResult(H, A) {
 	assert.equal(noCollapse.verify(output, ast), true);
 });
 
+test("no-collapse verify accepts a negated-identifier factory isCollapsible value", async () => {
+	const negatedIdentFixture = `
+function classifyToolResult(H, $, A) {
+  var hidden = H.hidden;
+  return {
+    isSearch: H.isSearch,
+    isRead: H.isRead,
+    isList: H.isList,
+    isREPL: H.isREPL,
+    isMemoryWrite: H.isMemoryWrite,
+    isCollapsible: !hidden
+  };
+}
+function getCollapseMetadata(H) {
+  if (H && H.type === "tool_use" && H.name) {
+    var A = classifyToolResult(H, null, null);
+    if (A.isCollapsible || A.isREPL) {
+      return { isSearch: A.isSearch, isRead: A.isRead, isREPL: A.isREPL, isMemoryWrite: A.isMemoryWrite };
+    }
+  }
+  return null;
+}
+function renderMemoryWriteResult(H, A) {
+  return { filePath: A, isCollapsible: !0, isMemoryWrite: !0, isSearch: !1, isRead: !1, isREPL: !1 };
+}
+`;
+	const ast = parse(negatedIdentFixture);
+	await runNoCollapseViaPasses(ast);
+	const output = print(ast);
+	// Negated-identifier isCollapsible is preserved verbatim (not mutated).
+	assert.equal(output.includes("isCollapsible: !hidden"), true);
+	// And verify accepts it: a negated identifier is non-literal with 4 siblings.
+	assert.equal(noCollapse.verify(output, ast), true);
+});
+
+test("no-collapse verify is satisfied by any one non-literal isCollapsible factory object (two present)", async () => {
+	const twoFactoryFixture = `
+function classifyA(H) {
+  var hidden = H.hidden;
+  return {
+    isSearch: H.isSearch,
+    isRead: H.isRead,
+    isList: H.isList,
+    isREPL: H.isREPL,
+    isMemoryWrite: H.isMemoryWrite,
+    isCollapsible: !hidden
+  };
+}
+function classifyB(H) {
+  var a = H.a, b = H.b;
+  return {
+    isSearch: H.isSearch,
+    isRead: H.isRead,
+    isList: H.isList,
+    isREPL: H.isREPL,
+    isMemoryWrite: H.isMemoryWrite,
+    isCollapsible: a || (b ? !0 : !1)
+  };
+}
+function getCollapseMetadata(H) {
+  if (H && H.type === "tool_use" && H.name) {
+    var A = classifyA(H);
+    if (A.isCollapsible || A.isREPL) {
+      return { isSearch: A.isSearch, isRead: A.isRead, isREPL: A.isREPL, isMemoryWrite: A.isMemoryWrite };
+    }
+  }
+  return null;
+}
+function renderMemoryWriteResult(H, A) {
+  return { filePath: A, isCollapsible: !0, isMemoryWrite: !0, isSearch: !1, isRead: !1, isREPL: !1 };
+}
+`;
+	const ast = parse(twoFactoryFixture);
+	await runNoCollapseViaPasses(ast);
+	const output = print(ast);
+	// Both non-literal factory values survive (neither is mutated).
+	assert.equal(output.includes("isCollapsible: !hidden"), true);
+	assert.equal(output.includes("isCollapsible: a || (b ? !0 : !1)"), true);
+	// Check 2 is an existence check: passes with either/both present.
+	assert.equal(noCollapse.verify(output, ast), true);
+});
+
 test("no-collapse verify rejects a literal factory isCollapsible value even with all sibling props present", () => {
 	const literalValueFixture = `
 function classifyToolResult(H, $, A) {

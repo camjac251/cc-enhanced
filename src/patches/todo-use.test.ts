@@ -218,6 +218,31 @@ The assistant did not use the todo list because it is trivial.
 	assert.equal(todo.verify(output), true);
 });
 
+test("todo-use fixture headings are unique (drift guard)", () => {
+	const count = (s: string, sub: string) => s.split(sub).length - 1;
+	assert.equal(
+		count(TODO_FIXTURE, "## Examples of When to Use the Todo List"),
+		1,
+	);
+	assert.equal(
+		count(TODO_FIXTURE, "## Examples of When NOT to Use the Todo List"),
+		1,
+	);
+	assert.equal(count(TODO_FIXTURE, "## Task States and Management"), 1);
+});
+
+test("todo-use verify flags tool-present-but-section-missing as drift", () => {
+	// No trigger heading, but a Todo tool marker is present.
+	const noSection = 'const tool = { name: "TodoWrite" };';
+	const result = todo.verify(noSection);
+	assert.notEqual(
+		result,
+		true,
+		"verify must flag bundle drift when the Todo prompt section vanished",
+	);
+	assert.equal(typeof result, "string");
+});
+
 test("todo-use stale-prose guard matches the upstream npm-install line despite trailing period", () => {
 	const withRealLine = `## Examples of When to Use the Todo List
 - Reach for it when the user hands you multiple related tasks or explicitly asks for tracking.

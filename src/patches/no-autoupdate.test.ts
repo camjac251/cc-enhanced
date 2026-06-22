@@ -168,3 +168,85 @@ test("no-autoupdate targets exactly one guard fn and one plugin gate", async () 
 	assert.equal(patchedGuardEntries, 1);
 	assert.equal(pluginGates, 1);
 });
+
+test("no-autoupdate verify rejects two distinct core-guard functions", async () => {
+	const fixture = `
+function wrap(v) { return typeof v === "boolean"; }
+function coreGuardA() {
+  if (envFlags.DISABLE_AUTOUPDATER) return "disabled";
+  return null;
+}
+function coreGuardB() {
+  if (otherFlags.DISABLE_AUTOUPDATER) return "disabled";
+  return null;
+}
+const envFlags = {};
+const otherFlags = {};
+function pluginForceGate() {
+  return !wrap(process.env.FORCE_AUTOUPDATE_PLUGINS);
+}
+`;
+	const ast = parse(fixture);
+	await runDisableAutoupdaterViaPasses(ast);
+	const output = print(ast);
+	const result = disableAutoupdater.verify(output, ast);
+	assert.notEqual(result, true);
+	assert.equal(typeof result, "string");
+	assert.match(result as string, /one auto-updater guard function name/);
+});
+
+test("no-autoupdate verify fails cleanly when the core-guard anchor is absent", async () => {
+	const fixture = `
+function wrap(v) { return typeof v === "boolean"; }
+function someUnrelatedGuard() {
+  if (envFlags.DISABLE_SOMETHING_ELSE) return "disabled";
+  return null;
+}
+const envFlags = {};
+function pluginForceGate() {
+  return !wrap(process.env.FORCE_AUTOUPDATE_PLUGINS);
+}
+`;
+	const ast = parse(fixture);
+	await runDisableAutoupdaterViaPasses(ast);
+	const result = disableAutoupdater.verify(print(ast), ast);
+	assert.notEqual(result, true);
+	assert.match(result as string, /guard function not found/);
+});
+
+test("no-autoupdate prepends the patched return ahead of the original guard if-test", async () => {
+	const ast = parse(AUTOUPDATER_FIXTURE);
+	await runDisableAutoupdaterViaPasses(ast);
+	let checked = false;
+	traverse(ast, {
+		Function(path) {
+			const body = path.node.body;
+			if (!t.isBlockStatement(body)) return;
+			let hasDisable = false;
+			path.traverse({
+				IfStatement(p) {
+					if (
+						t.isMemberExpression(p.node.test) &&
+						t.isIdentifier(p.node.test.property, {
+							name: "DISABLE_AUTOUPDATER",
+						})
+					)
+						hasDisable = true;
+				},
+			});
+			if (!hasDisable) return;
+			checked = true;
+			const first = body.body[0];
+			assert.ok(
+				t.isReturnStatement(first) &&
+					t.isStringLiteral(first.argument, { value: "patched" }),
+				"sentinel return must be the first statement of the guard fn",
+			);
+			assert.ok(
+				t.isIfStatement(body.body[1]),
+				"original guard if-test must remain immediately after the sentinel",
+			);
+		},
+	});
+	assert.equal(checked, true);
+});

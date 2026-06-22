@@ -122,6 +122,82 @@ test("sys-prompt-file existsSync guard uses the readFileSync source object", asy
 	assert.equal(output.includes(" existsSync(resolvedSystemPromptFile)"), false);
 });
 
+test("sys-prompt-file patches only the append-file branch when a systemPromptFile twin is present", async () => {
+	const twinFixture = `
+function handleAppend(M) {
+  let Ce = M.systemPrompt;
+  if (M.systemPromptFile) {
+    if (M.systemPrompt) throw new Error("conflict");
+    try {
+      let V$ = path.resolve(M.systemPromptFile);
+      Ce = fs.readFileSync(V$, "utf8");
+    } catch (V$) {
+      throw V$;
+    }
+  }
+  let GH = M.appendSystemPrompt;
+  if (M.appendSystemPromptFile) {
+    if (M.appendSystemPrompt) throw new Error("conflict");
+    try {
+      let V$ = path.resolve(M.appendSystemPromptFile);
+      GH = fs.readFileSync(V$, "utf8");
+    } catch (V$) {
+      throw V$;
+    }
+  }
+  return GH;
+}
+`;
+	const ast = parse(twinFixture);
+	await runSystemPromptFileViaPasses(ast);
+	const output = print(ast);
+	const guardCount =
+		output.split("process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE").length -
+		1;
+	assert.equal(guardCount, 1, "exactly one auto-append guard injected");
+	assert.equal(
+		output.includes("M.appendSystemPromptFile = resolvedSystemPromptFile"),
+		true,
+	);
+	// the replacement-mode branch must not gain an auto-append guard for systemPromptFile
+	assert.equal(
+		output.includes("M.systemPromptFile = resolvedSystemPromptFile"),
+		false,
+	);
+	assert.equal(systemPromptFile.verify(output, ast), true);
+});
+
+test("sys-prompt-file verify rejects an auto-append guard that also checks replacement-mode prompts", () => {
+	const overbroadGuard = `
+function handleAppend(M) {
+  let GH = M.appendSystemPrompt;
+  if (M.appendSystemPromptFile === void 0 && M.appendSystemPrompt === void 0 && M.systemPromptFile === void 0) {
+    let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";
+    try {
+      let resolvedSystemPromptFile = path.resolve(configuredSystemPromptFilePath);
+      if (fs.existsSync(resolvedSystemPromptFile)) {
+        M.appendSystemPromptFile = resolvedSystemPromptFile;
+      }
+    } catch (err) {}
+  }
+  if (M.appendSystemPromptFile) {
+    if (M.appendSystemPrompt) throw new Error("conflict");
+    try {
+      let V$ = path.resolve(M.appendSystemPromptFile);
+      GH = fs.readFileSync(V$, "utf8");
+    } catch (V$) {
+      throw V$;
+    }
+  }
+  return GH;
+}
+`;
+	const ast = parse(overbroadGuard);
+	const result = systemPromptFile.verify(overbroadGuard, ast);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("replacement-mode"), true);
+});
+
 test("sys-prompt-file patches the bare-call readFileSync form", async () => {
 	const bareCallFixture = `
 function handleAppend(M) {

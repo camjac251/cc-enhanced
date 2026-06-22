@@ -306,3 +306,58 @@ test("lsp-multi-server verify fails when closeFile stops untracking the URI", as
 	assert.equal(typeof result, "string");
 	assert.match(String(result), /closeFile does not delete the closed URI/);
 });
+
+test("lsp-multi-server fails closed when errFn cannot be discovered", async () => {
+	// errFn is discovered only from a call whose first argument is Error(...).
+	// Strip every such call so errFn is undiscoverable, then assert the patch
+	// declines to mutate AND verify reports a hard failure instead of a silent
+	// no-op promote.
+	const fixture = LSP_FACTORY_FIXTURE.replaceAll(
+		/throw \(PH\(Error\([^;]*?\)\), Error\("fail"\)\);/g,
+		'throw Error("fail");',
+	).replace("throw (PH(Z), Z);", "throw Z;");
+	assert.notEqual(fixture, LSP_FACTORY_FIXTURE, "fixture rewrite must apply");
+	const ast = parse(fixture);
+	const passes = (await lspMultiServer.astPasses?.(ast)) ?? [];
+	assert.equal(
+		passes.length,
+		0,
+		"no mutation passes when errFn is undiscoverable",
+	);
+	const output = print(ast);
+	const result = lspMultiServer.verify(output, ast);
+	assert.notEqual(
+		result,
+		true,
+		"verify must fail rather than silently pass when discovery fails",
+	);
+	assert.equal(typeof result, "string");
+});
+
+test("lsp-multi-server assigns trackMap from the 3rd Map even with a 4th present", async () => {
+	const fourMapFixture = LSP_FACTORY_FIXTURE.replace(
+		"let H = new Map(),\n    $ = new Map(),\n    A = new Map();",
+		"let H = new Map(),\n    $ = new Map(),\n    A = new Map(),\n    VER = new Map();",
+	);
+	assert.notEqual(
+		fourMapFixture,
+		LSP_FACTORY_FIXTURE,
+		"fixture rewrite must apply",
+	);
+	const ast = parse(fourMapFixture);
+	await runViaPasses(ast);
+	const output = print(ast);
+	// closeFile must delete from the 3rd map (A), the discovered tracking map,
+	// not from the trailing 4th map (VER).
+	assert.match(
+		output,
+		/A\.delete\(/,
+		"trackMap (3rd map) must be the one closeFile untracks",
+	);
+	assert.equal(
+		output.includes("VER.delete("),
+		false,
+		"the 4th map must not be treated as the tracking map",
+	);
+	assert.equal(lspMultiServer.verify(output, ast), true);
+});

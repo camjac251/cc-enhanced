@@ -116,3 +116,29 @@ test("session-guidance verify flags legacy find/grep helper when broad sentence 
 		"Session guidance still routes fallback exploration through find/grep",
 	);
 });
+
+test("session-guidance fails verify when broad-exploration sentence drifts but helper is rewritten", () => {
+	const driftedBroad = VANILLA_FIXTURE.replace(
+		"For broad codebase exploration or research that'll take more than ${nQK} queries",
+		"For wide codebase exploration that needs more than ${nQK} queries",
+	);
+	const output = sessionGuidance.string?.(driftedBroad) ?? driftedBroad;
+	// helper still rewritten
+	assert.equal(
+		output.includes(
+			"code-search routing (Serena, ChunkHound, Probe, ast-grep MCP/sg)",
+		),
+		true,
+	);
+	// but the broad sentence was not in the expected legacy shape, so it stays
+	// legacy and verify rejects
+	const result = sessionGuidance.verify(output);
+	assert.notEqual(result, true);
+});
+
+test("session-guidance verify accepts a fully-patched doubled surface", () => {
+	const doubled = `${VANILLA_FIXTURE}\n${VANILLA_FIXTURE}`;
+	const output = sessionGuidance.string?.(doubled) ?? doubled;
+	assert.equal(sessionGuidance.verify(output), true);
+	assert.equal(output.includes("Otherwise use ${z} directly."), false);
+});

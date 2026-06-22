@@ -123,6 +123,34 @@ test("memory-prompt-soften rewrites the escaped-backtick template team form", ()
 	assert.equal(output.includes("Use \\`eza team/\\`"), true);
 });
 
+test("memory-prompt-soften team Phase-1 matches the plain-backtick form, escaped-backtick form is a no-op", () => {
+	// The real bundle stores the team Phase-1 line in a plain string literal with
+	// plain backticks. This pins that the plain-backtick rewrite is the one that
+	// fires on the real surface; if upstream flips to the escaped-backtick template
+	// form, this fails and forces a deliberate regex update.
+	const plainBundleForm =
+		'"## Team memory\n\n- **Phase 1:** `ls team/` and skim it alongside your personal files. A teammate may have already captured something you\'d otherwise duplicate."';
+	const out = memoryPromptSoften.string?.(plainBundleForm) ?? plainBundleForm;
+	assert.equal(
+		out.includes("`ls team/`"),
+		false,
+		"plain-backtick team line rewritten",
+	);
+	assert.equal(
+		out.includes("Use `eza team/`"),
+		true,
+		"plain-backtick modern form emitted",
+	);
+});
+
+test("memory-prompt-soften emits exactly one modern transcript-search command", () => {
+	const output =
+		memoryPromptSoften.string?.(VANILLA_FIXTURE) ?? VANILLA_FIXTURE;
+	const count = (s: string, needle: string) => s.split(needle).length - 1;
+	assert.equal(count(output, 'rg -m 50 "<narrow term>"'), 1);
+	assert.equal(count(output, "-g '*.jsonl'"), 1);
+});
+
 test("memory-prompt-soften fixture anchors each occur exactly once", () => {
 	// The team line in the fixture uses the escaped-backtick representation the
 	// bundle stores, so the escaped form is the one that must appear once.

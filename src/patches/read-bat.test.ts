@@ -1017,3 +1017,90 @@ test("read-bat verify fails when the changed-file head budget multiplier is drif
 		true,
 	);
 });
+
+test("read-bat wraps a non-resolvable description METHOD return and statics the prompt method", async () => {
+	// The real bundle exposes the Read prompt/description as object METHODS whose
+	// return value is a non-resolvable call. The description method-form is
+	// wrapped with the description helper; the prompt method-form is replaced
+	// outright with the static prompt (it is never wrapped). The other
+	// unsupported-prompt coverage exercises the property branch only.
+	const fixture = READ_UNSUPPORTED_PROMPT_FIXTURE.replace(
+		"description: maybePrompt(),",
+		"async description() { return maybePrompt(); },",
+	).replace(
+		"prompt: maybePrompt(),",
+		"async prompt() { return maybePrompt(); },",
+	);
+	assert.notEqual(fixture, READ_UNSUPPORTED_PROMPT_FIXTURE);
+	const ast = parse(fixture);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes("return _claudePatchReadDescription(maybePrompt())"),
+		true,
+		"description method-form return should be wrapped with the description helper",
+	);
+	assert.equal(
+		output.includes("return _claudePatchReadPrompt(maybePrompt())"),
+		false,
+		"prompt method-form return is staticized, not wrapped",
+	);
+	assert.equal(
+		output.includes('return "Read files from the local filesystem.'),
+		true,
+		"prompt method-form return should be replaced with the static Read prompt",
+	);
+	assert.equal(
+		output.includes("function _claudePatchReadDescription(description)"),
+		true,
+	);
+});
+
+test("read-bat handles validateInput without offset/limit and still adds range param", async () => {
+	// 2.1.185 validateInput destructures only { file_path, pages }. The section-1b
+	// large-file guard rewrite is a no-op on this shape; only the additive
+	// range: R param should land, and verify must still pass.
+	const fixture = READ_DELEGATION_FIXTURE.replace(
+		"async validateInput({ file_path: A, offset: Q, limit: B, pages: Y }, G) {\n    if (!eG1(Y) && !Q && !B) return { result: false };\n    return { result: true };\n  },",
+		"async validateInput({ file_path: A, pages: Y }, G) {\n    return { result: true };\n  },",
+	);
+	assert.notEqual(fixture, READ_DELEGATION_FIXTURE);
+	const ast = parse(fixture);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+	assert.match(
+		output,
+		/async validateInput\(\{ file_path: A, pages: Y, range: R \}/,
+	);
+	assert.equal(readWithBat.verify(output), true);
+});
+
+test("read-bat threads both delegation sites when the second lives in the call catch block", async () => {
+	// The real bundle's second delegation site lives inside call()'s own catch
+	// block (the missing-file path), not a try/catch wrapping the helper return.
+	// This mirrors that nesting so the threading loop is exercised against the
+	// real structural position and a third or missed site would be caught.
+	const fixture = READ_DELEGATION_FIXTURE.replace(
+		"    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n  },",
+		"    try {\n      return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n    } catch (ENOENT_E) {\n      return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n    }\n  },",
+	);
+	assert.notEqual(fixture, READ_DELEGATION_FIXTURE);
+	const ast = parse(fixture);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.split(
+			"await helperRead(A, void 0, void 0, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2, R, WSPC)",
+		).length - 1,
+		2,
+		"both delegation sites (try + catch) must be threaded exactly once each",
+	);
+	assert.equal(
+		output.split(
+			"helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2, R, WSPC)",
+		).length - 1,
+		1,
+		"helper definition param list rewritten exactly once",
+	);
+	assert.equal(readWithBat.verify(output), true);
+});

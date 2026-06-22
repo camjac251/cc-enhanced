@@ -153,3 +153,33 @@ let G2 = H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd",
 		true,
 	);
 });
+
+test("claudemd-strong currently only neutralizes VariableDeclarator-init gates (if-test gate is a known blind spot)", async () => {
+	const ifGate = `
+function launch(H, f) {
+  if (H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd", !0)) return slim();
+  return full();
+}
+`;
+	const ast = parse(ifGate);
+	await runClaudeMdStrongViaPasses(ast);
+	const output = print(ast);
+	// mutator does not touch if-test gates today
+	assert.equal(output.includes("tengu_slim_subagent_claudemd"), true);
+	// and verify (gate-counter is VariableDeclarator-scoped) does not flag it
+	assert.equal(
+		claudeMdSystemPrompt.verify(
+			`${STRONG_DISCLAIMER_LINES.join("\n")}\n${output}`,
+			ast,
+		),
+		true,
+	);
+});
+
+test("claudemd-strong neutralizes exactly one gate on the single-gate fixture", async () => {
+	const ast = parse(SUBAGENT_OMIT_FIXTURE);
+	await runClaudeMdStrongViaPasses(ast);
+	const output = print(ast);
+	assert.equal((output.match(/=\s*false/g) ?? []).length, 1);
+	assert.equal(output.includes("tengu_slim_subagent_claudemd"), false);
+});

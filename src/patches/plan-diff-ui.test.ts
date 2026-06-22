@@ -210,3 +210,97 @@ test("plan-diff-ui flips the create-preview guard test to false", async () => {
 	assert.equal(output.includes("if (H.startsWith(v6()) && !f)"), false);
 	assert.equal(output.includes("if (false) {"), true);
 });
+
+test("plan-diff-ui rewrites Reading-Plan branch without disturbing a sibling Read-variant branch", async () => {
+	const src = `
+function v6() { return "/tmp/.claude/plans"; }
+function readLabel(H) {
+  if (H?.file_path?.startsWith(v6())) return "Reading Plan";
+  if (H?.file_path && agentOut(H.file_path)) return "Read agent output";
+  return "Read";
+}
+`;
+	const ast = parse(src);
+	await runPlanDiffUiViaPasses(ast);
+	const output = print(ast);
+	// plan branch becomes "Read"
+	assert.equal(
+		output.includes('if (H?.file_path?.startsWith(v6())) return "Read";'),
+		true,
+	);
+	// the competing sibling branch is untouched
+	assert.equal(output.includes('return "Read agent output";'), true);
+	assert.equal(output.includes("Reading Plan"), false);
+});
+
+test("plan-diff-ui resolves the Update fallback even when extra non-fallback branches are present", async () => {
+	const src = `
+function v6() { return "/tmp/.claude/plans"; }
+function updLabel(H) {
+  if (!H) return "Update";
+  if (H.file_path?.startsWith(v6())) return "Updated plan";
+  if (H.edits != null) return "Update";
+  if (H.old_string === "") return "Create";
+  return "Update";
+}
+`;
+	const ast = parse(src);
+	await runPlanDiffUiViaPasses(ast);
+	const output = print(ast);
+	// no Write fallback in scope -> plan branch must resolve to "Update", not "Create"
+	assert.equal(
+		output.includes('if (H.file_path?.startsWith(v6())) return "Update";'),
+		true,
+	);
+	assert.equal(output.includes("Updated plan"), false);
+	// the unrelated edits/old_string branches are preserved verbatim
+	assert.equal(output.includes('if (H.edits != null) return "Update";'), true);
+	assert.equal(
+		output.includes('if (H.old_string === "") return "Create";'),
+		true,
+	);
+});
+
+test("verify fails when an Updated-plan branch is left as the raw literal even if a Read return exists elsewhere", () => {
+	// Simulates a partial/incorrect mutation: the previewHint, guards, and one
+	// label group are patched, but an "Updated plan" literal survives. verify()
+	// must catch the surviving unpatched label rather than passing on the
+	// strength of other patched groups.
+	const partiallyPatched = `
+function v6() { return "/tmp/.claude/plans"; }
+function a(H) {
+  if (H?.file_path?.startsWith(v6())) return "Updated plan";
+  return "Write";
+}
+function b({ file_path: H }, { verbose: $ }) {
+  if (!H) return null;
+  if (false) return "";
+  return mk(H);
+}
+function c(H) {
+  return mk2({ filePath: H, previewHint: void 0 });
+}
+`;
+	const ast = parse(partiallyPatched);
+	const result = planDiffUi.verify(print(ast), ast);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("Updated plan"), true);
+});
+
+test("plan-diff-ui fixture models the same anchor multiplicity as the live bundle", () => {
+	// Tripwire: if upstream adds/removes a plan-dir surface, this count drifts
+	// and forces a fixture review. Pins the per-surface multiplicity the
+	// mutator's count-based test assertions depend on.
+	const plannedPreviewHints =
+		PLAN_DIFF_FIXTURE.split('? "/plan to preview" : void 0').length - 1;
+	const toolUseHideGuards =
+		PLAN_DIFF_FIXTURE.split('startsWith(v6())) return "";').length - 1;
+	const updatedPlanLiterals =
+		PLAN_DIFF_FIXTURE.split('"Updated plan"').length - 1;
+	const readingPlanLiterals =
+		PLAN_DIFF_FIXTURE.split('"Reading Plan"').length - 1;
+	assert.equal(plannedPreviewHints, 2);
+	assert.equal(toolUseHideGuards, 2);
+	assert.equal(updatedPlanLiterals, 2);
+	assert.equal(readingPlanLiterals, 1);
+});

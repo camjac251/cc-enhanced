@@ -460,3 +460,161 @@ function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
 		"verify should pass with the decoy present",
 	);
 });
+
+test("limits patches linesCap when the Read prompt has a capital-R branch plus a lowercase 'reads up to' branch sharing one lines var", async () => {
+	// Mirrors the real prompt shape: two branches, one shared lines variable,
+	// only the lowercase "it reads up to" branch carrying the matchable quasi.
+	// Guards against a future release flipping the casing of either branch.
+	const twoBranchFixture = `
+var bYC = 262144;
+var ZPA = 50000;
+var lNC = 2000;
+function getMaxOutputTokens() {
+  let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
+  if (env) { let p = Number(env); if (!Number.isNaN(p) && p > 0) return p; }
+  return;
+}
+var rTI = 25000;
+function checkFileSize(filePath, maxSize = bYC) {
+  return require("fs").statSync(filePath).size <= maxSize;
+}
+var readToolDef = { name: "Read", searchHint: "read files, images, PDFs, notebooks", maxResultSizeChars: 1 / 0, description: "Read files" };
+function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
+  if (!Number.isFinite(maxResultSizeChars)) return maxResultSizeChars;
+  return Math.min(maxResultSizeChars, ceiling);
+}
+function readPrompt(cond) {
+  if (cond)
+    return \`Reads a file from the local filesystem.
+- Reads up to \${lNC} lines by default.\`;
+  return \`Reads a file from the local filesystem. You can access any file directly.
+- it reads up to \${lNC} lines starting from the beginning of the file\`;
+}
+`;
+	const ast = parse(twoBranchFixture);
+	await runLimitsViaPasses(ast);
+	const output = print(ast);
+	// Single shared lines var: rewriting it updates the value for both branches.
+	assert.equal(
+		output.includes("lNC = 5000"),
+		true,
+		"shared lines var should be raised to 5000",
+	);
+	assert.equal(
+		output.includes("lNC = 2000"),
+		false,
+		"old lines value should be gone",
+	);
+	assert.equal(
+		limits.verify(output, ast),
+		true,
+		"verify should pass on the two-branch prompt",
+	);
+});
+
+test("limits raises the shared byteCeiling constant so a second consumer sees the new value", async () => {
+	// Real topology: the byte-ceiling constant is referenced both by the
+	// statSync "<=" gate and by a separate config default. Rewriting the
+	// shared declaration must update every reference site at once.
+	const sharedCeilingFixture = `
+var bYC = 262144;
+var ZPA = 50000;
+function getMaxOutputTokens() {
+  let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
+  if (env) { let p = Number(env); if (!Number.isNaN(p) && p > 0) return p; }
+  return;
+}
+var rTI = 25000;
+function checkFileSize(filePath, maxSize = bYC) {
+  return require("fs").statSync(filePath).size <= maxSize;
+}
+function readToolConfig(cfg) {
+  return { maxSizeBytes: typeof cfg?.maxSizeBytes === "number" ? cfg.maxSizeBytes : bYC };
+}
+var readToolDef = { name: "Read", searchHint: "read files", maxResultSizeChars: 1 / 0, description: "Read files" };
+function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
+  if (!Number.isFinite(maxResultSizeChars)) return maxResultSizeChars;
+  return Math.min(maxResultSizeChars, ceiling);
+}
+`;
+	const ast = parse(sharedCeilingFixture);
+	await runLimitsViaPasses(ast);
+	const output = print(ast);
+	// The declaration is rewritten once; both the gate default and the config
+	// default now read the raised value.
+	assert.equal(
+		output.includes("bYC = 1048576"),
+		true,
+		"shared ceiling decl should be raised",
+	);
+	assert.equal(
+		output.includes("262144"),
+		false,
+		"no 262144 should remain for the shared ceiling",
+	);
+	// Both reference sites still point at the (now raised) symbol.
+	assert.equal(
+		output.includes("maxSize = bYC"),
+		true,
+		"gate default still references the raised symbol",
+	);
+	assert.equal(
+		output.includes(": bYC"),
+		true,
+		"config consumer still references the raised symbol",
+	);
+	assert.equal(
+		limits.verify(output, ast),
+		true,
+		"verify should pass with the shared ceiling",
+	);
+});
+
+test("limits byteCeiling ignores a statSync size check that uses '>' instead of '<='", async () => {
+	// A separate file-size gate uses statSync(e).size > ceiling with its own
+	// 262144 constant. The matcher requires "<=", so the ">" gate's ceiling
+	// must be left untouched.
+	const decoyGateFixture = `
+var bYC = 262144;
+var GHI = 262144;
+var ZPA = 50000;
+function getMaxOutputTokens() {
+  let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
+  if (env) { let p = Number(env); if (!Number.isNaN(p) && p > 0) return p; }
+  return;
+}
+var rTI = 25000;
+function themeGate(themePath, ceiling = GHI) {
+  if (require("fs").statSync(themePath).size > ceiling) return;
+  return true;
+}
+function checkFileSize(filePath, maxSize = bYC) {
+  return require("fs").statSync(filePath).size <= maxSize;
+}
+var readToolDef = { name: "Read", searchHint: "read files", maxResultSizeChars: 1 / 0, description: "Read files" };
+function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
+  if (!Number.isFinite(maxResultSizeChars)) return maxResultSizeChars;
+  return Math.min(maxResultSizeChars, ceiling);
+}
+`;
+	const ast = parse(decoyGateFixture);
+	await runLimitsViaPasses(ast);
+	const output = print(ast);
+	// The "<=" Read gate ceiling is raised...
+	assert.equal(
+		output.includes("bYC = 1048576"),
+		true,
+		"the '<=' gate ceiling should be raised",
+	);
+	// ...but the ">" theme gate ceiling must remain 262144.
+	assert.equal(
+		output.includes("GHI = 262144"),
+		true,
+		"the '>' theme gate ceiling must be untouched",
+	);
+	assert.equal(
+		limits.verify(output, ast),
+		true,
+		"verify should pass with the decoy '>' gate present",
+	);
+});
