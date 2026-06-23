@@ -43,6 +43,7 @@ interface EndTurnDrainTarget {
 	functionPath: NodePath<FunctionLike>;
 	drainBlock: NodePath<t.BlockStatement>;
 	enqueue: t.Expression;
+	agentId: t.Expression;
 	turnAborted: t.Expression;
 }
 
@@ -1458,25 +1459,32 @@ function findEndTurnDrainBlock(
 
 function getPromptQueueCalleeFromBranch(
 	path: NodePath<t.IfStatement>,
-): t.Expression | null {
-	let enqueue: t.Expression | null = null;
+): { callee: t.Expression; agentId: t.Expression } | null {
+	let result: { callee: t.Expression; agentId: t.Expression } | null = null;
 	path.traverse({
 		Function(inner) {
 			inner.skip();
 		},
 		CallExpression(candidate) {
-			if (enqueue) return;
+			if (result) return;
 			const arg = candidate.node.arguments[0];
 			if (!t.isObjectExpression(arg)) return;
 			const mode = getObjectPropertyValue(arg, "mode");
 			if (!t.isStringLiteral(mode, { value: "prompt" })) return;
 			if (!hasObjectProperty(arg, "value")) return;
+			// A human prompt is enqueued onto the active agent's command queue
+			// with an agentId; the queue drainer only submits commands whose
+			// agentId matches the current agent. Capture that agentId expression
+			// here so the end-turn drain re-enqueues with the same routing, rather
+			// than producing an unroutable command that is never submitted.
+			const agentId = getObjectPropertyValue(arg, "agentId");
+			if (!agentId) return;
 			if (t.isExpression(candidate.node.callee)) {
-				enqueue = candidate.node.callee;
+				result = { callee: candidate.node.callee, agentId };
 			}
 		},
 	});
-	return enqueue;
+	return result;
 }
 
 function getTryStartGenerationName(
@@ -1504,8 +1512,8 @@ function getTryStartGenerationName(
 
 function getEnqueueCallFromConcurrentBranch(
 	functionPath: NodePath<FunctionLike>,
-): t.Expression | null {
-	let enqueue: t.Expression | null = null;
+): { enqueue: t.Expression; agentId: t.Expression } | null {
+	let result: { enqueue: t.Expression; agentId: t.Expression } | null = null;
 	const generationName = getTryStartGenerationName(functionPath);
 	if (!generationName) return null;
 
@@ -1514,7 +1522,7 @@ function getEnqueueCallFromConcurrentBranch(
 			if (path.node !== functionPath.node) path.skip();
 		},
 		IfStatement(path) {
-			if (enqueue) return;
+			if (result) return;
 			const branchEnqueue = getPromptQueueCalleeFromBranch(path);
 			if (!branchEnqueue) return;
 			const usesGeneration = nodeContains(path.node.test, (node) =>
@@ -1527,10 +1535,15 @@ function getEnqueueCallFromConcurrentBranch(
 					["===", "=="].includes(node.operator) &&
 					(t.isNullLiteral(node.left) || t.isNullLiteral(node.right)),
 			);
-			if (usesGeneration && handlesNullStart) enqueue = branchEnqueue;
+			if (usesGeneration && handlesNullStart) {
+				result = {
+					enqueue: branchEnqueue.callee,
+					agentId: branchEnqueue.agentId,
+				};
+			}
 		},
 	});
-	return enqueue;
+	return result;
 }
 
 function isSignalAbortedMember(node: t.Node | null | undefined): boolean {
@@ -1577,12 +1590,18 @@ function getEndTurnDrainTarget(
 ): EndTurnDrainTarget | null {
 	const drainBlock = findEndTurnDrainBlock(path);
 	if (!drainBlock) return null;
-	const enqueue = getEnqueueCallFromConcurrentBranch(path);
-	if (!enqueue) return null;
+	const enqueueInfo = getEnqueueCallFromConcurrentBranch(path);
+	if (!enqueueInfo) return null;
 	const turnAborted = getTurnAbortedExpression(drainBlock);
 	if (!turnAborted) return null;
 
-	return { functionPath: path, drainBlock, enqueue, turnAborted };
+	return {
+		functionPath: path,
+		drainBlock,
+		enqueue: enqueueInfo.enqueue,
+		agentId: enqueueInfo.agentId,
+		turnAborted,
+	};
 }
 
 function hasEndTurnDrain(target: EndTurnDrainTarget): boolean {
@@ -1616,9 +1635,13 @@ function hasEndTurnDrain(target: EndTurnDrainTarget): boolean {
 						if (!t.isObjectExpression(node)) return false;
 						const mode = getObjectPropertyValue(node, "mode");
 						const priority = getObjectPropertyValue(node, "priority");
+						// The agentId routing field is mandatory: without it the re-enqueued
+						// command never matches the per-agent queue drainer and is never submitted.
+						const agentId = getObjectPropertyValue(node, "agentId");
 						return (
 							t.isStringLiteral(mode, { value: "prompt" }) &&
-							t.isStringLiteral(priority, { value: "later" })
+							t.isStringLiteral(priority, { value: "later" }) &&
+							agentId !== null
 						);
 					})
 				) {
@@ -1698,6 +1721,10 @@ function buildEndTurnDrainStatement(
 									t.objectProperty(
 										t.identifier("priority"),
 										t.stringLiteral("later"),
+									),
+									t.objectProperty(
+										t.identifier("agentId"),
+										t.cloneNode(target.agentId, true),
 									),
 								]),
 							]),

@@ -155,7 +155,7 @@ async function runPrompt(newMessages, abortController) {
   if (generation === null) {
     logEvent("concurrent query detected", {});
     for (const message of newMessages) {
-      enqueue({ value: getContentText(message), mode: "prompt" });
+      enqueue({ value: getContentText(message), mode: "prompt", agentId: getCurrentAgentId() });
       logEvent("concurrent query enqueued", {});
     }
     return;
@@ -211,7 +211,7 @@ test("tab-queue adds busy-only Tab queue handler, preview, edit, and footer hint
 	assert.match(output, /!abortController\.signal\.aborted/);
 	assert.match(
 		output,
-		/enqueue\({ value: __ccQueuedInput, mode: "prompt", priority: "later" }\)/,
+		/enqueue\({ value: __ccQueuedInput, mode: "prompt", priority: "later", agentId: getCurrentAgentId\(\) }\)/,
 	);
 	assert.match(output, /key: "tab-queue-status"/);
 	assert.match(output, /Queued follow-up/);
@@ -441,6 +441,31 @@ test("tab-queue verify fails when the end-turn abort guard is removed", async ()
 		/if \(!abortController\.signal\.aborted && Array\.isArray\(__ccTabQueue\)/,
 		"if (Array.isArray(__ccTabQueue)",
 	);
+	assert.notEqual(mutated, output);
+
+	const result = tabQueue.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("end-turn drain not found"), true);
+});
+
+test("tab-queue end-turn drain routes the resubmit to the current agent", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	// The resubmit must carry the agentId captured from upstream's own enqueue,
+	// otherwise the per-agent queue drainer never picks the command up.
+	assert.match(
+		output,
+		/mode: "prompt", priority: "later", agentId: getCurrentAgentId\(\)/,
+	);
+	assert.equal(tabQueue.verify(output, ast), true);
+});
+
+test("tab-queue verify fails when the end-turn agentId routing is removed", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	const mutated = output.replace(/, agentId: getCurrentAgentId\(\) }\)/, " })");
 	assert.notEqual(mutated, output);
 
 	const result = tabQueue.verify(mutated);
