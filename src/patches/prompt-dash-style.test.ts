@@ -49,7 +49,7 @@ const prompt = "You are monitoring a long-running agent \u2014 do not block legi
 `;
 
 const LATEST_CLEAN_PROMPT_DASH_FIXTURE = [
-	'const memoryPruning = "# Dream: Memory Pruning\\n\\nYou are performing a dream \\u2014 a pruning pass over your memory files. The job is small: delete stale or invalidated memories, and collapse duplicates."; ',
+	'const memoryConsolidation = "# Dream: Memory Consolidation\\n\\nYou are performing a dream \\u2014 a reflective pass over your memory files. Synthesize what you have learned recently into durable, well-organized memories so future sessions can orient quickly."; ',
 	'const monitorGuidance = "If a monitor is armed, keep `delaySeconds` at 1200\\u20131800s \\u2014 the monitor is the wake signal and this is only the fallback heartbeat."; ',
 ].join("\n");
 
@@ -127,7 +127,7 @@ test("prompt-dash-style normalizes latest clean prompt examples", async () => {
 	});
 	assert.equal(output.includes("\\u2014"), false);
 	assert.equal(output.includes("\\u2013"), false);
-	assert.equal(output.includes("dream. A pruning pass"), true);
+	assert.equal(output.includes("dream. A reflective pass"), true);
 	assert.equal(output.includes("1200-1800s. The monitor"), true);
 	assert.equal(promptDashStyle.verify(output, ast), true);
 });

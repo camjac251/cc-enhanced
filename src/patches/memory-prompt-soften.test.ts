@@ -21,13 +21,6 @@ Session transcripts: \\\`\${$}\\\` (large JSONL files \\u2014 grep narrowly, don
    \\\`grep -rn "<narrow term>" \${$}/ --include="*.jsonl" | tail -50\\\`
 \`;
 }
-
-function Kx7(H, $, q = !1) {
-  return \`# Dream: Memory Pruning
-
-1. \\\`find \${H} -name '*.md'\\\` to enumerate every memory file (including any \\\`team/\\\` subdirectory).
-\`;
-}
 `;
 
 const VANILLA_FIXTURE =
@@ -54,7 +47,6 @@ test("memory-prompt-soften rewrites dream memory command guidance", () => {
 	assert.equal(output.includes("\\`ls -R logs/\\`"), false);
 	assert.equal(output.includes("grep the JSONL transcripts"), false);
 	assert.equal(output.includes("\\`grep -rn"), false);
-	assert.equal(output.includes("\\`find ${H} -name '*.md'\\`"), false);
 	assert.equal(output.includes("Use \\`eza team/\\`"), true);
 	assert.equal(
 		output.includes("Use \\`eza\\` to list the memory directory"),
@@ -72,12 +64,6 @@ test("memory-prompt-soften rewrites dream memory command guidance", () => {
 	);
 	assert.equal(
 		output.includes("use \\`rg -m 50\\` on the JSONL transcripts"),
-		true,
-	);
-	assert.equal(
-		output.includes(
-			"Use \\`fd -e md -t f .\\` against the memory directory shown above",
-		),
 		true,
 	);
 });
@@ -163,7 +149,6 @@ test("memory-prompt-soften fixture anchors each occur exactly once", () => {
 		"\\`ls -R logs/\\`",
 		"grep the JSONL transcripts",
 		"\\`grep -rn",
-		"-name '*.md'",
 	]) {
 		assert.equal(count(VANILLA_FIXTURE, needle), 1, needle);
 	}

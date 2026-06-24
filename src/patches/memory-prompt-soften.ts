@@ -17,8 +17,6 @@ const LEGACY_DREAM_TRANSCRIPT_SEARCH_LABEL_RE =
 	/\*\*Transcript search\*\* \\u2014 if you need specific context \(e\.g\., "what was the error message from yesterday's build failure\?"\), grep the JSONL transcripts for narrow terms:/g;
 const LEGACY_DREAM_TRANSCRIPT_SEARCH_COMMAND_RE =
 	/\\`grep -rn "<narrow term>" (\$\{[^}]+\})\/ --include="\*\.jsonl" \| tail -50\\`/g;
-const LEGACY_DREAM_FIND_MEMORY_FILES_RE =
-	/1\. \\`find (\$\{[^}]+\}) -name '\*\.md'\\` to enumerate every memory file \(including any \\`team\/\\` subdirectory\)\./g;
 
 const MODERN_PATH_SCOPED_MEMORY_READONLY =
 	"Only read-only shell commands and $1 with all paths inside $2 are permitted in this context. Prefer modern read-only inspection commands such as fd, eza, sg, rg for non-code text, bat ranges, git status/log/diff, stat, and wc when needed. Do not use legacy Unix viewing or truncation utilities as generic inspection tools.";
@@ -36,8 +34,6 @@ const MODERN_DREAM_TRANSCRIPT_SEARCH_LABEL =
 	'**Transcript search**: if you need specific context (e.g., "what was the error message from yesterday\'s build failure?"), use \\`rg -m 50\\` on the JSONL transcripts for narrow terms:';
 const MODERN_DREAM_TRANSCRIPT_SEARCH_COMMAND =
 	"\\`rg -m 50 \"<narrow term>\" $1/ -g '*.jsonl'\\`";
-const MODERN_DREAM_FIND_MEMORY_FILES =
-	"1. Use \\`fd -e md -t f .\\` against the memory directory shown above to enumerate every memory file (including any \\`team/\\` subdirectory).";
 
 const LEGACY_MEMORY_READONLY_TEXT =
 	"ls, find, grep, cat, stat, wc, head, tail, and similar";
@@ -57,7 +53,6 @@ const MODERN_DREAM_TEXTS = [
 	"Use \\`eza team/\\` if a \\`team/\\` subdirectory is present",
 	"Use \\`fd -t f . logs/\\` to list recent activity logs",
 	"use \\`rg -m 50\\` on the JSONL transcripts",
-	"Use \\`fd -e md -t f .\\` against the memory directory shown above",
 ] as const;
 
 export const memoryPromptSoften: Patch = {
@@ -84,10 +79,6 @@ export const memoryPromptSoften: Patch = {
 			.replace(
 				LEGACY_DREAM_TRANSCRIPT_SEARCH_COMMAND_RE,
 				MODERN_DREAM_TRANSCRIPT_SEARCH_COMMAND,
-			)
-			.replace(
-				LEGACY_DREAM_FIND_MEMORY_FILES_RE,
-				MODERN_DREAM_FIND_MEMORY_FILES,
 			),
 
 	verify: (code) => {
@@ -98,17 +89,6 @@ export const memoryPromptSoften: Patch = {
 			if (code.includes(legacyText)) {
 				return `Dream memory prompt still contains legacy guidance: ${legacyText}`;
 			}
-		}
-		// The /g flag on LEGACY_DREAM_FIND_MEMORY_FILES_RE makes
-		// RegExp.prototype.test stateful via lastIndex; calling .test() on
-		// the global regex would yield nondeterministic results across
-		// invocations. Use a fresh non-global copy for the verify probe.
-		const legacyFindRE = new RegExp(
-			LEGACY_DREAM_FIND_MEMORY_FILES_RE.source,
-			LEGACY_DREAM_FIND_MEMORY_FILES_RE.flags.replace("g", ""),
-		);
-		if (legacyFindRE.test(code)) {
-			return "Dream memory pruning prompt still enumerates memory files with find";
 		}
 		if (!code.includes(MODERN_MEMORY_READONLY_TEXT)) {
 			return "Memory/read-only prompt missing modern read-only inspection guidance";

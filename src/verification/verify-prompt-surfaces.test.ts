@@ -250,11 +250,6 @@ test("verifyPromptSurfaces rejects legacy live prompt guidance", async () => {
 				"system/sections/dream-memory-consolidation.md",
 			),
 		);
-		await writeSurface(
-			tempDir,
-			"system/sections/dream-memory-pruning.md",
-			contentWithForbiddenNeedles("system/sections/dream-memory-pruning.md"),
-		);
 
 		const result = await verifyPromptSurfaces({ exportDir: tempDir });
 		assert.equal(result.ok, false);
@@ -316,9 +311,6 @@ test("verifyPromptSurfaces rejects legacy live prompt guidance", async () => {
 			result.failures.some(
 				(failure) => failure.id === "dream-memory-grep-transcripts",
 			),
-		);
-		assert.ok(
-			result.failures.some((failure) => failure.id === "dream-memory-find-md"),
 		);
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });

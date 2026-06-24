@@ -663,26 +663,6 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 		],
 	},
 	{
-		file: "system/sections/dream-memory-pruning.md",
-		allowSyntheticPlaceholders: true,
-		required: [
-			{
-				id: "dream-memory-fd-md",
-				needle:
-					"Use `fd -e md -t f .` against the memory directory shown above",
-				reason: "Dream memory pruning still lacks fd markdown enumeration",
-			},
-		],
-		forbidden: [
-			{
-				id: "dream-memory-find-md",
-				needle: "find ${",
-				reason:
-					"Dream memory pruning still enumerates markdown files with find",
-			},
-		],
-	},
-	{
 		file: "system/sections/schedule-remote-agents.md",
 		presence: "optional",
 		allowSyntheticPlaceholders: true,
