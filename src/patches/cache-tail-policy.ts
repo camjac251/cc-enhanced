@@ -1146,6 +1146,11 @@ function createCacheControlCapStatements(
 		}
 		if (msgCheckpoints.length > maxMsgCheckpoints) {
 			let keepBlocks = new Set();
+			let addKeep = function(block) {
+				if (keepBlocks.size < maxMsgCheckpoints) {
+					keepBlocks.add(block);
+				}
+			};
 			let latestDecimation = null;
 			for (let i = msgCheckpoints.length - 1; i >= 0; i--) {
 				if (msgCheckpoints[i].isDecimation) {
@@ -1153,20 +1158,14 @@ function createCacheControlCapStatements(
 					break;
 				}
 			}
-			if (latestDecimation && keepBlocks.size < maxMsgCheckpoints) {
-				keepBlocks.add(latestDecimation.block);
+			if (latestDecimation) {
+				addKeep(latestDecimation.block);
 			}
-			if (
-				msgCheckpoints.length > 0 &&
-				keepBlocks.size < maxMsgCheckpoints
-			) {
-				keepBlocks.add(msgCheckpoints[msgCheckpoints.length - 1].block);
+			if (msgCheckpoints.length > 0) {
+				addKeep(msgCheckpoints[msgCheckpoints.length - 1].block);
 			}
 			for (let i = msgCheckpoints.length - 1; i >= 0; i--) {
-				if (keepBlocks.size >= maxMsgCheckpoints) {
-					break;
-				}
-				keepBlocks.add(msgCheckpoints[i].block);
+				addKeep(msgCheckpoints[i].block);
 			}
 			for (let cp of msgCheckpoints) {
 				if (!keepBlocks.has(cp.block)) {

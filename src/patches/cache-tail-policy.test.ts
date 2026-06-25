@@ -889,6 +889,26 @@ return { clampRequest, buildRequest };
 			true,
 			`${label}: total checkpoints must not exceed 4, got ${counts.total}`,
 		);
+
+		if (label.includes("distinct decimation")) {
+			// Verify decimation checkpoint prioritization:
+			// Decimation checkpoint (index 14) is kept because it's first priority,
+			// tail checkpoint (index 16) is deleted because maxMsgCheckpoints = 1.
+			assert.ok(
+				clamped.messages[14].content[0].cache_control,
+				"Decimation checkpoint at index 14 should survive",
+			);
+			assert.equal(
+				clamped.messages[15].content[0].cache_control,
+				undefined,
+				"Fork checkpoint at index 15 should be deleted",
+			);
+			assert.equal(
+				clamped.messages[16].content[0].cache_control,
+				undefined,
+				"Tail checkpoint at index 16 should be deleted",
+			);
+		}
 	};
 
 	runScenario({
