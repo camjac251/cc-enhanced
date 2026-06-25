@@ -265,6 +265,10 @@ test("extractPatchAnchors captures multi-line backtick template literals", () =>
 				"- 40: - line 40 to end of file`;",
 				"",
 				'const SHORT_ANCHOR = "Failed to set effort level";',
+				'console.warn("Patch mutator: Could not find appendSystemPrompt flow to patch");',
+				"function verify(): true | string {",
+				'  return "Missing fallback from appendSubagentSystemPrompt to appendSystemPrompt";',
+				"}",
 				"",
 				"export function noop(): void {}",
 				"",
@@ -290,6 +294,52 @@ test("extractPatchAnchors captures multi-line backtick template literals", () =>
 			),
 			"expected single-quoted string anchor to be captured",
 		);
+		assert.ok(
+			!anchors.some((anchor) => anchor.includes("Could not find")),
+			"expected patcher warning diagnostics to be skipped",
+		);
+		assert.ok(
+			!anchors.some((anchor) => anchor.includes("Missing fallback")),
+			"expected verifier failure diagnostics to be skipped",
+		);
+	} finally {
+		fs.rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("patch relevance ignores rewritten surfaces when the anchor survives", {
+	timeout: 15000,
+}, () => {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "patch-drift-"));
+	try {
+		const oldBundle = path.join(tempDir, "old.js");
+		const newBundle = path.join(tempDir, "new.js");
+		fs.writeFileSync(
+			oldBundle,
+			[
+				"// Version: 1.0.0",
+				"const skill = `# Skill\\n\\n## When to Use WebFetch\\n\\nUse WebFetch to get the latest documentation when:\\n\\n- old case\\n`;",
+				"",
+			].join("\n"),
+		);
+		fs.writeFileSync(
+			newBundle,
+			[
+				"// Version: 1.0.1",
+				"const skill = `# Skill\\n\\nSome new guidance.\\n\\n## When to Use WebFetch\\n\\nUse WebFetch to get the latest documentation when:\\n\\n- new case\\n`;",
+				"",
+			].join("\n"),
+		);
+
+		const output = runBundleDiffText([
+			oldBundle,
+			newBundle,
+			"--focus",
+			"patches",
+			"--limit",
+			"20",
+		]);
+		assert.doesNotMatch(output, /tools-off/);
 	} finally {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	}

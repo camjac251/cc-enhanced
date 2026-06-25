@@ -999,6 +999,7 @@ function buildBundleDiffReport(
 		removedCapabilities: buildCapabilityCandidates(removed, options.config),
 		commandCandidates: buildCommandCandidates(added, removed, countChanged),
 		patchRelevance: buildPatchRelevance(
+			added,
 			removed,
 			countChanged,
 			rewriteCandidates,
@@ -1513,6 +1514,7 @@ function isNearLine(
 }
 
 function buildPatchRelevance(
+	added: SurfaceChange[],
 	removed: SurfaceChange[],
 	countChanged: SurfaceChange[],
 	rewrites: RewriteCandidate[],
@@ -1530,7 +1532,9 @@ function buildPatchRelevance(
 		.map((file) => {
 			const tag = path.basename(file, ".ts");
 			const anchors = extractPatchAnchors(path.join(patchesDir, file));
-			const directRemoved = findPatchAnchorHits(anchors, removed).slice(0, 8);
+			const directRemoved = findPatchAnchorHits(anchors, removed)
+				.filter((hit) => !patchAnchorStillExists(hit.anchor, added))
+				.slice(0, 8);
 			const countHits = findPatchAnchorHits(anchors, countChanged).slice(0, 6);
 			const rewriteHits = findPatchRewriteHits(anchors, rewrites).slice(0, 6);
 			const confidence = getPatchRelevanceConfidence(
@@ -1581,9 +1585,11 @@ export function extractPatchAnchors(file: string): string[] {
 
 	traverse(ast, {
 		StringLiteral(nodePath: any) {
+			if (isPatchDiagnosticLiteral(nodePath)) return;
 			consider(nodePath.node.value);
 		},
 		TemplateLiteral(nodePath: any) {
+			if (isPatchDiagnosticLiteral(nodePath)) return;
 			consider(templateShape(nodePath.node));
 			for (const quasi of nodePath.node.quasis) {
 				consider(quasi.value.cooked ?? quasi.value.raw);
@@ -1592,6 +1598,24 @@ export function extractPatchAnchors(file: string): string[] {
 	});
 
 	return [...anchors].sort((a, b) => b.length - a.length).slice(0, 120);
+}
+
+function isPatchDiagnosticLiteral(nodePath: any): boolean {
+	if (nodePath.parentPath?.isReturnStatement?.()) return true;
+
+	const callPath = nodePath.findParent?.((parent: any) =>
+		parent.isCallExpression?.(),
+	);
+	if (!callPath) return false;
+	const callee = callPath.node.callee;
+	if (!t.isMemberExpression(callee) || callee.computed) return false;
+	if (!t.isIdentifier(callee.object, { name: "console" })) return false;
+	const propertyName = t.isIdentifier(callee.property)
+		? callee.property.name
+		: t.isStringLiteral(callee.property)
+			? callee.property.value
+			: null;
+	return propertyName === "warn" || propertyName === "error";
 }
 
 function isUsefulPatchAnchor(value: string): boolean {
@@ -1628,7 +1652,8 @@ function findPatchRewriteHits(
 		const normalizedAnchor = normalizeForPatchMatch(anchor);
 		for (const rewrite of rewrites) {
 			if (
-				surfaceMatchesPatchAnchor(rewrite.oldChange.value, normalizedAnchor)
+				surfaceMatchesPatchAnchor(rewrite.oldChange.value, normalizedAnchor) &&
+				!surfaceMatchesPatchAnchor(rewrite.newChange.value, normalizedAnchor)
 			) {
 				hits.push({ anchor, rewrite });
 				break;
@@ -1636,6 +1661,16 @@ function findPatchRewriteHits(
 		}
 	}
 	return hits;
+}
+
+function patchAnchorStillExists(
+	anchor: string,
+	added: SurfaceChange[],
+): boolean {
+	const normalizedAnchor = normalizeForPatchMatch(anchor);
+	return added.some((change) =>
+		surfaceMatchesPatchAnchor(change.value, normalizedAnchor),
+	);
 }
 
 function surfaceMatchesPatchAnchor(
