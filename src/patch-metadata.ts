@@ -191,6 +191,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "LSP multi-server",
 		group: "Tooling",
 	},
+	"lsp-filename-schema": {
+		tag: "lsp-filename-schema",
+		label: "LSP filename schema",
+		group: "Tooling",
+	},
 	limits: {
 		tag: "limits",
 		label: "Limits",
