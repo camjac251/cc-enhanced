@@ -13,6 +13,7 @@ export { effortStack } from "./effort-stack.js";
 export { featureFlags } from "./feature-flags.js";
 export { imageLimits } from "./image-limits.js";
 export { getLimitsChanged, limits } from "./limits.js";
+export { lspFilenameSchema } from "./lsp-filename-schema.js";
 export { lspMultiServer } from "./lsp-multi-server.js";
 export { mcpServerName } from "./mcp-server-name.js";
 export { memoryPromptSoften } from "./memory-prompt-soften.js";
@@ -53,6 +54,7 @@ import { effortStack } from "./effort-stack.js";
 import { featureFlags } from "./feature-flags.js";
 import { imageLimits } from "./image-limits.js";
 import { limits } from "./limits.js";
+import { lspFilenameSchema } from "./lsp-filename-schema.js";
 import { lspMultiServer } from "./lsp-multi-server.js";
 import { mcpServerName } from "./mcp-server-name.js";
 import { memoryPromptSoften } from "./memory-prompt-soften.js";
@@ -114,6 +116,7 @@ const basePatches: Patch[] = [
 	agentTools,
 	commandsOff,
 	lspMultiServer,
+	lspFilenameSchema,
 	noCollapse,
 	skillPathsInvoke,
 	skillGlobalPaths,

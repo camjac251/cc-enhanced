@@ -15,6 +15,12 @@ import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
  * The tracking map (A) is changed from Map<uri, serverName> to
  * Map<uri, Set<serverName>> for per-server open-file tracking. Existing
  * consumers (isFileOpen: A.has(), shutdown: A.clear()) work unchanged.
+ *
+ * Filename routing: helper functions (_lspByName / _lspGlobRe) are injected into
+ * the factory so getServerForFile and the lifecycle functions fall back to
+ * matching a server by exact basename (`filenames`) or glob (`filenamePatterns`)
+ * when the file extension yields no server, e.g. `Dockerfile` / `Dockerfile.dev`.
+ * The manifest schema fields those read are added by the lsp-filename-schema patch.
  */
 
 interface LspRefs {
@@ -227,6 +233,7 @@ function buildOpenFile(r: LspRefs, params: string[]): t.Statement[] {
 		`async function _r(${file}, ${text}) {
   var _ext = ${r.pathMod}.extname(${file}).toLowerCase();
   var _ns = ${r.extMap}.get(_ext);
+  if (!_ns || _ns.length === 0) _ns = _lspByName(${file});
   if (!_ns || _ns.length === 0) return;
   var _uri = ${r.urlMod}.pathToFileURL(${r.pathMod}.resolve(${file})).href;
   for (var _i = 0; _i < _ns.length; _i++) {
@@ -266,6 +273,7 @@ function buildChangeFile(r: LspRefs, params: string[]): t.Statement[] {
 		`async function _r(${file}, ${text}) {
   var _ext = ${r.pathMod}.extname(${file}).toLowerCase();
   var _ns = ${r.extMap}.get(_ext);
+  if (!_ns || _ns.length === 0) _ns = _lspByName(${file});
   if (!_ns || _ns.length === 0) return;
   var _uri = ${r.urlMod}.pathToFileURL(${r.pathMod}.resolve(${file})).href;
   var _os = ${r.trackMap}.get(_uri);
@@ -313,6 +321,7 @@ function buildSaveFile(r: LspRefs, params: string[]): t.Statement[] {
 		`async function _r(${file}) {
   var _ext = ${r.pathMod}.extname(${file}).toLowerCase();
   var _ns = ${r.extMap}.get(_ext);
+  if (!_ns || _ns.length === 0) _ns = _lspByName(${file});
   if (!_ns || _ns.length === 0) return;
   var _uri = ${r.urlMod}.pathToFileURL(${r.pathMod}.resolve(${file})).href;
   for (var _i = 0; _i < _ns.length; _i++) {
@@ -338,6 +347,7 @@ function buildCloseFile(r: LspRefs, params: string[]): t.Statement[] {
 		`async function _r(${file}) {
   var _ext = ${r.pathMod}.extname(${file}).toLowerCase();
   var _ns = ${r.extMap}.get(_ext);
+  if (!_ns || _ns.length === 0) _ns = _lspByName(${file});
   if (!_ns || _ns.length === 0) return;
   var _uri = ${r.urlMod}.pathToFileURL(${r.pathMod}.resolve(${file})).href;
   for (var _i = 0; _i < _ns.length; _i++) {
@@ -357,10 +367,72 @@ function buildCloseFile(r: LspRefs, params: string[]): t.Statement[] {
 	);
 }
 
+function buildGetServerForFile(r: LspRefs, params: string[]): t.Statement[] {
+	const [file] = params;
+	// Extension lookup first (primary [0] preserved for sendRequest/navigation),
+	// then fall back to filename/pattern routing via the injected _lspByName helper.
+	// prettier-ignore
+	return parseBody(
+		`function _r(${file}) {
+  var _ext = ${r.pathMod}.extname(${file}).toLowerCase();
+  var _ns = ${r.extMap}.get(_ext);
+  if (!_ns || _ns.length === 0) _ns = _lspByName(${file});
+  if (!_ns || _ns.length === 0) return;
+  var _h = _ns[0];
+  if (!_h) return;
+  return ${r.serverMap}.get(_h);
+}`,
+	);
+}
+
+/**
+ * Filename-routing helpers injected once into the LSP factory body. They let a
+ * server match by exact basename (`filenames`) or glob (`filenamePatterns`) when
+ * the file extension yields no server, e.g. `Dockerfile` / `Dockerfile.dev`.
+ * `_lspByName` returns an array of server names (matching the extMap value shape)
+ * so the lifecycle/getServerForFile callers can treat it identically.
+ */
+function buildFilenameHelpers(r: LspRefs): t.Statement[] {
+	// prettier-ignore
+	return parseBody(
+		`function _wrap() {
+  function _lspEsc(_c) {
+    return "\\\\^$.|?*+()[]{}".indexOf(_c) >= 0 ? "\\\\" + _c : _c;
+  }
+  function _lspGlobRe(_p) {
+    var _o = "";
+    for (var _i = 0; _i < _p.length; _i++) {
+      var _c = _p.charAt(_i);
+      _o += _c === "*" ? ".*" : _c === "?" ? "." : _lspEsc(_c);
+    }
+    return new RegExp("^" + _o + "$");
+  }
+  function _lspByName(_file) {
+    var _b = String(_file).split("/").pop().split("\\\\").pop();
+    var _out = [];
+    for (var _ent of ${r.serverMap}) {
+      var _nm = _ent[0], _sv = _ent[1];
+      var _cfg = _sv && _sv.config;
+      if (!_cfg) continue;
+      if (_cfg.filenames && _cfg.filenames[_b]) { _out.push(_nm); continue; }
+      var _pats = _cfg.filenamePatterns;
+      if (_pats) {
+        for (var _p in _pats) {
+          if (_lspGlobRe(_p).test(_b)) { _out.push(_nm); break; }
+        }
+      }
+    }
+    return _out.length ? _out : void 0;
+  }
+}`,
+	);
+}
+
 // === Mutation visitor ===
 
 function createMutateVisitor(refs: LspRefs): Visitor {
 	const builders = new Map<string, (params: string[]) => t.Statement[]>([
+		[refs.getServerForFile, (p) => buildGetServerForFile(refs, p)],
 		[refs.openFile, (p) => buildOpenFile(refs, p)],
 		[refs.changeFile, (p) => buildChangeFile(refs, p)],
 		[refs.saveFile, (p) => buildSaveFile(refs, p)],
@@ -372,6 +444,22 @@ function createMutateVisitor(refs: LspRefs): Visitor {
 	return {
 		FunctionDeclaration(path) {
 			if (!path.node.id) return;
+
+			// The factory itself: inject the filename-routing helpers once at the
+			// top of its body so getServerForFile and the lifecycle functions can
+			// reference _lspByName. Descent then continues into the rewritten
+			// lifecycle functions below.
+			if (path.node.id.name === refs.factoryName) {
+				const body = path.node.body.body;
+				const alreadyInjected = body.some(
+					(s) => t.isFunctionDeclaration(s) && s.id?.name === "_lspByName",
+				);
+				if (!alreadyInjected) {
+					body.unshift(...buildFilenameHelpers(refs));
+				}
+				return;
+			}
+
 			const builder = builders.get(path.node.id.name);
 			if (!builder) return;
 
@@ -398,7 +486,7 @@ function createMutateVisitor(refs: LspRefs): Visitor {
 			exit() {
 				if (replaced > 0) {
 					console.log(
-						`LSP multi-server: replaced ${replaced} lifecycle function(s)`,
+						`LSP multi-server: rewrote ${replaced} manager function(s)`,
 					);
 				}
 			},
@@ -570,6 +658,36 @@ function verifyMultiServer(code: string, ast?: t.File): true | string {
 	});
 	if (!hasIndexZero)
 		return "getServerForFile [0] primary access pattern missing";
+
+	// Filename routing: the factory must define _lspByName, and both the
+	// navigation path (getServerForFile) and the diagnostics path (openFile)
+	// must fall back to it so extensionless files (Dockerfile) and glob
+	// patterns (Dockerfile.*) resolve to a server.
+	const hasByNameDecl = (factoryBody as t.Statement[]).some(
+		(s): s is t.FunctionDeclaration =>
+			t.isFunctionDeclaration(s) && s.id?.name === "_lspByName",
+	);
+	if (!hasByNameDecl)
+		return "filename-routing helper (_lspByName) not injected into LSP factory";
+
+	const referencesByName = (fn: t.Node | undefined): boolean => {
+		if (!fn) return false;
+		let found = false;
+		walkNode(fn, (node) => {
+			if (t.isIdentifier(node, { name: "_lspByName" })) found = true;
+		});
+		return found;
+	};
+
+	if (!referencesByName(gsf))
+		return "getServerForFile does not fall back to filename routing (_lspByName)";
+
+	const openFn = (factoryBody as t.Statement[]).find(
+		(s): s is t.FunctionDeclaration =>
+			t.isFunctionDeclaration(s) && s.id?.name === refs.openFile,
+	);
+	if (!referencesByName(openFn))
+		return "openFile does not fall back to filename routing (_lspByName)";
 
 	return true;
 }

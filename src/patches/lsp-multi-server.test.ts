@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import vm from "node:vm";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { lspMultiServer } from "./lsp-multi-server.js";
@@ -168,11 +169,12 @@ test("lsp-multi-server replaces all 4 lifecycle functions", async () => {
 	assert.equal(output.includes('"textDocument/didSave"'), true);
 	assert.equal(output.includes('"textDocument/didClose"'), true);
 
-	// getServerForFile should still have [0] (primary access)
+	// getServerForFile is rewritten to add filename fallback but must still
+	// take the primary ([0]) of the resolved server-name list.
 	assert.equal(
-		output.includes("I[0]"),
+		output.includes("_ns[0]"),
 		true,
-		"getServerForFile [0] should be preserved",
+		"getServerForFile [0] primary access should be preserved",
 	);
 
 	// sendRequest and ensureServerStarted should be unchanged (still call f/getServerForFile)
@@ -360,4 +362,76 @@ test("lsp-multi-server assigns trackMap from the 3rd Map even with a 4th present
 		"the 4th map must not be treated as the tracking map",
 	);
 	assert.equal(lspMultiServer.verify(output, ast), true);
+});
+
+test("lsp-multi-server injects filename-routing helper and wires fallbacks", async () => {
+	const ast = parse(LSP_FACTORY_FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+
+	// Helpers injected into the factory.
+	assert.equal(
+		output.includes("function _lspByName("),
+		true,
+		"filename-routing helper should be injected",
+	);
+	assert.equal(
+		output.includes("function _lspGlobRe("),
+		true,
+		"glob helper should be injected",
+	);
+	// getServerForFile and the lifecycle path fall back to the helper.
+	assert.match(output, /_lspByName\(/, "callers should invoke the helper");
+	// verify enforces the feature (both with and without a pre-parsed AST).
+	assert.equal(lspMultiServer.verify(output, ast), true);
+	assert.equal(lspMultiServer.verify(output), true);
+});
+
+test("lsp-multi-server verify catches dropped filename routing", async () => {
+	const ast = parse(LSP_FACTORY_FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	assert.equal(lspMultiServer.verify(output), true);
+	// Remove the helper declaration; verify must reject rather than silently pass.
+	const mutated = output.replace("function _lspByName(", "function _gone(");
+	assert.notEqual(mutated, output, "precondition: helper declaration present");
+	const result = lspMultiServer.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /_lspByName/);
+});
+
+test("lsp-multi-server routes Dockerfile and globs by filename (execution)", async () => {
+	const ast = parse(LSP_FACTORY_FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+
+	// Materialize the patched factory in an isolated context and drive it with a
+	// populated serverMap. Executing the emitted code is the point of this test:
+	// it exercises the real glob/basename logic, not a re-implementation.
+	const factory = vm.runInNewContext(`${output}; XF8`) as () => {
+		getServerForFile: (f: string) => unknown;
+		getAllServers: () => Map<string, unknown>;
+	};
+	const mgr = factory();
+	const docker = {
+		name: "docker",
+		state: "running",
+		config: {
+			extensionToLanguage: {},
+			filenames: { Dockerfile: "dockerfile", Containerfile: "dockerfile" },
+			filenamePatterns: { "Dockerfile.*": "dockerfile" },
+		},
+	};
+	mgr.getAllServers().set("docker", docker);
+
+	// Exact basename (extensionless), bare and path-qualified.
+	assert.equal(mgr.getServerForFile("Dockerfile"), docker);
+	assert.equal(mgr.getServerForFile("/srv/app/Dockerfile"), docker);
+	assert.equal(mgr.getServerForFile("Containerfile"), docker);
+	// Glob pattern.
+	assert.equal(mgr.getServerForFile("Dockerfile.dev"), docker);
+	assert.equal(mgr.getServerForFile("Dockerfile.prod"), docker);
+	// Non-matches resolve to nothing (glob is anchored, not a loose prefix).
+	assert.equal(mgr.getServerForFile("notes.txt"), undefined);
+	assert.equal(mgr.getServerForFile("Dockerfilex"), undefined);
 });
