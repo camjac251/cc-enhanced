@@ -293,3 +293,29 @@ export function objectPatternHasKey(
 		return t.isStringLiteral(prop.key, { value: keyName });
 	});
 }
+
+/**
+ * Get the name of a function or the identifier it is assigned to.
+ */
+export function getCallableFunctionName(path: any): string | null {
+	const node = path.node;
+	if (t.isFunctionDeclaration(node) && node.id?.name) return node.id.name;
+	if (t.isFunctionExpression(node) && node.id?.name) return node.id.name;
+
+	const parent = path.parentPath;
+	if (
+		parent?.isVariableDeclarator() &&
+		t.isIdentifier(parent.node.id) &&
+		parent.node.init === node
+	) {
+		return parent.node.id.name;
+	}
+	if (
+		parent?.isAssignmentExpression() &&
+		t.isIdentifier(parent.node.left) &&
+		parent.node.right === node
+	) {
+		return parent.node.left.name;
+	}
+	return null;
+}

@@ -412,7 +412,7 @@ test("cache-tail-policy patches all required features in full fixture", async ()
 		"subagent query sources get 1h TTL",
 	);
 	assert.equal(
-		output.includes("let cacheControlExcess = -4;"),
+		output.includes("let maxMsgCheckpoints = 4 - systemToolsCount;"),
 		true,
 		"cache_control block cap",
 	);
@@ -478,15 +478,15 @@ test("cache-tail-policy verify rejects regressed cache_control block cap in comb
 	const output = print(ast);
 
 	const regressed = output.replace(
-		"let cacheControlExcess = -4;",
-		"let cacheControlExcess = -3;",
+		"let maxMsgCheckpoints = 4 - systemToolsCount;",
+		"let maxMsgCheckpoints = 5 - systemToolsCount;",
 	);
 	assert.notEqual(regressed, output);
 
 	const result = cacheTailPolicy.verify(regressed, parse(regressed));
 	assert.equal(typeof result, "string");
 	assert.equal(
-		String(result).includes("cacheControlExcess"),
+		String(result).includes("maxMsgCheckpoints"),
 		true,
 		`Expected cache_control cap failure, got: ${result}`,
 	);
@@ -533,12 +533,27 @@ async function sendStream(client, request, signal) {
 }
 `;
 
+const PRE_WARMING_MOCK_FIXTURE = `
+async function sideQueryFn(arg) {
+  var q = "sideQuery";
+  var s = "tengu_lone_surrogate_sanitized";
+}
+
+function startup(opts) {
+  let { resolvedInitialModel } = opts;
+  program.action(async (cmd, options) => {
+    telemetry("tengu_startup_manual_model_config");
+  });
+}
+`;
+
 const FULL_VERIFY_FIXTURE =
 	CACHE_TAIL_FIXTURE +
 	SYSPROMPT_SCOPE_FIXTURE +
 	CACHE_CONTROL_BUILDER_FIXTURE +
 	CACHE_TTL_ALLOWLIST_FIXTURE +
-	CACHE_CONTROL_BLOCK_CAP_FIXTURE;
+	CACHE_CONTROL_BLOCK_CAP_FIXTURE +
+	PRE_WARMING_MOCK_FIXTURE;
 
 const PARTIAL_DECL_FIXTURE =
 	`
@@ -565,7 +580,8 @@ function buildCacheBreakpoints(messages) {
 	SYSPROMPT_SCOPE_FIXTURE +
 	CACHE_CONTROL_BUILDER_FIXTURE +
 	CACHE_TTL_ALLOWLIST_FIXTURE +
-	CACHE_CONTROL_BLOCK_CAP_FIXTURE;
+	CACHE_CONTROL_BLOCK_CAP_FIXTURE +
+	PRE_WARMING_MOCK_FIXTURE;
 
 test("cache-tail-policy caps cache_control blocks in the live request builder and request clamp helper", async () => {
 	const ast = parse(CACHE_TAIL_FIXTURE + CACHE_CONTROL_BLOCK_CAP_FIXTURE);
@@ -573,9 +589,10 @@ test("cache-tail-policy caps cache_control blocks in the live request builder an
 	const output = print(ast);
 
 	assert.equal(
-		(output.match(/let cacheControlExcess = -4;/g) ?? []).length,
+		(output.match(/let maxMsgCheckpoints = 4 - systemToolsCount;/g) ?? [])
+			.length,
 		2,
-		"live request builder and request clamp helper should count excess cache_control blocks",
+		"live request builder and request clamp helper should compute maxMsgCheckpoints",
 	);
 	assert.match(
 		output,
@@ -583,14 +600,21 @@ test("cache-tail-policy caps cache_control blocks in the live request builder an
 		"live request builder should patch the materialized request object",
 	);
 	assert.equal(
-		output.indexOf(".messages = ") < output.indexOf(".system = "),
+		output.includes("delete cp.block.cache_control;"),
 		true,
-		"message breakpoints should be evicted before system breakpoints",
+		"should delete excess message checkpoints",
 	);
 	assert.equal(
-		output.indexOf(".system = ") < output.indexOf(".tools = "),
+		output.includes('cacheBlock.cache_control.ttl = "1h";'),
 		true,
-		"system breakpoints should be evicted before tool breakpoints",
+		"should enforce 1h TTL on system blocks",
+	);
+	assert.equal(
+		output.includes(
+			'lastTool.cache_control = { type: "ephemeral", ttl: "1h" };',
+		),
+		true,
+		"should enforce ephemeral 1h TTL on tools",
 	);
 	assert.equal(
 		output.includes("Array.isArray(L.tools)") &&
@@ -619,7 +643,7 @@ function buildSpreadRequest(model, messages, system, tools, toolChoice) {
 	const output = print(ast);
 	// The spread-key builder must NOT receive the cache_control cap injection.
 	assert.equal(
-		output.includes("cacheControlExcess"),
+		output.includes("maxMsgCheckpoints"),
 		false,
 		"object with conditional-spread tools/tool_choice must not be treated as the live request builder",
 	);
@@ -648,7 +672,8 @@ function buildRequestTwo(messages, system, tools, model, maxTokens) {
 	// Clamp helper (1) + first live request builder (1) = 2; the injector stops
 	// on the first request-builder match, so the second must stay un-injected.
 	assert.equal(
-		(output.match(/let cacheControlExcess = -4;/g) ?? []).length,
+		(output.match(/let maxMsgCheckpoints = 4 - systemToolsCount;/g) ?? [])
+			.length,
 		2,
 		"exactly one live-request-builder injection plus one clamp injection",
 	);
@@ -659,7 +684,7 @@ function buildRequestTwo(messages, system, tools, model, maxTokens) {
 	const blockCapResult = cacheTailPolicy.verify(output, parse(output));
 	assert.equal(
 		typeof blockCapResult === "string"
-			? !blockCapResult.toLowerCase().includes("cachecontrolexcess") &&
+			? !blockCapResult.toLowerCase().includes("maxmsgcheckpoints") &&
 					!blockCapResult.toLowerCase().includes("request builder") &&
 					!blockCapResult.toLowerCase().includes("request clamp")
 			: blockCapResult === true,
@@ -700,7 +725,7 @@ function buildRequestMulti(messages, system, tools, model, maxTokens) {
 	// capped against its own var.
 	assert.match(
 		output,
-		/let cacheControlExcess = -4;[\s\S]*requestPayload\.messages = requestPayload\.messages\.map/,
+		/let maxMsgCheckpoints = 4 - systemToolsCount;[\s\S]*Array\.isArray\(requestPayload\.messages\)/,
 		"single-declarator builder is still capped against its own var",
 	);
 	// Prove the multi-declarator-first object is itself a valid injection target
@@ -710,7 +735,7 @@ function buildRequestMulti(messages, system, tools, model, maxTokens) {
 	const soloOutput = print(soloAst);
 	assert.match(
 		soloOutput,
-		/requestMulti\.messages = requestMulti\.messages\.map/,
+		/Array\.isArray\(requestMulti\.messages\)/,
 		"multi-declarator-first request object must receive the cache_control cap when it is the first matched builder",
 	);
 });
@@ -743,16 +768,150 @@ function buildRequestAlt(messages, system, tools, model, maxTokens) {
 	const output = print(ast);
 	// Clamp helper (1) + first live builder requestPayload (1) = 2, never 3.
 	assert.equal(
-		(output.match(/let cacheControlExcess = -4;/g) ?? []).length,
+		(output.match(/let maxMsgCheckpoints = 4 - systemToolsCount;/g) ?? [])
+			.length,
 		2,
 		"only the first matched request builder is capped",
 	);
 	// The second builder must remain structurally un-capped.
 	assert.equal(
-		output.includes("requestAlt.messages = requestAlt.messages.map"),
+		output.includes("requestAlt.system"),
 		false,
 		"second 7-key builder must not receive a cache_control cap",
 	);
+});
+
+test("cache-tail-policy caps cache_control blocks dynamically during runtime execution", async () => {
+	const ast = parse(CACHE_TAIL_FIXTURE + CACHE_CONTROL_BLOCK_CAP_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+
+	// Evaluate the patched functions
+	const runtime = new Function(`
+let totalMessageCount, cachingEnabled, skipCacheWrite, forkPointPinned, markerCount;
+function gate(name, meta) {
+  totalMessageCount = meta.totalMessageCount;
+  cachingEnabled = meta.cachingEnabled;
+  skipCacheWrite = meta.skipCacheWrite;
+  forkPointPinned = meta.forkPointPinned;
+  markerCount = meta.markerCount;
+}
+function multiCacheEnabled() { return true; }
+function buildUser(msg, shouldCache) {
+  return { role: "user", content: msg.content.map(b => shouldCache ? { ...b, cache_control: { type: "ephemeral" } } : b) };
+}
+function buildAssistant(msg, shouldCache) {
+  return { role: "assistant", content: msg.content.map(b => shouldCache ? { ...b, cache_control: { type: "ephemeral" } } : b) };
+}
+${output}
+return { clampRequest, buildRequest };
+	`)() as {
+		clampRequest: (req: any, limit: number) => any;
+		buildRequest: (...args: any[]) => any;
+	};
+
+	const countCacheControls = (request: any) => {
+		const system = request.system.filter(
+			(block: any) => block.cache_control,
+		).length;
+		const tools = request.tools.filter(
+			(tool: any) => tool.cache_control,
+		).length;
+		let messages = 0;
+		for (const msg of request.messages) {
+			for (const block of msg.content) {
+				if (block.cache_control) messages++;
+			}
+		}
+		return { system, tools, messages, total: system + tools + messages };
+	};
+
+	const runScenario = ({
+		label,
+		systemCount,
+		toolCount,
+		messageCount,
+		expectedMaxMessages,
+	}: {
+		label: string;
+		systemCount: number;
+		toolCount: number;
+		messageCount: number;
+		expectedMaxMessages: number;
+	}) => {
+		const system = Array.from({ length: systemCount }, (_, index) => ({
+			type: "text",
+			text: `sys${index}`,
+			cache_control: { type: "ephemeral" },
+		}));
+		const tools = Array.from({ length: toolCount }, (_, index) => ({
+			name: `tool${index}`,
+			cache_control: { type: "ephemeral" },
+		}));
+		const messages = Array.from({ length: messageCount }, (_, index) => ({
+			type: "user",
+			content: [{ type: "text", text: `u${index}` }],
+		}));
+
+		const request = runtime.buildRequest(
+			messages,
+			system,
+			tools,
+			"model",
+			1024,
+			[],
+			true,
+			"1h",
+			true,
+			[],
+			false,
+		);
+		const clamped = runtime.clampRequest(request, 2048);
+		const counts = countCacheControls(clamped);
+
+		assert.equal(
+			counts.system,
+			systemCount,
+			`${label}: system cache_control should be preserved`,
+		);
+		assert.equal(
+			counts.tools,
+			toolCount,
+			`${label}: tools cache_control should be preserved`,
+		);
+		assert.equal(
+			counts.messages <= expectedMaxMessages,
+			true,
+			`${label}: message checkpoints should be capped at ${expectedMaxMessages}, got ${counts.messages}`,
+		);
+		assert.equal(
+			counts.total <= 4,
+			true,
+			`${label}: total checkpoints must not exceed 4, got ${counts.total}`,
+		);
+	};
+
+	runScenario({
+		label: "system and tools leave two message slots",
+		systemCount: 1,
+		toolCount: 1,
+		messageCount: 6,
+		expectedMaxMessages: 2,
+	});
+	runScenario({
+		label: "system and tools consume all checkpoint slots",
+		systemCount: 2,
+		toolCount: 2,
+		messageCount: 6,
+		expectedMaxMessages: 0,
+	});
+	runScenario({
+		label: "one message slot with distinct decimation and tail checkpoints",
+		systemCount: 2,
+		toolCount: 1,
+		messageCount: 17,
+		expectedMaxMessages: 1,
+	});
 });
 
 test("cache-tail-policy verify rejects sysprompt rewrite that clobbers the later org scope", async () => {

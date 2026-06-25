@@ -2,9 +2,9 @@ import * as t from "@babel/types";
 import { type NodePath, template, traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
+	getCallableFunctionName,
 	getObjectKeyName,
 	getVerifyAst,
-	hasObjectKeyName,
 	isMemberPropertyName,
 } from "./ast-helpers.js";
 
@@ -212,6 +212,7 @@ function hasCacheTailWindowLoop(
 }
 
 function createCacheTailWindowStatements(
+	messagesName: string,
 	setName: string,
 	indexName: string,
 	helperName: string,
@@ -222,7 +223,29 @@ function createCacheTailWindowStatements(
 	const tailIndexId = t.identifier("cacheTailIndex");
 	const tailCountId = t.identifier("cacheTailCount");
 
+	const decimationStatements = template.statements(
+		`
+		var userMsgCount = 0;
+		if (Array.isArray(MESSAGES)) {
+			for (var idx = 0; idx < MESSAGES.length; idx++) {
+				var msg = MESSAGES[idx];
+				if (msg && msg.type === "user") {
+					userMsgCount++;
+					if (userMsgCount % 15 === 0) {
+						SET_NAME.add(idx);
+					}
+				}
+			}
+		}
+		`,
+		{ placeholderPattern: /^(MESSAGES|SET_NAME)$/ },
+	)({
+		MESSAGES: t.identifier(messagesName),
+		SET_NAME: setId,
+	});
+
 	return [
+		...decimationStatements,
 		t.variableDeclaration("var", [
 			t.variableDeclarator(
 				t.cloneNode(tailCountId),
@@ -429,10 +452,15 @@ function createCacheTailPolicyMutator(): Visitor {
 					markerSetName,
 				);
 				if (primaryAdd) {
+					const firstParam = path.node.params[0];
+					const messagesVarName = t.isIdentifier(firstParam)
+						? firstParam.name
+						: "e";
 					body.splice(
 						updatedMarkerStmtIndex,
 						0,
 						...createCacheTailWindowStatements(
+							messagesVarName,
 							markerSetName,
 							primaryAdd.indexName,
 							primaryAdd.helperName,
@@ -1029,7 +1057,7 @@ function hasCacheControlCapDeclaration(body: t.Statement[]): boolean {
 			t.isVariableDeclaration(stmt) &&
 			stmt.declarations.some((decl) =>
 				t.isIdentifier(decl.id, {
-					name: "cacheControlExcess",
+					name: "maxMsgCheckpoints",
 				}),
 			),
 	);
@@ -1040,68 +1068,113 @@ function createCacheControlCapStatements(
 ): t.Statement[] {
 	return template.statements(
 		`
-		let cacheControlExcess = -4;
-		if (Array.isArray(REQUEST.tools)) {
-			for (let cacheTool of REQUEST.tools) {
-				if (cacheTool && typeof cacheTool === "object" && "cache_control" in cacheTool) {
-					cacheControlExcess++;
+		if (Array.isArray(REQUEST.system)) {
+			for (let cacheBlock of REQUEST.system) {
+				if (cacheBlock && typeof cacheBlock === "object" && cacheBlock.cache_control) {
+					cacheBlock.cache_control.ttl = "1h";
 				}
 			}
 		}
+		if (Array.isArray(REQUEST.tools) && REQUEST.tools.length > 0) {
+			let hasSystemCache = false;
+			if (Array.isArray(REQUEST.system)) {
+				for (let cacheBlock of REQUEST.system) {
+					if (cacheBlock && typeof cacheBlock === "object" && cacheBlock.cache_control) {
+						hasSystemCache = true;
+						break;
+					}
+				}
+			}
+			if (hasSystemCache) {
+				let lastTool = REQUEST.tools[REQUEST.tools.length - 1];
+				if (lastTool && typeof lastTool === "object") {
+					lastTool.cache_control = { type: "ephemeral", ttl: "1h" };
+				}
+			}
+		}
+		let systemCount = 0;
 		if (Array.isArray(REQUEST.system)) {
 			for (let cacheBlock of REQUEST.system) {
 				if (cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
-					cacheControlExcess++;
+					systemCount++;
 				}
 			}
 		}
+		let toolsCount = 0;
+		if (Array.isArray(REQUEST.tools)) {
+			for (let cacheTool of REQUEST.tools) {
+				if (cacheTool && typeof cacheTool === "object" && "cache_control" in cacheTool) {
+					toolsCount++;
+				}
+			}
+		}
+		let systemToolsCount = systemCount + toolsCount;
+		let maxMsgCheckpoints = 4 - systemToolsCount;
+		if (maxMsgCheckpoints < 0) {
+			maxMsgCheckpoints = 0;
+		}
+		let msgCheckpoints = [];
+		let userMsgCount = 0;
 		if (Array.isArray(REQUEST.messages)) {
-			for (let cacheMessage of REQUEST.messages) {
-				if (!cacheMessage || typeof cacheMessage !== "object" || !Array.isArray(cacheMessage.content)) continue;
-				for (let cacheBlock of cacheMessage.content) {
-					if (cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
-						cacheControlExcess++;
+			for (let i = 0; i < REQUEST.messages.length; i++) {
+				let msg = REQUEST.messages[i];
+				if (msg && msg.role === "user") {
+					userMsgCount++;
+					if (msg.content && Array.isArray(msg.content)) {
+						for (let block of msg.content) {
+							if (block && typeof block === "object" && "cache_control" in block) {
+								msgCheckpoints.push({
+									block: block,
+									userIndex: userMsgCount,
+									isDecimation: (userMsgCount % 15 === 0)
+								});
+							}
+						}
+					}
+				} else if (msg && msg.content && Array.isArray(msg.content)) {
+					for (let block of msg.content) {
+						if (block && typeof block === "object" && "cache_control" in block) {
+							msgCheckpoints.push({
+								block: block,
+								userIndex: userMsgCount,
+								isDecimation: false
+							});
+						}
 					}
 				}
 			}
 		}
-		if (cacheControlExcess > 0 && Array.isArray(REQUEST.messages)) {
-			REQUEST.messages = REQUEST.messages.map((cacheMessage) => {
-				if (cacheControlExcess <= 0 || !cacheMessage || typeof cacheMessage !== "object" || !Array.isArray(cacheMessage.content)) {
-					return cacheMessage;
+		if (msgCheckpoints.length > maxMsgCheckpoints) {
+			let keepBlocks = new Set();
+			let latestDecimation = null;
+			for (let i = msgCheckpoints.length - 1; i >= 0; i--) {
+				if (msgCheckpoints[i].isDecimation) {
+					latestDecimation = msgCheckpoints[i];
+					break;
 				}
-				let cacheContent = cacheMessage.content.map((cacheBlock) => {
-					if (cacheControlExcess > 0 && cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
-						cacheControlExcess--;
-						let { cache_control: removedCacheControl, ...cacheBlockRest } = cacheBlock;
-						return cacheBlockRest;
-					}
-					return cacheBlock;
-				});
-				return { ...cacheMessage, content: cacheContent };
-			});
-		}
-		if (cacheControlExcess > 0 && Array.isArray(REQUEST.system)) {
-			REQUEST.system = REQUEST.system.map((cacheBlock) => {
-				if (cacheControlExcess > 0 && cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
-					cacheControlExcess--;
-					let { cache_control: removedCacheControl, ...cacheBlockRest } = cacheBlock;
-					return cacheBlockRest;
+			}
+			if (latestDecimation && keepBlocks.size < maxMsgCheckpoints) {
+				keepBlocks.add(latestDecimation.block);
+			}
+			if (
+				msgCheckpoints.length > 0 &&
+				keepBlocks.size < maxMsgCheckpoints
+			) {
+				keepBlocks.add(msgCheckpoints[msgCheckpoints.length - 1].block);
+			}
+			for (let i = msgCheckpoints.length - 1; i >= 0; i--) {
+				if (keepBlocks.size >= maxMsgCheckpoints) {
+					break;
 				}
-				return cacheBlock;
-			});
-		}
-		if (cacheControlExcess > 0 && Array.isArray(REQUEST.tools)) {
-			REQUEST.tools = REQUEST.tools.map((cacheTool) => {
-				if (cacheControlExcess > 0 && cacheTool && typeof cacheTool === "object" && "cache_control" in cacheTool) {
-					cacheControlExcess--;
-					let { cache_control: removedCacheControl, ...cacheToolRest } = cacheTool;
-					return cacheToolRest;
+				keepBlocks.add(msgCheckpoints[i].block);
+			}
+			for (let cp of msgCheckpoints) {
+				if (!keepBlocks.has(cp.block)) {
+					delete cp.block.cache_control;
 				}
-				return cacheTool;
-			});
+			}
 		}
-	`,
+		`,
 		{ placeholderPattern: /^(REQUEST)$/ },
 	)({
 		REQUEST: requestIdentifier,
@@ -1280,6 +1353,7 @@ function verifyTailWindowPolicy(ast: t.File): true | string {
 	let hasUserOnlyReassign = false;
 	let hasTailWindowGate = false;
 	let hasUserOnlyConditional = false;
+	let hasDecimationGate = false;
 
 	traverse(ast, {
 		Function(path) {
@@ -1357,6 +1431,17 @@ function verifyTailWindowPolicy(ast: t.File): true | string {
 						hasUserOnlyConditional = true;
 					}
 				},
+				BinaryExpression(binPath) {
+					if (
+						binPath.node.operator === "===" &&
+						t.isBinaryExpression(binPath.node.left, { operator: "%" }) &&
+						t.isIdentifier(binPath.node.left.left, { name: "userMsgCount" }) &&
+						t.isNumericLiteral(binPath.node.left.right, { value: 15 }) &&
+						t.isNumericLiteral(binPath.node.right, { value: 0 })
+					) {
+						hasDecimationGate = true;
+					}
+				},
 			});
 
 			path.stop();
@@ -1386,6 +1471,9 @@ function verifyTailWindowPolicy(ast: t.File): true | string {
 	}
 	if (!hasUserOnlyConditional) {
 		return "Assistant cache tail gating was not patched to user-only";
+	}
+	if (!hasDecimationGate) {
+		return "Decimation cache loop was not patched";
 	}
 	return true;
 }
@@ -1623,64 +1711,6 @@ function verifyAgentCacheTtlAllowlist(ast: t.File): true | string {
 	return true;
 }
 
-function isMapCallbackProperlyShaped(
-	callback: t.FunctionExpression | t.ArrowFunctionExpression,
-): boolean {
-	// Mutator emits map callbacks that look like:
-	//   (entry) => {
-	//     if (cacheControlExcess < 0) return entry;
-	//     const { cache_control, ...rest } = entry;
-	//     if (!cache_control) return entry;
-	//     cacheControlExcess--;
-	//     return rest;
-	//   }
-	// We require: (a) `cacheControlExcess--` UpdateExpression somewhere in
-	// the body, and (b) at least one ObjectPattern with a `cache_control`
-	// property key (the destructure that drops the cache_control field).
-	let sawDecrement = false;
-	let sawCacheControlDestructure = false;
-
-	const visitBody = (node: t.Node): void => {
-		const walk = (value: unknown): void => {
-			if (sawDecrement && sawCacheControlDestructure) return;
-			if (!value) return;
-			if (Array.isArray(value)) {
-				for (const item of value) walk(item);
-				return;
-			}
-			if (typeof value !== "object") return;
-			const maybeNode = value as t.Node;
-			if (typeof (maybeNode as { type?: unknown }).type !== "string") return;
-			if (
-				t.isUpdateExpression(maybeNode, { operator: "--" }) &&
-				t.isIdentifier(maybeNode.argument, { name: "cacheControlExcess" })
-			) {
-				sawDecrement = true;
-			}
-			if (t.isObjectPattern(maybeNode)) {
-				for (const prop of maybeNode.properties) {
-					if (
-						t.isObjectProperty(prop) &&
-						hasObjectKeyName(prop, "cache_control")
-					) {
-						sawCacheControlDestructure = true;
-						break;
-					}
-				}
-			}
-			for (const child of Object.values(
-				maybeNode as unknown as Record<string, unknown>,
-			)) {
-				walk(child);
-			}
-		};
-		walk(node);
-	};
-
-	visitBody(callback.body);
-	return sawDecrement && sawCacheControlDestructure;
-}
-
 function verifyCacheControlBlockCap(
 	ast: t.File,
 	requestClampAnchor: ReturnType<typeof findRequestClampFunction>,
@@ -1691,8 +1721,8 @@ function verifyCacheControlBlockCap(
 
 	let fixedClampDeclCount = 0;
 	let fixedRequestBuilderDeclCount = 0;
-	const strippedClampTargets = new Set<string>();
-	const strippedRequestBuilderTargets = new Set<string>();
+	let hasDeleteInClamp = false;
+	let hasDeleteInRequestBuilder = false;
 
 	traverse(ast, {
 		Function(path) {
@@ -1729,17 +1759,11 @@ function verifyCacheControlBlockCap(
 			path.traverse({
 				VariableDeclarator(varPath) {
 					if (
-						!t.isIdentifier(varPath.node.id, {
-							name: "cacheControlExcess",
-						})
-					) {
-						return;
-					}
-					if (
-						t.isUnaryExpression(varPath.node.init, {
-							operator: "-",
+						t.isIdentifier(varPath.node.id, {
+							name: "maxMsgCheckpoints",
 						}) &&
-						t.isNumericLiteral(varPath.node.init.argument, { value: 4 })
+						t.isBinaryExpression(varPath.node.init, { operator: "-" }) &&
+						t.isNumericLiteral(varPath.node.init.left, { value: 4 })
 					) {
 						if (isClampFunction) {
 							fixedClampDeclCount += 1;
@@ -1748,50 +1772,17 @@ function verifyCacheControlBlockCap(
 						}
 					}
 				},
-				AssignmentExpression(assignPath) {
-					const left = assignPath.node.left;
-					const right = assignPath.node.right;
-					if (!t.isMemberExpression(left)) return;
-					const expectedTarget = isClampFunction
-						? requestClampAnchor.requestCopyName
-						: requestBuilderVarName;
-					if (!expectedTarget) return;
-					if (!t.isIdentifier(left.object, { name: expectedTarget })) return;
+				UnaryExpression(deletePath) {
 					if (
-						!t.isCallExpression(right) ||
-						!t.isMemberExpression(right.callee)
+						deletePath.node.operator === "delete" &&
+						t.isMemberExpression(deletePath.node.argument) &&
+						isMemberPropertyName(deletePath.node.argument, "cache_control")
 					) {
-						return;
-					}
-					if (!isMemberPropertyName(right.callee, "map")) return;
-					const keyName = getObjectKeyName(left.property);
-					if (
-						keyName !== "messages" &&
-						keyName !== "system" &&
-						keyName !== "tools"
-					) {
-						return;
-					}
-					// Per audit: assert each .map() callback's body contains
-					// `cacheControlExcess--` (the per-block decrement) AND
-					// destructures cache_control off the iterated element via
-					// an ObjectPattern with a `cache_control:` key. Presence
-					// of `.map()` alone is insemantic — a regression that
-					// replaced the strip body with a no-op would otherwise
-					// satisfy the verifier.
-					const callback = right.arguments[0];
-					if (
-						!callback ||
-						(!t.isFunctionExpression(callback) &&
-							!t.isArrowFunctionExpression(callback))
-					) {
-						return;
-					}
-					if (!isMapCallbackProperlyShaped(callback)) return;
-					if (isClampFunction) {
-						strippedClampTargets.add(keyName);
-					} else {
-						strippedRequestBuilderTargets.add(keyName);
+						if (isClampFunction) {
+							hasDeleteInClamp = true;
+						} else {
+							hasDeleteInRequestBuilder = true;
+						}
 					}
 				},
 			});
@@ -1799,26 +1790,218 @@ function verifyCacheControlBlockCap(
 	});
 
 	if (fixedClampDeclCount === 0) {
-		return "Request clamp helper missing fixed cacheControlExcess = -4 block cap";
+		return "Request clamp helper missing fixed maxMsgCheckpoints block cap";
 	}
 	if (fixedClampDeclCount !== 1) {
-		return `Request clamp cacheControlExcess declaration is ambiguous (${fixedClampDeclCount} declarations)`;
+		return `Request clamp maxMsgCheckpoints declaration is ambiguous (${fixedClampDeclCount} declarations)`;
 	}
 	if (fixedRequestBuilderDeclCount === 0) {
-		return "Live request builder missing fixed cacheControlExcess = -4 block cap";
+		return "Live request builder missing fixed maxMsgCheckpoints block cap";
 	}
 	if (fixedRequestBuilderDeclCount !== 1) {
-		return `Live request builder cacheControlExcess declaration is ambiguous (${fixedRequestBuilderDeclCount} declarations)`;
+		return `Live request builder maxMsgCheckpoints declaration is ambiguous (${fixedRequestBuilderDeclCount} declarations)`;
 	}
-	for (const target of ["messages", "system", "tools"]) {
-		if (!strippedClampTargets.has(target)) {
-			return `Request clamp helper missing cache_control strip pass for ${target}`;
-		}
-		if (!strippedRequestBuilderTargets.has(target)) {
-			return `Live request builder missing cache_control strip pass for ${target}`;
-		}
+	if (!hasDeleteInClamp) {
+		return "Request clamp helper missing delete cp.block.cache_control statement";
+	}
+	if (!hasDeleteInRequestBuilder) {
+		return "Live request builder missing delete cp.block.cache_control statement";
 	}
 	return true;
+}
+
+function verifyOneHourTtlEnforced(ast: t.File): true | string {
+	let hasSystemTtlSet = false;
+	let hasToolsTtlSet = false;
+
+	traverse(ast, {
+		AssignmentExpression(assignPath) {
+			const left = assignPath.node.left;
+			const right = assignPath.node.right;
+			if (
+				t.isMemberExpression(left) &&
+				isMemberPropertyName(left, "ttl") &&
+				t.isMemberExpression(left.object) &&
+				isMemberPropertyName(left.object, "cache_control") &&
+				t.isStringLiteral(right, { value: "1h" })
+			) {
+				hasSystemTtlSet = true;
+			}
+			if (
+				t.isMemberExpression(left) &&
+				isMemberPropertyName(left, "cache_control") &&
+				t.isObjectExpression(right)
+			) {
+				const typeProp = right.properties.find(
+					(prop): prop is t.ObjectProperty =>
+						t.isObjectProperty(prop) &&
+						getObjectKeyName(prop.key) === "type" &&
+						t.isStringLiteral(prop.value, { value: "ephemeral" }),
+				);
+				const ttlProp = right.properties.find(
+					(prop): prop is t.ObjectProperty =>
+						t.isObjectProperty(prop) &&
+						getObjectKeyName(prop.key) === "ttl" &&
+						t.isStringLiteral(prop.value, { value: "1h" }),
+				);
+				if (typeProp && ttlProp) {
+					hasToolsTtlSet = true;
+				}
+			}
+		},
+	});
+
+	if (!hasSystemTtlSet) {
+		return "System prompt 1h TTL enforcement not found";
+	}
+	if (!hasToolsTtlSet) {
+		return "Tools array 1h TTL enforcement not found";
+	}
+	return true;
+}
+
+function verifyPreWarmingUtility(
+	ast: t.File,
+	sideQueryFnName: string | null,
+): true | string {
+	if (!sideQueryFnName) {
+		return "Pre-warming verification skipped: side query function name not resolved";
+	}
+	let foundPreWarmCall = false;
+
+	traverse(ast, {
+		CallExpression(path) {
+			if (!t.isIdentifier(path.node.callee, { name: sideQueryFnName })) return;
+			if (path.node.arguments.length !== 1) return;
+			const arg = path.node.arguments[0];
+			if (!t.isObjectExpression(arg)) return;
+
+			const maxTokensProp = arg.properties.find(
+				(prop): prop is t.ObjectProperty =>
+					t.isObjectProperty(prop) &&
+					getObjectKeyName(prop.key) === "max_tokens" &&
+					t.isNumericLiteral(prop.value, { value: 0 }),
+			);
+			const querySourceProp = arg.properties.find(
+				(prop): prop is t.ObjectProperty =>
+					t.isObjectProperty(prop) &&
+					getObjectKeyName(prop.key) === "querySource" &&
+					t.isStringLiteral(prop.value, { value: "repl_main_thread" }),
+			);
+
+			if (maxTokensProp && querySourceProp) {
+				foundPreWarmCall = true;
+			}
+		},
+	});
+
+	if (!foundPreWarmCall) {
+		return "Pre-warming utility call not found";
+	}
+	return true;
+}
+
+function createPreWarmingMutator(): Visitor {
+	let done = false;
+	let sideQueryFnName: string | null = null;
+	let resolvedInitialModelVarName: string | null = null;
+	let optionsVarName: string | null = null;
+
+	return {
+		Function(path) {
+			if (done) return;
+			if (path.node.async && path.node.params.length === 1) {
+				let hasSideQuery = false;
+				let hasSanitized = false;
+				path.traverse({
+					StringLiteral(strPath) {
+						if (strPath.node.value === "sideQuery") hasSideQuery = true;
+						if (strPath.node.value === "tengu_lone_surrogate_sanitized")
+							hasSanitized = true;
+					},
+				});
+				if (hasSideQuery && hasSanitized) {
+					const fnName = getCallableFunctionName(path);
+					if (fnName) {
+						sideQueryFnName = fnName;
+					}
+				}
+			}
+
+			if (t.isBlockStatement(path.node.body)) {
+				for (const stmt of path.node.body.body) {
+					if (t.isVariableDeclaration(stmt)) {
+						for (const decl of stmt.declarations) {
+							if (t.isObjectPattern(decl.id)) {
+								for (const prop of decl.id.properties) {
+									if (
+										t.isObjectProperty(prop) &&
+										getObjectKeyName(prop.key) === "resolvedInitialModel"
+									) {
+										if (t.isIdentifier(prop.value)) {
+											resolvedInitialModelVarName = prop.value.name;
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		CallExpression(path) {
+			if (done) return;
+			if (
+				t.isMemberExpression(path.node.callee) &&
+				isMemberPropertyName(path.node.callee, "action")
+			) {
+				const callback = path.node.arguments[0];
+				if (t.isFunction(callback) && callback.params.length >= 2) {
+					const secondParam = callback.params[1];
+					if (t.isIdentifier(secondParam)) {
+						optionsVarName = secondParam.name;
+					}
+				}
+			}
+
+			if (
+				path.node.arguments.length >= 1 &&
+				t.isStringLiteral(path.node.arguments[0], {
+					value: "tengu_startup_manual_model_config",
+				})
+			) {
+				if (optionsVarName && resolvedInitialModelVarName && sideQueryFnName) {
+					const stmt = path.findParent((p) => p.isExpressionStatement());
+					if (stmt?.parentPath && t.isBlockStatement(stmt.parentPath.node)) {
+						const preWarmStmt = template.statement(
+							`
+							if (!OPTIONS.print) {
+								SIDE_QUERY({
+									model: MODEL,
+									system: [],
+									messages: [{ role: "user", content: "warm" }],
+									max_tokens: 0,
+									querySource: "repl_main_thread"
+								}).catch(() => {});
+							}
+							`,
+						)({
+							OPTIONS: t.identifier(optionsVarName),
+							SIDE_QUERY: t.identifier(sideQueryFnName),
+							MODEL: t.identifier(resolvedInitialModelVarName),
+						});
+						const index = stmt.parentPath.node.body.indexOf(
+							stmt.node as t.Statement,
+						);
+						if (index >= 0) {
+							stmt.parentPath.node.body.splice(index, 0, preWarmStmt);
+							done = true;
+						}
+					}
+				}
+			}
+		},
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1849,6 +2032,10 @@ export const cacheTailPolicy: Patch = {
 			pass: "mutate",
 			visitor: createAgentCacheTtlAllowlistMutator(),
 		},
+		{
+			pass: "mutate",
+			visitor: createPreWarmingMutator(),
+		},
 	],
 
 	verify: (code, ast) => {
@@ -1857,10 +2044,6 @@ export const cacheTailPolicy: Patch = {
 			return "Unable to parse AST for cache-tail-policy verification";
 		}
 
-		// Memoize the request clamp anchor for the verify pass instead of
-		// letting the block-cap verifier re-walk the bundle for it. The
-		// mutator's Program.exit hook does its own pass during mutate; this
-		// keeps a second walk out of verify.
 		const requestClampAnchor = findRequestClampFunction(verifyAst);
 
 		const checks: Array<() => true | string> = [
@@ -1869,6 +2052,33 @@ export const cacheTailPolicy: Patch = {
 			() => verifyCacheControlTtlRespectsCaller(verifyAst),
 			() => verifyAgentCacheTtlAllowlist(verifyAst),
 			() => verifyCacheControlBlockCap(verifyAst, requestClampAnchor),
+			() => verifyOneHourTtlEnforced(verifyAst),
+			() => {
+				let sideQueryFnName: string | null = null;
+				traverse(verifyAst, {
+					Function(path) {
+						if (sideQueryFnName) return;
+						if (path.node.async && path.node.params.length === 1) {
+							let hasSideQuery = false;
+							let hasSanitized = false;
+							path.traverse({
+								StringLiteral(strPath) {
+									if (strPath.node.value === "sideQuery") hasSideQuery = true;
+									if (strPath.node.value === "tengu_lone_surrogate_sanitized")
+										hasSanitized = true;
+								},
+							});
+							if (hasSideQuery && hasSanitized) {
+								const fnName = getCallableFunctionName(path);
+								if (fnName) {
+									sideQueryFnName = fnName;
+								}
+							}
+						}
+					},
+				});
+				return verifyPreWarmingUtility(verifyAst, sideQueryFnName);
+			},
 		];
 		for (const check of checks) {
 			const result = check();
