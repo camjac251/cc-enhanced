@@ -64,9 +64,35 @@ function isRecordOptional(node: t.Node | null | undefined): boolean {
 	const inner = optCallee.object;
 	if (!t.isCallExpression(inner)) return false;
 	const recCallee = inner.callee;
+	if (
+		!t.isMemberExpression(recCallee) ||
+		getMemberPropertyName(recCallee) !== "record"
+	)
+		return false;
 	return (
-		t.isMemberExpression(recCallee) &&
-		getMemberPropertyName(recCallee) === "record"
+		inner.arguments.length >= 2 &&
+		isStringMinOneCall(inner.arguments[0]) &&
+		isStringMinOneCall(inner.arguments[1])
+	);
+}
+
+function isStringMinOneCall(node: t.Node | null | undefined): boolean {
+	if (!node || !t.isCallExpression(node)) return false;
+	const minCallee = node.callee;
+	if (!t.isMemberExpression(minCallee)) return false;
+	if (getMemberPropertyName(minCallee) !== "min") return false;
+	if (
+		minCallee.computed ||
+		!t.isCallExpression(minCallee.object) ||
+		minCallee.object.arguments.length !== 0
+	)
+		return false;
+	const stringCallee = minCallee.object.callee;
+	return (
+		t.isMemberExpression(stringCallee) &&
+		getMemberPropertyName(stringCallee) === "string" &&
+		node.arguments.length >= 1 &&
+		t.isNumericLiteral(node.arguments[0], { value: 1 })
 	);
 }
 
@@ -128,7 +154,8 @@ function verifyFilenameSchema(code: string, ast?: t.File): true | string {
 
 	if (!foundSchema)
 		return "LSP per-server schema (strictObject with command + extensionToLanguage) not found";
-	if (!ok) return "filenames/filenamePatterns not added as record().optional()";
+	if (!ok)
+		return "filenames/filenamePatterns not added as string record().optional()";
 	return true;
 }
 

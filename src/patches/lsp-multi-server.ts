@@ -250,7 +250,7 @@ function buildOpenFile(r: LspRefs, params: string[]): t.Statement[] {
       ${r.logFn}("LSP: File already open in " + _ns[_i] + ", skipping didOpen for " + ${file});
       continue;
     }
-    var _lg = _sv.config.extensionToLanguage[_ext] || "plaintext";
+    var _lg = _lspLang(_sv, ${file}, _ext);
     try {
       await _sv.sendNotification("textDocument/didOpen", {
         textDocument: { uri: _uri, languageId: _lg, version: 1, text: ${text} }
@@ -297,7 +297,7 @@ function buildChangeFile(r: LspRefs, params: string[]): t.Statement[] {
           continue;
         }
       }
-      var _lg = _sv.config.extensionToLanguage[_ext] || "plaintext";
+      var _lg = _lspLang(_sv, ${file}, _ext);
       try {
         await _sv.sendNotification("textDocument/didOpen", {
           textDocument: { uri: _uri, languageId: _lg, version: 1, text: ${text} }
@@ -407,20 +407,32 @@ function buildFilenameHelpers(r: LspRefs): t.Statement[] {
     }
     return new RegExp("^" + _o + "$");
   }
+  function _lspBase(_file) {
+    return String(_file).split("/").pop().split("\\\\").pop();
+  }
+  function _lspFileLang(_cfg, _base) {
+    if (_cfg.filenames && _cfg.filenames[_base]) return _cfg.filenames[_base];
+    var _pats = _cfg.filenamePatterns;
+    if (_pats) {
+      for (var _p in _pats) {
+        if (_lspGlobRe(_p).test(_base)) return _pats[_p];
+      }
+    }
+  }
+  function _lspLang(_sv, _file, _ext) {
+    var _cfg = _sv && _sv.config;
+    if (!_cfg) return "plaintext";
+    if (_cfg.extensionToLanguage && _cfg.extensionToLanguage[_ext]) return _cfg.extensionToLanguage[_ext];
+    return _lspFileLang(_cfg, _lspBase(_file)) || "plaintext";
+  }
   function _lspByName(_file) {
-    var _b = String(_file).split("/").pop().split("\\\\").pop();
+    var _b = _lspBase(_file);
     var _out = [];
     for (var _ent of ${r.serverMap}) {
       var _nm = _ent[0], _sv = _ent[1];
       var _cfg = _sv && _sv.config;
       if (!_cfg) continue;
-      if (_cfg.filenames && _cfg.filenames[_b]) { _out.push(_nm); continue; }
-      var _pats = _cfg.filenamePatterns;
-      if (_pats) {
-        for (var _p in _pats) {
-          if (_lspGlobRe(_p).test(_b)) { _out.push(_nm); break; }
-        }
-      }
+      if (_lspFileLang(_cfg, _b)) _out.push(_nm);
     }
     return _out.length ? _out : void 0;
   }
@@ -670,24 +682,51 @@ function verifyMultiServer(code: string, ast?: t.File): true | string {
 	if (!hasByNameDecl)
 		return "filename-routing helper (_lspByName) not injected into LSP factory";
 
-	const referencesByName = (fn: t.Node | undefined): boolean => {
+	const hasLangDecl = (factoryBody as t.Statement[]).some(
+		(s): s is t.FunctionDeclaration =>
+			t.isFunctionDeclaration(s) && s.id?.name === "_lspLang",
+	);
+	if (!hasLangDecl)
+		return "filename language helper (_lspLang) not injected into LSP factory";
+
+	const referencesIdentifier = (
+		fn: t.Node | undefined,
+		identifier: string,
+	): boolean => {
 		if (!fn) return false;
 		let found = false;
 		walkNode(fn, (node) => {
-			if (t.isIdentifier(node, { name: "_lspByName" })) found = true;
+			if (t.isIdentifier(node, { name: identifier })) found = true;
 		});
 		return found;
 	};
 
-	if (!referencesByName(gsf))
-		return "getServerForFile does not fall back to filename routing (_lspByName)";
+	const factoryFn = (name: string): t.FunctionDeclaration | undefined =>
+		(factoryBody as t.Statement[]).find(
+			(s): s is t.FunctionDeclaration =>
+				t.isFunctionDeclaration(s) && s.id?.name === name,
+		);
 
-	const openFn = (factoryBody as t.Statement[]).find(
-		(s): s is t.FunctionDeclaration =>
-			t.isFunctionDeclaration(s) && s.id?.name === refs.openFile,
-	);
-	if (!referencesByName(openFn))
-		return "openFile does not fall back to filename routing (_lspByName)";
+	for (const { fn, label } of [
+		{ fn: gsf, label: "getServerForFile" },
+		{ fn: factoryFn(refs.openFile), label: "openFile" },
+		{ fn: factoryFn(refs.changeFile), label: "changeFile" },
+		{ fn: factoryFn(refs.saveFile), label: "saveFile" },
+		{ fn: factoryFn(refs.closeFile), label: "closeFile" },
+	]) {
+		if (!referencesIdentifier(fn, "_lspByName")) {
+			return `${label} does not fall back to filename routing (_lspByName)`;
+		}
+	}
+
+	for (const { fn, label } of [
+		{ fn: factoryFn(refs.openFile), label: "openFile" },
+		{ fn: factoryFn(refs.changeFile), label: "changeFile" },
+	]) {
+		if (!referencesIdentifier(fn, "_lspLang")) {
+			return `${label} does not derive didOpen languageId from filename routing (_lspLang)`;
+		}
+	}
 
 	return true;
 }

@@ -41,6 +41,13 @@ const McpServer = A.strictObject({
 const Plain = A.object({ name: A.string() });
 `;
 
+const MALFORMED_SCHEMA_FIXTURE = SCHEMA_FIXTURE.replace(
+	"startupTimeout: A.number().int().positive().optional(),",
+	`filenames: A.array(A.string()).optional(),
+  filenamePatterns: A.record(A.string().min(1)).optional(),
+  startupTimeout: A.number().int().positive().optional(),`,
+);
+
 test("lsp-filename-schema verify rejects the unpatched schema", () => {
 	const ast = parse(SCHEMA_FIXTURE);
 	const code = print(ast);
@@ -48,6 +55,15 @@ test("lsp-filename-schema verify rejects the unpatched schema", () => {
 	assert.notEqual(result, true);
 	assert.equal(typeof result, "string");
 	assert.match(String(result), /filenames\/filenamePatterns not added/);
+});
+
+test("lsp-filename-schema verify rejects malformed filename fields", () => {
+	const ast = parse(MALFORMED_SCHEMA_FIXTURE);
+	const code = print(ast);
+	const result = lspFilenameSchema.verify(code, ast);
+	assert.notEqual(result, true);
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /string record\(\)\.optional/);
 });
 
 test("lsp-filename-schema adds filenames + filenamePatterns to the LSP schema", async () => {
@@ -58,9 +74,14 @@ test("lsp-filename-schema adds filenames + filenamePatterns to the LSP schema", 
 	assert.equal(output.includes("filenames:"), true);
 	assert.equal(output.includes("filenamePatterns:"), true);
 	// Emitted as record(...).optional(), mirroring extensionToLanguage.
-	assert.match(output, /filenames:\s*A\.record\(/);
-	assert.match(output, /filenamePatterns:\s*A\.record\(/);
-	assert.match(output, /\.optional\(\)/);
+	assert.match(
+		output,
+		/filenames:\s*A\.record\(A\.string\(\)\.min\(1\),\s*A\.string\(\)\.min\(1\)\)\.optional\(\)/s,
+	);
+	assert.match(
+		output,
+		/filenamePatterns:\s*A\.record\(A\.string\(\)\.min\(1\),\s*A\.string\(\)\.min\(1\)\)\.optional\(\)/s,
+	);
 
 	assert.equal(lspFilenameSchema.verify(output, ast), true);
 	assert.equal(lspFilenameSchema.verify(output), true);

@@ -400,7 +400,22 @@ test("lsp-multi-server verify catches dropped filename routing", async () => {
 	assert.match(String(result), /_lspByName/);
 });
 
-test("lsp-multi-server routes Dockerfile and globs by filename (execution)", async () => {
+test("lsp-multi-server verify catches filename routing without language helper", async () => {
+	const ast = parse(LSP_FACTORY_FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	assert.equal(lspMultiServer.verify(output), true);
+	const mutated = output.replace(
+		/var _lg = _lspLang\([^;]+;/,
+		'var _lg = _sv.config.extensionToLanguage[_ext] || "plaintext";',
+	);
+	assert.notEqual(mutated, output, "precondition: _lspLang call present");
+	const result = lspMultiServer.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /languageId.*_lspLang/);
+});
+
+test("lsp-multi-server routes Dockerfile and globs through lifecycle functions (execution)", async () => {
 	const ast = parse(LSP_FACTORY_FIXTURE);
 	await runViaPasses(ast);
 	const output = print(ast);
@@ -411,18 +426,47 @@ test("lsp-multi-server routes Dockerfile and globs by filename (execution)", asy
 	const factory = vm.runInNewContext(`${output}; XF8`) as () => {
 		getServerForFile: (f: string) => unknown;
 		getAllServers: () => Map<string, unknown>;
+		openFile: (f: string, text: string) => Promise<void>;
+		changeFile: (f: string, text: string) => Promise<void>;
+		saveFile: (f: string) => Promise<void>;
+		closeFile: (f: string) => Promise<void>;
 	};
 	const mgr = factory();
-	const docker = {
-		name: "docker",
-		state: "running",
+	const notifications: Array<{
+		server: string;
+		method: string;
+		params: { textDocument?: { languageId?: string } };
+	}> = [];
+	const makeServer = (
+		name: string,
 		config: {
-			extensionToLanguage: {},
-			filenames: { Dockerfile: "dockerfile", Containerfile: "dockerfile" },
-			filenamePatterns: { "Dockerfile.*": "dockerfile" },
+			extensionToLanguage: Record<string, string>;
+			filenames: Record<string, string>;
+			filenamePatterns: Record<string, string>;
 		},
-	};
+	) => ({
+		name,
+		state: "running",
+		config,
+		sendNotification: async (
+			method: string,
+			params: { textDocument?: { languageId?: string } },
+		) => {
+			notifications.push({ server: name, method, params });
+		},
+	});
+	const docker = makeServer("docker", {
+		extensionToLanguage: {},
+		filenames: { Dockerfile: "dockerfile", Containerfile: "dockerfile" },
+		filenamePatterns: { "Dockerfile.*": "dockerfile-pattern" },
+	});
+	const lint = makeServer("docker-lint", {
+		extensionToLanguage: {},
+		filenames: { Dockerfile: "dockerlint" },
+		filenamePatterns: { "Dockerfile.*": "dockerlint-pattern" },
+	});
 	mgr.getAllServers().set("docker", docker);
+	mgr.getAllServers().set("docker-lint", lint);
 
 	// Exact basename (extensionless), bare and path-qualified.
 	assert.equal(mgr.getServerForFile("Dockerfile"), docker);
@@ -434,4 +478,51 @@ test("lsp-multi-server routes Dockerfile and globs by filename (execution)", asy
 	// Non-matches resolve to nothing (glob is anchored, not a loose prefix).
 	assert.equal(mgr.getServerForFile("notes.txt"), undefined);
 	assert.equal(mgr.getServerForFile("Dockerfilex"), undefined);
+
+	await mgr.openFile("Dockerfile", "FROM alpine");
+	assert.deepEqual(
+		notifications.map((n) => [
+			n.server,
+			n.method,
+			n.params.textDocument?.languageId,
+		]),
+		[
+			["docker", "textDocument/didOpen", "dockerfile"],
+			["docker-lint", "textDocument/didOpen", "dockerlint"],
+		],
+	);
+
+	notifications.length = 0;
+	await mgr.changeFile("Dockerfile", "FROM busybox");
+	await mgr.saveFile("Dockerfile");
+	await mgr.closeFile("Dockerfile");
+	assert.deepEqual(
+		notifications.map((n) => [n.server, n.method]),
+		[
+			["docker", "textDocument/didChange"],
+			["docker-lint", "textDocument/didChange"],
+			["docker", "textDocument/didSave"],
+			["docker-lint", "textDocument/didSave"],
+			["docker", "textDocument/didClose"],
+			["docker-lint", "textDocument/didClose"],
+		],
+	);
+
+	notifications.length = 0;
+	await mgr.openFile("Dockerfile.dev", "FROM alpine");
+	assert.deepEqual(
+		notifications.map((n) => [
+			n.server,
+			n.method,
+			n.params.textDocument?.languageId,
+		]),
+		[
+			["docker", "textDocument/didOpen", "dockerfile-pattern"],
+			["docker-lint", "textDocument/didOpen", "dockerlint-pattern"],
+		],
+	);
+
+	notifications.length = 0;
+	await mgr.openFile("notes.txt", "plain text");
+	assert.deepEqual(notifications, []);
 });
