@@ -610,11 +610,14 @@ test("cache-tail-policy caps cache_control blocks in the live request builder an
 		"should enforce 1h TTL on system blocks",
 	);
 	assert.equal(
-		output.includes(
-			'lastTool.cache_control = { type: "ephemeral", ttl: "1h" };',
-		),
+		output.includes('tool.cache_control = { type: "ephemeral", ttl: "1h" };'),
 		true,
 		"should enforce ephemeral 1h TTL on tools",
+	);
+	assert.equal(
+		output.includes("!tool.defer_loading"),
+		true,
+		"tools cache_control assignment should skip deferred tools",
 	);
 	assert.equal(
 		output.includes("Array.isArray(L.tools)") &&
@@ -832,22 +835,32 @@ return { clampRequest, buildRequest };
 		toolCount,
 		messageCount,
 		expectedMaxMessages,
+		deferLoadingLastTool = false,
 	}: {
 		label: string;
 		systemCount: number;
 		toolCount: number;
 		messageCount: number;
 		expectedMaxMessages: number;
+		deferLoadingLastTool?: boolean;
 	}) => {
 		const system = Array.from({ length: systemCount }, (_, index) => ({
 			type: "text",
 			text: `sys${index}`,
 			cache_control: { type: "ephemeral" },
 		}));
-		const tools = Array.from({ length: toolCount }, (_, index) => ({
-			name: `tool${index}`,
-			cache_control: { type: "ephemeral" },
-		}));
+		const tools = Array.from({ length: toolCount }, (_, index) => {
+			const isLast = index === toolCount - 1;
+			const isDeferred = deferLoadingLastTool && isLast;
+			return {
+				name: `tool${index}`,
+				...(isDeferred
+					? { defer_loading: true }
+					: deferLoadingLastTool
+						? {}
+						: { cache_control: { type: "ephemeral" } }),
+			};
+		});
 		const messages = Array.from({ length: messageCount }, (_, index) => ({
 			type: "user",
 			content: [{ type: "text", text: `u${index}` }],
@@ -876,8 +889,8 @@ return { clampRequest, buildRequest };
 		);
 		assert.equal(
 			counts.tools,
-			toolCount,
-			`${label}: tools cache_control should be preserved`,
+			deferLoadingLastTool ? 1 : toolCount,
+			`${label}: tools cache_control count mismatch`,
 		);
 		assert.equal(
 			counts.messages <= expectedMaxMessages,
@@ -909,6 +922,19 @@ return { clampRequest, buildRequest };
 				"Tail checkpoint at index 16 should be deleted",
 			);
 		}
+
+		if (deferLoadingLastTool && toolCount >= 2) {
+			assert.equal(
+				clamped.tools[toolCount - 1].cache_control,
+				undefined,
+				"Deferred tool should not have cache_control set",
+			);
+			assert.deepEqual(
+				clamped.tools[toolCount - 2].cache_control,
+				{ type: "ephemeral", ttl: "1h" },
+				"Second-to-last (non-deferred) tool should receive 1h cache_control",
+			);
+		}
 	};
 
 	runScenario({
@@ -932,6 +958,14 @@ return { clampRequest, buildRequest };
 		messageCount: 17,
 		expectedMaxMessages: 1,
 	});
+	runScenario({
+		label: "deferred last tool is skipped for cache_control",
+		systemCount: 1,
+		toolCount: 2,
+		messageCount: 6,
+		expectedMaxMessages: 2,
+		deferLoadingLastTool: true,
+	});
 });
 
 test("cache-tail-policy verify rejects sysprompt rewrite that clobbers the later org scope", async () => {
@@ -952,6 +986,23 @@ test("cache-tail-policy verify rejects sysprompt rewrite that clobbers the later
 			String(result).includes("org"),
 		true,
 		`Expected later-org preservation failure, got: ${result}`,
+	);
+});
+
+test("cache-tail-policy verify rejects tool cache_control without defer_loading guard", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	assert.equal(cacheTailPolicy.verify(output, parse(output)), true);
+
+	const unsafeOutput = output.replaceAll(" && !tool.defer_loading", "");
+	const result = cacheTailPolicy.verify(unsafeOutput, parse(unsafeOutput));
+
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("defer_loading"),
+		true,
+		`Expected defer_loading guard failure, got: ${result}`,
 	);
 });
 

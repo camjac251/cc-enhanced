@@ -1086,9 +1086,12 @@ function createCacheControlCapStatements(
 				}
 			}
 			if (hasSystemCache) {
-				let lastTool = REQUEST.tools[REQUEST.tools.length - 1];
-				if (lastTool && typeof lastTool === "object") {
-					lastTool.cache_control = { type: "ephemeral", ttl: "1h" };
+				for (let i = REQUEST.tools.length - 1; i >= 0; i--) {
+					let tool = REQUEST.tools[i];
+					if (tool && typeof tool === "object" && !tool.defer_loading) {
+						tool.cache_control = { type: "ephemeral", ttl: "1h" };
+						break;
+					}
 				}
 			}
 		}
@@ -1811,7 +1814,57 @@ function verifyCacheControlBlockCap(
 
 function verifyOneHourTtlEnforced(ast: t.File): true | string {
 	let hasSystemTtlSet = false;
-	let hasToolsTtlSet = false;
+	let toolsLoopTtlSetCount = 0;
+	let guardedToolsLoopTtlSetCount = 0;
+
+	const isDeferredLoadingExclusionForTarget = (
+		node: t.Node,
+		targetName: string,
+	): boolean =>
+		t.isUnaryExpression(node, { operator: "!" }) &&
+		t.isMemberExpression(node.argument) &&
+		isMemberPropertyName(node.argument, "defer_loading") &&
+		t.isIdentifier(node.argument.object, { name: targetName });
+
+	const hasDeferredLoadingExclusion = (
+		assignPath: NodePath<t.AssignmentExpression>,
+		targetName: string,
+	): boolean =>
+		Boolean(
+			assignPath.findParent(
+				(parentPath) =>
+					parentPath.isIfStatement() &&
+					nodeContains(parentPath.node.test, (candidate) =>
+						isDeferredLoadingExclusionForTarget(candidate, targetName),
+					),
+			),
+		);
+
+	const isToolsArrayElementAccess = (node: t.Node): boolean =>
+		t.isMemberExpression(node) &&
+		t.isMemberExpression(node.object) &&
+		isMemberPropertyName(node.object, "tools");
+
+	const hasToolsArrayLoopSource = (
+		assignPath: NodePath<t.AssignmentExpression>,
+		targetName: string,
+	): boolean =>
+		Boolean(
+			assignPath.findParent((parentPath) => {
+				if (!parentPath.isForStatement()) return false;
+				if (!t.isBlockStatement(parentPath.node.body)) return false;
+				return parentPath.node.body.body.some(
+					(stmt) =>
+						t.isVariableDeclaration(stmt) &&
+						stmt.declarations.some(
+							(decl) =>
+								t.isIdentifier(decl.id, { name: targetName }) &&
+								t.isMemberExpression(decl.init) &&
+								isToolsArrayElementAccess(decl.init),
+						),
+				);
+			}),
+		);
 
 	traverse(ast, {
 		AssignmentExpression(assignPath) {
@@ -1843,8 +1896,14 @@ function verifyOneHourTtlEnforced(ast: t.File): true | string {
 						getObjectKeyName(prop.key) === "ttl" &&
 						t.isStringLiteral(prop.value, { value: "1h" }),
 				);
-				if (typeProp && ttlProp) {
-					hasToolsTtlSet = true;
+				if (typeProp && ttlProp && t.isIdentifier(left.object)) {
+					const targetName = left.object.name;
+					if (hasToolsArrayLoopSource(assignPath, targetName)) {
+						toolsLoopTtlSetCount += 1;
+						if (hasDeferredLoadingExclusion(assignPath, targetName)) {
+							guardedToolsLoopTtlSetCount += 1;
+						}
+					}
 				}
 			}
 		},
@@ -1853,8 +1912,11 @@ function verifyOneHourTtlEnforced(ast: t.File): true | string {
 	if (!hasSystemTtlSet) {
 		return "System prompt 1h TTL enforcement not found";
 	}
-	if (!hasToolsTtlSet) {
+	if (toolsLoopTtlSetCount < 2) {
 		return "Tools array 1h TTL enforcement not found";
+	}
+	if (guardedToolsLoopTtlSetCount !== toolsLoopTtlSetCount) {
+		return "Tools array 1h TTL enforcement must skip defer_loading tools";
 	}
 	return true;
 }
