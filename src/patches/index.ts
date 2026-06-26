@@ -11,6 +11,7 @@ export { commandsOff } from "./commands-off.js";
 export { editTool } from "./edit-extended.js";
 export { effortStack } from "./effort-stack.js";
 export { featureFlags } from "./feature-flags.js";
+export { fileLinkTargets } from "./file-link-targets.js";
 export { imageLimits } from "./image-limits.js";
 export { getLimitsChanged, limits } from "./limits.js";
 export { lspFilenameSchema } from "./lsp-filename-schema.js";
@@ -52,6 +53,7 @@ import { commandsOff } from "./commands-off.js";
 import { editTool } from "./edit-extended.js";
 import { effortStack } from "./effort-stack.js";
 import { featureFlags } from "./feature-flags.js";
+import { fileLinkTargets } from "./file-link-targets.js";
 import { imageLimits } from "./image-limits.js";
 import { limits } from "./limits.js";
 import { lspFilenameSchema } from "./lsp-filename-schema.js";
@@ -107,6 +109,7 @@ const basePatches: Patch[] = [
 	editTool,
 	effortStack,
 	featureFlags,
+	fileLinkTargets,
 	imageLimits,
 	planDiffUi,
 	planCompactExecute,

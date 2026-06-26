@@ -81,6 +81,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Feature flags",
 		group: "System",
 	},
+	"file-link-targets": {
+		tag: "file-link-targets",
+		label: "File link targets",
+		group: "UX",
+	},
 	"image-limits": {
 		tag: "image-limits",
 		label: "High-res image limits",
