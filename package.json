@@ -47,7 +47,7 @@
 		"@babel/template": "^7.29.7",
 		"@biomejs/biome": "^2.4.16",
 		"@types/babel__template": "^7.4.4",
-		"@types/node": "^25.9.1",
+		"@types/node": "^26.0.0",
 		"@types/yargs": "^17.0.35",
 		"typescript": "^6.0.3"
 	},
