@@ -29,6 +29,8 @@ type FocusMode =
 	| "all"
 	| "commands"
 	| "env"
+	| "inventory"
+	| "release"
 	| "removals"
 	| "rewrites"
 	| "prompts"
@@ -62,6 +64,7 @@ interface SurfaceEntry {
 interface BundleFacts {
 	metadata: BundleMetadata;
 	surfaces: Map<string, SurfaceEntry>;
+	inventory: BundleInventory;
 }
 
 interface BundleDiffOptions {
@@ -101,9 +104,59 @@ interface BundleDiffReport {
 	addedCapabilities: CapabilityCandidate[];
 	removedCapabilities: CapabilityCandidate[];
 	commandCandidates: CommandCandidate[];
+	inventory: InventoryDiff;
+	releaseSummary: ReleaseSummary;
 	patchRelevance: PatchRelevance[];
 	promptExport?: PromptExportCheck;
 }
+
+interface InventoryContext {
+	line: number | null;
+	ast: string;
+}
+
+interface InventoryEntry {
+	value: string;
+	count: number;
+	contexts: InventoryContext[];
+}
+
+interface BundleInventory {
+	commands: Map<string, InventoryEntry>;
+	routes: Map<string, InventoryEntry>;
+	sqlTables: Map<string, InventoryEntry>;
+	sqlIndexes: Map<string, InventoryEntry>;
+}
+
+type InventoryKind = keyof BundleInventory;
+
+interface InventoryChange extends InventoryEntry {
+	kind: InventoryKind;
+	delta: number;
+}
+
+interface InventoryDiff {
+	added: InventoryChange[];
+	removed: InventoryChange[];
+	countChanged: InventoryChange[];
+}
+
+type ReleaseSummarySectionKey =
+	| "features"
+	| "infrastructure"
+	| "authSecurity"
+	| "hardening"
+	| "behaviorChanges"
+	| "noise";
+
+interface ReleaseSummaryItem {
+	title: string;
+	confidence: "high" | "medium" | "low";
+	evidence: string[];
+	lines: number[];
+}
+
+type ReleaseSummary = Record<ReleaseSummarySectionKey, ReleaseSummaryItem[]>;
 
 interface SurfaceCluster {
 	lineStart: number;
@@ -275,9 +328,34 @@ const SURFACE_SECTION_TITLES: Record<SurfaceSectionKey, string> = {
 	messages: "Prompts, logs, and user text",
 };
 
+const INVENTORY_TITLES: Record<InventoryKind, string> = {
+	commands: "Declared commands",
+	routes: "HTTP routes / endpoints",
+	sqlTables: "SQL tables",
+	sqlIndexes: "SQL indexes",
+};
+
+const RELEASE_SUMMARY_TITLES: Record<ReleaseSummarySectionKey, string> = {
+	features: "Likely Features",
+	infrastructure: "Infrastructure / Schema",
+	authSecurity: "Auth / Security",
+	hardening: "Hardening / Bug-Fix Hints",
+	behaviorChanges: "Behavior Changes / Removals",
+	noise: "Likely Noise / False Positives",
+};
+
+const RELEASE_SUMMARY_KEYS: ReleaseSummarySectionKey[] = [
+	"features",
+	"infrastructure",
+	"authSecurity",
+	"hardening",
+	"behaviorChanges",
+	"noise",
+];
+
 const SOURCE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.dirname(SOURCE_DIR);
-const CACHE_SCHEMA_VERSION = 5;
+const CACHE_SCHEMA_VERSION = 8;
 const DEFAULT_CACHE_DIR = path.join(REPO_ROOT, ".cache", "bundle-diff");
 const DEFAULT_DIFF_CONFIG: DiffConfig = {
 	ignoreTokens: [],
@@ -285,10 +363,29 @@ const DEFAULT_DIFF_CONFIG: DiffConfig = {
 	highSignalTokens: [],
 };
 
+const ROUTE_COLLECTION_NAME_PATTERN =
+	/(?:^|_)(?:api)?(?:routes?|endpoints?|uris?)(?:_|$)|(?:routes?|endpoints?|uris?)$/i;
+const ROUTE_STRONG_KEY_PATTERN = /(?:endpoint|route|uri)$/i;
+const ROUTE_WEAK_PATH_KEY_PATTERN = /(?:^path$|path$)/i;
+const ROUTE_METHOD_NAMES = new Set([
+	"all",
+	"delete",
+	"get",
+	"head",
+	"options",
+	"patch",
+	"post",
+	"put",
+	"route",
+	"use",
+]);
+
 const FOCUS_MODES: FocusMode[] = [
 	"all",
 	"commands",
 	"env",
+	"inventory",
+	"release",
 	"removals",
 	"rewrites",
 	"prompts",
@@ -398,9 +495,9 @@ async function main() {
 					})
 					.option("cache", {
 						type: "boolean",
-						default: false,
+						default: true,
 						description:
-							"Cache extracted bundle surfaces under .cache/bundle-diff",
+							"Cache extracted bundle facts under .cache/bundle-diff; pass --no-cache to force a reparse",
 					})
 					.option("cache-dir", {
 						type: "string",
@@ -416,7 +513,7 @@ async function main() {
 						choices: FOCUS_MODES,
 						default: "all",
 						description:
-							"Show a focused report section (commands, env, removals, rewrites, prompts, settings, patches)",
+							"Show a focused report section (commands, env, inventory, release, removals, rewrites, prompts, settings, patches)",
 					})
 					.option("markdown", {
 						type: "boolean",
@@ -455,9 +552,9 @@ async function main() {
 					})
 					.option("cache", {
 						type: "boolean",
-						default: false,
+						default: true,
 						description:
-							"Cache extracted bundle surfaces under .cache/bundle-diff",
+							"Cache extracted bundle facts under .cache/bundle-diff; pass --no-cache to force a reparse",
 					})
 					.option("cache-dir", {
 						type: "string",
@@ -523,6 +620,332 @@ function uniqueMatches(code: string, pattern: RegExp): string[] {
 	return [...values].sort();
 }
 
+const INVENTORY_KINDS: InventoryKind[] = [
+	"commands",
+	"routes",
+	"sqlTables",
+	"sqlIndexes",
+];
+
+function createEmptyInventory(): BundleInventory {
+	return {
+		commands: new Map(),
+		routes: new Map(),
+		sqlTables: new Map(),
+		sqlIndexes: new Map(),
+	};
+}
+
+function addInventoryEntry(
+	inventory: BundleInventory,
+	kind: InventoryKind,
+	rawValue: string,
+	nodePath: any,
+	contextLimit: number,
+): void {
+	const value = normalizeInventoryValue(rawValue);
+	if (!value) return;
+	const bucket = inventory[kind];
+	const existing = bucket.get(value);
+	const context = buildInventoryContext(nodePath);
+	if (existing) {
+		existing.count += 1;
+		if (existing.contexts.length < contextLimit)
+			existing.contexts.push(context);
+		return;
+	}
+	bucket.set(value, { value, count: 1, contexts: [context] });
+}
+
+function normalizeInventoryValue(value: string): string {
+	return value.replace(/\s+/g, " ").trim();
+}
+
+function buildInventoryContext(nodePath: any): InventoryContext {
+	return {
+		line: nodePath.node.loc?.start.line ?? null,
+		ast: generateAstBreadcrumbs(nodePath),
+	};
+}
+
+function extractCommandName(node: t.CallExpression): string | null {
+	const callee = node.callee;
+	if (!t.isMemberExpression(callee)) return null;
+	const property = callee.property;
+	const isCommand =
+		(t.isIdentifier(property) && property.name === "command") ||
+		(t.isStringLiteral(property) && property.value === "command");
+	if (!isCommand) return null;
+	const [firstArg] = node.arguments;
+	if (!t.isStringLiteral(firstArg)) return null;
+	return firstArg.value;
+}
+
+function commandAliasForInitializer(
+	node: t.Node | null | undefined,
+	commandAliases: Map<string, string>,
+): string | null {
+	if (!node) return null;
+	if (t.isCallExpression(node)) return extractCommandPath(node, commandAliases);
+	if (t.isMemberExpression(node)) {
+		const object = node.object;
+		if (t.isIdentifier(object)) return commandAliases.get(object.name) ?? null;
+	}
+	return null;
+}
+
+function extractCommandPath(
+	node: t.CallExpression,
+	commandAliases: Map<string, string>,
+): string | null {
+	const direct = extractDirectCommandPath(node, commandAliases);
+	if (direct) return direct;
+	const callee = node.callee;
+	if (!t.isMemberExpression(callee)) return null;
+	if (t.isCallExpression(callee.object)) {
+		return extractCommandPath(callee.object, commandAliases);
+	}
+	if (t.isIdentifier(callee.object)) {
+		return commandAliases.get(callee.object.name) ?? null;
+	}
+	return null;
+}
+
+function extractDirectCommandPath(
+	node: t.CallExpression,
+	commandAliases: Map<string, string>,
+): string | null {
+	const name = extractCommandName(node);
+	if (!name) return null;
+	const callee = node.callee;
+	if (!t.isMemberExpression(callee)) return name;
+	if (t.isIdentifier(callee.object)) {
+		const parent = commandAliases.get(callee.object.name);
+		return parent ? `${parent} ${name}` : name;
+	}
+	if (t.isCallExpression(callee.object)) {
+		const parent = extractCommandPath(callee.object, commandAliases);
+		return parent ? `${parent} ${name}` : name;
+	}
+	return name;
+}
+
+function isLikelyRouteValue(
+	value: string,
+	nodePath: any,
+	objectKey?: string,
+): boolean {
+	const normalized = normalizeInventoryValue(value);
+	if (!looksLikeRoute(normalized)) return false;
+	if (hasKnownRoutePrefix(normalized)) return true;
+	if (objectKey && isLikelyRouteObjectKey(objectKey, normalized, nodePath))
+		return true;
+	if (isRouteRegistrationCallContext(nodePath)) return true;
+	if (isRouteCollectionContext(nodePath)) return true;
+	return isRouteComparisonContext(nodePath);
+}
+
+function isLikelyRouteKey(value: string, nodePath: any): boolean {
+	const normalized = normalizeInventoryValue(value);
+	if (!looksLikeRoute(normalized)) return false;
+	return (
+		hasKnownRoutePrefix(normalized) ||
+		isRouteRegistrationCallContext(nodePath) ||
+		isRouteCollectionContext(nodePath) ||
+		isRouteObjectContext(nodePath)
+	);
+}
+
+function looksLikeRoute(value: string): boolean {
+	const route = value.startsWith("${}/") ? value.slice(3) : value;
+	return /^\/(?:\.well-known\/)?[A-Za-z0-9][A-Za-z0-9._~!$&'()*+,;=:@%/-]*$/.test(
+		route,
+	);
+}
+
+function hasKnownRoutePrefix(value: string): boolean {
+	const route = value.startsWith("${}/") ? value.slice(3) : value;
+	return /^\/(?:v\d+|api|oauth|\.well-known|healthz|readyz|status|protocol|device|managed|user)(?:\/|$)/i.test(
+		route,
+	);
+}
+
+function isLikelyRouteObjectKey(
+	key: string,
+	value: string,
+	nodePath: any,
+): boolean {
+	if (ROUTE_STRONG_KEY_PATTERN.test(key)) return true;
+	if (!ROUTE_WEAK_PATH_KEY_PATTERN.test(key)) return false;
+	return (
+		hasKnownRoutePrefix(value) ||
+		isRouteRegistrationCallContext(nodePath) ||
+		isRouteCollectionContext(nodePath) ||
+		isRouteObjectContext(nodePath)
+	);
+}
+
+function isRouteRegistrationCallContext(nodePath: any): boolean {
+	let current = nodePath;
+	while (current?.parentPath) {
+		const parent = current.parentPath.node;
+		if (t.isCallExpression(parent)) {
+			const index = parent.arguments.indexOf(current.node);
+			if (index === 0 && isRouteRegistrationCallee(parent.callee)) {
+				return true;
+			}
+		}
+		if (
+			!t.isTemplateLiteral(parent) &&
+			!t.isStringLiteral(parent) &&
+			!t.isArrayExpression(parent) &&
+			!t.isObjectProperty(parent) &&
+			!t.isObjectExpression(parent) &&
+			!t.isMemberExpression(parent)
+		) {
+			return false;
+		}
+		current = current.parentPath;
+	}
+	return false;
+}
+
+function isRouteRegistrationCallee(
+	callee: t.Expression | t.V8IntrinsicIdentifier,
+): boolean {
+	const name = calleeName(callee);
+	return name ? ROUTE_METHOD_NAMES.has(name) : false;
+}
+
+function calleeName(
+	callee: t.Expression | t.V8IntrinsicIdentifier,
+): string | null {
+	if (t.isIdentifier(callee)) return callee.name;
+	if (!t.isMemberExpression(callee)) return null;
+	const property = callee.property;
+	if (t.isIdentifier(property)) return property.name;
+	if (t.isStringLiteral(property)) return property.value;
+	return null;
+}
+
+function isRouteCollectionContext(nodePath: any): boolean {
+	let current = nodePath;
+	while (current?.parentPath) {
+		const parent = current.parentPath.node;
+		if (
+			t.isVariableDeclarator(parent) &&
+			parent.init === current.node &&
+			t.isIdentifier(parent.id) &&
+			isRouteCollectionName(parent.id.name)
+		) {
+			return true;
+		}
+		if (
+			t.isAssignmentExpression(parent) &&
+			parent.right === current.node &&
+			routeCollectionTargetName(parent.left)
+		) {
+			return true;
+		}
+		if (t.isObjectProperty(parent) && parent.value === current.node) {
+			const key = objectKeyToString(parent.key);
+			if (key && isRouteCollectionName(key)) return true;
+		}
+		current = current.parentPath;
+	}
+	return false;
+}
+
+function routeCollectionTargetName(left: t.Node): string | null {
+	if (t.isIdentifier(left) && isRouteCollectionName(left.name))
+		return left.name;
+	if (!t.isMemberExpression(left)) return null;
+	const property = left.property;
+	const name = t.isIdentifier(property)
+		? property.name
+		: t.isStringLiteral(property)
+			? property.value
+			: null;
+	return name && isRouteCollectionName(name) ? name : null;
+}
+
+function isRouteCollectionName(name: string): boolean {
+	return ROUTE_COLLECTION_NAME_PATTERN.test(name);
+}
+
+function isRouteObjectContext(nodePath: any): boolean {
+	let current = nodePath.parentPath;
+	while (current) {
+		if (t.isObjectExpression(current.node)) {
+			const keys = new Set<string>();
+			let hasHttpMethod = false;
+			for (const property of current.node.properties) {
+				if (!t.isObjectProperty(property)) continue;
+				const key = objectKeyToString(property.key);
+				if (key) keys.add(key);
+				const value = labelValueToString(property.value);
+				if (
+					key?.toLowerCase() === "method" &&
+					value &&
+					ROUTE_METHOD_NAMES.has(value.toLowerCase())
+				) {
+					hasHttpMethod = true;
+				}
+			}
+			return (
+				hasHttpMethod ||
+				[...keys].some((key) => ROUTE_STRONG_KEY_PATTERN.test(key)) ||
+				isRouteCollectionContext(current)
+			);
+		}
+		current = current.parentPath;
+	}
+	return false;
+}
+
+function isRouteComparisonContext(nodePath: any): boolean {
+	let current = nodePath.parentPath;
+	while (current) {
+		const node = current.node;
+		if (
+			t.isBinaryExpression(node) &&
+			["===", "!==", "==", "!="].includes(node.operator)
+		) {
+			return true;
+		}
+		if (
+			!t.isTemplateLiteral(node) &&
+			!t.isStringLiteral(node) &&
+			!t.isMemberExpression(node)
+		) {
+			return false;
+		}
+		current = current.parentPath;
+	}
+	return false;
+}
+
+function addSqlInventoryFromText(
+	text: string,
+	nodePath: any,
+	addInventory: (kind: InventoryKind, rawValue: string, nodePath: any) => void,
+): void {
+	for (const match of text.matchAll(
+		/\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?("?[\w.]+"?)/gi,
+	)) {
+		addInventory("sqlTables", stripSqlIdentifier(match[1]), nodePath);
+	}
+	for (const match of text.matchAll(
+		/\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?("?[\w.]+"?)/gi,
+	)) {
+		addInventory("sqlIndexes", stripSqlIdentifier(match[1]), nodePath);
+	}
+}
+
+function stripSqlIdentifier(value: string): string {
+	return value.replace(/^"|"$/g, "");
+}
+
 function extractBundleFacts(
 	file: string,
 	options: BundleDiffOptions,
@@ -533,9 +956,13 @@ function extractBundleFacts(
 		if (cached) return cached;
 	}
 
-	const code = fs.readFileSync(file, "utf-8");
+	let code = fs.readFileSync(file, "utf-8");
+	const metadata = extractMetadata(file, code);
 	const ast = parse(code);
+	code = "";
 	const surfaces = new Map<string, SurfaceEntry>();
+	const inventory = createEmptyInventory();
+	const commandAliases = new Map<string, string>();
 
 	const addSurface = (
 		rawValue: string,
@@ -572,6 +999,20 @@ function extractBundleFacts(
 		});
 	};
 
+	const addInventory = (
+		kind: InventoryKind,
+		rawValue: string,
+		nodePath: any,
+	) => {
+		addInventoryEntry(
+			inventory,
+			kind,
+			rawValue,
+			nodePath,
+			options.contextLimit,
+		);
+	};
+
 	const addReminderAndRemainder = (
 		text: string,
 		nodePath: any,
@@ -590,6 +1031,22 @@ function extractBundleFacts(
 	};
 
 	traverse(ast, {
+		VariableDeclarator(nodePath: any) {
+			if (!t.isIdentifier(nodePath.node.id)) return;
+			const commandPath = commandAliasForInitializer(
+				nodePath.node.init,
+				commandAliases,
+			);
+			if (commandPath) commandAliases.set(nodePath.node.id.name, commandPath);
+		},
+		AssignmentExpression(nodePath: any) {
+			if (!t.isIdentifier(nodePath.node.left)) return;
+			const commandPath = commandAliasForInitializer(
+				nodePath.node.right,
+				commandAliases,
+			);
+			if (commandPath) commandAliases.set(nodePath.node.left.name, commandPath);
+		},
 		ObjectMethod(nodePath: any) {
 			const key = objectKeyToString(nodePath.node.key);
 			if (key) addSurface(key, "object-method-key", nodePath, "object-key");
@@ -598,6 +1055,8 @@ function extractBundleFacts(
 			const key = objectKeyToString(nodePath.node.key);
 			if (key) {
 				addSurface(key, "object-property-key", nodePath, "object-key");
+				if (isLikelyRouteKey(key, nodePath))
+					addInventory("routes", key, nodePath);
 
 				const labelValue = labelValueToString(nodePath.node.value);
 				if (labelValue && HIGH_SIGNAL_LABEL_KEYS.has(key)) {
@@ -608,6 +1067,14 @@ function extractBundleFacts(
 						"object-label",
 					);
 				}
+				if (key === "command" && labelValue) {
+					addInventory("commands", labelValue, nodePath);
+				}
+				if (labelValue && isLikelyRouteValue(labelValue, nodePath, key)) {
+					addInventory("routes", labelValue, nodePath);
+				}
+				if (labelValue)
+					addSqlInventoryFromText(labelValue, nodePath, addInventory);
 			}
 		},
 		RegExpLiteral(nodePath: any) {
@@ -619,6 +1086,10 @@ function extractBundleFacts(
 			);
 		},
 		StringLiteral(nodePath: any) {
+			if (isLikelyRouteValue(nodePath.node.value, nodePath)) {
+				addInventory("routes", nodePath.node.value, nodePath);
+			}
+			addSqlInventoryFromText(nodePath.node.value, nodePath, addInventory);
 			if (isObjectPropertyKey(nodePath)) return;
 			if (addReminderAndRemainder(nodePath.node.value, nodePath, "string")) {
 				return;
@@ -627,6 +1098,9 @@ function extractBundleFacts(
 		},
 		TemplateLiteral(nodePath: any) {
 			const shape = templateShape(nodePath.node);
+			if (isLikelyRouteValue(shape, nodePath))
+				addInventory("routes", shape, nodePath);
+			addSqlInventoryFromText(shape, nodePath, addInventory);
 			if (addReminderAndRemainder(shape, nodePath, "template", "template")) {
 				return;
 			}
@@ -640,6 +1114,11 @@ function extractBundleFacts(
 			}
 		},
 		CallExpression(nodePath: any) {
+			const commandPath = extractDirectCommandPath(
+				nodePath.node,
+				commandAliases,
+			);
+			if (commandPath) addInventory("commands", commandPath, nodePath);
 			for (const write of extractSettingsWrites(nodePath.node)) {
 				addSurface(write, "settings-write", nodePath, "settings-write");
 			}
@@ -647,8 +1126,9 @@ function extractBundleFacts(
 	});
 
 	const facts = {
-		metadata: extractMetadata(file, code),
+		metadata,
 		surfaces,
+		inventory,
 	};
 	if (options.cache) writeCachedBundleFacts(file, options, facts);
 	return facts;
@@ -664,10 +1144,12 @@ function readCachedBundleFacts(
 		const raw = JSON.parse(fs.readFileSync(cachePath, "utf-8")) as {
 			metadata: BundleMetadata;
 			surfaces: [string, SurfaceEntry][];
+			inventory?: Partial<Record<InventoryKind, [string, InventoryEntry][]>>;
 		};
 		return {
 			metadata: raw.metadata,
 			surfaces: new Map(raw.surfaces),
+			inventory: deserializeInventory(raw.inventory),
 		};
 	} catch {
 		return null;
@@ -680,18 +1162,45 @@ function writeCachedBundleFacts(
 	facts: BundleFacts,
 ): void {
 	const cachePath = getBundleFactsCachePath(file, options);
-	fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-	fs.writeFileSync(
-		cachePath,
-		JSON.stringify(
-			{
-				metadata: facts.metadata,
-				surfaces: [...facts.surfaces.entries()],
-			},
-			null,
-			2,
-		),
-	);
+	try {
+		fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+		fs.writeFileSync(
+			cachePath,
+			JSON.stringify(
+				{
+					metadata: facts.metadata,
+					surfaces: [...facts.surfaces.entries()],
+					inventory: serializeInventory(facts.inventory),
+				},
+				null,
+				2,
+			),
+		);
+	} catch {
+		// Cache writes are an optimization; read-only worktrees should still diff.
+	}
+}
+
+function serializeInventory(
+	inventory: BundleInventory,
+): Record<InventoryKind, [string, InventoryEntry][]> {
+	return {
+		commands: [...inventory.commands.entries()],
+		routes: [...inventory.routes.entries()],
+		sqlTables: [...inventory.sqlTables.entries()],
+		sqlIndexes: [...inventory.sqlIndexes.entries()],
+	};
+}
+
+function deserializeInventory(
+	raw: Partial<Record<InventoryKind, [string, InventoryEntry][]>> | undefined,
+): BundleInventory {
+	const inventory = createEmptyInventory();
+	if (!raw) return inventory;
+	for (const kind of INVENTORY_KINDS) {
+		inventory[kind] = new Map(raw[kind] ?? []);
+	}
+	return inventory;
 }
 
 function getBundleFactsCachePath(
@@ -973,7 +1482,13 @@ function buildBundleDiffReport(
 	const rewriteCandidates = buildRewriteCandidates(removed, added, {
 		includeCrossPrefix: false,
 	});
+	const commandCandidates = buildCommandCandidates(
+		added,
+		removed,
+		countChanged,
+	);
 
+	const inventory = buildInventoryDiff(oldFacts.inventory, newFacts.inventory);
 	const report: BundleDiffReport = {
 		old: oldFacts.metadata,
 		new: newFacts.metadata,
@@ -997,7 +1512,15 @@ function buildBundleDiffReport(
 		rewriteCandidates,
 		addedCapabilities: buildCapabilityCandidates(added, options.config),
 		removedCapabilities: buildCapabilityCandidates(removed, options.config),
-		commandCandidates: buildCommandCandidates(added, removed, countChanged),
+		commandCandidates,
+		inventory,
+		releaseSummary: buildReleaseSummary({
+			added,
+			removed,
+			inventory,
+			commandCandidates,
+			rewriteCandidates,
+		}),
 		patchRelevance: buildPatchRelevance(
 			added,
 			removed,
@@ -1026,6 +1549,405 @@ function countByKind(changes: SurfaceChange[]): Record<SurfaceKind, number> {
 		SURFACE_KINDS.map((kind) => [kind, 0]),
 	) as Record<SurfaceKind, number>;
 	for (const change of changes) result[change.kind] += 1;
+	return result;
+}
+
+function buildInventoryDiff(
+	oldInventory: BundleInventory,
+	newInventory: BundleInventory,
+): InventoryDiff {
+	const added: InventoryChange[] = [];
+	const removed: InventoryChange[] = [];
+	const countChanged: InventoryChange[] = [];
+
+	for (const kind of INVENTORY_KINDS) {
+		const oldEntries = oldInventory[kind];
+		const newEntries = newInventory[kind];
+		for (const [value, entry] of newEntries.entries()) {
+			const oldEntry = oldEntries.get(value);
+			if (!oldEntry) {
+				added.push({ ...entry, kind, delta: entry.count });
+			} else if (oldEntry.count !== entry.count) {
+				countChanged.push({
+					...entry,
+					kind,
+					delta: entry.count - oldEntry.count,
+				});
+			}
+		}
+		for (const [value, entry] of oldEntries.entries()) {
+			if (!newEntries.has(value)) {
+				removed.push({ ...entry, kind, delta: -entry.count });
+			}
+		}
+	}
+
+	sortInventoryChanges(added);
+	sortInventoryChanges(removed);
+	sortInventoryChanges(countChanged);
+	return { added, removed, countChanged };
+}
+
+function sortInventoryChanges(changes: InventoryChange[]): void {
+	changes.sort((a, b) => {
+		const kindDelta =
+			INVENTORY_KINDS.indexOf(a.kind) - INVENTORY_KINDS.indexOf(b.kind);
+		if (kindDelta !== 0) return kindDelta;
+		const lineDelta = (a.contexts[0]?.line ?? 0) - (b.contexts[0]?.line ?? 0);
+		if (lineDelta !== 0) return lineDelta;
+		return a.value.localeCompare(b.value);
+	});
+}
+
+interface ReleaseSummaryInput {
+	added: SurfaceChange[];
+	removed: SurfaceChange[];
+	inventory: InventoryDiff;
+	commandCandidates: CommandCandidate[];
+	rewriteCandidates: RewriteCandidate[];
+}
+
+function buildReleaseSummary(input: ReleaseSummaryInput): ReleaseSummary {
+	const summary = createEmptyReleaseSummary();
+	const addItem = createReleaseSummaryAdder(summary);
+
+	const addedCommands = input.inventory.added.filter(
+		(change) => change.kind === "commands",
+	);
+	for (const command of addedCommands) {
+		addItem("features", {
+			title: `Command added: ${command.value}`,
+			confidence: "high",
+			evidence: [formatInventoryEvidence(command)],
+			lines: inventoryLines([command]),
+		});
+	}
+	addCommandCandidateSummaries(addedCommands, input.commandCandidates, addItem);
+
+	const addedRoutes = input.inventory.added.filter(
+		(change) => change.kind === "routes",
+	);
+	addRouteFamilySummaries(addedRoutes, addItem);
+
+	const addedTables = input.inventory.added.filter(
+		(change) => change.kind === "sqlTables",
+	);
+	const addedIndexes = input.inventory.added.filter(
+		(change) => change.kind === "sqlIndexes",
+	);
+	if (addedTables.length > 0) {
+		addItem("infrastructure", {
+			title: `SQL schema added: ${summarizeValues(addedTables)}`,
+			confidence: "high",
+			evidence: [
+				...addedTables.slice(0, 8).map(formatInventoryEvidence),
+				...addedIndexes.slice(0, 4).map(formatInventoryEvidence),
+			],
+			lines: inventoryLines([...addedTables, ...addedIndexes]),
+		});
+	}
+
+	addKeywordSurfaceSummary(
+		input.added,
+		addItem,
+		"authSecurity",
+		"Auth/security surface added",
+		/(?:oauth|openid|oidc|jose|jwt|jwe|jws|jwk|issuer|token|credential|bearer|certificate|proxy|private|public|signature|algorithm)/i,
+		"medium",
+	);
+	addKeywordSurfaceSummary(
+		input.added,
+		addItem,
+		"hardening",
+		"Hardening or bug-fix hint added",
+		/(?:mismatch|timeout|timed out|invalid|rejected|missing|required|failed|failure|unavailable|outside|stale|retry|denied|forbidden|too large|malformed|parse|resolved?|symlink|junction|unc|not allowed)/i,
+		"medium",
+	);
+
+	const removedHighSignal = input.removed.filter(
+		(change) => SURFACE_KIND_ORDER[change.kind] >= 60,
+	);
+	if (removedHighSignal.length > 0) {
+		const evidenceHits = removedHighSignal.slice(0, 8);
+		addItem("behaviorChanges", {
+			title: "High-signal public text or labels removed",
+			confidence: "medium",
+			evidence: evidenceHits.map(formatSurfaceEvidence),
+			lines: surfaceLines(evidenceHits),
+		});
+	}
+
+	const removedCommands = input.inventory.removed.filter(
+		(change) => change.kind === "commands",
+	);
+	if (removedCommands.length > 0) {
+		addItem("behaviorChanges", {
+			title: `Command removed: ${summarizeValues(removedCommands)}`,
+			confidence: "high",
+			evidence: removedCommands.slice(0, 8).map(formatInventoryEvidence),
+			lines: inventoryLines(removedCommands),
+		});
+	}
+
+	const likelyFlagNoise = input.added.filter(
+		(change) =>
+			change.kind === "cli-flag" &&
+			!input.inventory.added.some(
+				(inventory) =>
+					inventory.kind === "commands" &&
+					change.contexts.some((context) =>
+						inventory.contexts.some(
+							(inventoryContext) =>
+								context.line !== null &&
+								inventoryContext.line !== null &&
+								Math.abs(context.line - inventoryContext.line) <= 8,
+						),
+					),
+			),
+	);
+	if (likelyFlagNoise.length > 0) {
+		const evidenceHits = likelyFlagNoise.slice(0, 6);
+		addItem("noise", {
+			title: "Flag-shaped strings not tied to declared commands",
+			confidence: "medium",
+			evidence: evidenceHits.map(formatSurfaceEvidence),
+			lines: surfaceLines(evidenceHits),
+		});
+	}
+
+	const rewriteEvidence = input.rewriteCandidates
+		.filter((candidate) => candidate.score >= 0.82)
+		.slice(0, 6);
+	if (rewriteEvidence.length > 0) {
+		addItem("behaviorChanges", {
+			title: "Likely text rewrites",
+			confidence: "low",
+			evidence: rewriteEvidence.map(
+				(rewrite) =>
+					`${truncateForDisplay(rewrite.oldChange.value, 80)} -> ${truncateForDisplay(rewrite.newChange.value, 80)}`,
+			),
+			lines: rewriteEvidence.flatMap((rewrite) =>
+				[
+					rewrite.oldChange.contexts[0]?.line,
+					rewrite.newChange.contexts[0]?.line,
+				].filter((line): line is number => line !== null && line !== undefined),
+			),
+		});
+	}
+
+	return summary;
+}
+
+function createEmptyReleaseSummary(): ReleaseSummary {
+	return {
+		features: [],
+		infrastructure: [],
+		authSecurity: [],
+		hardening: [],
+		behaviorChanges: [],
+		noise: [],
+	};
+}
+
+function releaseSummaryHasItems(summary: ReleaseSummary): boolean {
+	return RELEASE_SUMMARY_KEYS.some((section) => summary[section].length > 0);
+}
+
+function createReleaseSummaryAdder(summary: ReleaseSummary) {
+	const seen = new Set<string>();
+	return (section: ReleaseSummarySectionKey, item: ReleaseSummaryItem) => {
+		const key = `${section}\0${item.title}`;
+		if (seen.has(key)) return;
+		seen.add(key);
+		summary[section].push({
+			...item,
+			evidence: item.evidence.slice(0, 10),
+			lines: uniqueNumbers(item.lines).slice(0, 10),
+		});
+	};
+}
+
+function addCommandCandidateSummaries(
+	inventoryCommands: InventoryChange[],
+	commandCandidates: CommandCandidate[],
+	addItem: ReturnType<typeof createReleaseSummaryAdder>,
+): void {
+	const inventoryKeys = new Set(
+		inventoryCommands.map((command) => commandSummaryKey(command.value)),
+	);
+	for (const command of commandCandidates) {
+		if (command.change !== "added") continue;
+		if (!isUsefulCommandSummaryCandidate(command)) continue;
+		const key = commandSummaryKey(command.command);
+		if (inventoryKeys.has(key)) continue;
+		inventoryKeys.add(key);
+		addItem("features", {
+			title: `Command candidate added: ${command.command}`,
+			confidence: command.confidence,
+			evidence: formatCommandCandidateEvidence(command),
+			lines: command.line ? [command.line] : [],
+		});
+	}
+}
+
+function isUsefulCommandSummaryCandidate(command: CommandCandidate): boolean {
+	return (
+		command.confidence === "high" ||
+		command.descriptions.length > 0 ||
+		command.flags.length > 0
+	);
+}
+
+function commandSummaryKey(command: string): string {
+	return command
+		.replace(/^claude\s+/, "")
+		.replace(/\s+(?:\[[^\]]+\]|<[^>]+>)/g, "")
+		.replace(/\s+/g, " ")
+		.trim()
+		.toLowerCase();
+}
+
+function formatCommandCandidateEvidence(command: CommandCandidate): string[] {
+	const evidence = [
+		`command: ${command.command}${command.line ? ` (line ${command.line})` : ""}`,
+	];
+	for (const description of command.descriptions.slice(0, 2)) {
+		evidence.push(`description: ${truncateForDisplay(description, 100)}`);
+	}
+	if (command.flags.length > 0) {
+		evidence.push(`flags: ${command.flags.slice(0, 6).join(", ")}`);
+	}
+	return evidence;
+}
+
+function addRouteFamilySummaries(
+	routes: InventoryChange[],
+	addItem: ReturnType<typeof createReleaseSummaryAdder>,
+): void {
+	const routeFamilies: Array<{
+		title: string;
+		section: ReleaseSummarySectionKey;
+		confidence: ReleaseSummaryItem["confidence"];
+		match: RegExp;
+	}> = [
+		{
+			title: "OAuth/device authorization routes added",
+			section: "authSecurity",
+			confidence: "high",
+			match: /(?:oauth|device|callback|openid|well-known)/i,
+		},
+		{
+			title: "Telemetry ingestion routes added",
+			section: "infrastructure",
+			confidence: "high",
+			match: /\/(?:logs|metrics|traces)(?:$|[/?#])/i,
+		},
+		{
+			title: "Admin or organization routes added",
+			section: "features",
+			confidence: "high",
+			match: /(?:admin|audit|effective|organizations?|settings|bootstrap)/i,
+		},
+		{
+			title: "Health/readiness/protocol routes added",
+			section: "infrastructure",
+			confidence: "high",
+			match: /(?:health|ready|protocol|status|live)/i,
+		},
+		{
+			title: "API routes added",
+			section: "features",
+			confidence: "medium",
+			match: /^\/?(?:\$\{\}\/)?(?:api|v\d+)\//i,
+		},
+	];
+	const matched = new Set<InventoryChange>();
+	for (const family of routeFamilies) {
+		const hits = routes.filter(
+			(route) => !matched.has(route) && family.match.test(route.value),
+		);
+		if (hits.length === 0) continue;
+		hits.forEach((hit) => {
+			matched.add(hit);
+		});
+		addItem(family.section, {
+			title: `${family.title}: ${summarizeValues(hits)}`,
+			confidence: family.confidence,
+			evidence: hits.slice(0, 8).map(formatInventoryEvidence),
+			lines: inventoryLines(hits),
+		});
+	}
+	const unmatched = routes.filter((route) => !matched.has(route));
+	if (unmatched.length > 0) {
+		addItem("features", {
+			title: `Other routes added: ${summarizeValues(unmatched)}`,
+			confidence: "medium",
+			evidence: unmatched.slice(0, 8).map(formatInventoryEvidence),
+			lines: inventoryLines(unmatched),
+		});
+	}
+}
+
+function addKeywordSurfaceSummary(
+	changes: SurfaceChange[],
+	addItem: ReturnType<typeof createReleaseSummaryAdder>,
+	section: ReleaseSummarySectionKey,
+	title: string,
+	pattern: RegExp,
+	confidence: ReleaseSummaryItem["confidence"],
+): void {
+	const hits = changes.filter((change) => pattern.test(change.value));
+	if (hits.length === 0) return;
+	const evidenceHits = hits.slice(0, 10);
+	addItem(section, {
+		title,
+		confidence,
+		evidence: evidenceHits.map(formatSurfaceEvidence),
+		lines: surfaceLines(evidenceHits),
+	});
+}
+
+function summarizeValues(changes: Array<{ value: string }>, limit = 6): string {
+	const values = changes.map((change) => change.value);
+	const shown = values.slice(0, limit).join(", ");
+	if (values.length <= limit) return shown;
+	return `${shown}, +${values.length - limit} more`;
+}
+
+function formatInventoryEvidence(change: InventoryChange): string {
+	const line = change.contexts[0]?.line;
+	return `${change.kind}: ${change.value}${line ? ` (line ${line})` : ""}`;
+}
+
+function formatSurfaceEvidence(change: SurfaceChange): string {
+	const line = change.contexts[0]?.line;
+	return `${change.kind}: ${truncateForDisplay(stripObjectLabelKey(change.value), 120)}${line ? ` (line ${line})` : ""}`;
+}
+
+function inventoryLines(changes: InventoryChange[]): number[] {
+	return uniqueNumbers(
+		changes
+			.map((change) => change.contexts[0]?.line)
+			.filter((line): line is number => line !== null && line !== undefined),
+	);
+}
+
+function surfaceLines(changes: SurfaceChange[]): number[] {
+	return uniqueNumbers(
+		changes
+			.map((change) => change.contexts[0]?.line)
+			.filter((line): line is number => line !== null && line !== undefined),
+	);
+}
+
+function uniqueNumbers(values: number[]): number[] {
+	const seen = new Set<number>();
+	const result: number[] = [];
+	for (const value of values) {
+		if (seen.has(value)) continue;
+		seen.add(value);
+		result.push(value);
+	}
 	return result;
 }
 
@@ -1513,7 +2435,7 @@ function isNearLine(
 	);
 }
 
-function buildPatchRelevance(
+export function buildPatchRelevance(
 	added: SurfaceChange[],
 	removed: SurfaceChange[],
 	countChanged: SurfaceChange[],
@@ -2059,6 +2981,12 @@ function renderBundleDiffMarkdown(
 			limit,
 		);
 	}
+	if (focus === "all" || focus === "inventory") {
+		appendMarkdownInventory(lines, report.inventory, limit);
+	}
+	if (focus === "all" || focus === "release") {
+		appendMarkdownReleaseSummary(lines, report.releaseSummary, limit);
+	}
 	if (focus === "all" || focus === "env") {
 		appendMarkdownSection(
 			lines,
@@ -2186,6 +3114,60 @@ function appendMarkdownCommandCandidates(
 	lines.push("");
 }
 
+function appendMarkdownInventory(
+	lines: string[],
+	inventory: InventoryDiff,
+	limit: number,
+): void {
+	const changes = [
+		...inventory.added,
+		...inventory.removed,
+		...inventory.countChanged,
+	];
+	if (changes.length === 0) return;
+	lines.push("## Semantic Inventory", "");
+	for (const kind of INVENTORY_KINDS) {
+		const kindChanges = changes.filter((change) => change.kind === kind);
+		if (kindChanges.length === 0) continue;
+		lines.push(`### ${INVENTORY_TITLES[kind]}`, "");
+		for (const change of kindChanges.slice(0, limit)) {
+			const prefix = change.delta > 0 ? "+" : change.delta < 0 ? "-" : "~";
+			const line = change.contexts[0]?.line
+				? `, line ${change.contexts[0].line}`
+				: "";
+			lines.push(
+				`- ${prefix} ${escapeMarkdownInline(change.value)} (${formatDelta(change.delta)}${line})`,
+			);
+		}
+		lines.push("");
+	}
+}
+
+function appendMarkdownReleaseSummary(
+	lines: string[],
+	summary: ReleaseSummary,
+	limit: number,
+): void {
+	if (!releaseSummaryHasItems(summary)) return;
+	lines.push("## Release Summary", "");
+	for (const section of RELEASE_SUMMARY_KEYS) {
+		const items = summary[section];
+		if (items.length === 0) continue;
+		lines.push(`### ${RELEASE_SUMMARY_TITLES[section]}`, "");
+		for (const item of items.slice(0, limit)) {
+			const linesText =
+				item.lines.length > 0 ? `, lines ${item.lines.join(", ")}` : "";
+			lines.push(
+				`- **${escapeMarkdownInline(item.title)}** (${item.confidence}${linesText})`,
+			);
+			for (const evidence of item.evidence.slice(0, 3)) {
+				lines.push(`  - ${escapeMarkdownInline(evidence)}`);
+			}
+		}
+		lines.push("");
+	}
+}
+
 function appendMarkdownPrefixRewrites(
 	lines: string[],
 	rewrites: PrefixRewrite[],
@@ -2294,6 +3276,8 @@ function sliceBundleDiffReport(
 		addedCapabilities: report.addedCapabilities.slice(0, limit),
 		removedCapabilities: report.removedCapabilities.slice(0, limit),
 		commandCandidates: report.commandCandidates.slice(0, limit),
+		inventory: sliceInventoryDiff(report.inventory, limit),
+		releaseSummary: sliceReleaseSummary(report.releaseSummary, limit),
 		patchRelevance: report.patchRelevance.slice(0, limit),
 		promptExport: report.promptExport
 			? {
@@ -2305,6 +3289,33 @@ function sliceBundleDiffReport(
 				}
 			: undefined,
 	};
+}
+
+function sliceInventoryDiff(
+	inventory: InventoryDiff,
+	limit: number,
+): InventoryDiff {
+	return {
+		added: inventory.added.slice(0, limit),
+		removed: inventory.removed.slice(0, limit),
+		countChanged: inventory.countChanged.slice(0, limit),
+	};
+}
+
+function sliceReleaseSummary(
+	summary: ReleaseSummary,
+	limit: number,
+): ReleaseSummary {
+	return Object.fromEntries(
+		RELEASE_SUMMARY_KEYS.map((section) => [
+			section,
+			summary[section].slice(0, limit).map((item) => ({
+				...item,
+				evidence: item.evidence.slice(0, Math.min(limit, 3)),
+				lines: item.lines.slice(0, Math.min(limit, 10)),
+			})),
+		]),
+	) as ReleaseSummary;
 }
 
 function printBundleDiffReport(
@@ -2348,6 +3359,12 @@ function printBundleDiffReport(
 			new Set(["commands", "flags"]),
 		);
 		printCommandCandidates(report.commandCandidates.slice(0, limit));
+	}
+	if (focus === "all" || focus === "inventory") {
+		printInventoryDiff(report.inventory, limit);
+	}
+	if (focus === "all" || focus === "release") {
+		printReleaseSummary(report.releaseSummary, limit);
 	}
 	if (focus === "all" || focus === "env") {
 		printSurfaceSections(
@@ -2546,6 +3563,65 @@ function printCommandCandidates(commands: CommandCandidate[]): void {
 		}
 		for (const prompt of command.prompts.slice(0, 3)) {
 			console.log(`    prompt: ${truncateForDisplay(prompt, 110)}`);
+		}
+	}
+	console.log();
+}
+
+function printInventoryDiff(inventory: InventoryDiff, limit: number): void {
+	const changes = [
+		...inventory.added,
+		...inventory.removed,
+		...inventory.countChanged,
+	];
+	if (changes.length === 0) return;
+
+	console.log(chalk.bold("Semantic inventory"));
+	for (const kind of INVENTORY_KINDS) {
+		const kindChanges = changes.filter((change) => change.kind === kind);
+		if (kindChanges.length === 0) continue;
+		console.log(`  ${INVENTORY_TITLES[kind]}`);
+		for (const change of kindChanges.slice(0, limit)) {
+			const prefix =
+				change.delta > 0
+					? chalk.green("+")
+					: change.delta < 0
+						? chalk.red("-")
+						: chalk.yellow("~");
+			const line = change.contexts[0]?.line
+				? ` line ${change.contexts[0].line}`
+				: "";
+			const delta =
+				Math.abs(change.delta) === change.count
+					? ""
+					: ` ${chalk.gray(`count ${formatDelta(change.delta)}`)}`;
+			console.log(
+				`    ${prefix}${line}${delta} ${truncateForDisplay(change.value, 120)}`,
+			);
+		}
+	}
+	console.log();
+}
+
+function printReleaseSummary(summary: ReleaseSummary, limit: number): void {
+	if (!releaseSummaryHasItems(summary)) return;
+
+	console.log(chalk.bold("Release summary"));
+	for (const section of RELEASE_SUMMARY_KEYS) {
+		const items = summary[section];
+		if (items.length === 0) continue;
+		console.log(`  ${RELEASE_SUMMARY_TITLES[section]}`);
+		for (const item of items.slice(0, limit)) {
+			const lines =
+				item.lines.length > 0
+					? chalk.gray(` lines ${item.lines.slice(0, 6).join(", ")}`)
+					: "";
+			console.log(
+				`    ${chalk.cyan("-")} ${item.title} ${chalk.gray(`confidence ${item.confidence}`)}${lines}`,
+			);
+			for (const evidence of item.evidence.slice(0, 3)) {
+				console.log(`      ${truncateForDisplay(evidence, 130)}`);
+			}
 		}
 	}
 	console.log();
