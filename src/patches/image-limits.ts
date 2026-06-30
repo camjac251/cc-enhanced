@@ -5,6 +5,7 @@ import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
 const TARGET_METADATA_MODEL_KEYS = new Set([
 	"claude-fable-5",
+	"claude-sonnet-5",
 	"claude-opus-4-7",
 	"claude-opus-4-8",
 ]);

@@ -20,6 +20,7 @@ async function runImageLimitsViaPasses(ast: any): Promise<void> {
 const TARGET_KEYS = [
 	"claude-fable-5",
 	"claude-mythos-5",
+	"claude-sonnet-5",
 	"claude-opus-4-7",
 	"claude-opus-4-8",
 ];
@@ -62,6 +63,7 @@ function initRegistry() {
       { id: "claude-opus-4-7", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-fable-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
+      { id: "claude-sonnet-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-mythos-5" },
     ],
   };
@@ -87,6 +89,7 @@ function initRegistry() {
       { id: "claude-opus-4-7", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-fable-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
+      { id: "claude-sonnet-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-mythos-5" },
     ],
   };
@@ -112,6 +115,7 @@ function initRegistry() {
       { id: "claude-opus-4-7", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-fable-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
+      { id: "claude-sonnet-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-mythos-5" },
       { id: "claude-opus-5-0", image_limits: { maxWidth: 3000, maxHeight: 3000 } },
     ],
@@ -249,6 +253,7 @@ function initRegistry() {
   registry = {
     models: [
       { id: "claude-fable-5", image_limits: { maxWidth: BASE_W, maxHeight: BASE_W } },
+      { id: "claude-sonnet-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-opus-4-7", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
     ],
@@ -280,6 +285,7 @@ function initRegistry() {
   registry = {
     models: [
       { id: "claude-fable-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
+      { id: "claude-sonnet-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-opus-4-7", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
     ],
@@ -297,7 +303,7 @@ function initRegistry() {
 	assert.equal(imageLimits.verify(output, ast), true);
 });
 
-test("image-limits pins exactly the four target entries", async () => {
+test("image-limits pins exactly the five target entries", async () => {
 	const ast = parse(DOWNGRADED_FIXTURE);
 	await runImageLimitsViaPasses(ast);
 	const output = print(ast);
@@ -321,7 +327,7 @@ function initRegistry() {
 	assert.match(result as string, /missing/);
 });
 
-test("image-limits pins exactly four entries and never the adjacent base default object", async () => {
+test("image-limits pins exactly five entries and never the adjacent base default object", async () => {
 	const ast = parse(DOWNGRADED_FIXTURE);
 	await runImageLimitsViaPasses(ast);
 	const output = print(ast);
@@ -330,7 +336,7 @@ test("image-limits pins exactly four entries and never the adjacent base default
 	assert.equal(
 		pinned.length,
 		TARGET_KEYS.length,
-		"expected exactly the four model entries pinned to 2576",
+		"expected exactly the five model entries pinned to 2576",
 	);
 
 	// The base default object lives in an adjacent initializer; the matcher must
@@ -364,6 +370,7 @@ function initRegistry() {
       { id: "claude-opus-4-7", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-fable-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
+      { id: "claude-sonnet-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-mythos-5" },
     ],
   };
