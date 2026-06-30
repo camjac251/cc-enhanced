@@ -30,7 +30,7 @@ function readUltracodeFlag(state) {
 }
 
 function ultracodeAvailable(model) {
-  return workflowsEnabled() && (model === void 0 || supportsXhigh(model));
+  return workflowsEnabled() && (model === void 0 || (supportsUltracode(model) && supportsEffort("xhigh", model)));
 }
 
 function isUltracodeActive(model, effort, ultracode) {

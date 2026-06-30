@@ -160,6 +160,7 @@ const oversizedOutputWarning = "Pipe output through head, tail, or grep to reduc
 const escapedOversizedOutputWarning = "Pipe output through head, tail, or grep to reduce result size. Avoid cat on large files \\u2014 use Read with offset/limit instead.";
 const powershellOversizedOutputWarning = "Pipe output through Select-Object -First/-Last or Select-String to reduce result size. Avoid Get-Content on large files \\u2014 use Read with offset/limit instead.";
 const monitorGuidance = "Every pipe stage must flush per line. \`head\` cannot flush at all \\u2014 \`| head -N\` delivers nothing until N matches accumulate, then ends the stream.";
+const credentialMaterializationGuidance = "Partial output (\`| cut\`, \`| head\`, \`[:N]\`) still counts.";
 `;
 
 test("bash-tail verify rejects the unpatched fixture", () => {
@@ -196,6 +197,16 @@ test("bash-tail patches schema, prompt, persistence, and preview surfaces", asyn
 	assert.equal(
 		output.includes("delivers nothing until N matches accumulate"),
 		false,
+	);
+	assert.equal(
+		output.includes("Partial output (`| cut`, `| head`, `[:N]`) still counts."),
+		false,
+	);
+	assert.equal(
+		output.includes(
+			"Partial output through shell filters or string slices still counts.",
+		),
+		true,
 	);
 	assert.equal(
 		output.includes(

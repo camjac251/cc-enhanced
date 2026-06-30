@@ -49,6 +49,12 @@ const MONITOR_COPYABLE_PIPE_HEAD_RE =
 const MODERN_MONITOR_HEAD_WARNING =
 	"`head` waits for its quota before ending the stream, so it delays notifications instead of streaming useful events.";
 
+const CREDENTIAL_PARTIAL_OUTPUT_COPYABLE_PIPE_RE =
+	/Partial output \((?:\\`|`)\| cut(?:\\`|`), (?:\\`|`)\| head(?:\\`|`), (?:\\`|`)\[:N\](?:\\`|`)\) still counts\./g;
+
+const MODERN_CREDENTIAL_PARTIAL_OUTPUT_WARNING =
+	"Partial output through shell filters or string slices still counts.";
+
 // --- Helpers ---
 
 function hasCopyableOutputCapPipeText(value: string, command: "head" | "tail") {
@@ -722,7 +728,11 @@ export const bashOutputTail: Patch = {
 		code = code
 			.replace(LEGACY_TOKEN_WARNING_RE, MODERN_OUTPUT_LIMIT_WARNING)
 			.replace(LEGACY_POWERSHELL_TOKEN_WARNING_RE, MODERN_OUTPUT_LIMIT_WARNING)
-			.replace(MONITOR_COPYABLE_PIPE_HEAD_RE, MODERN_MONITOR_HEAD_WARNING);
+			.replace(MONITOR_COPYABLE_PIPE_HEAD_RE, MODERN_MONITOR_HEAD_WARNING)
+			.replace(
+				CREDENTIAL_PARTIAL_OUTPUT_COPYABLE_PIPE_RE,
+				MODERN_CREDENTIAL_PARTIAL_OUTPUT_WARNING,
+			);
 
 		// Insert disk persistence / output_tail guidance into the Bash prompt.
 		// The current prompt builder emits an array of strings (one per bullet).

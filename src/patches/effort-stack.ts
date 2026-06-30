@@ -441,9 +441,30 @@ function isVoidZeroCheck(expr: t.Expression, paramName: string): boolean {
 }
 
 function isXhighSupportCall(expr: t.Expression, paramName: string): boolean {
-	if (!t.isCallExpression(expr) || expr.arguments.length !== 1) return false;
-	const [arg] = expr.arguments;
-	return t.isExpression(arg) && t.isIdentifier(arg, { name: paramName });
+	if (!t.isCallExpression(expr) || expr.arguments.length !== 2) return false;
+	const [effort, model] = expr.arguments;
+	return (
+		t.isStringLiteral(effort, { value: "xhigh" }) &&
+		t.isExpression(model) &&
+		t.isIdentifier(model, { name: paramName })
+	);
+}
+
+function expressionContainsXhighSupportCall(
+	expr: t.Expression,
+	paramName: string,
+): boolean {
+	if (isXhighSupportCall(expr, paramName)) return true;
+	if (t.isLogicalExpression(expr)) {
+		return (
+			expressionContainsXhighSupportCall(
+				expr.left as t.Expression,
+				paramName,
+			) ||
+			expressionContainsXhighSupportCall(expr.right as t.Expression, paramName)
+		);
+	}
+	return false;
 }
 
 function isAvailabilityHelperReturn(
@@ -459,7 +480,7 @@ function isAvailabilityHelperReturn(
 	if (!t.isLogicalExpression(right, { operator: "||" })) return false;
 	return (
 		isVoidZeroCheck(right.left as t.Expression, paramName) &&
-		isXhighSupportCall(right.right as t.Expression, paramName)
+		expressionContainsXhighSupportCall(right.right as t.Expression, paramName)
 	);
 }
 
