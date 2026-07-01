@@ -35,26 +35,15 @@ function assertPinnedTo2576(output: string, key: string): void {
 	);
 }
 
-function assertMythosFallbackPinnedTo2576(output: string): void {
-	assert.match(
-		output,
-		/mythosLimits\s*=\s*\{\s*maxWidth:\s*2576,\s*maxHeight:\s*2576\s*\}/,
-		"expected Mythos fallback limits to be pinned to 2576px",
-	);
-}
-
 const DOWNGRADED_FIXTURE = `
 let baseLimits;
-let mythosLimits;
 let registry;
 function imageLimitsFor(model) {
   let canonical = model ? normalizeModel(model) : void 0;
   let metadataLimits = canonical ? registry.models.find((entry) => entry.id === canonical)?.image_limits : void 0;
   return metadataLimits
     ? { maxWidth: metadataLimits.maxWidth, maxHeight: metadataLimits.maxHeight, maxBase64Size: metadataLimits.maxBase64Size }
-    : canonical === "claude-mythos-5"
-      ? mythosLimits
-      : void 0;
+    : void 0;
 }
 function initRegistry() {
   baseLimits = { maxWidth: 2000, maxHeight: 2000, maxBase64Size: 5242880, targetRawSize: 3932160 };
@@ -64,24 +53,20 @@ function initRegistry() {
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-fable-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-sonnet-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
-      { id: "claude-mythos-5" },
+      { id: "claude-mythos-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
     ],
   };
-  mythosLimits = { maxWidth: 2000, maxHeight: 2000 };
 }
 `;
 
 const ALREADY_RESTORED_FIXTURE = `
-let mythosLimits;
 let registry;
 function imageLimitsFor(model) {
   let canonical = model ? normalizeModel(model) : void 0;
   let metadataLimits = canonical ? registry.models.find((entry) => entry.id === canonical)?.image_limits : void 0;
   return metadataLimits
     ? { maxWidth: metadataLimits.maxWidth, maxHeight: metadataLimits.maxHeight, maxBase64Size: metadataLimits.maxBase64Size }
-    : canonical === "claude-mythos-5"
-      ? mythosLimits
-      : void 0;
+    : void 0;
 }
 function initRegistry() {
   registry = {
@@ -90,24 +75,20 @@ function initRegistry() {
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-fable-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-sonnet-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
-      { id: "claude-mythos-5" },
+      { id: "claude-mythos-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
     ],
   };
-  mythosLimits = { maxWidth: 2576, maxHeight: 2576 };
 }
 `;
 
 const MULTI_ENTRY_FIXTURE = `
-let mythosLimits;
 let registry;
 function imageLimitsFor(model) {
   let canonical = model ? normalizeModel(model) : void 0;
   let metadataLimits = canonical ? registry.models.find((entry) => entry.id === canonical)?.image_limits : void 0;
   return metadataLimits
     ? { maxWidth: metadataLimits.maxWidth, maxHeight: metadataLimits.maxHeight, maxBase64Size: metadataLimits.maxBase64Size }
-    : canonical === "claude-mythos-5"
-      ? mythosLimits
-      : void 0;
+    : void 0;
 }
 function initRegistry() {
   registry = {
@@ -116,25 +97,21 @@ function initRegistry() {
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-fable-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-sonnet-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
-      { id: "claude-mythos-5" },
+      { id: "claude-mythos-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-opus-5-0", image_limits: { maxWidth: 3000, maxHeight: 3000 } },
     ],
   };
-  mythosLimits = { maxWidth: 2000, maxHeight: 2000 };
 }
 `;
 
 const PARTIAL_FIXTURE = `
-let mythosLimits;
 let registry;
 function imageLimitsFor(model) {
   let canonical = model ? normalizeModel(model) : void 0;
   let metadataLimits = canonical ? registry.models.find((entry) => entry.id === canonical)?.image_limits : void 0;
   return metadataLimits
     ? { maxWidth: metadataLimits.maxWidth, maxHeight: metadataLimits.maxHeight, maxBase64Size: metadataLimits.maxBase64Size }
-    : canonical === "claude-mythos-5"
-      ? mythosLimits
-      : void 0;
+    : void 0;
 }
 function initRegistry() {
   registry = {
@@ -143,7 +120,6 @@ function initRegistry() {
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
     ],
   };
-  mythosLimits = { maxWidth: 2576, maxHeight: 2576 };
 }
 `;
 
@@ -187,8 +163,7 @@ test("image-limits restores every high-res model override to 2576px", async () =
 	const output = print(ast);
 
 	for (const key of TARGET_KEYS) {
-		if (key === "claude-mythos-5") assertMythosFallbackPinnedTo2576(output);
-		else assertPinnedTo2576(output, key);
+		assertPinnedTo2576(output, key);
 	}
 	assert.equal(imageLimits.verify(output, ast), true);
 });
@@ -214,8 +189,7 @@ test("image-limits is idempotent", async () => {
 	const output = print(ast);
 
 	for (const key of TARGET_KEYS) {
-		if (key === "claude-mythos-5") assertMythosFallbackPinnedTo2576(output);
-		else assertPinnedTo2576(output, key);
+		assertPinnedTo2576(output, key);
 	}
 	assert.equal(imageLimits.verify(output, ast), true);
 });
@@ -226,8 +200,7 @@ test("image-limits leaves non-target model metadata untouched", async () => {
 	const output = print(ast);
 
 	for (const key of TARGET_KEYS) {
-		if (key === "claude-mythos-5") assertMythosFallbackPinnedTo2576(output);
-		else assertPinnedTo2576(output, key);
+		assertPinnedTo2576(output, key);
 	}
 	assert.match(
 		output,
@@ -238,27 +211,24 @@ test("image-limits leaves non-target model metadata untouched", async () => {
 test("verify treats a non-literal override value as a missing entry", () => {
 	const NON_LITERAL_FIXTURE = `
 let BASE_W = 2000;
-let mythosLimits;
 let registry;
 function imageLimitsFor(model) {
   let canonical = model ? normalizeModel(model) : void 0;
   let metadataLimits = canonical ? registry.models.find((entry) => entry.id === canonical)?.image_limits : void 0;
   return metadataLimits
     ? { maxWidth: metadataLimits.maxWidth, maxHeight: metadataLimits.maxHeight, maxBase64Size: metadataLimits.maxBase64Size }
-    : canonical === "claude-mythos-5"
-      ? mythosLimits
-      : void 0;
+    : void 0;
 }
 function initRegistry() {
   registry = {
     models: [
       { id: "claude-fable-5", image_limits: { maxWidth: BASE_W, maxHeight: BASE_W } },
+      { id: "claude-mythos-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-sonnet-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-opus-4-7", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
     ],
   };
-  mythosLimits = { maxWidth: 2576, maxHeight: 2576 };
 }
 `;
 	const ast = parse(NON_LITERAL_FIXTURE);
@@ -270,35 +240,31 @@ function initRegistry() {
 
 test("image-limits pins only the downgraded entries in mixed metadata", async () => {
 	const MIXED_FIXTURE = `
-let mythosLimits;
 let registry;
 function imageLimitsFor(model) {
   let canonical = model ? normalizeModel(model) : void 0;
   let metadataLimits = canonical ? registry.models.find((entry) => entry.id === canonical)?.image_limits : void 0;
   return metadataLimits
     ? { maxWidth: metadataLimits.maxWidth, maxHeight: metadataLimits.maxHeight, maxBase64Size: metadataLimits.maxBase64Size }
-    : canonical === "claude-mythos-5"
-      ? mythosLimits
-      : void 0;
+    : void 0;
 }
 function initRegistry() {
   registry = {
     models: [
       { id: "claude-fable-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
+      { id: "claude-mythos-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-sonnet-5", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-opus-4-7", image_limits: { maxWidth: 2000, maxHeight: 2000 } },
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
     ],
   };
-  mythosLimits = { maxWidth: 2576, maxHeight: 2576 };
 }
 `;
 	const ast = parse(MIXED_FIXTURE);
 	await runImageLimitsViaPasses(ast);
 	const output = print(ast);
 	for (const key of TARGET_KEYS) {
-		if (key === "claude-mythos-5") assertMythosFallbackPinnedTo2576(output);
-		else assertPinnedTo2576(output, key);
+		assertPinnedTo2576(output, key);
 	}
 	assert.equal(imageLimits.verify(output, ast), true);
 });
@@ -352,16 +318,13 @@ test("image-limits pins exactly five entries and never the adjacent base default
 test("verify accepts model metadata with a co-located base default object", () => {
 	const CO_LOCATED_FIXTURE = `
 let baseLimits;
-let mythosLimits;
 let registry;
 function imageLimitsFor(model) {
   let canonical = model ? normalizeModel(model) : void 0;
   let metadataLimits = canonical ? registry.models.find((entry) => entry.id === canonical)?.image_limits : void 0;
   return metadataLimits
     ? { maxWidth: metadataLimits.maxWidth, maxHeight: metadataLimits.maxHeight, maxBase64Size: metadataLimits.maxBase64Size }
-    : canonical === "claude-mythos-5"
-      ? mythosLimits
-      : void 0;
+    : void 0;
 }
 function initRegistry() {
   baseLimits = { maxWidth: 2000, maxHeight: 2000, maxBase64Size: 5242880, targetRawSize: 3932160 };
@@ -371,10 +334,9 @@ function initRegistry() {
       { id: "claude-opus-4-8", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-fable-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
       { id: "claude-sonnet-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
-      { id: "claude-mythos-5" },
+      { id: "claude-mythos-5", image_limits: { maxWidth: 2576, maxHeight: 2576 } },
     ],
   };
-  mythosLimits = { maxWidth: 2576, maxHeight: 2576 };
 }
 `;
 	const ast = parse(CO_LOCATED_FIXTURE);

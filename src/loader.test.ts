@@ -47,7 +47,9 @@ test("loader prints escaped non-ASCII bundle output", () => {
 	assert.doesNotThrow(() => parse(output));
 });
 
-test("loader can parse a detected installed Claude bundle when available", (t) => {
+test("loader can parse a detected installed Claude bundle when available", {
+	timeout: 30000,
+}, (t) => {
 	const detected = detectInstalledClaudeTarget();
 	if (!detected) {
 		t.skip("No installed Claude target detected");

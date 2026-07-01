@@ -735,24 +735,29 @@ export const bashOutputTail: Patch = {
 			);
 
 		// Insert disk persistence / output_tail guidance into the Bash prompt.
-		// The current prompt builder emits an array of strings (one per bullet).
-		// Inject new items before "When issuing multiple commands:".
-		const arrayAnchor = '"When issuing multiple commands:"';
+		// The current prompt builder emits arrays of plain strings and formats
+		// instruction bullets through `uz(...)`. Inject the new items into that
+		// same instruction list so the rendered prompt keeps upstream styling.
+		const instructionAnchor = /(^[ \t]*\.\.\.uz\(c\),\n)([ \t]*)s9a\(\),/m;
 		if (
 			code.includes("Executes a given bash command") &&
-			code.includes(arrayAnchor)
+			instructionAnchor.test(code)
 		) {
-			// Current array-builder format: inject as separate array elements
 			const items = PROMPT_ADDITION.split("\n")
 				.map((line) => line.replace(/^\s+-\s*/, "").trim())
 				.filter((line) => line.length > 0);
-			const escaped = items
-				.map((item) => {
-					const jsStr = item.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-					return `"${jsStr}"`;
-				})
-				.join(",\n      ");
-			return code.replace(arrayAnchor, `${escaped},\n      ${arrayAnchor}`);
+			return code.replace(
+				instructionAnchor,
+				(_match: string, uzLine: string, indent: string) => {
+					const escaped = items
+						.map((item) => {
+							const jsStr = item.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+							return `${indent}  "${jsStr}"`;
+						})
+						.join(",\n");
+					return `${uzLine}${indent}...uz([\n${escaped},\n${indent}]),\n${indent}s9a(),`;
+				},
+			);
 		}
 		return code;
 	},

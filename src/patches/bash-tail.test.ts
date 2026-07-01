@@ -82,17 +82,30 @@ function formatPath(filePath) {
   return "short:" + filePath;
 }
 
+function uz(lines) {
+  return lines;
+}
+
+function s9a() {
+  return "OS reminders";
+}
+
 async function storeBlocks(blocks, result, limit) {
   return { blocks, result, limit };
 }
 
 const BashTool = {
   name: "Bash",
-  prompt() {
+  prompt(c = [], u, l) {
     return [
-      "Executes a given bash command",
-      "When issuing multiple commands:",
-    ];
+      "Executes a given bash command and returns its output.",
+      ...(u ? ["", u] : []),
+      "",
+      "# Instructions",
+      ...uz(c),
+      s9a(),
+      ...(l ? ["", l] : []),
+    ].join("\\n");
   },
   input_schema: z.strictObject({
     command: z.string().describe("The bash command to execute"),

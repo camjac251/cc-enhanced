@@ -18,13 +18,13 @@ async function runSystemPromptFileViaPasses(ast: any): Promise<void> {
 }
 
 const SYS_PROMPT_FILE_FIXTURE = `
-function handleAppend(M) {
+async function handleAppend(M) {
   let GH = M.appendSystemPrompt;
   if (M.appendSystemPromptFile) {
     if (M.appendSystemPrompt) throw new Error("conflict");
     try {
       let V$ = path.resolve(M.appendSystemPromptFile);
-      GH = fs.readFileSync(V$, "utf8");
+      GH = await fs.readFile(V$, "utf8");
     } catch (V$) {
       throw V$;
     }
@@ -32,6 +32,14 @@ function handleAppend(M) {
   return GH;
 }
 `;
+
+function countAutoAppendReadAssignments(output: string): number {
+	return (
+		output.match(
+			/GH\s*=\s*await\s*fs\.readFile\(\s*resolvedSystemPromptFile\s*,\s*"utf8"\s*\)/g,
+		)?.length ?? 0
+	);
+}
 
 test("sys-prompt-file verify rejects unpatched fixture", () => {
 	const ast = parse(SYS_PROMPT_FILE_FIXTURE);
@@ -50,27 +58,23 @@ test("sys-prompt-file injects auto-append guard ahead of append file branch", as
 		true,
 	);
 	assert.equal(output.includes('"/etc/claude-code/system-prompt.md"'), true);
-	assert.equal(
-		output.includes("M.appendSystemPromptFile = resolvedSystemPromptFile"),
-		true,
-	);
+	assert.equal(countAutoAppendReadAssignments(output), 1);
 	assert.equal(output.includes("M.systemPromptFile === void 0"), false);
 	assert.equal(output.includes("M.systemPrompt === void 0"), false);
-	assert.equal(output.includes("existsSync"), true);
+	assert.equal(output.includes("existsSync"), false);
 	assert.equal(systemPromptFile.verify(output, ast), true);
 	assert.equal(systemPromptFile.verify(output), true);
 });
 
 test("sys-prompt-file verify rejects auto-append guard outside sibling position", () => {
 	const misplacedGuard = `
-function unrelated(M) {
-  if (M.appendSystemPromptFile === void 0 && M.appendSystemPrompt === void 0) {
+async function unrelated(M) {
+  let GH = M.appendSystemPrompt;
+  if (GH === void 0 && M.appendSystemPromptFile === void 0) {
     let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";
     try {
       let resolvedSystemPromptFile = path.resolve(configuredSystemPromptFilePath);
-      if (fs.existsSync(resolvedSystemPromptFile)) {
-        M.appendSystemPromptFile = resolvedSystemPromptFile;
-      }
+      GH = await fs.readFile(resolvedSystemPromptFile, "utf8");
     } catch (err) {}
   }
 }
@@ -103,34 +107,26 @@ test("sys-prompt-file injects exactly one auto-append guard", async () => {
 		output.split("process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE").length -
 		1;
 	assert.equal(guardCount, 1);
-	const assignCount =
-		output.split("M.appendSystemPromptFile = resolvedSystemPromptFile").length -
-		1;
-	assert.equal(assignCount, 1);
+	assert.equal(countAutoAppendReadAssignments(output), 1);
 });
 
-test("sys-prompt-file existsSync guard uses the readFileSync source object", async () => {
+test("sys-prompt-file auto-read uses the append branch readFile callee", async () => {
 	const ast = parse(SYS_PROMPT_FILE_FIXTURE);
 	await runSystemPromptFileViaPasses(ast);
 	const output = print(ast);
-	// The fixture reads via `fs.readFileSync`; the synthesized guard must call
-	// existsSync on that same object, not a bare/global existsSync.
-	assert.equal(
-		output.includes("fs.existsSync(resolvedSystemPromptFile)"),
-		true,
-	);
-	assert.equal(output.includes(" existsSync(resolvedSystemPromptFile)"), false);
+	assert.equal(countAutoAppendReadAssignments(output), 1);
+	assert.equal(output.includes("readFileSync"), false);
 });
 
 test("sys-prompt-file patches only the append-file branch when a systemPromptFile twin is present", async () => {
 	const twinFixture = `
-function handleAppend(M) {
+async function handleAppend(M) {
   let Ce = M.systemPrompt;
   if (M.systemPromptFile) {
     if (M.systemPrompt) throw new Error("conflict");
     try {
       let V$ = path.resolve(M.systemPromptFile);
-      Ce = fs.readFileSync(V$, "utf8");
+      Ce = await fs.readFile(V$, "utf8");
     } catch (V$) {
       throw V$;
     }
@@ -140,7 +136,7 @@ function handleAppend(M) {
     if (M.appendSystemPrompt) throw new Error("conflict");
     try {
       let V$ = path.resolve(M.appendSystemPromptFile);
-      GH = fs.readFileSync(V$, "utf8");
+      GH = await fs.readFile(V$, "utf8");
     } catch (V$) {
       throw V$;
     }
@@ -155,10 +151,7 @@ function handleAppend(M) {
 		output.split("process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE").length -
 		1;
 	assert.equal(guardCount, 1, "exactly one auto-append guard injected");
-	assert.equal(
-		output.includes("M.appendSystemPromptFile = resolvedSystemPromptFile"),
-		true,
-	);
+	assert.equal(countAutoAppendReadAssignments(output), 1);
 	// the replacement-mode branch must not gain an auto-append guard for systemPromptFile
 	assert.equal(
 		output.includes("M.systemPromptFile = resolvedSystemPromptFile"),
@@ -169,22 +162,20 @@ function handleAppend(M) {
 
 test("sys-prompt-file verify rejects an auto-append guard that also checks replacement-mode prompts", () => {
 	const overbroadGuard = `
-function handleAppend(M) {
+async function handleAppend(M) {
   let GH = M.appendSystemPrompt;
-  if (M.appendSystemPromptFile === void 0 && M.appendSystemPrompt === void 0 && M.systemPromptFile === void 0) {
+  if (GH === void 0 && M.appendSystemPromptFile === void 0 && M.systemPromptFile === void 0) {
     let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";
     try {
       let resolvedSystemPromptFile = path.resolve(configuredSystemPromptFilePath);
-      if (fs.existsSync(resolvedSystemPromptFile)) {
-        M.appendSystemPromptFile = resolvedSystemPromptFile;
-      }
+      GH = await fs.readFile(resolvedSystemPromptFile, "utf8");
     } catch (err) {}
   }
   if (M.appendSystemPromptFile) {
     if (M.appendSystemPrompt) throw new Error("conflict");
     try {
       let V$ = path.resolve(M.appendSystemPromptFile);
-      GH = fs.readFileSync(V$, "utf8");
+      GH = await fs.readFile(V$, "utf8");
     } catch (V$) {
       throw V$;
     }
@@ -196,34 +187,4 @@ function handleAppend(M) {
 	const result = systemPromptFile.verify(overbroadGuard, ast);
 	assert.equal(typeof result, "string");
 	assert.equal(String(result).includes("replacement-mode"), true);
-});
-
-test("sys-prompt-file patches the bare-call readFileSync form", async () => {
-	const bareCallFixture = `
-function handleAppend(M) {
-  let GH;
-  if (M.appendSystemPromptFile) {
-    if (M.appendSystemPrompt) throw new Error("conflict");
-    try {
-      let V$ = path.resolve(M.appendSystemPromptFile);
-      fs.readFileSync(V$, "utf8");
-    } catch (V$) {
-      throw V$;
-    }
-  }
-  return GH;
-}
-`;
-	const ast = parse(bareCallFixture);
-	await runSystemPromptFileViaPasses(ast);
-	const output = print(ast);
-	assert.equal(
-		output.includes("process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE"),
-		true,
-	);
-	assert.equal(
-		output.includes("fs.existsSync(resolvedSystemPromptFile)"),
-		true,
-	);
-	assert.equal(systemPromptFile.verify(output, ast), true);
 });

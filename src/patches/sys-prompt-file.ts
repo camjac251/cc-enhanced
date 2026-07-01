@@ -59,16 +59,15 @@ function flattenLogicalAnd(node: t.Node): t.Node[] {
 	return [node];
 }
 
-function findPathHelpers(
+function findAppendFileBranchHelpers(
 	appendIf: t.IfStatement,
 	optionsName: string,
-): { resolveCallee: t.Expression; existsCallee: t.Expression } | null {
+): { resolveCallee: t.Expression; readFileCallee: t.Expression } | null {
 	if (!t.isBlockStatement(appendIf.consequent)) return null;
 
 	let resolvedVarName: string | null = null;
 	let resolveCallee: t.Expression | null = null;
-	let existsCallee: t.Expression | null = null;
-	let readFileSyncObject: t.Expression | null = null;
+	let readFileCallee: t.Expression | null = null;
 
 	for (const stmt of appendIf.consequent.body) {
 		if (!t.isTryStatement(stmt) || !t.isBlockStatement(stmt.block)) continue;
@@ -92,66 +91,35 @@ function findPathHelpers(
 				}
 			}
 
-			if (t.isIfStatement(innerStmt)) {
-				let call: t.CallExpression | null = null;
-				if (
-					t.isUnaryExpression(innerStmt.test, { operator: "!" }) &&
-					t.isCallExpression(innerStmt.test.argument)
-				) {
-					call = innerStmt.test.argument;
-				} else if (t.isCallExpression(innerStmt.test)) {
-					call = innerStmt.test;
-				}
-				if (call?.arguments.length !== 1) continue;
-				if (!t.isExpression(call.callee)) continue;
-				const [firstArg] = call.arguments;
-				if (
-					resolvedVarName &&
-					t.isIdentifier(firstArg) &&
-					firstArg.name === resolvedVarName
-				) {
-					existsCallee = t.cloneNode(call.callee);
-				}
-			}
-
-			const readFileSyncCall =
+			const readFileCall =
 				t.isExpressionStatement(innerStmt) &&
 				t.isCallExpression(innerStmt.expression)
 					? innerStmt.expression
 					: t.isExpressionStatement(innerStmt) &&
 							t.isAssignmentExpression(innerStmt.expression) &&
-							t.isCallExpression(innerStmt.expression.right)
-						? innerStmt.expression.right
+							t.isAwaitExpression(innerStmt.expression.right) &&
+							t.isCallExpression(innerStmt.expression.right.argument)
+						? innerStmt.expression.right.argument
 						: null;
 			if (
-				readFileSyncCall &&
-				t.isMemberExpression(readFileSyncCall.callee) &&
-				getObjectKeyName(
-					readFileSyncCall.callee.property as t.Expression | t.Identifier,
-				) === "readFileSync" &&
-				readFileSyncCall.arguments.length >= 1
+				readFileCall &&
+				t.isExpression(readFileCall.callee) &&
+				readFileCall.arguments.length >= 1
 			) {
-				const [firstArg] = readFileSyncCall.arguments;
+				const [firstArg] = readFileCall.arguments;
 				if (
 					resolvedVarName &&
 					t.isIdentifier(firstArg) &&
 					firstArg.name === resolvedVarName
 				) {
-					readFileSyncObject = t.cloneNode(readFileSyncCall.callee.object);
+					readFileCallee = t.cloneNode(readFileCall.callee);
 				}
 			}
 		}
 	}
 
-	if (!existsCallee && readFileSyncObject) {
-		existsCallee = t.memberExpression(
-			readFileSyncObject,
-			t.identifier("existsSync"),
-		);
-	}
-
-	if (!resolveCallee || !existsCallee) return null;
-	return { resolveCallee, existsCallee };
+	if (!resolveCallee || !readFileCallee) return null;
+	return { resolveCallee, readFileCallee };
 }
 
 function hasAppendPromptConflictCheck(
@@ -195,10 +163,11 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 	hasEnvOverride: boolean;
 	hasDefaultPath: boolean;
 	hasAppendAssignment: boolean;
-	hasExistsSync: boolean;
+	hasReadFile: boolean;
 	guardsReplacementPrompt: boolean;
 } | null {
 	const guardedProps = new Set<string>();
+	let guardsAppendLocal = false;
 	for (const part of flattenLogicalAnd(path.node.test)) {
 		for (const propName of [
 			"appendSystemPromptFile",
@@ -210,12 +179,20 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 				guardedProps.add(propName);
 			}
 		}
+		if (
+			t.isBinaryExpression(part, { operator: "===" }) &&
+			t.isIdentifier(part.left) &&
+			t.isUnaryExpression(part.right, { operator: "void" }) &&
+			t.isNumericLiteral(part.right.argument, { value: 0 })
+		) {
+			guardsAppendLocal = true;
+		}
 	}
 	if (!guardedProps.has("appendSystemPromptFile")) return null;
-	if (!guardedProps.has("appendSystemPrompt")) return null;
+	if (!guardsAppendLocal) return null;
 
 	// The mutator injects a single wired shape:
-	//   if (existsSync(resolvedVar)) { options.appendSystemPromptFile = resolvedVar; }
+	//   appendPrompt = await readFile(resolvedVar, "utf8")
 	// inside a try { ... } catch, where resolvedVar = resolve(
 	//   process.env.<ENV> ?? "/etc/claude-code/system-prompt.md"
 	// ). Verify mirrors that wiring rather than checking the four pieces
@@ -223,9 +200,8 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 	// catch fails instead of passing on incidental presence.
 	let hasEnvOverride = false;
 	let hasDefaultPath = false;
-	let existsSyncArgName: string | null = null;
 	let assignmentName: string | null = null;
-	let assignmentWiredToExists = false;
+	let assignmentWiredToReadFile = false;
 
 	path.traverse({
 		LogicalExpression(innerPath) {
@@ -240,81 +216,50 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 				hasDefaultPath = true;
 			}
 		},
-		CallExpression(innerPath) {
-			if (!isExistsSyncCall(innerPath.node)) return;
-			const [arg] = innerPath.node.arguments;
-			if (t.isIdentifier(arg)) existsSyncArgName = arg.name;
-		},
 		AssignmentExpression(innerPath) {
-			if (
-				!t.isMemberExpression(innerPath.node.left) ||
-				getObjectKeyName(
-					innerPath.node.left.property as t.Expression | t.Identifier,
-				) !== "appendSystemPromptFile" ||
-				!t.isIdentifier(innerPath.node.right)
-			) {
+			if (!t.isIdentifier(innerPath.node.left)) return;
+			if (!t.isAwaitExpression(innerPath.node.right)) return;
+			if (!t.isCallExpression(innerPath.node.right.argument)) return;
+			const call = innerPath.node.right.argument;
+			if (call.arguments.length < 2) return;
+			const [resolvedArg, encodingArg] = call.arguments;
+			if (!t.isIdentifier(resolvedArg)) return;
+			if (!t.isStringLiteral(encodingArg, { value: "utf8" })) {
 				return;
 			}
-			assignmentName = innerPath.node.right.name;
-			// The assignment must live inside the existsSync guard's consequent
-			// and inside a try-statement, both within this auto-append branch.
-			const insideExistsGuard = Boolean(
-				innerPath.findParent(
-					(parent) =>
-						parent.isIfStatement() && isExistsSyncCall(parent.node.test),
-				),
-			);
+			assignmentName = resolvedArg.name;
 			const insideTry = Boolean(
 				innerPath.findParent((parent) => parent.isTryStatement()),
 			);
-			if (insideExistsGuard && insideTry) assignmentWiredToExists = true;
+			if (insideTry) assignmentWiredToReadFile = true;
 		},
 	});
 
-	const hasExistsSync = existsSyncArgName !== null;
-	const hasAppendAssignment =
-		assignmentName !== null &&
-		assignmentName === existsSyncArgName &&
-		assignmentWiredToExists;
+	const hasReadFile = assignmentName !== null;
+	const hasAppendAssignment = hasReadFile && assignmentWiredToReadFile;
 
 	return {
 		hasEnvOverride,
 		hasDefaultPath,
 		hasAppendAssignment,
-		hasExistsSync,
+		hasReadFile,
 		guardsReplacementPrompt:
 			guardedProps.has("systemPromptFile") || guardedProps.has("systemPrompt"),
 	};
-}
-
-/**
- * True for an `existsSync(arg)` call, whether invoked bare or as a member
- * (e.g. `fs.existsSync(arg)`), matching the receiver-agnostic helper the
- * mutator synthesizes from the readFileSync source object.
- */
-function isExistsSyncCall(node: t.Node): node is t.CallExpression {
-	if (!t.isCallExpression(node)) return false;
-	const callee = node.callee;
-	if (t.isIdentifier(callee) && callee.name.includes("existsSync")) return true;
-	return (
-		t.isMemberExpression(callee) &&
-		getObjectKeyName(callee.property as t.Expression | t.Identifier) ===
-			"existsSync"
-	);
 }
 
 function findAutoAppendGuardBeforeAppendBranch(ast: t.File): {
 	hasEnvOverride: boolean;
 	hasDefaultPath: boolean;
 	hasAppendAssignment: boolean;
-	hasExistsSync: boolean;
+	hasReadFile: boolean;
 	guardsReplacementPrompt: boolean;
 } | null {
 	let found: {
 		hasEnvOverride: boolean;
 		hasDefaultPath: boolean;
 		hasAppendAssignment: boolean;
-		hasExistsSync: boolean;
+		hasReadFile: boolean;
 		guardsReplacementPrompt: boolean;
 	} | null = null;
 
@@ -356,8 +301,37 @@ function isAppendSystemPromptFileBranch(
 	if (!t.isIdentifier(path.node.test.object)) return false;
 	return (
 		hasAppendPromptConflictCheck(path.node, path.node.test.object.name) &&
-		findPathHelpers(path.node, path.node.test.object.name) !== null
+		findAppendFileBranchHelpers(path.node, path.node.test.object.name) !== null
 	);
+}
+
+function findAppendPromptLocalBeforeBranch(
+	statementPath: NodePath<t.Statement>,
+	optionsName: string,
+): { localName: string; insertIndex: number } | null {
+	const parentPath = statementPath.parentPath;
+	if (!parentPath?.isBlockStatement()) return null;
+	const siblingIndex = parentPath.node.body.indexOf(statementPath.node);
+	if (siblingIndex <= 0) return null;
+
+	for (let index = siblingIndex - 1; index >= 0; index--) {
+		const sibling = parentPath.node.body[index];
+		if (!t.isVariableDeclaration(sibling)) continue;
+		for (const decl of sibling.declarations) {
+			if (!t.isIdentifier(decl.id)) continue;
+			if (
+				!isMemberOnOptions(
+					decl.init as t.Node,
+					optionsName,
+					"appendSystemPrompt",
+				)
+			) {
+				continue;
+			}
+			return { localName: decl.id.name, insertIndex: index + 1 };
+		}
+	}
+	return null;
 }
 
 export const systemPromptFile: Patch = {
@@ -386,10 +360,10 @@ export const systemPromptFile: Patch = {
 			return "Missing default /etc/claude-code/system-prompt.md path";
 		}
 		if (!autoAppendGuard.hasAppendAssignment) {
-			return "Missing appendSystemPromptFile assignment in auto-append flow";
+			return "Missing appendSystemPrompt assignment in auto-append flow";
 		}
-		if (!autoAppendGuard.hasExistsSync) {
-			return "Missing existsSync call within auto-append guard body";
+		if (!autoAppendGuard.hasReadFile) {
+			return "Missing readFile call within auto-append guard body";
 		}
 		if (autoAppendGuard.guardsReplacementPrompt) {
 			return "Auto-append guard must not skip replacement-mode systemPrompt/systemPromptFile";
@@ -410,7 +384,7 @@ function createSystemPromptFileMutator(): Visitor {
 			if (!t.isIdentifier(path.node.test.object)) return;
 
 			const optionsName = path.node.test.object.name;
-			const helpers = findPathHelpers(path.node, optionsName);
+			const helpers = findAppendFileBranchHelpers(path.node, optionsName);
 			if (!helpers) return;
 
 			const statementPath = path.getStatementParent();
@@ -427,27 +401,31 @@ function createSystemPromptFileMutator(): Visitor {
 			const siblingIndex = parentBlock.body.indexOf(statementPath.node);
 			if (siblingIndex < 0) return;
 			if (!hasAppendPromptConflictCheck(path.node, optionsName)) return;
+			const appendLocal = findAppendPromptLocalBeforeBranch(
+				statementPath,
+				optionsName,
+			);
+			if (!appendLocal) return;
 
 			const [autoAppendIf] = template.statements(
 				`
-                if (OPTIONS.appendSystemPromptFile === void 0 && OPTIONS.appendSystemPrompt === void 0) {
+                if (APPEND_PROMPT === void 0 && OPTIONS.appendSystemPromptFile === void 0) {
                     let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";
                     try {
 						let resolvedSystemPromptFile = RESOLVE(configuredSystemPromptFilePath);
-						if (EXISTS(resolvedSystemPromptFile)) {
-							OPTIONS.appendSystemPromptFile = resolvedSystemPromptFile;
-						}
+						APPEND_PROMPT = await READ_FILE(resolvedSystemPromptFile, "utf8");
 					} catch (err) {}
 				}
 			`,
-				{ placeholderPattern: /^(OPTIONS|RESOLVE|EXISTS)$/ },
+				{ placeholderPattern: /^(APPEND_PROMPT|OPTIONS|RESOLVE|READ_FILE)$/ },
 			)({
+				APPEND_PROMPT: t.identifier(appendLocal.localName),
 				OPTIONS: t.identifier(optionsName),
 				RESOLVE: t.cloneNode(helpers.resolveCallee),
-				EXISTS: t.cloneNode(helpers.existsCallee),
+				READ_FILE: t.cloneNode(helpers.readFileCallee),
 			});
 
-			parentBlock.body.splice(siblingIndex, 0, autoAppendIf);
+			parentBlock.body.splice(appendLocal.insertIndex, 0, autoAppendIf);
 			patched = true;
 		},
 		Program: {

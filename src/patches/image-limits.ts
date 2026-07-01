@@ -5,14 +5,10 @@ import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
 const TARGET_METADATA_MODEL_KEYS = new Set([
 	"claude-fable-5",
+	"claude-mythos-5",
 	"claude-sonnet-5",
 	"claude-opus-4-7",
 	"claude-opus-4-8",
-]);
-const TARGET_FALLBACK_MODEL_KEYS = new Set(["claude-mythos-5"]);
-const TARGET_MODEL_KEYS = new Set([
-	...TARGET_METADATA_MODEL_KEYS,
-	...TARGET_FALLBACK_MODEL_KEYS,
 ]);
 const TARGET_PIXELS = 2576;
 
@@ -67,76 +63,12 @@ function getModelMetadataImageLimitEntry(
 	return getNumericLimitEntry(imageLimitsProp.value, key);
 }
 
-function isVoidZeroExpression(expr: t.Expression): boolean {
-	return (
-		t.isUnaryExpression(expr, { operator: "void" }) &&
-		t.isNumericLiteral(expr.argument, { value: 0 })
-	);
-}
-
-function getComparedModelKey(expr: t.Expression): string | null {
-	if (!t.isBinaryExpression(expr, { operator: "===" })) return null;
-	if (t.isStringLiteral(expr.left)) return expr.left.value;
-	if (t.isStringLiteral(expr.right)) return expr.right.value;
-	return null;
-}
-
-function getFallbackLimitIdentifier(
-	node: t.ConditionalExpression,
-): { key: string; identifierName: string } | null {
-	const key = getComparedModelKey(node.test);
-	if (!key || !TARGET_FALLBACK_MODEL_KEYS.has(key)) return null;
-	if (t.isIdentifier(node.consequent) && isVoidZeroExpression(node.alternate)) {
-		return { key, identifierName: node.consequent.name };
-	}
-	if (t.isIdentifier(node.alternate) && isVoidZeroExpression(node.consequent)) {
-		return { key, identifierName: node.alternate.name };
-	}
-	return null;
-}
-
-function getAssignedIdentifierName(
-	path: NodePath<t.ObjectExpression>,
-): string | null {
-	const parent = path.parentPath?.node;
-	if (
-		t.isAssignmentExpression(parent) &&
-		parent.right === path.node &&
-		t.isIdentifier(parent.left)
-	) {
-		return parent.left.name;
-	}
-	if (
-		t.isVariableDeclarator(parent) &&
-		parent.init === path.node &&
-		t.isIdentifier(parent.id)
-	) {
-		return parent.id.name;
-	}
-	return null;
-}
-
 function setEntryPixels(entry: ImageLimitEntry): void {
 	entry.maxWidth.value = t.numericLiteral(TARGET_PIXELS);
 	entry.maxHeight.value = t.numericLiteral(TARGET_PIXELS);
 }
 
-function createImageLimitsDiscoverer(
-	fallbackLimitIdentifiers: Map<string, string>,
-): Visitor {
-	return {
-		ConditionalExpression(path) {
-			const fallback = getFallbackLimitIdentifier(path.node);
-			if (fallback) {
-				fallbackLimitIdentifiers.set(fallback.identifierName, fallback.key);
-			}
-		},
-	};
-}
-
-function createImageLimitsMutator(
-	fallbackLimitIdentifiers: Map<string, string>,
-): Visitor {
+function createImageLimitsMutator(): Visitor {
 	const entriesSeen = new Set<string>();
 
 	function patchObjectExpression(path: NodePath<t.ObjectExpression>): void {
@@ -144,16 +76,6 @@ function createImageLimitsMutator(
 		if (metadataEntry) {
 			entriesSeen.add(metadataEntry.key);
 			setEntryPixels(metadataEntry);
-			return;
-		}
-		const assignedIdentifier = getAssignedIdentifierName(path);
-		const fallbackKey =
-			assignedIdentifier && fallbackLimitIdentifiers.get(assignedIdentifier);
-		if (!fallbackKey) return;
-		const fallbackEntry = getNumericLimitEntry(path.node, fallbackKey);
-		if (fallbackEntry) {
-			entriesSeen.add(fallbackEntry.key);
-			setEntryPixels(fallbackEntry);
 		}
 	}
 
@@ -164,7 +86,7 @@ function createImageLimitsMutator(
 
 		Program: {
 			exit() {
-				const missingKeys = [...TARGET_MODEL_KEYS].filter(
+				const missingKeys = [...TARGET_METADATA_MODEL_KEYS].filter(
 					(key) => !entriesSeen.has(key),
 				);
 				if (missingKeys.length > 0) {
@@ -181,15 +103,10 @@ export const imageLimits: Patch = {
 	tag: "image-limits",
 
 	astPasses: () => {
-		const fallbackLimitIdentifiers = new Map<string, string>();
 		return [
 			{
-				pass: "discover",
-				visitor: createImageLimitsDiscoverer(fallbackLimitIdentifiers),
-			},
-			{
 				pass: "mutate",
-				visitor: createImageLimitsMutator(fallbackLimitIdentifiers),
+				visitor: createImageLimitsMutator(),
 			},
 		];
 	},
@@ -200,38 +117,23 @@ export const imageLimits: Patch = {
 
 		let downgradedKey: string | null = null;
 		const seenKeys = new Set<string>();
-		const fallbackLimitIdentifiers = new Map<string, string>();
-
-		traverse(verifyAst, {
-			ConditionalExpression(path) {
-				const fallback = getFallbackLimitIdentifier(path.node);
-				if (fallback) {
-					fallbackLimitIdentifiers.set(fallback.identifierName, fallback.key);
-				}
-			},
-		});
 
 		traverse(verifyAst, {
 			ObjectExpression(path) {
 				const metadataEntry = getModelMetadataImageLimitEntry(path.node);
-				const assignedIdentifier = getAssignedIdentifierName(path);
-				const fallbackKey =
-					assignedIdentifier &&
-					fallbackLimitIdentifiers.get(assignedIdentifier);
-				const entry =
-					metadataEntry ??
-					(fallbackKey ? getNumericLimitEntry(path.node, fallbackKey) : null);
-				if (!entry) return;
-				seenKeys.add(entry.key);
-				const widthVal = (entry.maxWidth.value as t.NumericLiteral).value;
-				const heightVal = (entry.maxHeight.value as t.NumericLiteral).value;
+				if (!metadataEntry) return;
+				seenKeys.add(metadataEntry.key);
+				const widthVal = (metadataEntry.maxWidth.value as t.NumericLiteral)
+					.value;
+				const heightVal = (metadataEntry.maxHeight.value as t.NumericLiteral)
+					.value;
 				if (widthVal !== TARGET_PIXELS || heightVal !== TARGET_PIXELS) {
-					downgradedKey ??= entry.key;
+					downgradedKey ??= metadataEntry.key;
 				}
 			},
 		});
 
-		const missingKeys = [...TARGET_MODEL_KEYS].filter(
+		const missingKeys = [...TARGET_METADATA_MODEL_KEYS].filter(
 			(key) => !seenKeys.has(key),
 		);
 		if (missingKeys.length > 0) {

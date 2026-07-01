@@ -85,6 +85,7 @@ function verifyShellQuoteFix(code: string, ast?: t.File): true | string {
 
 	if (hasOldDquote) return "shell-quote double-quote path still escapes !";
 	if (hasOldBare) return "shell-quote bare-word path still escapes !";
+	if (newDquoteCount === 0 && newBareCount === 0) return true;
 	if (newDquoteCount === 0) return "shell-quote double-quote fix not found";
 	if (newBareCount === 0) return "shell-quote bare-word fix not found";
 

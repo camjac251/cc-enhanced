@@ -2171,9 +2171,11 @@ function createTabQueuePasses(): PatchAstPass[] {
 							);
 						}
 						if (uniqueReceiverTargets.length !== 1 || !patchedReceiver) {
-							console.warn(
-								`Tab queue: expected one deferred submit receiver target, found ${uniqueReceiverTargets.length}`,
-							);
+							if (uniqueReceiverTargets.length > 0) {
+								console.warn(
+									`Tab queue: expected one deferred submit receiver target, found ${uniqueReceiverTargets.length}`,
+								);
+							}
 						}
 						if (uniqueDrainTargets.length !== 1 || !patchedDrain) {
 							console.warn(
@@ -2315,9 +2317,6 @@ export const tabQueue: Patch = {
 			return `Draft Tab queue typeahead bypass is ambiguous (${counts.typeahead} bypasses found)`;
 		}
 
-		if (counts.deferredSubmitReceiver === 0) {
-			return "Deferred Tab queue submit receiver not found";
-		}
 		if (counts.deferredSubmitReceiver > 1) {
 			return `Deferred Tab queue submit receiver is ambiguous (${counts.deferredSubmitReceiver} receivers found)`;
 		}

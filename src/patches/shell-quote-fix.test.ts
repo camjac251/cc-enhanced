@@ -48,6 +48,16 @@ test("shell-quote-fix verify rejects unpatched input", () => {
 	assert.equal(typeof result, "string");
 });
 
+test("shell-quote-fix accepts bundles where the old helper is absent", () => {
+	const LATEST_SHAPE = `
+function quoteForWin32CreateProcess(args) {
+  return args.map((arg) => arg.includes(" ") ? JSON.stringify(arg) : arg).join(" ");
+}
+`;
+	const ast = parse(LATEST_SHAPE);
+	assert.equal(shellQuoteFix.verify(print(ast), ast), true);
+});
+
 test("shell-quote-fix is idempotent", async () => {
 	const once = await applyShellQuoteFix(FIXTURE);
 	const twice = await applyShellQuoteFix(once);
