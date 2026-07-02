@@ -23,8 +23,8 @@ function resolveEffortLevel(H) {
   return H.settings.effortLevel ?? "high";
 }
 
-function readUltracodeFlag(state) {
-  let enabled = settings().ultracode === !0 || !1;
+function readUltracodeFlag() {
+  let enabled = settings().ultracode === !0;
   if (enabled) unpinLaunchEffort();
   return enabled;
 }
@@ -139,28 +139,29 @@ function describeOption(H, $ = !1) {
   return \`option: \${H}\`;
 }
 
-function runEffortCommand(H, setState, done) {
-  let K = pickCommand(H);
-  if (K.effortUpdate) {
-    let { value: _, ultracode: z = !1 } = K.effortUpdate;
-    setState((A) => {
-      if (A.effortValue === _ && (A.ultracode ?? !1) === z) return A;
-      return { ...A, effortValue: _, ultracode: z };
+async function runEffortCommand(H, setState, done) {
+  let didOptimisticUpdate = !1,
+    previous = null,
+    result = await pickCommand(H, (update) => {
+      didOptimisticUpdate = !0;
+      let nextUltracode = update.ultracode ?? !1;
+      setState((current) => {
+        if (
+          ((previous ??= { value: current.effortValue, ultracode: current.ultracode ?? !1 }),
+          current.effortValue === update.value && (current.ultracode ?? !1) === nextUltracode)
+        )
+          return current;
+        return { ...current, effortValue: update.value, ultracode: nextUltracode };
+      });
     });
-  }
-  done(K.message);
-}
-
-function callEffortCommand(H, api) {
-  let K = pickCommand(H);
-  if (K.effortUpdate) {
-    let _ = K.effortUpdate.value;
-    let z = K.effortUpdate.ultracode ?? !1;
-    api.setAppState((A) =>
-      A.effortValue === _ && (A.ultracode ?? !1) === z ? A : { ...A, effortValue: _, ultracode: z },
-    );
-  }
-  return { type: "text", value: K.message };
+  if (didOptimisticUpdate && !result.effortUpdate)
+    setState((current) => {
+      if (previous === null) return current;
+      if (current.effortValue === previous.value && (current.ultracode ?? !1) === previous.ultracode) return current;
+      return { ...current, effortValue: previous.value, ultracode: previous.ultracode };
+    });
+  done(result.message);
+  return result;
 }
 `;
 
@@ -189,7 +190,7 @@ test("effort-stack lets CLAUDE_CODE_ULTRACODE enable workflow mode", async () =>
 	const output = print(ast);
 	assert.equal(
 		output.includes(
-			'let enabled = settings().ultracode === !0 || !1 || ["1", "true", "yes", "on"].includes(String(process.env.CLAUDE_CODE_ULTRACODE).toLowerCase())',
+			'let enabled = settings().ultracode === !0 || ["1", "true", "yes", "on"].includes(String(process.env.CLAUDE_CODE_ULTRACODE).toLowerCase())',
 		),
 		true,
 	);
@@ -397,7 +398,7 @@ test("effort-stack verify fails hard when env ultracode source is missing", asyn
 	await runEffortStackViaPasses(ast);
 	const output = print(ast);
 	const regressed = output.replace(
-		'settings().ultracode === !0 || !1 || ["1", "true", "yes", "on"].includes(String(process.env.CLAUDE_CODE_ULTRACODE).toLowerCase())',
+		'settings().ultracode === !0 || ["1", "true", "yes", "on"].includes(String(process.env.CLAUDE_CODE_ULTRACODE).toLowerCase())',
 		"settings().ultracode === !0",
 	);
 	const result = effortStack.verify(regressed);
@@ -481,34 +482,31 @@ function unrelated() {
 	assert.equal(typeof result, "string");
 });
 
-test("effort-stack marks session override on the expression-body effortUpdate arrow", async () => {
+test("effort-stack marks session override after a successful effort update", async () => {
 	const ast = parse(EFFORT_STACK_FIXTURE);
 	await runEffortStackViaPasses(ast);
 	const output = print(ast);
 	assert.match(
 		output,
-		/api\.setAppState\(\(A\) =>\s*\(globalThis\.__claudeCodeEffortSessionOverride = true,\s*A\.effortValue === _ && \(A\.ultracode \?\? !1\) === z \? A : \{ \.\.\.A, effortValue: _, ultracode: z \}\)/,
+		/if \(result\.effortUpdate\) globalThis\.__claudeCodeEffortSessionOverride = true;/,
 	);
 });
 
-test("effort-stack marks session override as first statement of the block-body effortUpdate arrow", async () => {
+test("effort-stack leaves rollback state updates unmarked", async () => {
 	const ast = parse(EFFORT_STACK_FIXTURE);
 	await runEffortStackViaPasses(ast);
 	const output = print(ast);
-	assert.match(
-		output,
-		/setState\(\(A\) => \{\s*globalThis\.__claudeCodeEffortSessionOverride = true;\s*if \(A\.effortValue === _ && \(A\.ultracode \?\? !1\) === z\) return A;/,
-	);
+	assert.doesNotMatch(output, /previous\.ultracode\);\s*globalThis/);
 });
 
-test("effort-stack injects the session-override assignment at exactly both effortUpdate sites", async () => {
+test("effort-stack injects the session-override assignment at the result boundary", async () => {
 	const ast = parse(EFFORT_STACK_FIXTURE);
 	await runEffortStackViaPasses(ast);
 	const output = print(ast);
 	const occurrences =
 		output.split("globalThis.__claudeCodeEffortSessionOverride = true").length -
 		1;
-	assert.equal(occurrences, 2);
+	assert.equal(occurrences, 1);
 });
 
 test("effort-stack does not inject the session-only guard into a writer without a top-level unpin call", async () => {

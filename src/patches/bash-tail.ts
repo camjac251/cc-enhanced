@@ -736,9 +736,10 @@ export const bashOutputTail: Patch = {
 
 		// Insert disk persistence / output_tail guidance into the Bash prompt.
 		// The current prompt builder emits arrays of plain strings and formats
-		// instruction bullets through `uz(...)`. Inject the new items into that
-		// same instruction list so the rendered prompt keeps upstream styling.
-		const instructionAnchor = /(^[ \t]*\.\.\.uz\(c\),\n)([ \t]*)s9a\(\),/m;
+		// instruction bullets through a local helper. Inject the new items into
+		// that same instruction list so the rendered prompt keeps upstream styling.
+		const instructionAnchor =
+			/(^[ \t]*"# Instructions",\n)([ \t]*)\.\.\.([A-Za-z_$][\w$]*)\(c\),\n([ \t]*)([A-Za-z_$][\w$]*)\(\),/m;
 		if (
 			code.includes("Executes a given bash command") &&
 			instructionAnchor.test(code)
@@ -748,14 +749,21 @@ export const bashOutputTail: Patch = {
 				.filter((line) => line.length > 0);
 			return code.replace(
 				instructionAnchor,
-				(_match: string, uzLine: string, indent: string) => {
+				(
+					_match: string,
+					headingLine: string,
+					instructionIndent: string,
+					instructionHelper: string,
+					reminderIndent: string,
+					reminderHelper: string,
+				) => {
 					const escaped = items
 						.map((item) => {
 							const jsStr = item.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-							return `${indent}  "${jsStr}"`;
+							return `${reminderIndent}  "${jsStr}"`;
 						})
 						.join(",\n");
-					return `${uzLine}${indent}...uz([\n${escaped},\n${indent}]),\n${indent}s9a(),`;
+					return `${headingLine}${instructionIndent}...${instructionHelper}(c),\n${reminderIndent}...${instructionHelper}([\n${escaped},\n${reminderIndent}]),\n${reminderIndent}${reminderHelper}(),`;
 				},
 			);
 		}

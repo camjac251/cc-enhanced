@@ -541,7 +541,7 @@ function buildPatchedUltracodeActiveGate(
 }
 
 function patchRawUltracodeFlagFunction(fn: t.Function): boolean | null {
-	if (fn.params.length !== 1 || !t.isBlockStatement(fn.body)) return null;
+	if (fn.params.length > 1 || !t.isBlockStatement(fn.body)) return null;
 	for (const stmt of fn.body.body) {
 		if (!t.isVariableDeclaration(stmt)) continue;
 		for (const declaration of stmt.declarations) {
@@ -564,7 +564,7 @@ function patchRawUltracodeFlagFunction(fn: t.Function): boolean | null {
 }
 
 function hasPatchedRawUltracodeFlagFunction(fn: t.Function): boolean {
-	if (fn.params.length !== 1 || !t.isBlockStatement(fn.body)) return false;
+	if (fn.params.length > 1 || !t.isBlockStatement(fn.body)) return false;
 	for (const stmt of fn.body.body) {
 		if (!t.isVariableDeclaration(stmt)) continue;
 		for (const declaration of stmt.declarations) {
@@ -946,6 +946,122 @@ function hasPatchedEffortUpdateStateOverride(
 		},
 	});
 	return found;
+}
+
+function getRollbackEffortResultName(expr: t.Expression): string | null {
+	if (!t.isLogicalExpression(expr, { operator: "&&" })) return null;
+	const right = expr.right;
+	if (!t.isUnaryExpression(right, { operator: "!" })) return null;
+	const target = right.argument;
+	if (!t.isMemberExpression(target)) return null;
+	if (!t.isIdentifier(target.object)) return null;
+	if (!t.isIdentifier(target.property, { name: "effortUpdate" })) return null;
+	return target.object.name;
+}
+
+function isSessionOverrideResultStatement(
+	stmt: t.Statement,
+	resultName: string,
+): boolean {
+	if (!t.isIfStatement(stmt)) return false;
+	const test = stmt.test;
+	if (!t.isMemberExpression(test)) return false;
+	if (!t.isIdentifier(test.object, { name: resultName })) return false;
+	if (!t.isIdentifier(test.property, { name: "effortUpdate" })) return false;
+	const consequent = stmt.consequent;
+	if (t.isBlockStatement(consequent)) {
+		return consequent.body.some(isSessionOverrideStatement);
+	}
+	return isSessionOverrideStatement(consequent);
+}
+
+function functionReturnsIdentifier(
+	body: t.BlockStatement,
+	resultName: string,
+): boolean {
+	return body.body.some(
+		(stmt) =>
+			t.isReturnStatement(stmt) &&
+			t.isIdentifier(stmt.argument, { name: resultName }),
+	);
+}
+
+function hasEffortRollbackGuard(
+	body: t.BlockStatement,
+	resultName: string,
+): boolean {
+	return body.body.some(
+		(stmt) =>
+			t.isIfStatement(stmt) &&
+			getRollbackEffortResultName(stmt.test) === resultName,
+	);
+}
+
+function isAwaitedEffortExecutorCall(
+	init: t.Expression | null | undefined,
+): boolean {
+	if (!init || !t.isAwaitExpression(init)) return false;
+	const argument = init.argument;
+	if (!t.isCallExpression(argument)) return false;
+	return argument.arguments.some((arg) => t.isArrowFunctionExpression(arg));
+}
+
+function patchEffortUpdateResultOverride(fn: t.Function): boolean | null {
+	if (!t.isBlockStatement(fn.body)) return null;
+	const body = fn.body;
+	for (let index = 0; index < body.body.length; index += 1) {
+		const stmt = body.body[index];
+		if (!t.isVariableDeclaration(stmt)) continue;
+		for (const declaration of stmt.declarations) {
+			if (!t.isIdentifier(declaration.id)) continue;
+			const resultName = declaration.id.name;
+			if (!isAwaitedEffortExecutorCall(declaration.init as t.Expression)) {
+				continue;
+			}
+			if (!hasEffortRollbackGuard(body, resultName)) continue;
+			if (!functionReturnsIdentifier(body, resultName)) continue;
+			if (
+				body.body.some((candidate) =>
+					isSessionOverrideResultStatement(candidate, resultName),
+				)
+			) {
+				return true;
+			}
+			body.body.splice(
+				index + 1,
+				0,
+				t.ifStatement(
+					t.memberExpression(
+						t.identifier(resultName),
+						t.identifier("effortUpdate"),
+					),
+					buildSessionOverrideStatement(),
+				),
+			);
+			return true;
+		}
+	}
+	return null;
+}
+
+function hasPatchedEffortUpdateResultOverride(fn: t.Function): boolean {
+	if (!t.isBlockStatement(fn.body)) return false;
+	for (const stmt of fn.body.body) {
+		if (!t.isVariableDeclaration(stmt)) continue;
+		for (const declaration of stmt.declarations) {
+			if (!t.isIdentifier(declaration.id)) continue;
+			const resultName = declaration.id.name;
+			if (!isAwaitedEffortExecutorCall(declaration.init as t.Expression)) {
+				continue;
+			}
+			if (!hasEffortRollbackGuard(fn.body, resultName)) continue;
+			if (!functionReturnsIdentifier(fn.body, resultName)) continue;
+			return fn.body.body.some((candidate) =>
+				isSessionOverrideResultStatement(candidate, resultName),
+			);
+		}
+	}
+	return false;
 }
 
 function isLegacyEffectiveEffortNoopGuard(node: t.IfStatement): boolean {
@@ -1353,6 +1469,8 @@ function createEffortStackMutator(): Visitor {
 				path.node,
 			);
 			if (settingsWriterPatched) patchedSettingsWriter += 1;
+			const resultOverridePatched = patchEffortUpdateResultOverride(path.node);
+			if (resultOverridePatched) patchedSessionOverrideUpdate += 1;
 			const flagSourcePatched = patchRawUltracodeFlagFunction(path.node);
 			if (flagSourcePatched) patchedFlagSource += 1;
 			if (!isHy8FunctionByContent(path)) return;
@@ -1591,6 +1709,9 @@ export const effortStack: Patch = {
 				}
 				if (hasPatchedEffortSettingsWriterFunction(path.node)) {
 					hasPatchedSettingsWriter = true;
+				}
+				if (hasPatchedEffortUpdateResultOverride(path.node)) {
+					hasPatchedSessionOverrideUpdate = true;
 				}
 				if (hasPatchedRawUltracodeFlagFunction(path.node)) {
 					hasPatchedFlagSource = true;
