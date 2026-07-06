@@ -25,6 +25,92 @@ const TARGET_KEYS = [
 	"claude-opus-4-8",
 ];
 
+const REQUEST_PIPELINE_FIXTURE = `
+function Nqe(buffer) {
+  let text = buffer.toString("utf8");
+  if (text === "VP8X") return { width: 1, height: 1 };
+  let match = text.match(/(\\d+)x(\\d+)/);
+  return match ? { width: Number(match[1]), height: Number(match[2]) } : void 0;
+}
+async function _na(e, t) {
+  if (e.source.type !== "base64") return { block: e };
+  return U$({ data: e.source.data, mediaType: e.source.media_type, limits: t });
+}
+async function U$({ data, mediaType, limits }) {
+  return {
+    block: {
+      type: "image",
+      source: { type: "base64", media_type: mediaType, data: "downscaled" },
+    },
+    dimensions: { displayWidth: limits.maxWidth, displayHeight: limits.maxHeight },
+  };
+}
+function cy(model) {
+  let s = { maxWidth: 2576, maxHeight: 2576, maxBase64Size: 5242880, targetRawSize: 3932160 };
+  return {
+    maxWidth: s.maxWidth,
+    maxHeight: s.maxHeight,
+    maxBase64Size: s.maxBase64Size,
+    targetRawSize: s.targetRawSize,
+  };
+}
+function q() {}
+function Xp() {}
+function zWn() {
+  return true;
+}
+function CVf(e, t) {
+  return { messagesPreNormalize: e, messagesForAPI: e, midConvFallback: () => e };
+}
+async function* query(e, s) {
+  q("tengu_api_before_normalize", { preNormalizedMessageCount: e.length });
+  Xp("query_message_normalization_start");
+  let h = s.model,
+    S = [],
+    p = [],
+    $ = false,
+    _ = false,
+    y = void 0;
+  let {
+      messagesPreNormalize: L,
+      messagesForAPI: O,
+      midConvFallback: j,
+    } = CVf(e, {
+      model: s.model,
+      bodyModel: h,
+      tools: S,
+      betas: p,
+      midConvLatchedOff: $,
+      useToolSearch: _,
+      advisorModel: y,
+    }),
+    N = O,
+    M = j;
+  let Ct = null;
+  if (M && zWn(Ct))
+    return (
+      (N = M()),
+      (M = null),
+      "retry:mid-conv-system"
+    );
+  q("tengu_api_after_normalize", { postNormalizedMessageCount: N.length });
+  return N;
+}
+`;
+
+function withRequestPipeline(source: string): string {
+	return `${source}\n${REQUEST_PIPELINE_FIXTURE}`;
+}
+
+async function patchImageLimitsFixture(source: string): Promise<{
+	ast: any;
+	output: string;
+}> {
+	const ast = parse(source);
+	await runImageLimitsViaPasses(ast);
+	return { ast, output: print(ast) };
+}
+
 function assertPinnedTo2576(output: string, key: string): void {
 	assert.match(
 		output,
@@ -151,16 +237,17 @@ test("verify rejects when a target model entry is absent from metadata", () => {
 	assert.match(result as string, /claude-fable-5/);
 });
 
-test("verify accepts the documented 2576px override", () => {
-	const ast = parse(ALREADY_RESTORED_FIXTURE);
-	const code = print(ast);
-	assert.equal(imageLimits.verify(code, ast), true);
+test("verify accepts the documented 2576px override", async () => {
+	const { ast, output } = await patchImageLimitsFixture(
+		withRequestPipeline(ALREADY_RESTORED_FIXTURE),
+	);
+	assert.equal(imageLimits.verify(output, ast), true);
 });
 
 test("image-limits restores every high-res model override to 2576px", async () => {
-	const ast = parse(DOWNGRADED_FIXTURE);
-	await runImageLimitsViaPasses(ast);
-	const output = print(ast);
+	const { ast, output } = await patchImageLimitsFixture(
+		withRequestPipeline(DOWNGRADED_FIXTURE),
+	);
 
 	for (const key of TARGET_KEYS) {
 		assertPinnedTo2576(output, key);
@@ -169,9 +256,9 @@ test("image-limits restores every high-res model override to 2576px", async () =
 });
 
 test("image-limits leaves the base default limits untouched", async () => {
-	const ast = parse(DOWNGRADED_FIXTURE);
-	await runImageLimitsViaPasses(ast);
-	const output = print(ast);
+	const { output } = await patchImageLimitsFixture(
+		withRequestPipeline(DOWNGRADED_FIXTURE),
+	);
 
 	assert.match(output, /maxBase64Size:\s*5242880/);
 	assert.match(output, /targetRawSize:\s*3932160/);
@@ -184,9 +271,9 @@ test("image-limits leaves the base default limits untouched", async () => {
 });
 
 test("image-limits is idempotent", async () => {
-	const ast = parse(ALREADY_RESTORED_FIXTURE);
-	await runImageLimitsViaPasses(ast);
-	const output = print(ast);
+	const { ast, output } = await patchImageLimitsFixture(
+		withRequestPipeline(ALREADY_RESTORED_FIXTURE),
+	);
 
 	for (const key of TARGET_KEYS) {
 		assertPinnedTo2576(output, key);
@@ -195,9 +282,9 @@ test("image-limits is idempotent", async () => {
 });
 
 test("image-limits leaves non-target model metadata untouched", async () => {
-	const ast = parse(MULTI_ENTRY_FIXTURE);
-	await runImageLimitsViaPasses(ast);
-	const output = print(ast);
+	const { output } = await patchImageLimitsFixture(
+		withRequestPipeline(MULTI_ENTRY_FIXTURE),
+	);
 
 	for (const key of TARGET_KEYS) {
 		assertPinnedTo2576(output, key);
@@ -205,6 +292,60 @@ test("image-limits leaves non-target model metadata untouched", async () => {
 	assert.match(
 		output,
 		/id:\s*"claude-opus-5-0"[\s\S]*?image_limits:\s*\{\s*maxWidth:\s*3000,\s*maxHeight:\s*3000\s*\}/,
+	);
+});
+
+test("verify rejects when the many-image downscale guard is absent", () => {
+	const ast = parse(withRequestPipeline(ALREADY_RESTORED_FIXTURE));
+	const code = print(ast);
+	const result = imageLimits.verify(code, ast);
+	assert.notEqual(result, true);
+	assert.match(result as string, /Many-image high-resolution downscale guard/);
+});
+
+test("image-limits downscales high-resolution many-image requests before API submission", async () => {
+	const { ast, output } = await patchImageLimitsFixture(
+		withRequestPipeline(ALREADY_RESTORED_FIXTURE),
+	);
+
+	assert.equal(imageLimits.verify(output, ast), true);
+	assert.match(output, /__ccEnhancedVisualBlockCount <= 20/);
+	assert.match(output, /block\.type === "document"/);
+	assert.match(
+		output,
+		/__ccEnhancedImageBlocks\.some\(__ccEnhancedImageTooLargeForManyImage\)/,
+	);
+	assert.match(output, /__ccEnhancedBlock\.type === "tool_result"/);
+	assert.match(output, /Array\.isArray\(__ccEnhancedBlock\.content\)/);
+	assert.match(
+		output,
+		/Buffer\.from\(source\.data\.slice\(0,\s*87400\),\s*"base64"\)/,
+	);
+	assert.match(output, /parsed\.width > 2000/);
+	assert.match(output, /parsed\.height > 2000/);
+	assert.match(output, /maxWidth:\s*2000/);
+	assert.match(output, /maxHeight:\s*2000/);
+	assert.match(output, /await _na\(block,\s*limits\)/);
+	assert.match(output, /normalized\?\.block \?\? block/);
+	assert.match(output, /\.\.\.cy\(s\.model\)/);
+	assert.doesNotMatch(output, /\.\.\.cy\(h\)/);
+	assert.match(
+		output,
+		/N = await __ccEnhancedDownscaleManyImageMessages\(N,\s*__ccEnhancedManyImageLimits\)/,
+	);
+	assert.match(
+		output,
+		/M = async \(\) => await __ccEnhancedDownscaleManyImageMessages/,
+	);
+	assert.match(output, /N = await M\(\)/);
+	assert.doesNotMatch(output, /\[media removed: request limit\]/);
+
+	const guardIndex = output.indexOf("__ccEnhancedVisualBlockCount");
+	const normalizeEndIndex = output.indexOf('q("tengu_api_after_normalize"');
+	assert.ok(guardIndex >= 0, "many-image guard not found");
+	assert.ok(
+		normalizeEndIndex > guardIndex,
+		"guard must run before the API request proceeds",
 	);
 });
 
@@ -260,9 +401,9 @@ function initRegistry() {
   };
 }
 `;
-	const ast = parse(MIXED_FIXTURE);
-	await runImageLimitsViaPasses(ast);
-	const output = print(ast);
+	const { ast, output } = await patchImageLimitsFixture(
+		withRequestPipeline(MIXED_FIXTURE),
+	);
 	for (const key of TARGET_KEYS) {
 		assertPinnedTo2576(output, key);
 	}
@@ -270,10 +411,13 @@ function initRegistry() {
 });
 
 test("image-limits pins exactly the five target entries", async () => {
-	const ast = parse(DOWNGRADED_FIXTURE);
-	await runImageLimitsViaPasses(ast);
-	const output = print(ast);
-	const pinned = output.match(/maxWidth:\s*2576,\s*maxHeight:\s*2576/g) ?? [];
+	const { output } = await patchImageLimitsFixture(
+		withRequestPipeline(DOWNGRADED_FIXTURE),
+	);
+	const pinned =
+		output.match(
+			/image_limits:\s*\{\s*maxWidth:\s*2576,\s*maxHeight:\s*2576/g,
+		) ?? [];
 	assert.equal(pinned.length, TARGET_KEYS.length);
 });
 
@@ -294,11 +438,14 @@ function initRegistry() {
 });
 
 test("image-limits pins exactly five entries and never the adjacent base default object", async () => {
-	const ast = parse(DOWNGRADED_FIXTURE);
-	await runImageLimitsViaPasses(ast);
-	const output = print(ast);
+	const { output } = await patchImageLimitsFixture(
+		withRequestPipeline(DOWNGRADED_FIXTURE),
+	);
 
-	const pinned = output.match(/maxWidth:\s*2576,\s*maxHeight:\s*2576/g) ?? [];
+	const pinned =
+		output.match(
+			/image_limits:\s*\{\s*maxWidth:\s*2576,\s*maxHeight:\s*2576/g,
+		) ?? [];
 	assert.equal(
 		pinned.length,
 		TARGET_KEYS.length,
@@ -315,7 +462,7 @@ test("image-limits pins exactly five entries and never the adjacent base default
 	assert.equal(baseDefault[2], "2000");
 });
 
-test("verify accepts model metadata with a co-located base default object", () => {
+test("verify accepts model metadata with a co-located base default object", async () => {
 	const CO_LOCATED_FIXTURE = `
 let baseLimits;
 let registry;
@@ -339,9 +486,10 @@ function initRegistry() {
   };
 }
 `;
-	const ast = parse(CO_LOCATED_FIXTURE);
-	const code = print(ast);
+	const { ast, output } = await patchImageLimitsFixture(
+		withRequestPipeline(CO_LOCATED_FIXTURE),
+	);
 	// The base default object has numeric maxWidth/maxHeight but no model id,
 	// so it must not be counted as one of the target metadata entries.
-	assert.equal(imageLimits.verify(code, ast), true);
+	assert.equal(imageLimits.verify(output, ast), true);
 });
