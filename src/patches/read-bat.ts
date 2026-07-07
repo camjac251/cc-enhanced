@@ -1906,20 +1906,44 @@ export const readWithBat: Patch = {
 								}
 
 								// Find the call method
-								const callMethod = path.node.properties.find(
-									(p): p is t.ObjectMethod =>
-										t.isObjectMethod(p) && hasObjectKeyName(p, "call"),
-								);
-								if (!callMethod) return;
+								const methodPaths = path.get("properties");
+								const findMethodPath = (
+									methodName: string,
+								): NodePath<t.ObjectMethod | t.ObjectProperty> | null => {
+									for (const propPath of methodPaths) {
+										if (
+											(propPath.isObjectMethod() ||
+												propPath.isObjectProperty()) &&
+											hasObjectKeyName(propPath.node, methodName)
+										) {
+											return propPath as NodePath<
+												t.ObjectMethod | t.ObjectProperty
+											>;
+										}
+									}
+									return null;
+								};
+
+								const callMethodPath = findMethodPath("call");
+								if (!callMethodPath?.isObjectMethod()) return;
+								const callMethod = callMethodPath.node;
+								const callBodyPath = callMethodPath.get(
+									"body",
+								) as NodePath<t.BlockStatement>;
 
 								// Check if already patched (look for our bat args)
 								const bodyStr = JSON.stringify(callMethod.body);
 								if (bodyStr.includes("START_LINE")) return;
 
-								const validateMethod = path.node.properties.find(
-									(p): p is t.ObjectMethod =>
-										t.isObjectMethod(p) && hasObjectKeyName(p, "validateInput"),
-								);
+								const foundValidateMethodPath = findMethodPath("validateInput");
+								const validateMethodPath =
+									foundValidateMethodPath?.isObjectMethod()
+										? foundValidateMethodPath
+										: null;
+								const validateMethod = validateMethodPath?.node ?? null;
+								const validateBodyPath = validateMethodPath?.get("body") as
+									| NodePath<t.BlockStatement>
+									| undefined;
 
 								// === 1. Modify call signature ===
 								// Original: async call({ file_path: A, offset: Q = 1, limit: B = void 0 }, G)
@@ -2148,79 +2172,73 @@ export const readWithBat: Patch = {
 											return null;
 										};
 
-										traverse(
-											validateMethod.body,
-											{
-												IfStatement(ifPath) {
-													const test = ifPath.node.test;
+										validateBodyPath?.traverse({
+											IfStatement(ifPath) {
+												const test = ifPath.node.test;
 
-													// Must have both negated offset AND negated limit vars to be the right condition
-													// This is the file size guard: if (!sizeCheck(w) && !K && !q)
-													if (!offsetVar || !limitVar) return;
-													if (!hasNegatedIdentifier(test, offsetVar)) return;
-													if (!hasNegatedIdentifier(test, limitVar)) return;
+												// Must have both negated offset AND negated limit vars to be the right condition
+												// This is the file size guard: if (!sizeCheck(w) && !K && !q)
+												if (!offsetVar || !limitVar) return;
+												if (!hasNegatedIdentifier(test, offsetVar)) return;
+												if (!hasNegatedIdentifier(test, limitVar)) return;
 
-													// Find the negated function call (the size check) so we only
-													// patch the intended large-file guard.
-													if (!findNegatedFunctionCall(test)) return;
+												// Find the negated function call (the size check) so we only
+												// patch the intended large-file guard.
+												if (!findNegatedFunctionCall(test)) return;
 
-													// Replace: !sizeCheck(w) && !K && !q
-													// With: !sizeCheck(w) && !R && !(typeof file_path==="string" && file_path.endsWith(".output"))
-													const notRangeExpr = t.unaryExpression("!", rangeId);
-													let rangeGateExpr: t.Expression = notRangeExpr;
-													if (filePathVar) {
-														const filePathId = t.identifier(filePathVar);
-														const outputPathExpr = t.logicalExpression(
-															"&&",
-															t.binaryExpression(
-																"===",
-																t.unaryExpression(
-																	"typeof",
-																	t.cloneNode(filePathId, true),
-																),
-																t.stringLiteral("string"),
+												// Replace: !sizeCheck(w) && !K && !q
+												// With: !sizeCheck(w) && !R && !(typeof file_path==="string" && file_path.endsWith(".output"))
+												const notRangeExpr = t.unaryExpression("!", rangeId);
+												let rangeGateExpr: t.Expression = notRangeExpr;
+												if (filePathVar) {
+													const filePathId = t.identifier(filePathVar);
+													const outputPathExpr = t.logicalExpression(
+														"&&",
+														t.binaryExpression(
+															"===",
+															t.unaryExpression(
+																"typeof",
+																t.cloneNode(filePathId, true),
 															),
-															t.callExpression(
-																t.memberExpression(
-																	t.cloneNode(filePathId, true),
-																	t.identifier("endsWith"),
-																),
-																[t.stringLiteral(".output")],
+															t.stringLiteral("string"),
+														),
+														t.callExpression(
+															t.memberExpression(
+																t.cloneNode(filePathId, true),
+																t.identifier("endsWith"),
 															),
-														);
-														rangeGateExpr = t.logicalExpression(
-															"&&",
-															notRangeExpr,
-															t.unaryExpression("!", outputPathExpr),
-														);
+															[t.stringLiteral(".output")],
+														),
+													);
+													rangeGateExpr = t.logicalExpression(
+														"&&",
+														notRangeExpr,
+														t.unaryExpression("!", outputPathExpr),
+													);
+												}
+												const terms = flattenLogicalAndTerms(test);
+												const preservedTerms: t.Expression[] = [];
+												let removedOffsetGuard = false;
+												let removedLimitGuard = false;
+												for (const term of terms) {
+													if (isNegatedIdentifierTerm(term, offsetVar)) {
+														removedOffsetGuard = true;
+														continue;
 													}
-													const terms = flattenLogicalAndTerms(test);
-													const preservedTerms: t.Expression[] = [];
-													let removedOffsetGuard = false;
-													let removedLimitGuard = false;
-													for (const term of terms) {
-														if (isNegatedIdentifierTerm(term, offsetVar)) {
-															removedOffsetGuard = true;
-															continue;
-														}
-														if (isNegatedIdentifierTerm(term, limitVar)) {
-															removedLimitGuard = true;
-															continue;
-														}
-														preservedTerms.push(
-															t.cloneNode(term, true) as t.Expression,
-														);
+													if (isNegatedIdentifierTerm(term, limitVar)) {
+														removedLimitGuard = true;
+														continue;
 													}
-													if (!removedOffsetGuard || !removedLimitGuard) return;
-													preservedTerms.push(rangeGateExpr);
-													ifPath.node.test =
-														joinLogicalAndTerms(preservedTerms);
-													ifPath.stop();
-												},
+													preservedTerms.push(
+														t.cloneNode(term, true) as t.Expression,
+													);
+												}
+												if (!removedOffsetGuard || !removedLimitGuard) return;
+												preservedTerms.push(rangeGateExpr);
+												ifPath.node.test = joinLogicalAndTerms(preservedTerms);
+												ifPath.stop();
 											},
-											path.scope,
-											path,
-										);
+										});
 									}
 								}
 
@@ -2230,133 +2248,210 @@ export const readWithBat: Patch = {
 								// The removed vars ($ for offset, q for limit) cause ReferenceError
 								// on the second read of any file. Rewrite to compare range instead.
 								if (removedCallCompatVars.size > 0) {
-									traverse(
-										callMethod.body,
-										{
-											IfStatement(ifPath) {
-												const { test } = ifPath.node;
-												if (!t.isLogicalExpression(test, { operator: "&&" }))
-													return;
+									callBodyPath.traverse({
+										IfStatement(ifPath) {
+											const { test } = ifPath.node;
+											if (!t.isLogicalExpression(test, { operator: "&&" }))
+												return;
 
-												// Match: ... && J.offset !== void 0
-												const outerTerms = flattenLogicalAndTerms(
-													test as t.Expression,
-												);
-												let dedupObjName: string | null = null;
-												let offsetGuardIdx = -1;
-												for (let i = 0; i < outerTerms.length; i++) {
-													const term = outerTerms[i];
-													if (
-														!t.isBinaryExpression(term, {
-															operator: "!==",
-														})
-													)
-														continue;
-													if (!isVoidZeroExpression(term.right)) continue;
-													if (
-														t.isMemberExpression(term.left) &&
-														!term.left.computed &&
-														isMemberPropertyName(term.left, "offset") &&
-														t.isIdentifier(term.left.object)
-													) {
-														dedupObjName = term.left.object.name;
-														offsetGuardIdx = i;
-														break;
-													}
+											// Match: ... && J.offset !== void 0
+											const outerTerms = flattenLogicalAndTerms(
+												test as t.Expression,
+											);
+											let dedupObjName: string | null = null;
+											let offsetGuardIdx = -1;
+											for (let i = 0; i < outerTerms.length; i++) {
+												const term = outerTerms[i];
+												if (
+													!t.isBinaryExpression(term, {
+														operator: "!==",
+													})
+												)
+													continue;
+												if (!isVoidZeroExpression(term.right)) continue;
+												if (
+													t.isMemberExpression(term.left) &&
+													!term.left.computed &&
+													isMemberPropertyName(term.left, "offset") &&
+													t.isIdentifier(term.left.object)
+												) {
+													dedupObjName = term.left.object.name;
+													offsetGuardIdx = i;
+													break;
 												}
-												if (!dedupObjName || offsetGuardIdx < 0) return;
+											}
+											if (!dedupObjName || offsetGuardIdx < 0) return;
 
-												// Verify inner if compares removed vars
-												const consequent = ifPath.node.consequent;
-												const innerBlock = t.isBlockStatement(consequent)
-													? consequent.body
-													: [consequent];
-												const innerIf = innerBlock.find(
-													(s): s is t.IfStatement => t.isIfStatement(s),
+											// Verify inner if compares removed vars
+											const consequent = ifPath.node.consequent;
+											const innerBlock = t.isBlockStatement(consequent)
+												? consequent.body
+												: [consequent];
+											const innerIf = innerBlock.find((s): s is t.IfStatement =>
+												t.isIfStatement(s),
+											);
+											if (!innerIf) return;
+
+											const innerTerms = flattenLogicalAndTerms(
+												innerIf.test as t.Expression,
+											);
+											const refsRemovedVars = innerTerms.some((term) => {
+												if (!t.isBinaryExpression(term, { operator: "===" }))
+													return false;
+												return (
+													(t.isIdentifier(term.right) &&
+														removedCallCompatVars.has(term.right.name)) ||
+													(t.isIdentifier(term.left) &&
+														removedCallCompatVars.has(
+															(term.left as t.Identifier).name,
+														))
 												);
-												if (!innerIf) return;
+											});
+											if (!refsRemovedVars) return;
 
-												const innerTerms = flattenLogicalAndTerms(
-													innerIf.test as t.Expression,
+											// Rewrite outer guard: J.offset !== void 0 -> J.range !== void 0
+											outerTerms[offsetGuardIdx] = t.binaryExpression(
+												"!==",
+												t.memberExpression(
+													t.identifier(dedupObjName),
+													t.identifier("range"),
+												),
+												t.unaryExpression("void", t.numericLiteral(0)),
+											);
+											// Rebuild the && chain
+											let newOuterTest = outerTerms[0];
+											for (let i = 1; i < outerTerms.length; i++) {
+												newOuterTest = t.logicalExpression(
+													"&&",
+													newOuterTest as t.Expression,
+													outerTerms[i],
 												);
-												const refsRemovedVars = innerTerms.some((term) => {
-													if (!t.isBinaryExpression(term, { operator: "===" }))
-														return false;
-													return (
-														(t.isIdentifier(term.right) &&
-															removedCallCompatVars.has(term.right.name)) ||
-														(t.isIdentifier(term.left) &&
-															removedCallCompatVars.has(
-																(term.left as t.Identifier).name,
-															))
-													);
-												});
-												if (!refsRemovedVars) return;
+											}
+											ifPath.node.test = newOuterTest;
 
-												// Rewrite outer guard: J.offset !== void 0 -> J.range !== void 0
-												outerTerms[offsetGuardIdx] = t.binaryExpression(
-													"!==",
-													t.memberExpression(
-														t.identifier(dedupObjName),
-														t.identifier("range"),
-													),
-													t.unaryExpression("void", t.numericLiteral(0)),
-												);
-												// Rebuild the && chain
-												let newOuterTest = outerTerms[0];
-												for (let i = 1; i < outerTerms.length; i++) {
-													newOuterTest = t.logicalExpression(
-														"&&",
-														newOuterTest as t.Expression,
-														outerTerms[i],
-													);
-												}
-												ifPath.node.test = newOuterTest;
+											// Rewrite inner comparison: J.offset === $ && J.limit === q -> J.range === R
+											innerIf.test = t.binaryExpression(
+												"===",
+												t.memberExpression(
+													t.identifier(dedupObjName),
+													t.identifier("range"),
+												),
+												t.identifier(rangeVarName || "R"),
+											);
 
-												// Rewrite inner comparison: J.offset === $ && J.limit === q -> J.range === R
-												innerIf.test = t.binaryExpression(
-													"===",
-													t.memberExpression(
-														t.identifier(dedupObjName),
-														t.identifier("range"),
-													),
-													t.identifier(rangeVarName || "R"),
-												);
-
-												ifPath.stop();
-											},
+											ifPath.stop();
 										},
-										path.scope,
-										path,
-									);
+									});
+
+									callBodyPath.traverse({
+										IfStatement(ifPath) {
+											const { test } = ifPath.node;
+											if (!t.isLogicalExpression(test, { operator: "&&" }))
+												return;
+
+											const terms = flattenLogicalAndTerms(
+												test as t.Expression,
+											);
+											let removedOffsetFullReadTerm = false;
+											let removedLimitFullReadTerm = false;
+											const preservedTerms: t.Expression[] = [];
+
+											for (const term of terms) {
+												if (
+													t.isBinaryExpression(term, { operator: "===" }) &&
+													t.isIdentifier(term.left) &&
+													removedCallCompatVars.has(term.left.name) &&
+													t.isNumericLiteral(term.right, { value: 1 })
+												) {
+													removedOffsetFullReadTerm = true;
+													continue;
+												}
+												if (
+													t.isBinaryExpression(term, { operator: "===" }) &&
+													t.isIdentifier(term.left) &&
+													removedCallCompatVars.has(term.left.name) &&
+													isVoidZeroExpression(term.right)
+												) {
+													removedLimitFullReadTerm = true;
+													continue;
+												}
+												preservedTerms.push(term);
+											}
+
+											if (
+												!removedOffsetFullReadTerm ||
+												!removedLimitFullReadTerm
+											) {
+												return;
+											}
+
+											const rangeId = t.identifier(rangeVarName || "R");
+											let fullReadRangeGate: t.Expression = t.binaryExpression(
+												"===",
+												t.cloneNode(rangeId, true),
+												t.unaryExpression("void", t.numericLiteral(0)),
+											);
+											if (_filePathVar) {
+												const filePathId = t.identifier(_filePathVar);
+												const outputPathExpr = t.logicalExpression(
+													"&&",
+													t.binaryExpression(
+														"===",
+														t.unaryExpression(
+															"typeof",
+															t.cloneNode(filePathId, true),
+														),
+														t.stringLiteral("string"),
+													),
+													t.callExpression(
+														t.memberExpression(
+															t.cloneNode(filePathId, true),
+															t.identifier("endsWith"),
+														),
+														[t.stringLiteral(".output")],
+													),
+												);
+												fullReadRangeGate = t.logicalExpression(
+													"&&",
+													fullReadRangeGate,
+													t.unaryExpression("!", outputPathExpr),
+												);
+											}
+											preservedTerms.push(fullReadRangeGate);
+
+											let rebuiltTest = preservedTerms[0];
+											for (let i = 1; i < preservedTerms.length; i++) {
+												rebuiltTest = t.logicalExpression(
+													"&&",
+													rebuiltTest as t.Expression,
+													preservedTerms[i],
+												);
+											}
+											ifPath.node.test = rebuiltTest;
+											ifPath.stop();
+										},
+									});
 								}
 
 								// === Probe for inline vs delegation ===
 								// Detect whether the text-reading call is inline or delegated
 								// to a helper function, then patch the body that owns the read.
-								let targetBody: t.BlockStatement = callMethod.body;
+								let targetBodyPath = callBodyPath;
 
 								{
 									let foundInline = false;
-									traverse(
-										callMethod.body,
-										{
-											VariableDeclarator(probePath) {
-												const id = probePath.node.id;
-												if (!t.isObjectPattern(id)) return;
-												if (
-													!t.isCallExpression(unwrapAwait(probePath.node.init))
-												)
-													return;
-												if (isD2IDestructuring(id)) {
-													foundInline = true;
-													probePath.stop();
-												}
-											},
+									callBodyPath.traverse({
+										VariableDeclarator(probePath) {
+											const id = probePath.node.id;
+											if (!t.isObjectPattern(id)) return;
+											if (!t.isCallExpression(unwrapAwait(probePath.node.init)))
+												return;
+											if (isD2IDestructuring(id)) {
+												foundInline = true;
+												probePath.stop();
+											}
 										},
-										path.scope,
-										path,
-									);
+									});
 
 									if (!foundInline) {
 										// Delegation detected: the call method delegates to a
@@ -2368,55 +2463,54 @@ export const readWithBat: Patch = {
 										// the bundle changes argument counts.
 										let helperName: string | null = null;
 										const delegationCalls: t.CallExpression[] = [];
-										traverse(
-											callMethod.body,
-											{
-												AwaitExpression(awaitPath) {
-													const arg = awaitPath.node.argument;
-													if (!t.isCallExpression(arg)) return;
-													if (!t.isIdentifier(arg.callee)) return;
-													if (arg.arguments.length < 8) return;
-													delegationCalls.push(arg);
-													if (!helperName) helperName = arg.callee.name;
-												},
+										let patchedDelegatedHelper = false;
+										callBodyPath.traverse({
+											AwaitExpression(awaitPath) {
+												const arg = awaitPath.node.argument;
+												if (!t.isCallExpression(arg)) return;
+												if (!t.isIdentifier(arg.callee)) return;
+												if (arg.arguments.length < 8) return;
+												delegationCalls.push(arg);
+												if (!helperName) helperName = arg.callee.name;
 											},
-											path.scope,
-											path,
-										);
+										});
 
 										if (helperName) {
 											const helperBinding = path.scope.getBinding(helperName);
 											if (helperBinding) {
-												let helperFn: t.Function | null = null;
+												let helperFnPath: NodePath<t.Function> | null = null;
 												if (helperBinding.path.isFunctionDeclaration()) {
-													helperFn = helperBinding.path.node;
-												} else if (
-													helperBinding.path.isVariableDeclarator() &&
-													t.isFunction(
-														(helperBinding.path.node as t.VariableDeclarator)
-															.init,
-													)
-												) {
-													helperFn = (
-														helperBinding.path.node as t.VariableDeclarator
-													).init as t.Function;
+													helperFnPath =
+														helperBinding.path as NodePath<t.Function>;
+												} else if (helperBinding.path.isVariableDeclarator()) {
+													const initPath = helperBinding.path.get("init");
+													if (
+														!Array.isArray(initPath) &&
+														(initPath.isFunctionExpression() ||
+															initPath.isArrowFunctionExpression())
+													) {
+														helperFnPath = initPath as NodePath<t.Function>;
+													}
 												}
-												if (helperFn && t.isBlockStatement(helperFn.body)) {
+												const helperFn = helperFnPath?.node ?? null;
+												if (
+													helperFnPath &&
+													helperFn &&
+													t.isBlockStatement(helperFn.body)
+												) {
+													const helperBodyPath = helperFnPath.get(
+														"body",
+													) as NodePath<t.BlockStatement>;
 													// Verify helper contains D2I destructuring (content/lineCount/totalLines)
 													let hasD2I = false;
-													traverse(
-														helperFn.body,
-														{
-															ObjectPattern(patternPath) {
-																if (isD2IDestructuring(patternPath.node)) {
-																	hasD2I = true;
-																	patternPath.stop();
-																}
-															},
+													helperBodyPath.traverse({
+														ObjectPattern(patternPath) {
+															if (isD2IDestructuring(patternPath.node)) {
+																hasD2I = true;
+																patternPath.stop();
+															}
 														},
-														path.scope,
-														path,
-													);
+													});
 													if (hasD2I) {
 														for (const call of delegationCalls) {
 															call.arguments = call.arguments.map((arg) => {
@@ -2453,11 +2547,239 @@ export const readWithBat: Patch = {
 														);
 														targetRangeVarName = helperRangeVarName;
 														targetWhitespaceVarName = helperWhitespaceVarName;
-														targetBody = helperFn.body;
+														targetBodyPath = helperBodyPath;
+														patchedDelegatedHelper = true;
 													} else {
 														console.warn(
 															"read-with-bat: delegation candidate found but missing D2I pattern, skipping",
 														);
+													}
+												}
+											}
+										}
+										if (!patchedDelegatedHelper) {
+											let objectHelperName: string | null = null;
+											let objectHelperFnPath: NodePath<t.Function> | null =
+												null;
+											const objectDelegateCalls: t.CallExpression[] = [];
+
+											callBodyPath.traverse({
+												AwaitExpression(awaitPath) {
+													const arg = awaitPath.node.argument;
+													if (!t.isCallExpression(arg)) return;
+													if (!t.isIdentifier(arg.callee)) return;
+													if (arg.arguments.length !== 1) return;
+													const [payload] = arg.arguments;
+													if (!t.isObjectExpression(payload)) return;
+													const hasResolvedPath = payload.properties.some((p) =>
+														hasObjectKeyName(p, "resolvedFilePath"),
+													);
+													if (!hasResolvedPath) return;
+													objectHelperName ??= arg.callee.name;
+													if (arg.callee.name === objectHelperName) {
+														objectDelegateCalls.push(arg);
+													}
+												},
+											});
+
+											if (objectHelperName) {
+												const helperBinding =
+													path.scope.getBinding(objectHelperName);
+												if (helperBinding?.path.isFunctionDeclaration()) {
+													objectHelperFnPath =
+														helperBinding.path as NodePath<t.Function>;
+												} else if (helperBinding?.path.isVariableDeclarator()) {
+													const initPath = helperBinding.path.get("init");
+													if (
+														!Array.isArray(initPath) &&
+														(initPath.isFunctionExpression() ||
+															initPath.isArrowFunctionExpression())
+													) {
+														objectHelperFnPath =
+															initPath as NodePath<t.Function>;
+													}
+												}
+											}
+
+											const helperFn = objectHelperFnPath?.node ?? null;
+											if (
+												objectHelperFnPath &&
+												helperFn &&
+												t.isBlockStatement(helperFn.body)
+											) {
+												const helperBodyPath = objectHelperFnPath.get(
+													"body",
+												) as NodePath<t.BlockStatement>;
+												let d2iFound = false;
+												helperBodyPath.traverse({
+													ObjectPattern(patternPath) {
+														if (isD2IDestructuring(patternPath.node)) {
+															d2iFound = true;
+															patternPath.stop();
+														}
+													},
+												});
+
+												if (d2iFound) {
+													const helperReservedNames = getBindingNames(helperFn);
+													const helperRangeVarName = freshIdentifierName(
+														rangeVarName || "R",
+														helperReservedNames,
+													);
+													helperReservedNames.add(helperRangeVarName);
+													const helperWhitespaceVarName = freshIdentifierName(
+														whitespaceVarName || "WSPC",
+														helperReservedNames,
+													);
+
+													callBodyPath.traverse({
+														ObjectExpression(objectPath) {
+															const props = objectPath.node.properties;
+															const hasFilePath = props.some((p) =>
+																hasObjectKeyName(p, "file_path"),
+															);
+															const hasFullFilePath = props.some((p) =>
+																hasObjectKeyName(p, "fullFilePath"),
+															);
+															const hasMaxTokens = props.some((p) =>
+																hasObjectKeyName(p, "maxTokens"),
+															);
+															if (
+																!hasFilePath ||
+																!hasFullFilePath ||
+																!hasMaxTokens
+															) {
+																return;
+															}
+
+															let hasRange = false;
+															let hasShowWhitespace = false;
+															objectPath.node.properties = props.map((p) => {
+																if (
+																	t.isObjectProperty(p) &&
+																	hasObjectKeyName(p, "offset")
+																) {
+																	return t.objectProperty(
+																		t.identifier("offset"),
+																		t.numericLiteral(1),
+																	);
+																}
+																if (
+																	t.isObjectProperty(p) &&
+																	hasObjectKeyName(p, "limit")
+																) {
+																	return t.objectProperty(
+																		t.identifier("limit"),
+																		t.unaryExpression(
+																			"void",
+																			t.numericLiteral(0),
+																		),
+																	);
+																}
+																if (
+																	t.isObjectProperty(p) &&
+																	hasObjectKeyName(p, "range")
+																) {
+																	hasRange = true;
+																	return t.objectProperty(
+																		t.identifier("range"),
+																		t.identifier(rangeVarName || "R"),
+																	);
+																}
+																if (
+																	t.isObjectProperty(p) &&
+																	hasObjectKeyName(p, "show_whitespace")
+																) {
+																	hasShowWhitespace = true;
+																	return t.objectProperty(
+																		t.identifier("show_whitespace"),
+																		t.identifier(whitespaceVarName || "WSPC"),
+																	);
+																}
+																return p;
+															});
+															if (!hasRange) {
+																objectPath.node.properties.push(
+																	t.objectProperty(
+																		t.identifier("range"),
+																		t.identifier(rangeVarName || "R"),
+																	),
+																);
+															}
+															if (!hasShowWhitespace) {
+																objectPath.node.properties.push(
+																	t.objectProperty(
+																		t.identifier("show_whitespace"),
+																		t.identifier(whitespaceVarName || "WSPC"),
+																	),
+																);
+															}
+														},
+													});
+
+													for (const call of objectDelegateCalls) {
+														const [payload] = call.arguments;
+														if (!t.isObjectExpression(payload)) continue;
+														const hasRange = payload.properties.some((p) =>
+															hasObjectKeyName(p, "range"),
+														);
+														const hasShowWhitespace = payload.properties.some(
+															(p) => hasObjectKeyName(p, "show_whitespace"),
+														);
+														if (!hasRange) {
+															payload.properties.push(
+																t.objectProperty(
+																	t.identifier("range"),
+																	t.identifier(rangeVarName || "R"),
+																),
+															);
+														}
+														if (!hasShowWhitespace) {
+															payload.properties.push(
+																t.objectProperty(
+																	t.identifier("show_whitespace"),
+																	t.identifier(whitespaceVarName || "WSPC"),
+																),
+															);
+														}
+													}
+
+													let helperPatternPatched = false;
+													helperBodyPath.traverse({
+														VariableDeclarator(declPath) {
+															if (!t.isObjectPattern(declPath.node.id)) return;
+															const pattern = declPath.node.id;
+															const hasRange = pattern.properties.some((p) =>
+																hasObjectKeyName(p, "range"),
+															);
+															const hasShowWhitespace = pattern.properties.some(
+																(p) => hasObjectKeyName(p, "show_whitespace"),
+															);
+															if (!hasRange) {
+																pattern.properties.push(
+																	t.objectProperty(
+																		t.identifier("range"),
+																		t.identifier(helperRangeVarName),
+																	),
+																);
+															}
+															if (!hasShowWhitespace) {
+																pattern.properties.push(
+																	t.objectProperty(
+																		t.identifier("show_whitespace"),
+																		t.identifier(helperWhitespaceVarName),
+																	),
+																);
+															}
+															helperPatternPatched = true;
+															declPath.stop();
+														},
+													});
+
+													if (helperPatternPatched) {
+														targetRangeVarName = helperRangeVarName;
+														targetWhitespaceVarName = helperWhitespaceVarName;
+														targetBodyPath = helperBodyPath;
 													}
 												}
 											}
@@ -2490,50 +2812,48 @@ export const readWithBat: Patch = {
 
 								// === 2. Find and replace text reading logic ===
 								// Look for: { content: X, lineCount: Y, totalLines: Z } = someFunc(path, offset, limit)
-								traverse(
-									targetBody,
-									{
-										VariableDeclarator(declPath) {
-											const id = declPath.node.id;
+								targetBodyPath.traverse({
+									VariableDeclarator(declPath) {
+										const id = declPath.node.id;
 
-											// Must be ObjectPattern = CallExpression (or await CallExpression)
-											if (!t.isObjectPattern(id)) return;
-											const callExpr = unwrapAwait(declPath.node.init);
-											if (!t.isCallExpression(callExpr)) return;
-											if (!isD2IDestructuring(id)) return;
+										// Must be ObjectPattern = CallExpression (or await CallExpression)
+										if (!t.isObjectPattern(id)) return;
+										const callExpr = unwrapAwait(declPath.node.init);
+										if (!t.isCallExpression(callExpr)) return;
+										if (!isD2IDestructuring(id)) return;
 
-											// Get original function and file path argument
-											if (!t.isIdentifier(callExpr.callee)) return;
-											originalReadFn = callExpr.callee.name;
-											const fileArg = callExpr.arguments[0];
-											if (!t.isIdentifier(fileArg)) return;
-											const getCallArgOrVoid = (
-												arg:
-													| t.Expression
-													| t.SpreadElement
-													| t.ArgumentPlaceholder
-													| undefined,
-											): t.Expression => {
-												if (
-													!arg ||
-													t.isSpreadElement(arg) ||
-													t.isArgumentPlaceholder(arg)
-												) {
-													return t.unaryExpression("void", t.numericLiteral(0));
-												}
-												return t.cloneNode(arg, true) as t.Expression;
-											};
-											const fallbackMaxBytesArg = getCallArgOrVoid(
-												callExpr.arguments[3],
-											);
-											const fallbackSignalArg = getCallArgOrVoid(
-												callExpr.arguments[4],
-											);
+										// Get original function and file path argument
+										if (!t.isIdentifier(callExpr.callee)) return;
+										originalReadFn = callExpr.callee.name;
+										const fileArg = callExpr.arguments[0];
+										if (!t.isIdentifier(fileArg)) return;
+										const getCallArgOrVoid = (
+											arg:
+												| t.Expression
+												| t.SpreadElement
+												| t.ArgumentPlaceholder
+												| undefined,
+										): t.Expression => {
+											if (
+												!arg ||
+												t.isSpreadElement(arg) ||
+												t.isArgumentPlaceholder(arg)
+											) {
+												return t.unaryExpression("void", t.numericLiteral(0));
+											}
+											return t.cloneNode(arg, true) as t.Expression;
+										};
+										const fallbackMaxBytesArg = getCallArgOrVoid(
+											callExpr.arguments[3],
+										);
+										const fallbackSignalArg = getCallArgOrVoid(
+											callExpr.arguments[4],
+										);
 
-											// Build bat reading async IIFE. All runtime code is self-contained
-											// (async function(filePath, range, showWs, fallbackFn, fallbackMaxBytes, fallbackSignal) { ... })(D, R, WSPC, KtB, MAX, SIGNAL)
-											const batFn = template.expression(
-												`async function(filePath, range, showWs, fallbackFn, fallbackMaxBytes, fallbackSignal) {
+										// Build bat reading async IIFE. All runtime code is self-contained
+										// (async function(filePath, range, showWs, fallbackFn, fallbackMaxBytes, fallbackSignal) { ... })(D, R, WSPC, KtB, MAX, SIGNAL)
+										const batFn = template.expression(
+											`async function(filePath, range, showWs, fallbackFn, fallbackMaxBytes, fallbackSignal) {
   var fs = await import("fs");
   var stat = fs.statSync(filePath);
   if (stat.isDirectory()) throw new Error("EISDIR: Cannot read a directory. Use Bash with eza or fd to list directory contents: " + filePath);
@@ -2747,236 +3067,219 @@ export const readWithBat: Patch = {
     };
   }
 }`,
-												{ placeholderPattern: false },
-											)() as t.FunctionExpression;
+											{ placeholderPattern: false },
+										)() as t.FunctionExpression;
 
-											// Replace init with awaited IIFE call
-											declPath.node.init = t.awaitExpression(
-												t.callExpression(batFn, [
-													fileArg,
-													t.identifier(
-														targetRangeVarName || rangeVarName || "R",
-													),
-													t.identifier(
-														targetWhitespaceVarName ||
-															whitespaceVarName ||
-															"WSPC",
-													),
-													t.identifier(originalReadFn),
-													fallbackMaxBytesArg,
-													fallbackSignalArg,
-												]),
-											);
+										// Replace init with awaited IIFE call
+										declPath.node.init = t.awaitExpression(
+											t.callExpression(batFn, [
+												fileArg,
+												t.identifier(targetRangeVarName || rangeVarName || "R"),
+												t.identifier(
+													targetWhitespaceVarName ||
+														whitespaceVarName ||
+														"WSPC",
+												),
+												t.identifier(originalReadFn),
+												fallbackMaxBytesArg,
+												fallbackSignalArg,
+											]),
+										);
 
-											// Ensure we also destructure startLine from the bat result
-											const hasStartLine = id.properties.some((p) =>
-												hasObjectKeyName(p, "startLine"),
+										// Ensure we also destructure startLine from the bat result
+										const hasStartLine = id.properties.some((p) =>
+											hasObjectKeyName(p, "startLine"),
+										);
+										if (!hasStartLine) {
+											id.properties.push(
+												t.objectProperty(
+													t.identifier("startLine"),
+													t.identifier("START_LINE"),
+												),
 											);
-											if (!hasStartLine) {
-												id.properties.push(
-													t.objectProperty(
-														t.identifier("startLine"),
-														t.identifier("START_LINE"),
-													),
+										}
+
+										// Remove the offset calculation declarator if present
+										// Original: let W = Q === 0 ? 0 : Q - 1, { content: K, ... } = KtB(...)
+										// Both are in the SAME VariableDeclaration
+										const varDeclPath = declPath.parentPath;
+										if (
+											varDeclPath &&
+											t.isVariableDeclaration(varDeclPath.node)
+										) {
+											const decls = varDeclPath.node.declarations;
+											// Find and remove the offset calculation declarator
+											const offsetIdx = decls.findIndex((d) => {
+												// Look for: W = Q === 0 ? 0 : Q - 1
+												if (!t.isConditionalExpression(d.init)) return false;
+												const cond = d.init;
+												return (
+													t.isBinaryExpression(cond.test, {
+														operator: "===",
+													}) &&
+													t.isNumericLiteral(cond.consequent, { value: 0 })
 												);
+											});
+											if (offsetIdx >= 0) {
+												decls.splice(offsetIdx, 1);
 											}
+										}
 
-											// Remove the offset calculation declarator if present
-											// Original: let W = Q === 0 ? 0 : Q - 1, { content: K, ... } = KtB(...)
-											// Both are in the SAME VariableDeclaration
-											const varDeclPath = declPath.parentPath;
-											if (
-												varDeclPath &&
-												t.isVariableDeclaration(varDeclPath.node)
-											) {
-												const decls = varDeclPath.node.declarations;
-												// Find and remove the offset calculation declarator
-												const offsetIdx = decls.findIndex((d) => {
-													// Look for: W = Q === 0 ? 0 : Q - 1
-													if (!t.isConditionalExpression(d.init)) return false;
-													const cond = d.init;
-													return (
-														t.isBinaryExpression(cond.test, {
-															operator: "===",
-														}) &&
-														t.isNumericLiteral(cond.consequent, { value: 0 })
-													);
-												});
-												if (offsetIdx >= 0) {
-													decls.splice(offsetIdx, 1);
-												}
-											}
-
-											declPath.stop();
-										},
+										declPath.stop();
 									},
-									path.scope,
-									path,
-								);
+								});
 
 								// === 3. Fix readFileState.set call ===
 								// Change: Z.set(D, { content: K, timestamp: ..., offset: Q, limit: B })
 								// To: Z.set(D, { content: K, timestamp: ..., range: R,
 								// compatibility markers })
-								traverse(
-									targetBody,
-									{
-										CallExpression(callPath) {
-											const callee = callPath.node.callee;
-											if (!t.isMemberExpression(callee)) return;
-											if (!isMemberPropertyName(callee, "set")) return;
+								targetBodyPath.traverse({
+									CallExpression(callPath) {
+										const callee = callPath.node.callee;
+										if (!t.isMemberExpression(callee)) return;
+										if (!isMemberPropertyName(callee, "set")) return;
 
-											// Check second argument is the state object with offset/limit
-											// fields.
-											const args = callPath.node.arguments;
-											if (args.length < 2) return;
-											const objArg = args[1];
-											if (!t.isObjectExpression(objArg)) return;
+										// Check second argument is the state object with offset/limit
+										// fields.
+										const args = callPath.node.arguments;
+										if (args.length < 2) return;
+										const objArg = args[1];
+										if (!t.isObjectExpression(objArg)) return;
 
-											// Look for offset and limit properties
-											const hasOffset = objArg.properties.some((p) =>
-												hasObjectKeyName(p, "offset"),
-											);
-											const hasLimit = objArg.properties.some((p) =>
-												hasObjectKeyName(p, "limit"),
-											);
+										// Look for offset and limit properties
+										const hasOffset = objArg.properties.some((p) =>
+											hasObjectKeyName(p, "offset"),
+										);
+										const hasLimit = objArg.properties.some((p) =>
+											hasObjectKeyName(p, "limit"),
+										);
 
-											if (!hasOffset || !hasLimit) return;
+										if (!hasOffset || !hasLimit) return;
 
-											// Keep offset/limit as compatibility markers for the
-											// changed-files attachment scanner. It skips diff-injection
-											// for partial reads when either field is defined.
-											const isRangedExpr = t.binaryExpression(
-												"!==",
+										// Keep offset/limit as compatibility markers for the
+										// changed-files attachment scanner. It skips diff-injection
+										// for partial reads when either field is defined.
+										const isRangedExpr = t.binaryExpression(
+											"!==",
+											t.identifier(targetRangeVarName || rangeVarName || "R"),
+											t.unaryExpression("void", t.numericLiteral(0)),
+										);
+										const filePathExpr = t.identifier(_filePathVar || "A");
+										const isOutputFileExpr = t.logicalExpression(
+											"&&",
+											t.binaryExpression(
+												"===",
+												t.unaryExpression(
+													"typeof",
+													t.cloneNode(filePathExpr, true),
+												),
+												t.stringLiteral("string"),
+											),
+											t.callExpression(
+												t.memberExpression(
+													t.cloneNode(filePathExpr, true),
+													t.identifier("endsWith"),
+												),
+												[t.stringLiteral(".output")],
+											),
+										);
+										const hasImplicitOutputTailExpr = t.logicalExpression(
+											"&&",
+											t.binaryExpression(
+												"===",
 												t.identifier(targetRangeVarName || rangeVarName || "R"),
 												t.unaryExpression("void", t.numericLiteral(0)),
-											);
-											const filePathExpr = t.identifier(_filePathVar || "A");
-											const isOutputFileExpr = t.logicalExpression(
-												"&&",
-												t.binaryExpression(
-													"===",
-													t.unaryExpression(
-														"typeof",
-														t.cloneNode(filePathExpr, true),
-													),
-													t.stringLiteral("string"),
-												),
-												t.callExpression(
-													t.memberExpression(
-														t.cloneNode(filePathExpr, true),
-														t.identifier("endsWith"),
-													),
-													[t.stringLiteral(".output")],
-												),
-											);
-											const hasImplicitOutputTailExpr = t.logicalExpression(
-												"&&",
-												t.binaryExpression(
-													"===",
-													t.identifier(
-														targetRangeVarName || rangeVarName || "R",
-													),
-													t.unaryExpression("void", t.numericLiteral(0)),
-												),
+											),
+											t.cloneNode(isOutputFileExpr, true),
+										);
+										const isPartialReadExpr = t.logicalExpression(
+											"||",
+											t.cloneNode(isRangedExpr, true),
+											hasImplicitOutputTailExpr,
+										);
+										const compatMarkerExpr = t.conditionalExpression(
+											isPartialReadExpr,
+											t.numericLiteral(1),
+											t.unaryExpression("void", t.numericLiteral(0)),
+										);
+										const effectiveRangeExpr = t.conditionalExpression(
+											t.cloneNode(isRangedExpr, true),
+											t.identifier(targetRangeVarName || rangeVarName || "R"),
+											t.conditionalExpression(
 												t.cloneNode(isOutputFileExpr, true),
-											);
-											const isPartialReadExpr = t.logicalExpression(
-												"||",
-												t.cloneNode(isRangedExpr, true),
-												hasImplicitOutputTailExpr,
-											);
-											const compatMarkerExpr = t.conditionalExpression(
-												isPartialReadExpr,
-												t.numericLiteral(1),
+												t.stringLiteral("-500:"),
 												t.unaryExpression("void", t.numericLiteral(0)),
-											);
-											const effectiveRangeExpr = t.conditionalExpression(
-												t.cloneNode(isRangedExpr, true),
-												t.identifier(targetRangeVarName || rangeVarName || "R"),
-												t.conditionalExpression(
-													t.cloneNode(isOutputFileExpr, true),
-													t.stringLiteral("-500:"),
-													t.unaryExpression("void", t.numericLiteral(0)),
-												),
-											);
-											let hasRange = false;
-											objArg.properties = objArg.properties.map((p) => {
-												if (
-													t.isObjectProperty(p) &&
-													hasObjectKeyName(p, "offset")
-												) {
-													return t.objectProperty(
-														t.identifier("offset"),
-														t.cloneNode(compatMarkerExpr, true),
-													);
-												}
-												if (
-													t.isObjectProperty(p) &&
-													hasObjectKeyName(p, "limit")
-												) {
-													return t.objectProperty(
-														t.identifier("limit"),
-														t.cloneNode(compatMarkerExpr, true),
-													);
-												}
-												if (
-													t.isObjectProperty(p) &&
-													hasObjectKeyName(p, "range")
-												) {
-													hasRange = true;
-													return t.objectProperty(
-														t.identifier("range"),
-														t.cloneNode(effectiveRangeExpr, true),
-													);
-												}
-												return p;
-											});
-
-											if (!hasRange) {
-												objArg.properties.push(
-													t.objectProperty(
-														t.identifier("range"),
-														t.cloneNode(effectiveRangeExpr, true),
-													),
+											),
+										);
+										let hasRange = false;
+										objArg.properties = objArg.properties.map((p) => {
+											if (
+												t.isObjectProperty(p) &&
+												hasObjectKeyName(p, "offset")
+											) {
+												return t.objectProperty(
+													t.identifier("offset"),
+													t.cloneNode(compatMarkerExpr, true),
 												);
 											}
-										},
+											if (
+												t.isObjectProperty(p) &&
+												hasObjectKeyName(p, "limit")
+											) {
+												return t.objectProperty(
+													t.identifier("limit"),
+													t.cloneNode(compatMarkerExpr, true),
+												);
+											}
+											if (
+												t.isObjectProperty(p) &&
+												hasObjectKeyName(p, "range")
+											) {
+												hasRange = true;
+												return t.objectProperty(
+													t.identifier("range"),
+													t.cloneNode(effectiveRangeExpr, true),
+												);
+											}
+											return p;
+										});
+
+										if (!hasRange) {
+											objArg.properties.push(
+												t.objectProperty(
+													t.identifier("range"),
+													t.cloneNode(effectiveRangeExpr, true),
+												),
+											);
+										}
 									},
-									path.scope,
-									path,
-								);
+								});
 
 								// === 4. Fix startLine in result object ===
 								// Change: startLine: Q (where Q was offset) to startLine: START_LINE
-								traverse(
-									targetBody,
-									{
-										ObjectProperty(propPath) {
-											if (!hasObjectKeyName(propPath.node, "startLine")) return;
+								targetBodyPath.traverse({
+									ObjectProperty(propPath) {
+										if (!hasObjectKeyName(propPath.node, "startLine")) return;
 
-											// Only change if value is an identifier (was bound to offset var)
-											if (t.isIdentifier(propPath.node.value)) {
-												// Check we're in a file: { ... } object (has numLines, totalLines siblings)
-												const parent = propPath.parent;
-												if (!t.isObjectExpression(parent)) return;
+										// Check we're in a file: { ... } object (has numLines,
+										// totalLines siblings). Upstream may compute startLine
+										// inline, so replace the value rather than requiring an
+										// identifier-bound offset.
+										const parent = propPath.parent;
+										if (!t.isObjectExpression(parent)) return;
 
-												const hasNumLines = parent.properties.some((p) =>
-													hasObjectKeyName(p, "numLines"),
-												);
-												const hasTotalLines = parent.properties.some((p) =>
-													hasObjectKeyName(p, "totalLines"),
-												);
+										const hasNumLines = parent.properties.some((p) =>
+											hasObjectKeyName(p, "numLines"),
+										);
+										const hasTotalLines = parent.properties.some((p) =>
+											hasObjectKeyName(p, "totalLines"),
+										);
 
-												if (hasNumLines && hasTotalLines) {
-													propPath.node.value = t.identifier("START_LINE");
-												}
-											}
-										},
+										if (hasNumLines && hasTotalLines) {
+											propPath.node.value = t.identifier("START_LINE");
+										}
 									},
-									path.scope,
-									path,
-								);
+								});
 
 								path.stop();
 							},

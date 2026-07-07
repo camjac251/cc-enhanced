@@ -168,6 +168,103 @@ function renderToolUseMessage({ file_path: A, offset: Q, limit: B, pages: Y }, {
 }
 `;
 
+function readObjectDelegationFixture(): string {
+	return READ_DELEGATION_FIXTURE.replace(
+		`  async validateInput({ file_path: A, offset: Q, limit: B, pages: Y }, G) {
+    if (!eG1(Y) && !Q && !B) return { result: false };
+    return { result: true };
+  },
+  async call({ file_path: A, offset: Q = 1, limit: B = void 0, ...READ_COMPAT }, G) {
+    if (R === void 0 && READ_COMPAT.offset !== void 0 && READ_COMPAT.limit !== void 0) {
+      R = String(READ_COMPAT.offset) + ":" + String(READ_COMPAT.limit);
+    }
+    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);
+  },
+};
+
+async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2) {
+  let W = offset === 0 ? 0 : offset - 1, { content: K, lineCount: O, totalLines: T } = await D2I(filePath, W, limit, maxBytes, signal);
+  ctx.readFileState.set(filePath, { content: K, timestamp: Date.now(), offset, limit });
+  return { type: "text", file: { filePath, numLines: O, totalLines: T, startLine: offset } };
+}`,
+		`  async validateInput({ file_path: A, pages: Y }, G) {
+    return { result: true };
+  },
+  async call({ file_path: A, offset: Q = 1, limit: B = void 0, pages: Y, ...READ_COMPAT }, G) {
+    let F = A;
+    let S = G.readFileState.get(F);
+    if (S && S.seededFromContext && !S.isPartialView && Q === 1 && B === void 0) return { data: { type: "file_unchanged" } };
+    if (S && !S.isPartialView && S.offset !== void 0) {
+      if (S.offset === Q && S.limit === B) return { data: { type: "file_unchanged" } };
+    }
+    let request = {
+      file_path: A,
+      fullFilePath: F,
+      ext: "txt",
+      offset: Q,
+      limit: B,
+      pages: Y,
+      maxSizeBytes: MAX_BYTES,
+      maxTokens: MAX_TOKENS,
+      context: G,
+      messageId: MSG,
+    };
+    try {
+      return await helperRead({ ...request, resolvedFilePath: F });
+    } catch (E) {
+      return await helperRead({ ...request, resolvedFilePath: A });
+    }
+  },
+};
+
+async function helperRead(input) {
+  let {
+      file_path: A,
+      fullFilePath: F,
+      resolvedFilePath: N,
+      ext: EXT,
+      offset: Q,
+      limit: B,
+      pages: Y,
+      maxSizeBytes: MAX_BYTES,
+      maxTokens: MAX_TOKENS,
+      context: G,
+      messageId: MSG,
+    } = input,
+    { readFileState: state } = G;
+  let W = Q === 0 ? 0 : Q - 1,
+    { content: K, lineCount: O, totalLines: T, mtimeMs: M } = await D2I(
+      N,
+      W,
+      B,
+      B === void 0 ? MAX_BYTES : void 0,
+      G.abortController.signal,
+    ),
+    OUT = K,
+    NUM = O,
+    CAP,
+    FULL = (Q ?? 1) <= 1 && B === void 0 && Y === void 0;
+  state.set(F, {
+    content: OUT,
+    timestamp: Math.floor(M),
+    offset: Q,
+    limit: B,
+    ...(CAP !== void 0 && { isPartialView: true }),
+  });
+  return {
+    type: "text",
+    file: {
+      filePath: A,
+      content: OUT,
+      numLines: NUM,
+      startLine: CAP !== void 0 ? Math.max(1, Q) : Q,
+      totalLines: T,
+    },
+  };
+}`,
+	);
+}
+
 const READ_IDENTIFIER_PROMPT_FIXTURE = `
 const z = {
   strictObject(x) { return x; },
@@ -545,6 +642,20 @@ test("read-bat patches delegated helper calls and appends range/whitespace param
 	assert.equal(output.includes("__ccChangedFileMtime <= S.timestamp"), true);
 	assert.equal(output.includes("S.timestamp = __ccChangedFileMtime"), true);
 	assert.equal(output.includes('var style = "numbers"'), true);
+});
+
+test("read-bat patches object-payload delegated read helpers", async () => {
+	const ast = parse(readObjectDelegationFixture());
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes("execFileSync"), true);
+	assert.equal(output.includes('var style = "numbers"'), true);
+	assert.equal(output.includes("range: R"), true);
+	assert.equal(output.includes("show_whitespace: WSPC"), true);
+	assert.equal(output.includes("Q === 1 && B === void 0"), false);
+	assert.equal(output.includes("startLine: START_LINE"), true);
+	assert.equal(readWithBat.verify(output), true);
 });
 
 test("read-bat verify fails when content-identical re-reads are not marked seen", async () => {
