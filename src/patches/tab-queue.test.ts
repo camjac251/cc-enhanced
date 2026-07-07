@@ -106,7 +106,8 @@ function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, se
   ] });
 }
 
-function renderFooterLeft({ showHint, isInputEmpty, isLoading, leftArrowPending }) {
+function renderFooterLeft(footerProps) {
+  let { showHint, isInputEmpty, isLoading, leftArrowPending } = footerProps;
   let parts = [];
   let escShortcut = "esc";
   let toggleShortcut = "ctrl+t";

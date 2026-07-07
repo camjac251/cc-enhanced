@@ -348,7 +348,22 @@ function getFunctionObjectParam(
 	path: NodePath<FunctionLike>,
 ): t.ObjectPattern | null {
 	const param = path.node.params[0];
-	return t.isObjectPattern(param) ? param : null;
+	if (t.isObjectPattern(param)) return param;
+	if (!t.isIdentifier(param) || !t.isBlockStatement(path.node.body)) {
+		return null;
+	}
+	for (const stmt of path.node.body.body) {
+		if (!t.isVariableDeclaration(stmt)) continue;
+		for (const declaration of stmt.declarations) {
+			if (
+				t.isObjectPattern(declaration.id) &&
+				t.isIdentifier(declaration.init, { name: param.name })
+			) {
+				return declaration.id;
+			}
+		}
+	}
+	return null;
 }
 
 function getInputFromSuppressHint(value: t.Expression): t.Expression | null {

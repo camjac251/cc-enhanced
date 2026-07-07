@@ -301,11 +301,27 @@ function isRawUltracodeEqualsTrueTest(expr: t.Expression): boolean {
 	return t.isCallExpression(left.object);
 }
 
+function flattenLogicalOr(expr: t.Expression): t.Expression[] {
+	if (!t.isLogicalExpression(expr, { operator: "||" })) return [expr];
+	return [
+		...flattenLogicalOr(expr.left as t.Expression),
+		...flattenLogicalOr(expr.right as t.Expression),
+	];
+}
+
 function isRawUltracodeSourceWithEnv(expr: t.Expression): boolean {
-	if (!t.isLogicalExpression(expr, { operator: "||" })) return false;
+	const parts = flattenLogicalOr(expr);
 	return (
-		isRawUltracodeEqualsTrueTest(expr.left as t.Expression) &&
-		isEnvUltracodeEnabledCheck(expr.right as t.Expression)
+		parts.some(isRawUltracodeEqualsTrueTest) &&
+		parts.some(isEnvUltracodeEnabledCheck)
+	);
+}
+
+function isPatchableRawUltracodeSource(expr: t.Expression): boolean {
+	const parts = flattenLogicalOr(expr);
+	return (
+		parts.some(isRawUltracodeEqualsTrueTest) &&
+		!parts.some(isEnvUltracodeEnabledCheck)
 	);
 }
 
@@ -549,7 +565,7 @@ function patchRawUltracodeFlagFunction(fn: t.Function): boolean | null {
 			if (isRawUltracodeSourceWithEnv(declaration.init as t.Expression)) {
 				return true;
 			}
-			if (!isRawUltracodeEqualsTrueTest(declaration.init as t.Expression)) {
+			if (!isPatchableRawUltracodeSource(declaration.init as t.Expression)) {
 				continue;
 			}
 			declaration.init = t.logicalExpression(
