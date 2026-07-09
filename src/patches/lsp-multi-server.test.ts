@@ -30,11 +30,12 @@ function PH(err) {}
 function XF8() {
   let H = new Map(),
     $ = new Map(),
-    A = new Map();
+    A = new Map(),
+    VER = new Map();
 
   async function L() {}
   async function D() {
-    H.clear(); $.clear(); A.clear();
+    H.clear(); $.clear(); A.clear(); VER.clear();
   }
 
   function f(Y) {
@@ -112,27 +113,15 @@ function XF8() {
     }
   }
 
-  async function w(Y) {
-    let j = f(Y);
-    if (!j || j.state !== "running") return;
-    let I = XTH.pathToFileURL(kn.resolve(Y)).href;
-    try {
-      await j.sendNotification("textDocument/didClose", { textDocument: { uri: I } });
-      A.delete(I);
-      v(\`LSP: Sent didClose for \${Y}\`);
-    } catch (X) {
-      throw (PH(Error(\`Failed to sync file close \${Y}\`)), Error("fail"));
-    }
-  }
-
   function z(Y) {
     let j = XTH.pathToFileURL(kn.resolve(Y)).href;
     return A.has(j);
   }
 
+  function g(Y) { return VER.get(Y); }
+
   return {
     initialize: L,
-    shutdown: D,
     getServerForFile: f,
     ensureServerStarted: _,
     sendRequest: M,
@@ -140,8 +129,8 @@ function XF8() {
     openFile: q,
     changeFile: P,
     saveFile: O,
-    closeFile: w,
     isFileOpen: z,
+    getDocumentVersion: g,
   };
 }
 `;
@@ -154,7 +143,7 @@ test("verify rejects unpatched LSP factory", () => {
 	assert.equal(typeof result, "string");
 });
 
-test("lsp-multi-server replaces all 4 lifecycle functions", async () => {
+test("lsp-multi-server rewrites all current lifecycle functions", async () => {
 	const ast = parse(LSP_FACTORY_FIXTURE);
 	await runViaPasses(ast);
 	const output = print(ast);
@@ -163,11 +152,10 @@ test("lsp-multi-server replaces all 4 lifecycle functions", async () => {
 	// openFile: for loop with didOpen
 	assert.match(output, /for\s*\(/, "should contain for-loop");
 
-	// All 4 LSP methods should still be present
+	// All current LSP lifecycle methods should still be present.
 	assert.equal(output.includes('"textDocument/didOpen"'), true);
 	assert.equal(output.includes('"textDocument/didChange"'), true);
 	assert.equal(output.includes('"textDocument/didSave"'), true);
-	assert.equal(output.includes('"textDocument/didClose"'), true);
 
 	// getServerForFile is rewritten to add filename fallback but must still
 	// take the primary ([0]) of the resolved server-name list.
@@ -223,8 +211,8 @@ test("lsp-multi-server preserves getServerForFile and sendRequest", async () => 
 	assert.equal(output.includes("ensureServerStarted:"), true);
 	assert.equal(output.includes("sendRequest:"), true);
 	assert.equal(output.includes("openFile:"), true);
-	assert.equal(output.includes("closeFile:"), true);
 	assert.equal(output.includes("isFileOpen:"), true);
+	assert.equal(output.includes("getDocumentVersion:"), true);
 });
 
 test("lsp-multi-server couples a for-loop to every lifecycle method", async () => {
@@ -235,7 +223,6 @@ test("lsp-multi-server couples a for-loop to every lifecycle method", async () =
 		"textDocument/didOpen",
 		"textDocument/didChange",
 		"textDocument/didSave",
-		"textDocument/didClose",
 	]) {
 		// The method string must sit after a `for (` in the same function-sized
 		// window, mirroring verify()'s for-loop/sendNotification coupling without
@@ -251,21 +238,11 @@ test("lsp-multi-server couples a for-loop to every lifecycle method", async () =
 	}
 });
 
-test("lsp-multi-server tolerates an extra (4th) Map in the factory", async () => {
-	// Mirror upstream: add a trailing document-version Map as the 4th declarator.
-	const fourMapFixture = LSP_FACTORY_FIXTURE.replace(
-		"let H = new Map(),\n    $ = new Map(),\n    A = new Map();",
-		"let H = new Map(),\n    $ = new Map(),\n    A = new Map(),\n    VER = new Map();",
-	);
-	assert.notEqual(
-		fourMapFixture,
-		LSP_FACTORY_FIXTURE,
-		"fixture rewrite must apply (Map declaration shape changed)",
-	);
-	const ast = parse(fourMapFixture);
+test("lsp-multi-server handles the document-version Map", async () => {
+	const ast = parse(LSP_FACTORY_FIXTURE);
 	await runViaPasses(ast);
 	const output = print(ast);
-	// Discovery must still pick the URI tracker (3rd map) for Set-based tracking.
+	// Discovery must pick the URI tracker (3rd map), not the trailing version map.
 	assert.equal(output.includes("instanceof Set"), true);
 	assert.equal(output.includes("new Set()"), true);
 	assert.equal(lspMultiServer.verify(output, ast), true);
@@ -295,20 +272,6 @@ test("lsp-multi-server discovers errFn from a non-lifecycle function", async () 
 	assert.equal(lspMultiServer.verify(output, ast), true);
 });
 
-test("lsp-multi-server verify fails when closeFile stops untracking the URI", async () => {
-	const ast = parse(LSP_FACTORY_FIXTURE);
-	await runViaPasses(ast);
-	const output = print(ast);
-	assert.equal(lspMultiServer.verify(output), true);
-	// Drop the tracking-map delete from the patched closeFile body. A reopen
-	// would then be skipped as "already open", so verify must reject this.
-	const mutated = output.replace(/A\.delete\([^)]*\);/, "");
-	assert.notEqual(mutated, output, "precondition: closeFile delete present");
-	const result = lspMultiServer.verify(mutated);
-	assert.equal(typeof result, "string");
-	assert.match(String(result), /closeFile does not delete the closed URI/);
-});
-
 test("lsp-multi-server fails closed when errFn cannot be discovered", async () => {
 	// errFn is discovered only from a call whose first argument is Error(...).
 	// Strip every such call so errFn is undiscoverable, then assert the patch
@@ -336,30 +299,20 @@ test("lsp-multi-server fails closed when errFn cannot be discovered", async () =
 	assert.equal(typeof result, "string");
 });
 
-test("lsp-multi-server assigns trackMap from the 3rd Map even with a 4th present", async () => {
-	const fourMapFixture = LSP_FACTORY_FIXTURE.replace(
-		"let H = new Map(),\n    $ = new Map(),\n    A = new Map();",
-		"let H = new Map(),\n    $ = new Map(),\n    A = new Map(),\n    VER = new Map();",
-	);
-	assert.notEqual(
-		fourMapFixture,
-		LSP_FACTORY_FIXTURE,
-		"fixture rewrite must apply",
-	);
-	const ast = parse(fourMapFixture);
+test("lsp-multi-server assigns trackMap from the 3rd Map", async () => {
+	const ast = parse(LSP_FACTORY_FIXTURE);
 	await runViaPasses(ast);
 	const output = print(ast);
-	// closeFile must delete from the 3rd map (A), the discovered tracking map,
-	// not from the trailing 4th map (VER).
+	// Set accumulation must use the 3rd map (A), not the version map (VER).
 	assert.match(
 		output,
-		/A\.delete\(/,
-		"trackMap (3rd map) must be the one closeFile untracks",
+		/A\.get\([^)]*\)\.add\(/,
+		"trackMap (3rd map) must accumulate server names",
 	);
 	assert.equal(
-		output.includes("VER.delete("),
+		/VER\.get\([^)]*\)\.add\(/.test(output),
 		false,
-		"the 4th map must not be treated as the tracking map",
+		"the version map must not be treated as the tracking map",
 	);
 	assert.equal(lspMultiServer.verify(output, ast), true);
 });
@@ -429,7 +382,6 @@ test("lsp-multi-server routes Dockerfile and globs through lifecycle functions (
 		openFile: (f: string, text: string) => Promise<void>;
 		changeFile: (f: string, text: string) => Promise<void>;
 		saveFile: (f: string) => Promise<void>;
-		closeFile: (f: string) => Promise<void>;
 	};
 	const mgr = factory();
 	const notifications: Array<{
@@ -495,7 +447,6 @@ test("lsp-multi-server routes Dockerfile and globs through lifecycle functions (
 	notifications.length = 0;
 	await mgr.changeFile("Dockerfile", "FROM busybox");
 	await mgr.saveFile("Dockerfile");
-	await mgr.closeFile("Dockerfile");
 	assert.deepEqual(
 		notifications.map((n) => [n.server, n.method]),
 		[
@@ -503,8 +454,6 @@ test("lsp-multi-server routes Dockerfile and globs through lifecycle functions (
 			["docker-lint", "textDocument/didChange"],
 			["docker", "textDocument/didSave"],
 			["docker-lint", "textDocument/didSave"],
-			["docker", "textDocument/didClose"],
-			["docker-lint", "textDocument/didClose"],
 		],
 	);
 

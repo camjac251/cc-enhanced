@@ -6,15 +6,15 @@ import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
 /**
  * Multi-LSP server patch: fans out lifecycle notifications (didOpen, didChange,
- * didSave, didClose) to ALL servers registered for a file extension, not just
- * the first. Fixes anthropics/claude-code#32912.
+ * didSave) to ALL servers registered for a file extension, not just the first.
+ * Fixes anthropics/claude-code#32912.
  *
  * sendRequest continues to use the primary (first) server for type intelligence.
- * Diagnostics already iterate all servers (yF8 handler).
+ * Diagnostics already iterate all servers.
  *
- * The tracking map (A) is changed from Map<uri, serverName> to
+ * The tracking map is changed from Map<uri, serverName> to
  * Map<uri, Set<serverName>> for per-server open-file tracking. Existing
- * consumers (isFileOpen: A.has(), shutdown: A.clear()) work unchanged.
+ * consumers only check presence or clear the map, so they work unchanged.
  *
  * Filename routing: helper functions (_lspByName / _lspGlobRe) are injected into
  * the factory so getServerForFile and the lifecycle functions fall back to
@@ -29,8 +29,6 @@ interface LspRefs {
 	openFile: string;
 	changeFile: string;
 	saveFile: string;
-	closeFile: string;
-	shutdown: string;
 	getServerForFile: string;
 	// Map variables (from first 3-Map VariableDeclaration)
 	serverMap: string; // server instances: name -> server
@@ -71,27 +69,15 @@ function discoverRefs(ast: t.File): LspRefs | null {
 				"openFile",
 				"changeFile",
 				"saveFile",
-				"closeFile",
 				"isFileOpen",
-				"shutdown",
 				"getAllServers",
 			];
 			if (!required.every((k) => propMap.has(k))) return;
 			const openFile = propMap.get("openFile");
 			const changeFile = propMap.get("changeFile");
 			const saveFile = propMap.get("saveFile");
-			const closeFile = propMap.get("closeFile");
-			const shutdown = propMap.get("shutdown");
 			const getServerForFile = propMap.get("getServerForFile");
-			if (
-				!openFile ||
-				!changeFile ||
-				!saveFile ||
-				!closeFile ||
-				!shutdown ||
-				!getServerForFile
-			)
-				return;
+			if (!openFile || !changeFile || !saveFile || !getServerForFile) return;
 
 			// Walk up to enclosing FunctionDeclaration
 			let fp: NodePath | null = path.parentPath;
@@ -175,8 +161,6 @@ function discoverRefs(ast: t.File): LspRefs | null {
 				openFile,
 				changeFile,
 				saveFile,
-				closeFile,
-				shutdown,
 				getServerForFile,
 				serverMap,
 				extMap,
@@ -340,33 +324,6 @@ function buildSaveFile(r: LspRefs, params: string[]): t.Statement[] {
 	);
 }
 
-function buildCloseFile(r: LspRefs, params: string[]): t.Statement[] {
-	const [file] = params;
-	// prettier-ignore
-	return parseBody(
-		`async function _r(${file}) {
-  var _ext = ${r.pathMod}.extname(${file}).toLowerCase();
-  var _ns = ${r.extMap}.get(_ext);
-  if (!_ns || _ns.length === 0) _ns = _lspByName(${file});
-  if (!_ns || _ns.length === 0) return;
-  var _uri = ${r.urlMod}.pathToFileURL(${r.pathMod}.resolve(${file})).href;
-  for (var _i = 0; _i < _ns.length; _i++) {
-    var _sv = ${r.serverMap}.get(_ns[_i]);
-    if (!_sv || _sv.state !== "running") continue;
-    try {
-      await _sv.sendNotification("textDocument/didClose", {
-        textDocument: { uri: _uri }
-      });
-      ${r.logFn}("LSP: Sent didClose for " + ${file} + " to " + _ns[_i]);
-    } catch (_e) {
-      ${r.errFn}(Error("Failed to sync file close " + ${file} + " to " + _ns[_i] + ": " + _e.message));
-    }
-  }
-  ${r.trackMap}.delete(_uri);
-}`,
-	);
-}
-
 function buildGetServerForFile(r: LspRefs, params: string[]): t.Statement[] {
 	const [file] = params;
 	// Extension lookup first (primary [0] preserved for sendRequest/navigation),
@@ -448,7 +405,6 @@ function createMutateVisitor(refs: LspRefs): Visitor {
 		[refs.openFile, (p) => buildOpenFile(refs, p)],
 		[refs.changeFile, (p) => buildChangeFile(refs, p)],
 		[refs.saveFile, (p) => buildSaveFile(refs, p)],
-		[refs.closeFile, (p) => buildCloseFile(refs, p)],
 	]);
 
 	let replaced = 0;
@@ -537,11 +493,6 @@ function verifyMultiServer(code: string, ast?: t.File): true | string {
 			label: "changeFile",
 		},
 		{ name: refs.saveFile, method: "textDocument/didSave", label: "saveFile" },
-		{
-			name: refs.closeFile,
-			method: "textDocument/didClose",
-			label: "closeFile",
-		},
 	];
 
 	for (const { name, method, label } of lifecycleFns) {
@@ -624,37 +575,7 @@ function verifyMultiServer(code: string, ast?: t.File): true | string {
 		}
 	}
 
-	// closeFile must untrack the URI from the per-URI tracking map so a later
-	// reopen is not skipped as "already open". Require a `.delete(...)` call on
-	// the discovered tracking map inside closeFile.
-	{
-		const closeFn = (factoryBody as t.Statement[]).find(
-			(s): s is t.FunctionDeclaration =>
-				t.isFunctionDeclaration(s) && s.id?.name === refs.closeFile,
-		);
-		if (closeFn) {
-			let hasTrackMapDelete = false;
-			walkNode(closeFn, (node) => {
-				if (hasTrackMapDelete) return;
-				if (!t.isCallExpression(node)) return;
-				const callee = node.callee;
-				if (!t.isMemberExpression(callee)) return;
-				const propName =
-					(t.isIdentifier(callee.property) && callee.property.name) ||
-					(t.isStringLiteral(callee.property) && callee.property.value) ||
-					null;
-				if (propName !== "delete") return;
-				if (t.isIdentifier(callee.object, { name: refs.trackMap })) {
-					hasTrackMapDelete = true;
-				}
-			});
-			if (!hasTrackMapDelete) {
-				return "closeFile does not delete the closed URI from the tracking map";
-			}
-		}
-	}
-
-	// Verify getServerForFile still returns primary (I[0] pattern intact)
+	// Verify getServerForFile still returns the primary server at index zero.
 	const gsf = (factoryBody as t.Statement[]).find(
 		(s): s is t.FunctionDeclaration =>
 			t.isFunctionDeclaration(s) && s.id?.name === refs.getServerForFile,
@@ -712,7 +633,6 @@ function verifyMultiServer(code: string, ast?: t.File): true | string {
 		{ fn: factoryFn(refs.openFile), label: "openFile" },
 		{ fn: factoryFn(refs.changeFile), label: "changeFile" },
 		{ fn: factoryFn(refs.saveFile), label: "saveFile" },
-		{ fn: factoryFn(refs.closeFile), label: "closeFile" },
 	]) {
 		if (!referencesIdentifier(fn, "_lspByName")) {
 			return `${label} does not fall back to filename routing (_lspByName)`;
