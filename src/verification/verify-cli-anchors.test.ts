@@ -113,6 +113,17 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 		"CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE",
 		"appendSystemPromptFile === void 0",
 		"appendSubagentSystemPrompt ??",
+		'const workflowSubagent = { agentType: "workflow-subagent" };',
+		`for await (let item of runAgent({
+  agentDefinition: Me,
+  promptMessages: [Mr({ content: Lt })],
+  toolUseContext: Ko,
+  querySource: IDe(Me.agentType, Yb(Me)),
+  transcriptSubdir: n ? \`workflows/\${n}\` : void 0,
+  spawnedByWorkflowRunId: n,
+})) {
+  consume(item);
+}`,
 		MODERN_TOOL_PREFERENCE,
 		MODERN_STDOUT_CAP,
 		'return "patched";',

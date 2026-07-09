@@ -262,6 +262,31 @@ function checkClaudeMdMarkers(
 	return 1;
 }
 
+function checkWorkflowSubagentRouting(
+	patchedCode: string,
+	failures: AnchorFailure[],
+): number {
+	const hasWorkflowSubagentDefinition = patchedCode.includes(
+		'agentType: "workflow-subagent"',
+	);
+	const routesWorkflowAgentsThroughSharedRunner =
+		/for\s+await\s*\(\s*let\s+[A-Za-z_$][A-Za-z0-9_$]*\s+of\s+[A-Za-z_$][A-Za-z0-9_$]*\(\{[\s\S]{0,2200}agentDefinition:\s*[A-Za-z_$][A-Za-z0-9_$]*,[\s\S]{0,2200}transcriptSubdir:\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\?\s*`workflows\/\$\{[A-Za-z_$][A-Za-z0-9_$]*\}`\s*:\s*void 0,[\s\S]{0,400}spawnedByWorkflowRunId:\s*[A-Za-z_$][A-Za-z0-9_$]*/.test(
+			patchedCode,
+		);
+	if (
+		!hasWorkflowSubagentDefinition ||
+		!routesWorkflowAgentsThroughSharedRunner
+	) {
+		pushFailure(
+			failures,
+			"patched",
+			"workflow-subagent-shared-runner",
+			"Workflow agents no longer route through the shared subagent runner with workflow metadata",
+		);
+	}
+	return 1;
+}
+
 function checkPromptPolicyContract(
 	patchedCode: string,
 	failures: AnchorFailure[],
@@ -484,6 +509,7 @@ export async function verifyCliAnchors(
 	checksRun += checkForbiddenRegex(patchedCode, "patched", failures);
 	checksRun += checkReadRangeMarker(patchedCode, failures);
 	checksRun += checkClaudeMdMarkers(patchedCode, failures);
+	checksRun += checkWorkflowSubagentRouting(patchedCode, failures);
 	checksRun += checkPromptPolicyContract(patchedCode, failures);
 	if (!input.skipPatchVerifiers) {
 		checksRun += runPatchVerifiers(patchedCode, failures);

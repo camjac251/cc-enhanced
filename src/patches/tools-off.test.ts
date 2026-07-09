@@ -348,6 +348,14 @@ test("tools-off rewrites actionable legacy command examples in bundled skills", 
 [Bulleted markdown checklist of TODOs for testing the pull request...]
 EOF
 )"\`;`,
+		`const prPromptDynamic = \`gh pr create --title "Short, descriptive title" --body "$(cat <<'EOF'
+## Summary
+\${S7t()}
+
+## Test plan
+\${E7t()}\${p}
+EOF
+)"\`;`,
 	].join("\n");
 	const { output, ast } = await applyFullPatch(input);
 
@@ -359,6 +367,12 @@ EOF
 	assert.equal(output.includes("grep these files rather than guessing"), false);
 	assert.equal(output.includes("verify with ls first"), false);
 	assert.equal(output.includes("--body \"$(cat <<'EOF'"), false);
+	assert.equal(
+		output.includes(
+			'gh pr create --title "Short, descriptive title" --body-file "$pr_body"',
+		),
+		true,
+	);
 	assert.equal(output.includes("tee \"$pr_body\" >/dev/null <<'EOF'"), false);
 	assert.equal(
 		output.includes("tee \\\"$pr_body\\\" >/dev/null <<'EOF'"),

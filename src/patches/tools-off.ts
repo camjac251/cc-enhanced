@@ -241,19 +241,6 @@ const ACTIONABLE_PROMPT_REWRITES: Array<{
 	},
 	{
 		pattern:
-			/gh pr create --title "([^"]+)" --body "\$\(cat <<'EOF'\n## Summary\n<1-3 bullet points>\n\n## Test plan\n[\s\S]*?\nEOF\n\)"/g,
-		replacement: `pr_body=$(mktemp)
-tee "$pr_body" >/dev/null <<'PR_BODY'
-## Summary
-<1-3 bullet points>
-
-## Test plan
-[Bulleted markdown checklist of TODOs for testing the pull request...]
-PR_BODY
-gh pr create --title "$1" --body-file "$pr_body"`,
-	},
-	{
-		pattern:
 			/If the user is in this repo and you're unsure whether a command is covered, grep these files rather than guessing\./g,
 		replacement:
 			"If the user is in this repo and you're unsure whether a command is covered, search these files with \\`rg -n\\` rather than guessing.",
@@ -271,6 +258,20 @@ gh pr create --title "$1" --body-file "$pr_body"`,
 			"When unsure of a path, verify with \\`fd\\` or \\`eza\\` first; absolute paths avoid ambiguity about the working directory.",
 	},
 ];
+
+const GH_PR_CREATE_CAT_HEREDOC_PATTERN =
+	/gh pr create --title "([^"]+)" --body "\$\(cat <<'EOF'\n([\s\S]*?)\nEOF\n\)"/g;
+
+function rewriteGhPrCreateCatHeredocs(code: string): string {
+	return code.replace(
+		GH_PR_CREATE_CAT_HEREDOC_PATTERN,
+		(_match, title: string, body: string) => `pr_body=$(mktemp)
+tee "$pr_body" >/dev/null <<'PR_BODY'
+${body}
+PR_BODY
+gh pr create --title "${title}" --body-file "$pr_body"`,
+	);
+}
 
 const PROMPT_REWRITE_SOURCE_SIGNALS = [
 	"for broad file pattern matching",
@@ -631,6 +632,7 @@ export const disableTools: Patch = {
 		for (const { pattern, replacement } of ACTIONABLE_PROMPT_REWRITES) {
 			result = result.replace(pattern, replacement);
 		}
+		result = rewriteGhPrCreateCatHeredocs(result);
 
 		// --- Skill allowed-tools and doc table cleanup ---
 		const hasSkillMarkers =

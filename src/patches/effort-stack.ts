@@ -654,15 +654,27 @@ function expressionContainsUserSettingsEffortWrite(
 	return found;
 }
 
-function findUnpinEffortCall(fn: t.Function): t.CallExpression | null {
+function isZeroArgCallStatement(
+	stmt: t.Statement,
+): stmt is t.ExpressionStatement {
+	return (
+		t.isExpressionStatement(stmt) &&
+		t.isCallExpression(stmt.expression) &&
+		stmt.expression.arguments.length === 0
+	);
+}
+
+function findUnpinEffortStatement(fn: t.Function): t.Statement | null {
 	if (!t.isBlockStatement(fn.body)) return null;
 	for (const stmt of fn.body.body) {
+		if (isZeroArgCallStatement(stmt)) return stmt;
+		if (!t.isIfStatement(stmt)) continue;
+		if (isZeroArgCallStatement(stmt.consequent)) return stmt;
 		if (
-			t.isExpressionStatement(stmt) &&
-			t.isCallExpression(stmt.expression) &&
-			stmt.expression.arguments.length === 0
+			t.isBlockStatement(stmt.consequent) &&
+			stmt.consequent.body.some(isZeroArgCallStatement)
 		) {
-			return stmt.expression;
+			return stmt;
 		}
 	}
 	return null;
@@ -683,7 +695,7 @@ function isSessionOnlySettingsGuard(stmt: t.Statement): boolean {
 }
 
 function patchEffortSettingsWriterFunction(fn: t.Function): boolean | null {
-	if (fn.params.length !== 1 || !t.isBlockStatement(fn.body)) return null;
+	if (fn.params.length !== 2 || !t.isBlockStatement(fn.body)) return null;
 	if (fn.body.body.some(isSessionOnlySettingsGuard)) return true;
 	let hasEffortSettingsWrite = false;
 	for (const stmt of fn.body.body) {
@@ -706,15 +718,12 @@ function patchEffortSettingsWriterFunction(fn: t.Function): boolean | null {
 		}
 	}
 	if (!hasEffortSettingsWrite) return null;
-	const unpinCall = findUnpinEffortCall(fn);
-	if (!unpinCall) return null;
+	const unpinStatement = findUnpinEffortStatement(fn);
+	if (!unpinStatement) return null;
 	fn.body.body.unshift(
 		t.ifStatement(
 			buildRawEnvIsSetCheck(ENV_EFFORT_LEVEL),
-			t.blockStatement([
-				t.expressionStatement(t.cloneNode(unpinCall)),
-				t.returnStatement(),
-			]),
+			t.blockStatement([t.cloneNode(unpinStatement), t.returnStatement()]),
 		),
 	);
 	return true;
@@ -722,7 +731,7 @@ function patchEffortSettingsWriterFunction(fn: t.Function): boolean | null {
 
 function hasPatchedEffortSettingsWriterFunction(fn: t.Function): boolean {
 	return (
-		fn.params.length === 1 &&
+		fn.params.length === 2 &&
 		t.isBlockStatement(fn.body) &&
 		fn.body.body.some(isSessionOnlySettingsGuard)
 	);

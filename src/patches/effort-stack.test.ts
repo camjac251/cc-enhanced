@@ -64,13 +64,13 @@ function effortWouldChange(next, current, model, cacheToken, hasConversationMess
   return !0;
 }
 
-function storeEffortSetting(H) {
+function storeEffortSetting(H, persist = true) {
   let parsed = H !== void 0 ? parsePersistedEffort(H) : void 0;
-  if (H === void 0 || parsed !== void 0) {
+  if (persist && (H === void 0 || parsed !== void 0) && !remoteActive()) {
     let result = saveSettings("userSettings", { effortLevel: parsed });
     if (result.error) return result.error;
   }
-  unpinLaunchEffort();
+  if (persist) unpinLaunchEffort();
   return;
 }
 
@@ -348,6 +348,7 @@ test("effort-stack keeps env-backed effort changes session-only", async () => {
 		output.includes('saveSettings("userSettings", { effortLevel: parsed })'),
 		true,
 	);
+	assert.equal(output.includes("if (persist) unpinLaunchEffort();"), true);
 });
 
 test("effort-stack full pipeline verifies clean", async () => {

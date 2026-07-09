@@ -41,6 +41,19 @@ const MODERN_BASH_IMPORTANT_LINE =
 	"IMPORTANT: Prefer dedicated symbol/semantic tools and modern CLI utilities whenever possible. Recommended defaults:";
 
 const MODERN_GUIDE_FINDING_TOOLS = MODERN_FINDING_TOOLS;
+const GH_PR_CREATE_CAT_HEREDOC_PATTERN =
+	/gh pr create --title "([^"]+)" --body "\$\(cat <<'EOF'\n([\s\S]*?)\nEOF\n\)"/g;
+
+function rewriteGhPrCreateCatHeredocs(text: string): string {
+	return text.replace(
+		GH_PR_CREATE_CAT_HEREDOC_PATTERN,
+		(_match, title: string, body: string) => `pr_body=$(mktemp)
+tee "$pr_body" >/dev/null <<'PR_BODY'
+${body}
+PR_BODY
+gh pr create --title "${title}" --body-file "$pr_body"`,
+	);
+}
 
 function templatePattern(node: t.TemplateLiteral): string {
 	return node.quasis
@@ -96,7 +109,7 @@ function createTwoExpressionTemplate(
 }
 
 function rewriteLegacyText(text: string): string {
-	let next = text
+	let next = rewriteGhPrCreateCatHeredocs(text)
 		.replace(
 			"If your command will create new directories or files, first use this tool to run `ls` to verify the parent directory exists and is the correct location.",
 			"If your command will create new directories or files, first use this tool to run `eza` or `fd` to verify the parent directory exists and is the correct location.",
@@ -104,18 +117,6 @@ function rewriteLegacyText(text: string): string {
 		.replace(
 			/When running `find`, search from `\.` \(or a specific path\), not `\/`(?:\.|\s+(?:\u2014|\\u2014))\s+[Ss]canning the full filesystem can exhaust system resources on large trees\./g,
 			"Use `fd` for file discovery. If an explicit user request or portability constraint requires `find`, search from `.` (or a specific path), not `/`.",
-		)
-		.replace(
-			/gh pr create --title "([^"]+)" --body "\$\(cat <<'EOF'\n## Summary\n<1-3 bullet points>\n\n## Test plan\n[\s\S]*?\nEOF\n\)"/g,
-			`pr_body=$(mktemp)
-tee "$pr_body" >/dev/null <<'PR_BODY'
-## Summary
-<1-3 bullet points>
-
-## Test plan
-[Bulleted markdown checklist of TODOs for testing the pull request...]
-PR_BODY
-gh pr create --title "$1" --body-file "$pr_body"`,
 		)
 		.replace(
 			"Communication: Output text directly (NOT echo/printf)",
