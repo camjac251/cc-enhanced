@@ -125,6 +125,65 @@ test("cache-tail-policy handles marker embedded in a sequence return", async () 
 	assert.equal(output.includes("cacheUserOnly ? false : shouldCache"), true);
 });
 
+// Mirrors the current upstream shape where the primary cache index is produced
+// by a conditional select (`cond ? lastIndex : tailIndex`) instead of a direct
+// helper call, and the marker Set is not the first declarator. The tail helper
+// must still be resolved from its `helper(messages.length - 1)` seed call so the
+// window loop can step back from a non-call primary index.
+const CACHE_TAIL_CONDITIONAL_INDEX_FIXTURE = `
+function buildCacheBreakpoints(messages, cachingEnabled, ttl, skipCacheWrite = false, foldTurnStartId, forkPointId) {
+  let findCacheableIndex = (startIndex) => {
+    let candidate = startIndex;
+    while (candidate >= 0 && messages[candidate].type === "api_system") candidate--;
+    return candidate;
+  };
+  let tailIndex = findCacheableIndex(messages.length - 1);
+  if (skipCacheWrite) tailIndex = findCacheableIndex(tailIndex - 1);
+  let systemTailEnabled = featureA() && featureB() && featureC(),
+    lastIndex = messages.length - 1,
+    lastMessage = messages[lastIndex],
+    hasTrailingSystem = lastMessage !== undefined && lastMessage.type === "api_system" && typeof lastMessage.message.content === "string" && lastMessage.message.content.trim() !== "",
+    primaryIndex = systemTailEnabled && cachingEnabled && !skipCacheWrite && tailIndex >= 0 && hasTrailingSystem ? lastIndex : tailIndex,
+    markerIndexes = new Set();
+  if (primaryIndex >= 0) markerIndexes.add(primaryIndex);
+  let forkPointPinned = false, foldIndex = -1;
+  gate("tengu_api_cache_breakpoints", {
+    totalMessageCount: messages.length,
+    cachingEnabled,
+    skipCacheWrite,
+    forkPointPinned,
+    markerCount: markerIndexes.size,
+  });
+  return messages.map((message, index) => {
+    let shouldCache = markerIndexes.has(index);
+    if (message.type === "user") return buildUser(message, shouldCache, cachingEnabled, ttl);
+    if (message.type === "api_system")
+      return { role: "system", content: shouldCache && cachingEnabled && systemTailEnabled ? [{ type: "text", text: message.message.content, cache_control: buildCC({ ttl }) }] : message.message.content };
+    return buildAssistant(message, shouldCache, cachingEnabled, ttl);
+  });
+}
+`;
+
+test("cache-tail-policy resolves the tail helper when the primary index is a conditional select", async () => {
+	const ast = parse(CACHE_TAIL_CONDITIONAL_INDEX_FIXTURE);
+	await runCacheTailViaPasses(ast, [0]);
+	const output = print(ast);
+
+	assert.equal(output.includes("var cacheTailWindow = 2;"), true);
+	assert.equal(output.includes("var cacheUserOnly = true;"), true);
+	// Tail count is seeded from the conditional primary index, and the window loop
+	// steps back through it using the helper resolved from its seed call.
+	assert.equal(
+		output.includes("var cacheTailCount = primaryIndex >= 0 ? 1 : 0;"),
+		true,
+	);
+	assert.equal(output.includes("findCacheableIndex(primaryIndex - 1)"), true);
+	assert.equal(output.includes("cacheTailCount < cacheTailWindow"), true);
+	assert.equal(output.includes("markerIndexes.add(cacheTailIndex)"), true);
+	// Assistant breakpoint is still gated to user-only.
+	assert.equal(output.includes("cacheUserOnly ? false : shouldCache"), true);
+});
+
 test("cache-tail-policy applies declarations, window gate, and user-only conditional", async () => {
 	const ast = parse(CACHE_TAIL_FIXTURE);
 	await runCacheTailViaPasses(ast);

@@ -22,7 +22,8 @@ async function runViaPasses(ast: any): Promise<void> {
 //     argument carries `loadedFrom: "skills"` and `paths: <id>`, where the id
 //     binds to a paths-extractor call taking the frontmatter as first arg;
 //   - a conditional-skill activation loop that builds a gitignore matcher from
-//     `<skill>.paths`, skips out-of-cwd files, and activates on `ignores(f)`.
+//     a normalized `<skill>.paths` (wrapped in a validator call), skips
+//     out-of-cwd files, and activates on `ignores(f)`.
 // Names are semantic so the fixture does not double as an upstream-naming hint.
 const FIXTURE = `
 function loadSkill(w, name) {
@@ -43,7 +44,7 @@ function activate(H, $) {
   let q = [];
   for (let [K, _] of state().conditionalSkills) {
     if (_.type !== "prompt" || !_.paths || _.paths.length === 0) continue;
-    let A = ig.default().add(_.paths);
+    let A = ig.default().add(normalizeGlobs(_.paths, "skill_paths"));
     for (let z of H) {
       let f = pathmod.isAbsolute(z) ? pathmod.relative($, z) : z;
       if (!f || f.startsWith("..") || pathmod.isAbsolute(f)) continue;
@@ -103,9 +104,11 @@ test("patch wraps loader paths, splits matcher, injects helpers, and verifies", 
 	assert.ok(output.includes("function _claudePatchSplitPaths"));
 	// Loader paths value wrapped with merge helper, frontmatter resolved to `w`.
 	assert.ok(output.includes("_claudePatchMergeGlobalPaths(L, w)"));
-	// Activation matcher split: cwd matcher over local, split call present.
+	// Activation matcher split: cwd matcher normalizes local entries, global
+	// matcher normalizes the sentinel (global) entries, split call present.
 	assert.ok(output.includes("_claudePatchSplitPaths(_.paths)"));
-	assert.ok(output.includes(".add(_claudeGpSplit.local)"));
+	assert.ok(output.includes("normalizeGlobs(_claudeGpSplit.local"));
+	assert.ok(output.includes("normalizeGlobs(_claudeGpSplit.global"));
 	assert.ok(output.includes("_claudeGpIgnore"));
 
 	assert.doesNotThrow(() => parse(output));

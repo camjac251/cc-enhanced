@@ -140,10 +140,10 @@ function tryWrapSkillPaths(path: {
 
 /**
  * Anchor 3: the activation matcher iterates `*.conditionalSkills`, builds a
- * gitignore matcher from `<skill>.paths`, and tests it against the cwd-relative
- * path. Split the array, keep the cwd matcher over local entries, build a
- * second matcher over global (sentinel) entries, and test it against the
- * absolute path before the cwd-skip guard.
+ * gitignore matcher from a normalized `<skill>.paths` list, and tests it against
+ * the cwd-relative path. Split the array, keep the cwd matcher over local
+ * entries, build a second matcher over global (sentinel) entries, and test it
+ * against the absolute path before the cwd-skip guard.
  */
 function tryPatchActivationLoop(node: t.ForOfStatement): boolean {
 	const right = node.right;
@@ -163,11 +163,15 @@ function tryPatchActivationLoop(node: t.ForOfStatement): boolean {
 	if (!t.isBlockStatement(node.body)) return false;
 	const outerBody = node.body.body;
 
-	// Find: let A = <factory>.add(<skill>.paths);
+	// Find: let A = <factory>.add(<normalizer>(<skill>.paths, ...));
+	// Upstream runs the glob list through a normalizer (dropping patterns that
+	// fail to compile) before building the gitignore matcher, so the matcher's
+	// path source is a call whose first argument is `<skill>.paths`.
 	let matcherIdx = -1;
 	let matcherName: string | null = null;
 	let factory: t.Expression | null = null;
 	let matcherInit: t.CallExpression | null = null;
+	let pathsWrapper: t.CallExpression | null = null;
 	for (let i = 0; i < outerBody.length; i++) {
 		const st = outerBody[i];
 		if (!t.isVariableDeclaration(st) || st.declarations.length !== 1) continue;
@@ -177,10 +181,12 @@ function tryPatchActivationLoop(node: t.ForOfStatement): boolean {
 		if (!t.isMemberExpression(callee) || !isMemberPropertyName(callee, "add"))
 			continue;
 		const arg0 = d.init.arguments[0];
+		if (!t.isCallExpression(arg0)) continue;
+		const pathsArg = arg0.arguments[0];
 		if (
-			!t.isMemberExpression(arg0) ||
-			!t.isIdentifier(arg0.object, { name: skillVar }) ||
-			!isMemberPropertyName(arg0, "paths")
+			!t.isMemberExpression(pathsArg) ||
+			!t.isIdentifier(pathsArg.object, { name: skillVar }) ||
+			!isMemberPropertyName(pathsArg, "paths")
 		) {
 			continue;
 		}
@@ -188,9 +194,16 @@ function tryPatchActivationLoop(node: t.ForOfStatement): boolean {
 		matcherName = d.id.name;
 		factory = callee.object;
 		matcherInit = d.init;
+		pathsWrapper = arg0;
 		break;
 	}
-	if (matcherIdx === -1 || !matcherName || !factory || !matcherInit)
+	if (
+		matcherIdx === -1 ||
+		!matcherName ||
+		!factory ||
+		!matcherInit ||
+		!pathsWrapper
+	)
 		return false;
 
 	// Find the inner per-file loop and its `if (A.ignores(f))` activation block.
@@ -221,8 +234,15 @@ function tryPatchActivationLoop(node: t.ForOfStatement): boolean {
 	if (!activationIf) return false;
 
 	// --- mutate ---
-	// Rewrite the cwd matcher to operate over local entries only.
-	matcherInit.arguments[0] = t.memberExpression(
+	// Clone the normalizer call for the global matcher before repointing the cwd
+	// matcher's copy, so the clone still wraps the original path source.
+	const globalWrapper = t.cloneNode(pathsWrapper, true);
+	globalWrapper.arguments[0] = t.memberExpression(
+		t.identifier(SPLIT_BINDING),
+		t.identifier("global"),
+	);
+	// Rewrite the cwd matcher to normalize local entries only.
+	pathsWrapper.arguments[0] = t.memberExpression(
 		t.identifier(SPLIT_BINDING),
 		t.identifier("local"),
 	);
@@ -253,12 +273,7 @@ function tryPatchActivationLoop(node: t.ForOfStatement): boolean {
 				),
 				t.callExpression(
 					t.memberExpression(t.cloneNode(factory, true), t.identifier("add")),
-					[
-						t.memberExpression(
-							t.identifier(SPLIT_BINDING),
-							t.identifier("global"),
-						),
-					],
+					[globalWrapper],
 				),
 				t.nullLiteral(),
 			),
@@ -350,6 +365,15 @@ function verifySkillGlobalPaths(ast: t.File): true | string {
 		t.isIdentifier(node.object, { name: SPLIT_BINDING }) &&
 		isMemberPropertyName(node, prop);
 
+	// The cwd matcher feeds `_claudeGpSplit.local` into the path normalizer, so
+	// the `.add(...)` argument is a call wrapping the split member rather than the
+	// member directly.
+	const containsSplitLocal = (node: t.Node | null | undefined): boolean =>
+		isSplitMember(node, "local") ||
+		(!!node &&
+			t.isCallExpression(node) &&
+			node.arguments.some((arg) => isSplitMember(arg, "local")));
+
 	traverse(ast, {
 		FunctionDeclaration(path) {
 			if (t.isIdentifier(path.node.id, { name: MERGE_HELPER }))
@@ -381,13 +405,14 @@ function verifySkillGlobalPaths(ast: t.File): true | string {
 			if (t.isIdentifier(callee, { name: SPLIT_HELPER })) {
 				matcherSplit = true;
 			}
-			// The cwd matcher's `.add(...)` argument must now be `_claudeGpSplit.local`
-			// (local-only), proving the local/global partition rewrite landed and not
-			// just that the split helper is referenced somewhere.
+			// The cwd matcher's `.add(...)` argument must now feed
+			// `_claudeGpSplit.local` (local-only) into the path normalizer, proving
+			// the local/global partition rewrite landed and not just that the split
+			// helper is referenced somewhere.
 			if (
 				t.isMemberExpression(callee) &&
 				isMemberPropertyName(callee, "add") &&
-				isSplitMember(path.node.arguments[0], "local")
+				containsSplitLocal(path.node.arguments[0])
 			) {
 				localRewrite = true;
 			}

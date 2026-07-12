@@ -144,24 +144,20 @@ function nodeContainsSetHas(
 	});
 }
 
-function getVariableDeclarator(
-	body: t.Statement[],
-	name: string,
-): t.VariableDeclarator | null {
-	for (const stmt of body) {
-		if (!t.isVariableDeclaration(stmt)) continue;
-		for (const decl of stmt.declarations) {
-			if (t.isIdentifier(decl.id, { name })) return decl;
-		}
-	}
-	return null;
-}
-
 function findPrimaryTailSetAdd(
 	body: t.Statement[],
 	markerStmtIndex: number,
 	setName: string,
+	messagesParamName: string,
 ): { indexName: string; helperName: string } | null {
+	// The tail-window loop steps back through cacheable positions using the
+	// "previous non-system index" closure. Resolve it from its canonical seed
+	// call `helper(messages.length - 1)` so the primary index it is paired with
+	// can be produced by any expression (a direct call, a conditional select,
+	// ...), not only a direct `helper(...)` declarator.
+	const helperName = findLastIndexHelperName(body, messagesParamName);
+	if (!helperName) return null;
+
 	for (let index = 0; index < markerStmtIndex; index++) {
 		const stmt = body[index];
 		let addName: string | null = null;
@@ -181,13 +177,44 @@ function findPrimaryTailSetAdd(
 		});
 
 		if (!addName) continue;
-		const decl = getVariableDeclarator(body, addName);
-		if (!decl?.init || !t.isCallExpression(decl.init)) continue;
-		if (!t.isIdentifier(decl.init.callee)) continue;
-		return { indexName: addName, helperName: decl.init.callee.name };
+		return { indexName: addName, helperName };
 	}
 
 	return null;
+}
+
+/**
+ * Resolve the "previous cacheable index" closure by its canonical seed call
+ * `helper(messages.length - 1)` near the top of the breakpoint function. The
+ * closure walks backward past trailing system messages; the injected
+ * tail-window loop reuses it to step through earlier cacheable positions.
+ */
+function findLastIndexHelperName(
+	body: t.Statement[],
+	messagesParamName: string,
+): string | null {
+	let helperName: string | null = null;
+	for (const stmt of body) {
+		nodeContains(stmt, (candidate) => {
+			if (helperName) return false;
+			if (!t.isCallExpression(candidate)) return false;
+			if (!t.isIdentifier(candidate.callee)) return false;
+			const arg = candidate.arguments[0];
+			if (
+				!t.isBinaryExpression(arg, { operator: "-" }) ||
+				!t.isMemberExpression(arg.left) ||
+				!t.isIdentifier(arg.left.object, { name: messagesParamName }) ||
+				!isMemberPropertyName(arg.left, "length") ||
+				!t.isNumericLiteral(arg.right, { value: 1 })
+			) {
+				return false;
+			}
+			helperName = candidate.callee.name;
+			return false;
+		});
+		if (helperName) break;
+	}
+	return helperName;
 }
 
 function hasCacheTailWindowLoop(
@@ -446,16 +473,17 @@ function createCacheTailPolicyMutator(): Visitor {
 			if (hasCacheTailWindowLoop(body, markerSetName)) {
 				patchedWindow = true;
 			} else {
+				const firstParam = path.node.params[0];
+				const messagesVarName = t.isIdentifier(firstParam)
+					? firstParam.name
+					: "e";
 				const primaryAdd = findPrimaryTailSetAdd(
 					body,
 					updatedMarkerStmtIndex,
 					markerSetName,
+					messagesVarName,
 				);
 				if (primaryAdd) {
-					const firstParam = path.node.params[0];
-					const messagesVarName = t.isIdentifier(firstParam)
-						? firstParam.name
-						: "e";
 					body.splice(
 						updatedMarkerStmtIndex,
 						0,

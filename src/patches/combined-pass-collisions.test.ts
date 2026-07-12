@@ -168,7 +168,7 @@ function activate(H, $) {
   let q = [];
   for (let [K, _] of state().conditionalSkills) {
     if (_.type !== "prompt" || !_.paths || _.paths.length === 0) continue;
-    let A = ig.default().add(_.paths);
+    let A = ig.default().add(normalizeGlobs(_.paths, "skill_paths"));
     for (let z of H) {
       let f = pathmod.isAbsolute(z) ? pathmod.relative($, z) : z;
       if (!f || f.startsWith("..")) continue;
