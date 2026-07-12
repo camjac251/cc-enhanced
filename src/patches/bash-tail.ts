@@ -342,6 +342,15 @@ function createBashOutputTailMutator(): Visitor {
 
 			const parent = path.parent;
 			if (!t.isObjectExpression(parent)) return;
+			// Only inject into command-input schemas. Require the command +
+			// run_in_background markers (the same shape verify() treats as the bash
+			// input schema) so the tool result schema, which also carries a
+			// dangerouslyDisableSandbox field, is left alone.
+			if (
+				!parent.properties.some((p) => hasObjectKeyName(p, "command")) ||
+				!parent.properties.some((p) => hasObjectKeyName(p, "run_in_background"))
+			)
+				return;
 			if (parent.properties.some((p) => hasObjectKeyName(p, "output_tail")))
 				return;
 

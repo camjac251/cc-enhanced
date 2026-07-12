@@ -43,12 +43,19 @@ const EFFORT_SESSION_ONLY_ENV_OVERRIDE_PATCHED_QUASIS = [
 	" remains the launch default for new sessions. Set effort level to ",
 	" for this session.",
 ] as const;
+// The /effort auto|unset override message wraps its lead text in a ternary
+// (settings-cleared vs session-auto), so the template has three quasis with an
+// empty leading quasi and the env name in the middle quasi. Rewriting the
+// trailing quasi reframes both branches from "still controls this session"
+// (false once the session override lands) to the launch-default framing.
 const EFFORT_AUTO_ENV_OVERRIDE_ORIGINAL_QUASIS = [
-	`Cleared effort from settings, but ${ENV_EFFORT_LEVEL}=`,
+	"",
+	` ${ENV_EFFORT_LEVEL}=`,
 	" still controls this session",
 ] as const;
 const EFFORT_AUTO_ENV_OVERRIDE_PATCHED_QUASIS = [
-	`Effort level set to auto for this session. ${ENV_EFFORT_LEVEL}=`,
+	"",
+	` ${ENV_EFFORT_LEVEL}=`,
 	" remains the launch default for new sessions.",
 ] as const;
 
@@ -1482,6 +1489,7 @@ function createEffortStackMutator(): Visitor {
 			) {
 				setQuasiText(path.node, 0, EFFORT_AUTO_ENV_OVERRIDE_PATCHED_QUASIS[0]);
 				setQuasiText(path.node, 1, EFFORT_AUTO_ENV_OVERRIDE_PATCHED_QUASIS[1]);
+				setQuasiText(path.node, 2, EFFORT_AUTO_ENV_OVERRIDE_PATCHED_QUASIS[2]);
 				patchedUyz += 1;
 				return;
 			}
@@ -1630,7 +1638,12 @@ export const effortStack: Patch = {
 		let hasPatchedByz = false;
 		let hasPatchedCommandEffortValue = false;
 		let hasLegacyByz = false;
-		let hasPatchedUyz = false;
+		// The effort-command and session-only picker messages patch to identical
+		// wording, so they cannot be told apart post-patch and share one flag. The
+		// auto/unset message patches to distinct wording and is tracked separately
+		// so a silent auto-form miss cannot be masked by the other forms.
+		let hasPatchedUyzNonAuto = false;
+		let hasPatchedUyzAuto = false;
 		let hasLegacyUyz = false;
 		let hasPatchedHy8 = false;
 		let hasPatchedUltracodeMenu = false;
@@ -1685,7 +1698,7 @@ export const effortStack: Patch = {
 						EFFORT_COMMAND_ENV_OVERRIDE_PATCHED_QUASIS,
 					)
 				) {
-					hasPatchedUyz = true;
+					hasPatchedUyzNonAuto = true;
 				}
 				if (
 					templateMatchesQuasiPattern(
@@ -1693,7 +1706,7 @@ export const effortStack: Patch = {
 						EFFORT_SESSION_ONLY_ENV_OVERRIDE_PATCHED_QUASIS,
 					)
 				) {
-					hasPatchedUyz = true;
+					hasPatchedUyzNonAuto = true;
 				}
 				if (
 					templateMatchesQuasiPattern(
@@ -1701,7 +1714,7 @@ export const effortStack: Patch = {
 						EFFORT_AUTO_ENV_OVERRIDE_PATCHED_QUASIS,
 					)
 				) {
-					hasPatchedUyz = true;
+					hasPatchedUyzAuto = true;
 				}
 				if (
 					templateMatchesQuasiPattern(
@@ -1819,8 +1832,11 @@ export const effortStack: Patch = {
 		if (hasLegacyUyz) {
 			return "Effort command env-override message still claims env controls this session";
 		}
-		if (!hasPatchedUyz) {
+		if (!hasPatchedUyzNonAuto) {
 			return "Did not find session-aware effort command env override message";
+		}
+		if (!hasPatchedUyzAuto) {
+			return "Did not find session-aware effort auto/unset env override message";
 		}
 		if (!hasPatchedHy8) {
 			console.warn(

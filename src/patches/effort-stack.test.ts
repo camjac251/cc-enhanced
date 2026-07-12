@@ -112,11 +112,11 @@ function pickMaxEffort(H) {
   };
 }
 
-function clearEffort() {
+function clearEffort(cleared) {
   let envEffort = readEnvEffort();
   if (envEffort !== void 0 && envEffort !== null)
     return {
-      message: \`Cleared effort from settings, but CLAUDE_CODE_EFFORT_LEVEL=\${process.env.CLAUDE_CODE_EFFORT_LEVEL} still controls this session\`,
+      message: \`\${cleared ? "Cleared effort from settings, but" : "Effort set to auto for this session, but"} CLAUDE_CODE_EFFORT_LEVEL=\${process.env.CLAUDE_CODE_EFFORT_LEVEL} still controls this session\`,
       effortUpdate: { value: void 0, ultracode: !1 },
     };
   return {
@@ -287,6 +287,16 @@ test("effort-stack rewrites effort env override warnings into session overrides"
 		false,
 	);
 	assert.equal(output.includes("still controls this session"), false);
+	// The auto/unset override message (3-quasi ternary) is reframed too, not just
+	// the command/session-only forms; its trailing quasi becomes the launch-default
+	// wording so both ternary branches read correctly.
+	assert.equal(
+		output.includes(
+			"CLAUDE_CODE_EFFORT_LEVEL=${process.env.CLAUDE_CODE_EFFORT_LEVEL} remains the launch default for new sessions.",
+		),
+		true,
+		"auto/unset env override message should be rewritten to launch-default framing",
+	);
 	assert.equal(
 		output.includes(" overrides this session "),
 		false,

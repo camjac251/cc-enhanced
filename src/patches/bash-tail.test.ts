@@ -130,6 +130,12 @@ const BashTool = {
   },
 };
 
+const bashResultSchema = z.strictObject({
+  stdout: z.string().describe("The standard output of the command"),
+  stderr: z.string().describe("The standard error output of the command"),
+  dangerouslyDisableSandbox: z.boolean().optional().describe("Whether sandbox mode was overridden"),
+});
+
 async function persistBlocks(helper, result, ctx) {
   const blocks = helper.mapToolResultToToolResultBlockParam(
     result.data,
@@ -456,4 +462,21 @@ test("bash-tail render patches only the filePath-bearing verbose/theme renderer"
 	// second verbose/theme renderer without a filePath branch must be skipped.
 	const helperDecls = output.split("function _bashAppendOpts(").length - 1;
 	assert.equal(helperDecls, 1);
+});
+
+test("bash-tail injects output tailing options only into command-input schemas, not the result schema", async () => {
+	const output = await applyBashTailPatch(BASH_TAIL_FIXTURE);
+	// The output_tail describe text is unique to the injected schema property, so
+	// its occurrence count equals the number of schemas that received the options.
+	// Only the command-input schema (command + run_in_background) qualifies; the
+	// result schema (stdout/stderr + dangerouslyDisableSandbox, no command) is left
+	// alone, so a second qualifying object in the fixture must not raise the count.
+	const injectedCount = (
+		output.match(/keep the LAST N characters instead of first/g) ?? []
+	).length;
+	assert.equal(
+		injectedCount,
+		1,
+		"only the command-input schema should receive output_tail/max_output",
+	);
 });
