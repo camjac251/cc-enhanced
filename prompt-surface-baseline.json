@@ -1,11 +1,11 @@
 {
-  "version": "2.1.206_patched",
+  "version": "2.1.208",
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
     "agents/claude.md": "b168954fb56310c902c8dd571a8ed695956982ce07ef98b65e56e3eba6074d68",
-    "agents/explore.md": "42896b59c7f8e68ae4ef1cb220030b314ea2eb6b2f2f8a834fc4a20ea35ffe42",
-    "agents/plan.md": "7636c4d9e6d8fcd24457642257d2c6b89de658429940441d95bd5ad0988288a0",
+    "agents/explore.md": "20999d856fbb38e9af230386dd129ee7c7fbfa81eab54e42682af7e2319411c9",
+    "agents/plan.md": "40400e509b4c226f8c9a86edfdaa4e1575806db2237d336f5e31506c2f1f8b79",
     "agents/worker.md": "ec857d392c0cd19d3e2e9f463a2dda7a03e1d4592981e093bc7e50981fe5bf1f",
     "agents/workflow-subagent.md": "804922198b47f80ed571e748d099799faf680c1decb247a4171c7c8472e18945",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge-2.md": "8d24296a1459ba9472328887c294278e8be614df3168e70b1134b7ae13dd2ff9",

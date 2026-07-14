@@ -130,9 +130,9 @@ async function main() {
 						description: "Baseline JSON path for --verify-prompt-drift",
 					})
 					.option("write-prompt-drift-baseline", {
-						type: "string",
+						type: "boolean",
 						description:
-							"Write watched prompt-surface drift baseline JSON to this path using positional arg: <export_dir>",
+							"Write watched prompt-surface drift baseline JSON using positional arg: <export_dir>; defaults to prompt-surface-baseline.json and accepts --prompt-drift-baseline <path>",
 					})
 					.option("prompt-drift-version", {
 						type: "string",
@@ -379,10 +379,7 @@ async function main() {
 			return;
 		}
 	}
-	if (
-		opts.verifyPromptDrift ||
-		typeof opts.writePromptDriftBaseline === "string"
-	) {
+	if (opts.verifyPromptDrift || opts.writePromptDriftBaseline) {
 		const positionalArgs = ((opts._ as unknown[]) ?? [])
 			.map((value) => String(value))
 			.filter((value) => value !== "$0");
@@ -403,8 +400,12 @@ async function main() {
 				writePromptSurfaceDriftBaseline,
 			} = await import("./verification/prompt-surface-drift.js");
 
-			if (typeof opts.writePromptDriftBaseline === "string") {
-				const baselinePath = path.resolve(opts.writePromptDriftBaseline);
+			if (opts.writePromptDriftBaseline) {
+				const baselinePath = path.resolve(
+					typeof opts.promptDriftBaseline === "string"
+						? opts.promptDriftBaseline
+						: "prompt-surface-baseline.json",
+				);
 				const baseline = await createPromptSurfaceDriftBaseline({
 					exportDir,
 					version:

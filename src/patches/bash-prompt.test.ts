@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { bashPrompt } from "./bash-prompt.js";
+import { MODERN_OUTPUT_LIMIT_WARNING } from "./prompt-policy.js";
 
 async function runBashPromptViaPasses(ast: any): Promise<void> {
 	const passes = (await bashPrompt.astPasses?.(ast)) ?? [];
@@ -16,6 +17,45 @@ async function runBashPromptViaPasses(ast: any): Promise<void> {
 		},
 	);
 }
+
+test("bash-prompt rewrites stock oversized-output warnings", () => {
+	const fixture = String.raw`
+const posix = "Pipe output through head, tail, or grep to reduce result size. Avoid cat on large files \u2014 use Read with offset/limit instead.";
+const powershell = "Pipe output through Select-Object -First/-Last or Select-String to reduce result size. Avoid Get-Content on large files \u2014 use Read with offset/limit instead.";
+const cwd = "The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).";
+`;
+	const output = bashPrompt.string?.(fixture) ?? fixture;
+
+	assert.equal(
+		output.includes("Pipe output through head, tail, or grep"),
+		false,
+	);
+	assert.equal(
+		output.includes("Pipe output through Select-Object -First/-Last"),
+		false,
+	);
+	assert.equal(output.split(MODERN_OUTPUT_LIMIT_WARNING).length - 1, 2);
+	assert.equal(
+		output.includes("The working directory persists between commands"),
+		false,
+	);
+	assert.equal(
+		output.includes(
+			"Working-directory behavior is controlled by runtime policy. Do not rely on `cd`, shell variables, or other shell state carrying between calls; use explicit paths.",
+		),
+		true,
+	);
+	assert.equal(
+		MODERN_OUTPUT_LIMIT_WARNING.includes(
+			"If Bash saves the full output, inspect the saved file with Read range -200: first, then narrow further.",
+		),
+		true,
+	);
+	assert.equal(
+		MODERN_OUTPUT_LIMIT_WARNING.includes("bare rg catch-all"),
+		false,
+	);
+});
 
 const BASH_PROMPT_FIXTURE = `
 function ws_() {
@@ -48,6 +88,7 @@ function A4D() {
   ];
   return [
     "Executes a given bash command and returns its output.",
+    "Working-directory behavior is controlled by runtime policy. Do not rely on \`cd\`, shell variables, or other shell state carrying between calls; use explicit paths.",
     \`IMPORTANT: Avoid using this tool to run \${A} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\`,
     "If your command will create new directories or files, first use this tool to run \`ls\` to verify the parent directory exists and is the correct location.",
     "gh pr create --title \\"the pr title\\" --body \\"$(cat <<'EOF'\\n## Summary\\n<1-3 bullet points>\\n\\n## Test plan\\n[Bulleted markdown checklist of TODOs for testing the pull request...]\\n\\n\`file viewing, editing, creation, or output formatting\`\\nEOF\\n)\\"",
@@ -474,6 +515,7 @@ function A4D() {
     ];
   return [
     "Executes a given bash command and returns its output.",
+    "Working-directory behavior is controlled by runtime policy. Do not rely on \`cd\`, shell variables, or other shell state carrying between calls; use explicit paths.",
     \`IMPORTANT: Avoid using this tool to run \${A} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\`,
     ...M,
   ].join("\\n");

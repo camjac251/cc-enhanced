@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { parse } from "../loader.js";
 import { builtInAgentPrompt } from "./built-in-agent-prompt.js";
 import {
 	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
@@ -122,6 +123,13 @@ function patchedCombinedAgentFixture(): string {
 		builtInAgentPrompt.string?.(GENERAL_FIXTURE) ?? GENERAL_FIXTURE,
 	].join("\n");
 }
+
+test("built-in-agent-prompt keeps template-literal replacements parseable", () => {
+	const fixture = `function buildExplorePrompt() {${EXPLORE_FIXTURE}}`;
+	const output = builtInAgentPrompt.string?.(fixture) ?? fixture;
+
+	assert.doesNotThrow(() => parse(output));
+});
 
 test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
 	const output =

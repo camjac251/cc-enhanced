@@ -59,7 +59,8 @@ const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 	},
 	{
 		id: "bash-token-warning",
-		needle: "Never cap output with a head/tail pipe",
+		needle:
+			"Do not use head, tail, sed, or awk solely to hide unread command output",
 		reason: "Missing modern oversized-output warning",
 	},
 	{

@@ -43,9 +43,9 @@ export const MODERN_CODE_SEARCH_POLICY = MODERN_CODE_SEARCH_DECISION_TREE;
 /** Bash-specific code/text search fallback guidance. */
 export const MODERN_BASH_SEARCH_GUIDANCE = MODERN_CODE_SEARCH_DECISION_TREE;
 
-/** Stdout caps line: prefer tool-level limits over shell pipeline truncation. */
+/** Stdout caps line: prefer producer-native limits over shell pipeline truncation. */
 export const MODERN_STDOUT_CAP =
-	"Never cap output with a head/tail pipe (or a sed/awk first-N slice or a bare rg catch-all): it discards everything past the cap and is blocked. Cap at the producer instead: rg -m N for non-code text, fd --max-results N for bounded file lists, Read ranges for non-code files or known code ranges after symbol lookup, and bat -r START:END for shell file slices. Use Bash tool caps (max_output, output_tail: true) when the command has no useful native cap or when you need a bounded inline preview. For eza directory listings, use plain eza with max_output only when you need eza metadata/layout; use fd --max-results N when entry-count bounds matter. Allowed exceptions: top-N rankings where sort feeds head/tail, tail -f via the Monitor tool, and head/tail inside $(...) for a programmatic pick.";
+	"Do not use head, tail, sed, or awk solely to hide unread command output. Use a producer-native limit such as rg -m N or fd --max-results N only when a bounded result is part of the task. Otherwise run the command normally. If Bash saves the full output, inspect the saved file with Read range -200: first, then narrow further. Top-N rankings and live tailing through Monitor are valid exceptions.";
 
 /** Alias for the stdout-cap text, retained for surfaces that previously imported a distinct constant. */
 export const MODERN_OUTPUT_LIMIT_WARNING = MODERN_STDOUT_CAP;

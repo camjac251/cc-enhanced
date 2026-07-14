@@ -692,7 +692,7 @@ export const builtInAgentPrompt: Patch = {
 			return "Missing sg/fd/bat guidance in built-in agent prompts";
 		}
 		if (!scopedPrompts.some((scope) => scope.includes(MODERN_STDOUT_CAP))) {
-			return "Missing stdout-cap (max_output/output_tail) guidance in built-in agent prompts";
+			return "Missing stdout-cap guidance in built-in agent prompts";
 		}
 		// Legacy-leftover guard. Any one of the legacy fragments surviving in
 		// a built-in agent scope without the modern replacement is a failure

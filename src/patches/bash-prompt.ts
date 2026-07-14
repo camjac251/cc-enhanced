@@ -5,7 +5,20 @@ import { getVerifyAst } from "./ast-helpers.js";
 import {
 	MODERN_BASH_SEARCH_GUIDANCE,
 	MODERN_FINDING_TOOLS,
+	MODERN_OUTPUT_LIMIT_WARNING,
 } from "./prompt-policy.js";
+
+const LEGACY_TOKEN_WARNING_RE =
+	/Pipe output through head, tail, or grep to reduce result size\. Avoid cat on large files (?:—|\\u2014) use Read with offset\/limit instead\./g;
+
+const LEGACY_POWERSHELL_TOKEN_WARNING_RE =
+	/Pipe output through Select-Object -First\/-Last or Select-String to reduce result size\. Avoid Get-Content on large files (?:—|\\u2014) use Read with offset\/limit instead\./g;
+
+const LEGACY_WORKING_DIRECTORY_GUIDANCE =
+	"The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).";
+
+const RUNTIME_NEUTRAL_WORKING_DIRECTORY_GUIDANCE =
+	"Working-directory behavior is controlled by runtime policy. Do not rely on `cd`, shell variables, or other shell state carrying between calls; use explicit paths.";
 
 // Functions containing these anchors have an EMBEDDED_SEARCH_TOOLS gate (Yz()
 // or equivalent) as the init of their first VariableDeclarator.  Since tools-off
@@ -593,6 +606,14 @@ function sourceIncludesPromptText(code: string, text: string): boolean {
 
 export const bashPrompt: Patch = {
 	tag: "bash-prompt",
+	string: (code) =>
+		code
+			.replaceAll(
+				LEGACY_WORKING_DIRECTORY_GUIDANCE,
+				RUNTIME_NEUTRAL_WORKING_DIRECTORY_GUIDANCE,
+			)
+			.replace(LEGACY_TOKEN_WARNING_RE, MODERN_OUTPUT_LIMIT_WARNING)
+			.replace(LEGACY_POWERSHELL_TOKEN_WARNING_RE, MODERN_OUTPUT_LIMIT_WARNING),
 
 	// Use a Function visitor directly so the combined-pass engine visits each
 	// function node natively, avoiding nested traverse conflicts.
@@ -613,6 +634,21 @@ export const bashPrompt: Patch = {
 	verify: (code, ast) => {
 		const verifyAst = getVerifyAst(code, ast);
 		if (!verifyAst) return "Unable to parse AST during verification";
+		if (
+			code.includes("Pipe output through head, tail, or grep") ||
+			code.includes("Pipe output through Select-Object -First/-Last")
+		) {
+			return "Legacy oversized-output guidance still present";
+		}
+		if (code.includes(LEGACY_WORKING_DIRECTORY_GUIDANCE)) {
+			return "Legacy Bash working-directory guidance still present";
+		}
+		if (
+			code.includes("Executes a given bash command") &&
+			!code.includes(RUNTIME_NEUTRAL_WORKING_DIRECTORY_GUIDANCE)
+		) {
+			return "Runtime-neutral Bash working-directory guidance missing";
+		}
 
 		if (code.includes("Avoid using Bash with the `find`")) {
 			return "Old 'Avoid using Bash with' text still present";

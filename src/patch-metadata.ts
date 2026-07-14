@@ -16,11 +16,6 @@ const GROUP_ORDER = [
 ] as const;
 
 const BY_TAG: Record<string, PatchMetadata> = {
-	"bash-tail": {
-		tag: "bash-tail",
-		label: "Bash output tail",
-		group: "Tooling",
-	},
 	"bash-prompt": {
 		tag: "bash-prompt",
 		label: "Bash prompt",

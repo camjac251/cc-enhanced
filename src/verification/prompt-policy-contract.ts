@@ -63,23 +63,24 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 	},
 	{
 		id: "prompt-policy-head-tail-cap",
-		needle: "Never cap output with a head/tail pipe",
+		needle:
+			"Do not use head, tail, sed, or awk solely to hide unread command output",
 		reason: "Missing head/tail pipeline cap guidance",
 	},
 	{
 		id: "prompt-policy-producer-native-caps",
-		needle: "Cap at the producer instead",
+		needle: "Use a producer-native limit",
 		reason: "Missing producer-native output-cap preference",
 	},
 	{
-		id: "prompt-policy-bash-tool-caps",
-		needle: "Use Bash tool caps",
-		reason: "Missing Bash tool-level output-cap guidance",
+		id: "prompt-policy-persisted-output",
+		needle: "If Bash saves the full output",
+		reason: "Missing persisted Bash output guidance",
 	},
 	{
-		id: "prompt-policy-eza-entry-count-bounds",
-		needle: "use fd --max-results N when entry-count bounds matter",
-		reason: "Missing eza versus fd bounded-list guidance",
+		id: "prompt-policy-saved-output-range",
+		needle: "Read range -200: first",
+		reason: "Missing saved-output Read range guidance",
 	},
 ];
 
@@ -88,16 +89,6 @@ export const FORBIDDEN_LEGACY_PROMPT_NEEDLES: readonly PromptPolicyNeedle[] = [
 		id: "legacy-bash-token-warning-posix",
 		needle: "Pipe output through head, tail, or grep",
 		reason: "Legacy POSIX oversized-output warning still present",
-	},
-	{
-		id: "copyable-pipe-head",
-		needle: "`| head",
-		reason: "Prompt still contains copyable pipe-head syntax",
-	},
-	{
-		id: "copyable-pipe-tail",
-		needle: "`| tail",
-		reason: "Prompt still contains copyable pipe-tail syntax",
 	},
 	{
 		id: "legacy-bash-token-warning-powershell",

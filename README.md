@@ -7,15 +7,15 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
-  <img src="https://img.shields.io/badge/Patches-39-orange.svg" alt="39 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.207-8A2BE2.svg" alt="Tested against Claude Code 2.1.207">
+  <img src="https://img.shields.io/badge/Patches-38-orange.svg" alt="38 Patches">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.208-8A2BE2.svg" alt="Tested against Claude Code 2.1.208">
 </p>
 
 ---
 
-cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 39 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 38 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
 
-Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting and LSP fan-out), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read, batched `edits[]` on Edit, output tails on Bash), and replace prompt fragments that steer the model toward better shell tooling.
+Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting and LSP fan-out), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read and batched `edits[]` on Edit), and replace prompt fragments that steer the model toward better shell tooling.
 
 > [!NOTE]
 > This tool patches your local copy of the Claude Code binary. It does not distribute Claude Code binaries or npm packages. All modifications happen on your machine.
@@ -98,7 +98,6 @@ Changes to built-in tools (Read, Edit, Bash, LSP, Task, MCP).
 |-------|--------|
 | [`read-bat`](src/patches/read-bat.ts) | Read replaces `offset`/`limit` with a single `range` string (`30:40`, `-30:`, `50:+20`, `100::10`, `30:40:2`), renders text through `bat` with line numbers, adds `show_whitespace: true` to reveal tabs/spaces/newlines, surfaces the read range on the tool-use chip including agent-output (`.output`) reads so chunked reads render distinctly, auto-tails `*.output` files to `-500:` when `range` is omitted, previews the first 200 lines of oversized files, caps changed-file reminder snippets at a bounded head-plus-tail summary, and marks content-identical changed-file re-reads as seen so mtime-only churn (for example from git operations) does not re-read watched files on every cycle. |
 | [`edit-extended`](src/patches/edit-extended.ts) | Edit accepts batched changes via `edits[]` and keeps them intact through validation, call dispatch, diff rendering, and transcript cleanup. Plain Edit no longer fails only because a prior Read timestamp is stale; current-file exact-match and ambiguity checks decide whether the content-addressed edit can apply. Write can overwrite existing files without a prior Read while still honoring modified-since-read protection when read state exists. The tool-use chip surfaces `batch(N)` for `edits[]` and `replace_all` when those fields are set. Prompt guidance routes structural code rewrites through `sg` previews, reserves `sd` for non-code text replacement, and covers fuzzy-match recovery plus multi-site refactors. |
-| [`bash-tail`](src/patches/bash-tail.ts) | Bash gains `output_tail: boolean` (keep the last N characters on truncation, for build/test output where failures land at the end) and `max_output: number` (raise the inline threshold up to 500K chars). The tool-use chip surfaces `background`, `tail`, `max_output: N`, `timeout: N`, and `no-sandbox` when those flags are set. Prompt text calls out when to use each and explicitly rejects head/tail pipelines as output caps. |
 | [`tools-off`](src/patches/tools-off.ts) | Disables `Glob`, `Grep`, `WebSearch`, `WebFetch`, and `NotebookEdit`, and strips their references from prompts, tool tables, agent frontmatter, and workflow `allowed_tools` examples. The model is steered toward `fd`/`bat`/`sg`, with `rg` reserved for non-code text. |
 | [`shell-quote-fix`](src/patches/shell-quote-fix.ts) | Bash no longer mangles `!` in negation (`!x`, `!==`), shell tests (`[ ! -f ]`), or literal banged strings. Fixes real-world breakage on `-c` invocations. |
 | [`mcp-server-name`](src/patches/mcp-server-name.ts) | MCP server-name validation accepts the plugin-style form (`plugin:<plugin>:<key>`) alongside the legacy alphanumeric form, so settings entries stop silently dropping at schema parse time. |
@@ -218,7 +217,7 @@ mise run verify:prompt-surfaces -- <export-dir>
 mise run verify:prompt-drift -- <export-dir> --prompt-drift-baseline <baseline.json>
 mise run prompts:export                           # Export prompt artifacts from promoted binary
 mise run prompts:export -- <version> --output-dir /tmp/prompts-<version>
-mise run prompts:drift-baseline -- <baseline.json> <export-dir> --prompt-drift-version <version>
+mise run prompts:drift-baseline -- <export-dir> --prompt-drift-version <version>
 bun run prompts:compare <vanilla-export> <patched-export> /etc/claude-code
 bun run inspect search versions_clean/<version>/cli.js "Read" --field string --object
 bun run inspect prompts versions_clean/<version>/cli.js "Command sandbox"
@@ -256,7 +255,7 @@ Useful outputs:
 `verify:prompt-drift` adds a path-based drift guard for the surfaces this patcher cares about most. `prompt-surface-baseline.json` is checked in and used by `mise run verify:patches` by default. Generate or refresh it only from a reviewed known-good patched export:
 
 ```bash
-mise run prompts:drift-baseline -- prompt-surface-baseline.json exported-prompts/<version>_patched --prompt-drift-version <version>
+mise run prompts:drift-baseline -- exported-prompts/<version>_patched --prompt-drift-version <version>
 ```
 
 Then compare future exports against it:
@@ -383,7 +382,7 @@ When a prompt patch changes live guidance, update both the patch verifier and th
 
 ## Compatibility
 
-Current target: **Claude Code 2.1.207**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
+Current target: **Claude Code 2.1.208**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
 
 `native:update` accepts `latest`, `next`, `stable`, or an explicit `X.Y.Z`. The `latest` resolver cross-checks the native release bucket with the npm `latest` and `next` dist-tags so release promotion can follow npm when a new version appears there before the bucket alias moves.
 
