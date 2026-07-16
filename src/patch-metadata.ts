@@ -86,6 +86,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "High-res image limits",
 		group: "System",
 	},
+	"model-context-metadata": {
+		tag: "model-context-metadata",
+		label: "Per-model context metadata",
+		group: "System",
+	},
 	"plan-diff-ui": {
 		tag: "plan-diff-ui",
 		label: "Plan diff UI",
@@ -138,8 +143,8 @@ const BY_TAG: Record<string, PatchMetadata> = {
 	},
 	"subagent-model-tag": {
 		tag: "subagent-model-tag",
-		label: "Subagent model tag",
-		group: "UX",
+		label: "Subagent model selection",
+		group: "Agent",
 	},
 	"subagent-system-prompt": {
 		tag: "subagent-system-prompt",

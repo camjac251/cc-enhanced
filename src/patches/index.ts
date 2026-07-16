@@ -17,6 +17,7 @@ export { lspFilenameSchema } from "./lsp-filename-schema.js";
 export { lspMultiServer } from "./lsp-multi-server.js";
 export { mcpServerName } from "./mcp-server-name.js";
 export { memoryPromptSoften } from "./memory-prompt-soften.js";
+export { modelContextMetadata } from "./model-context-metadata.js";
 export { disableAutoupdater } from "./no-autoupdate.js";
 export { noCollapse } from "./no-collapse.js";
 export { planCompactExecute } from "./plan-compact-execute.js";
@@ -58,6 +59,7 @@ import { lspFilenameSchema } from "./lsp-filename-schema.js";
 import { lspMultiServer } from "./lsp-multi-server.js";
 import { mcpServerName } from "./mcp-server-name.js";
 import { memoryPromptSoften } from "./memory-prompt-soften.js";
+import { modelContextMetadata } from "./model-context-metadata.js";
 import { disableAutoupdater } from "./no-autoupdate.js";
 import { noCollapse } from "./no-collapse.js";
 import { planCompactExecute } from "./plan-compact-execute.js";
@@ -127,6 +129,7 @@ const basePatches: Patch[] = [
 	subagentModelTag,
 	tabQueue,
 	sessionMemory,
+	modelContextMetadata,
 	systemPromptFile,
 	limits,
 	promptDashStyle,

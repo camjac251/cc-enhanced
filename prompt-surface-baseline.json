@@ -1,5 +1,5 @@
 {
-  "version": "2.1.209",
+  "version": "2.1.211",
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
@@ -13,6 +13,6 @@
     "system/sections/dream-memory-consolidation.md": "e84a3b93df02dabae37d71ff141efcd6e54ac8afb7777e778526fd4678ff0cc3",
     "system/sections/session-specific-guidance.md": "d1bd8ebfc82fc5643ae7022ea8e2fa8f032501e1f4e1d367b49805d246b11e48",
     "system/sections/using-your-tools.md": "9f7e7a7321436c63b1a06629cfb11caefa722e8ab81b87ad744c8598b375ea7c",
-    "tools/builtin/agent.md": "5d4da7b2f7127388d73824ce8e7109fa2815f01e79a528b402066ac099f4b71b"
+    "tools/builtin/agent.md": "b2f4a74495888b728f586cef7881b2b0d9faf85aab5f224076776248604484eb"
   }
 }

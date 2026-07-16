@@ -7,13 +7,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
-  <img src="https://img.shields.io/badge/Patches-38-orange.svg" alt="38 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.209-8A2BE2.svg" alt="Tested against Claude Code 2.1.209">
+  <img src="https://img.shields.io/badge/Patches-39-orange.svg" alt="39 Patches">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.211-8A2BE2.svg" alt="Tested against Claude Code 2.1.211">
 </p>
 
 ---
 
-cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 38 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 39 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
 
 Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting and LSP fan-out), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read and batched `edits[]` on Edit), and replace prompt fragments that steer the model toward better shell tooling.
 
@@ -115,6 +115,7 @@ Runtime behavior, caching, memory, and configuration.
 | [`effort-stack`](src/patches/effort-stack.ts) | Lets `CLAUDE_CODE_EFFORT_LEVEL=max` stack with ultracode workflow orchestration without sending a non-API `ultracode` effort value. Set `CLAUDE_CODE_EFFORT_LEVEL=max` plus either `CLAUDE_CODE_ULTRACODE=1` or a true `ultracode` setting. Env values seed new sessions, while `/effort` choices become session-only overrides instead of staying locked behind env. The active gate still requires workflows and an `xhigh`-capable model, and `/effort` shows the stacked max+ultracode state instead of claiming the env override disabled it. |
 | [`feature-flags`](src/patches/feature-flags.ts) | Reserved slot for server-side feature-flag overrides. Currently a no-op. |
 | [`image-limits`](src/patches/image-limits.ts) | Restores the per-side image cap for `claude-fable-5`, `claude-mythos-5`, `claude-sonnet-5`, `claude-opus-4-7`, and `claude-opus-4-8` to the documented 2576px (3.75 MP). Upstream silently downgrades all five overrides to 2000px so conversations with more than 20 images stop tripping the API's many-image batch limit ("dimension exceeds max for many-image requests: 2000 pixels"), but the per-message API limit is 8000px and the models themselves process input up to 2576px on the long edge. The downgrade trades documented headroom for everyone to silence one error class for heavy multi-screenshot sessions. The patch keeps the headroom and, when a request has more than 20 image/document blocks with any image over 2000px on either side, downscales only the oversized image blocks to the API's many-image bucket before submission. |
+| [`model-context-metadata`](src/patches/model-context-metadata.ts) | When gateway model discovery is enabled, activates the existing model-capability cache and uses each matching model's positive safe-integer `max_input_tokens` value before the global custom-model fallback, capped at 1M. Native Claude 1M handling keeps precedence. `max_tokens` continues to drive the existing per-model output limit, so parent and child agents can safely mix different discovered context and output windows in one process. |
 | [`no-autoupdate`](src/patches/no-autoupdate.ts) | Forces the autoupdater guard to a safe stub so the patched binary is not replaced in the background. Marketplace plugin autoupdates continue to work through the same guard path. |
 | [`limits`](src/patches/limits.ts) | Read keeps larger files inline. Byte ceiling 256K -> 1M, token budget 25K -> 50K (still overridable via `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`), persistence threshold 50K -> 120K chars, per-tool result cap 100K -> 250K chars. |
 | [`session-mem`](src/patches/session-mem.ts) | An explicit `autoDreamEnabled: true` setting bypasses the server-side auto-dream availability gate. |
@@ -142,6 +143,7 @@ Which built-in agents and commands are exposed.
 |-------|--------|
 | [`agents-off`](src/patches/agents-off.ts) | Removes `statusline-setup` and `claude-code-guide` from the built-in agent registry. Those flows move to user skills. |
 | [`commands-off`](src/patches/commands-off.ts) | Removes the `/security-review` built-in slash command, leaving `/review` as the single review entry point and freeing the name for local skills to shadow. |
+| [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | Agent model overrides accept a trimmed, nonempty built-in alias, `inherit`, or full model ID exposed by the active provider instead of being limited to the four built-in aliases. The existing model resolver keeps its configured `availableModels` enforcement and fallback behavior. Explicit one-off overrides are persisted in the existing agent metadata sidecar and restored during resume; omitted overrides and `inherit` remain dynamic, and forks still inherit the parent. When `CLAUDE_CODE_SUBAGENT_MODEL` is set globally, Task rows also omit the redundant dimmed `model: ...` label. |
 | [`skill-paths-invoke`](src/patches/skill-paths-invoke.ts) | Keeps `paths`-scoped skills visible to model invocation while preserving the stored path metadata and explicit model-invocation opt-outs. Skill-cache resets keep the activation guard, so an already-activated path skill is not re-bucketed and re-activated after every skills reload (which otherwise loops into per-cycle registry reloads). |
 | [`skill-global-paths`](src/patches/skill-global-paths.ts) | Adds a `global-paths` skill frontmatter field whose globs path-activate a skill when a matching file is touched anywhere on disk, not only inside the project. Uses the same gitignore syntax (including `!` exclusions) as `paths`, is purely additive, and is ignored by unpatched builds. |
 
@@ -158,7 +160,6 @@ Terminal interface polish.
 | [`skill-listing-ui`](src/patches/skill-listing-ui.ts) | The "Saved N skills" and "Loaded N skills from path" notifications preview the first few skill names inline instead of showing only a count badge. |
 | [`skill-activation-notice`](src/patches/skill-activation-notice.ts) | When a `paths`/`global-paths` skill activates because a touched file matched, a notice surfaces the activated skill name and file instead of the activation being silent. Notices are deduplicated per session by file and skill set, so re-activation churn never repeats them. |
 | [`agent-listing-ui`](src/patches/agent-listing-ui.ts) | The "N agent types available" notification previews the available agent type names inline instead of showing only a count badge. |
-| [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | When `CLAUDE_CODE_SUBAGENT_MODEL` is set globally, Task rows omit the redundant dimmed `model: ...` label that would otherwise appear on every subagent. |
 | [`tab-queue`](src/patches/tab-queue.ts) | While Claude is responding, plain Tab queues the current draft as a follow-up shown inside the prompt bar. Press Tab on an empty prompt with queued drafts to pop the latest draft back into the input for editing. Follow-ups drain only after a non-aborted turn and behind pending task notifications, so background-task summaries stay ahead of deferred drafts. Idle Tab behavior and autocomplete completion stay unchanged unless an aborted turn leaves a queued draft to edit. |
 
 ### Metadata
@@ -188,11 +189,15 @@ Terminal interface polish.
 | `CLAUDE_CODE_FILE_LINK_SCHEME` | [`file-link-targets`](src/patches/file-link-targets.ts) | unset |
 | `CLAUDE_CODE_FILE_LINK_WSL_DISTRO` | [`file-link-targets`](src/patches/file-link-targets.ts) | `WSL_DISTRO_NAME` or `Ubuntu` |
 | `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS` | [`limits`](src/patches/limits.ts) | 50000 |
+| `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | [`model-context-metadata`](src/patches/model-context-metadata.ts) | unset |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | [`model-context-metadata`](src/patches/model-context-metadata.ts) | fallback for custom models without valid discovered metadata |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | unset |
 
 `file-link-targets` keeps stock file labels but rewrites WSL absolute-path hyperlink targets so Ctrl-clicks in Windows Terminal resolve outside WSL. The default `wsl-file` mode emits `file://wsl.localhost/<distro>/...`. Set `CLAUDE_CODE_FILE_LINK_MODE=vscode` for `vscode://file...`, `vscode-remote` for VS Code Remote WSL URLs, `zed` for `zed://file...`, `file` for explicit file URLs, or `off`/`vanilla` to keep stock `file:///home/...` links. `CLAUDE_CODE_FILE_LINK_SCHEME` accepts a custom URI scheme when `CLAUDE_CODE_FILE_LINK_MODE` is not one of the built-ins.
 
 `autoDreamEnabled` is a Claude Code setting rather than an env var. When it is explicitly `true`, `session-mem` lets auto-dream run even if the server-side availability flag is off.
+
+When gateway model discovery is enabled, Claude Code manages its model-capability cache under its configured cache directory. Do not edit that cache directly. Matching positive safe-integer `max_input_tokens` values take precedence over `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; the environment value remains the startup, offline, and unknown-model fallback.
 
 Do not set `DISABLE_TELEMETRY`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, or `DISABLE_GROWTHBOOK`. They disable feature-flag evaluation and the server-side flags that depend on it, including features this patcher relies on and the upstream Remote Control surface. Use the individual `DISABLE_ERROR_REPORTING`, `DISABLE_AUTOUPDATER`, and `DISABLE_BUG_COMMAND` switches instead.
 
@@ -382,7 +387,7 @@ When a prompt patch changes live guidance, update both the patch verifier and th
 
 ## Compatibility
 
-Current target: **Claude Code 2.1.209**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
+Current target: **Claude Code 2.1.211**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
 
 `native:update` accepts `latest`, `next`, `stable`, or an explicit `X.Y.Z`. The `latest` resolver cross-checks the native release bucket with the npm `latest` and `next` dist-tags so release promotion can follow npm when a new version appears there before the bucket alias moves.
 
