@@ -20,20 +20,21 @@ async function runDisableAutoupdaterViaPasses(ast: any): Promise<void> {
 }
 
 const AUTOUPDATER_FIXTURE = `
-function isBool(v) { return typeof v === "boolean"; }
 const envFlags = {};
 
 function checkForUpdates() {
   if (envFlags.DISABLE_AUTOUPDATER) {
-    return "disabled";
+    return { type: "env", envVar: "DISABLE_AUTOUPDATER" };
   }
   return null;
 }
 
+function updatesDisabled() {
+  return checkForUpdates() !== null;
+}
+
 function pluginAutoUpdate() {
-  var force = isBool(process.env.FORCE_AUTOUPDATE_PLUGINS);
-  if (force) return true;
-  return false;
+  return updatesDisabled() && !envFlags.FORCE_AUTOUPDATE_PLUGINS;
 }
 `;
 
@@ -73,48 +74,68 @@ test("verify rejects unpatched code", () => {
 	assert.equal(typeof result, "string");
 });
 
-test("no-autoupdate patches plugin gate in logical-return shape", async () => {
+test("no-autoupdate ignores a bare force-config read", async () => {
 	const fixture = `
-function isEligible() { return true; }
-function wrap(v) { return typeof v === "boolean"; }
 function coreGuard() {
   if (envFlags.DISABLE_AUTOUPDATER) return "disabled";
   return null;
 }
 const envFlags = {};
 function pluginForceGate() {
-  return isEligible() && !wrap(process.env.FORCE_AUTOUPDATE_PLUGINS);
+  return envFlags.FORCE_AUTOUPDATE_PLUGINS;
 }
 `;
 	const ast = parse(fixture);
 	await runDisableAutoupdaterViaPasses(ast);
 	const output = print(ast);
 	assert.equal(output.includes('return "patched";'), true);
-	assert.equal(output.includes('coreGuard() === "patched"'), true);
-	assert.equal(disableAutoupdater.verify(output, ast), true);
+	assert.equal(output.includes('coreGuard() === "patched"'), false);
+	assert.match(
+		disableAutoupdater.verify(output, ast) as string,
+		/exactly one plugin autoupdate gate function \(found 0\)/,
+	);
 });
 
-test("no-autoupdate does not match a two-arg plugin wrapper call", async () => {
+test("no-autoupdate ignores a force-config disjunction", async () => {
 	const fixture = `
-function wrap(v, opts) { return typeof v === "boolean"; }
+function updatesDisabled() { return true; }
 function coreGuard() {
   if (envFlags.DISABLE_AUTOUPDATER) return "disabled";
   return null;
 }
 const envFlags = {};
 function pluginForceGate() {
-  return !wrap(process.env.FORCE_AUTOUPDATE_PLUGINS, { strict: true });
+  return updatesDisabled() || !envFlags.FORCE_AUTOUPDATE_PLUGINS;
 }
 `;
 	const ast = parse(fixture);
 	await runDisableAutoupdaterViaPasses(ast);
 	const output = print(ast);
-	// core guard still patched
 	assert.equal(output.includes('return "patched";'), true);
-	// plugin gate not injected, so verify must fail with a string reason
 	const result = disableAutoupdater.verify(output, ast);
 	assert.notEqual(result, true);
-	assert.equal(typeof result, "string");
+	assert.match(result as string, /exactly one plugin autoupdate gate function/);
+});
+
+test("no-autoupdate ignores a force gate with an argument-taking check", async () => {
+	const fixture = `
+function updatesDisabled(mode) { return mode === "all"; }
+function coreGuard() {
+  if (envFlags.DISABLE_AUTOUPDATER) return "disabled";
+  return null;
+}
+const envFlags = {};
+function pluginForceGate() {
+  return updatesDisabled("all") && !envFlags.FORCE_AUTOUPDATE_PLUGINS;
+}
+`;
+	const ast = parse(fixture);
+	await runDisableAutoupdaterViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.includes('return "patched";'), true);
+	const result = disableAutoupdater.verify(output, ast);
+	assert.notEqual(result, true);
+	assert.match(result as string, /exactly one plugin autoupdate gate function/);
 });
 
 test("no-autoupdate targets exactly one guard fn and one plugin gate", async () => {
@@ -147,19 +168,21 @@ test("no-autoupdate targets exactly one guard fn and one plugin gate", async () 
 				)
 					patchedGuardEntries++;
 			}
-			let hasForce = false;
-			path.traverse({
-				CallExpression(p) {
-					const a = p.node.arguments[0];
-					if (
-						p.node.arguments.length === 1 &&
-						t.isMemberExpression(a) &&
-						t.isIdentifier(a.property, {
-							name: "FORCE_AUTOUPDATE_PLUGINS",
-						})
-					)
-						hasForce = true;
-				},
+			const hasForce = body.body.some((statement) => {
+				if (!t.isReturnStatement(statement)) return false;
+				if (!t.isLogicalExpression(statement.argument, { operator: "&&" }))
+					return false;
+				const { left, right } = statement.argument;
+				return (
+					t.isCallExpression(left) &&
+					t.isIdentifier(left.callee) &&
+					left.arguments.length === 0 &&
+					t.isUnaryExpression(right, { operator: "!" }) &&
+					t.isMemberExpression(right.argument) &&
+					t.isIdentifier(right.argument.property, {
+						name: "FORCE_AUTOUPDATE_PLUGINS",
+					})
+				);
 			});
 			if (hasForce) pluginGates++;
 		},
@@ -169,9 +192,32 @@ test("no-autoupdate targets exactly one guard fn and one plugin gate", async () 
 	assert.equal(pluginGates, 1);
 });
 
+test("no-autoupdate verify rejects two plugin gate functions", async () => {
+	const fixture = `
+const envFlags = {};
+function coreGuard() {
+  if (envFlags.DISABLE_AUTOUPDATER) return "disabled";
+  return null;
+}
+function updatesDisabled() { return coreGuard() !== null; }
+function pluginForceGateA() {
+  return updatesDisabled() && !envFlags.FORCE_AUTOUPDATE_PLUGINS;
+}
+function pluginForceGateB() {
+  return updatesDisabled() && !envFlags.FORCE_AUTOUPDATE_PLUGINS;
+}
+`;
+	const ast = parse(fixture);
+	await runDisableAutoupdaterViaPasses(ast);
+	const output = print(ast);
+	assert.match(
+		disableAutoupdater.verify(output, ast) as string,
+		/exactly one plugin autoupdate gate function \(found 2\)/,
+	);
+});
+
 test("no-autoupdate verify rejects two distinct core-guard functions", async () => {
 	const fixture = `
-function wrap(v) { return typeof v === "boolean"; }
 function coreGuardA() {
   if (envFlags.DISABLE_AUTOUPDATER) return "disabled";
   return null;
@@ -182,8 +228,9 @@ function coreGuardB() {
 }
 const envFlags = {};
 const otherFlags = {};
+function updatesDisabled() { return coreGuardA() !== null; }
 function pluginForceGate() {
-  return !wrap(process.env.FORCE_AUTOUPDATE_PLUGINS);
+  return updatesDisabled() && !envFlags.FORCE_AUTOUPDATE_PLUGINS;
 }
 `;
 	const ast = parse(fixture);
@@ -197,14 +244,14 @@ function pluginForceGate() {
 
 test("no-autoupdate verify fails cleanly when the core-guard anchor is absent", async () => {
 	const fixture = `
-function wrap(v) { return typeof v === "boolean"; }
 function someUnrelatedGuard() {
   if (envFlags.DISABLE_SOMETHING_ELSE) return "disabled";
   return null;
 }
 const envFlags = {};
+function updatesDisabled() { return someUnrelatedGuard() !== null; }
 function pluginForceGate() {
-  return !wrap(process.env.FORCE_AUTOUPDATE_PLUGINS);
+  return updatesDisabled() && !envFlags.FORCE_AUTOUPDATE_PLUGINS;
 }
 `;
 	const ast = parse(fixture);

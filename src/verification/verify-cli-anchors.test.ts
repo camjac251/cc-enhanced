@@ -98,7 +98,7 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 		.filter((tag) => tag !== "signature")
 		.sort();
 	const signature = `(Claude Code; patched: ${selectedTags.join(", ")})`;
-	const patchedFixture = [
+	const anchorText = [
 		...STRONG_CLAUDEMD_DISCLAIMER_LINES,
 		...MODERN_CODE_SEARCH_DECISION_TREE_LINES,
 		MODERN_CODE_TOOL_SELF_CHECK,
@@ -128,9 +128,24 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 		MODERN_STDOUT_CAP,
 		'return "patched";',
 		"if (A.offset !== void 0 || A.limit !== void 0 || A.range !== void 0) return null;",
-		'if (typeof A?.file_path === "string" && A.offset === void 0 && A.limit === void 0 && A?.range === void 0) return String((A?.file_path ?? "")).endsWith(".output");',
 		signature,
 	].join("\n");
+	const readStateGuard = `function rebuildReadState(input, toolUseId) {
+let normalizedOffset = normalize(input?.offset);
+let normalizedLimit = normalize(input?.limit);
+if (
+  typeof input?.file_path === "string" &&
+  (normalizedOffset === void 0 || (typeof normalizedOffset === "number" && Number.isInteger(normalizedOffset) && normalizedOffset >= 0)) &&
+  (normalizedLimit === void 0 || (typeof normalizedLimit === "number" && Number.isInteger(normalizedLimit) && normalizedLimit >= 1)) &&
+  input?.range === void 0 &&
+  !String(input?.file_path ?? "").endsWith(".output")
+) readState.set(toolUseId, {
+  filePath: resolvePath(input.file_path),
+  offset: normalizedOffset,
+  limit: normalizedLimit,
+});
+}`;
+	const patchedFixture = [`/*\n${anchorText}\n*/`, readStateGuard].join("\n");
 
 	try {
 		await fs.writeFile(patchedCliPath, patchedFixture, "utf-8");
@@ -142,7 +157,7 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 			skipPatchVerifiers: true,
 			signatureExpectation: "selected",
 		});
-		assert.equal(result.ok, true);
+		assert.equal(result.ok, true, JSON.stringify(result.failures, null, 2));
 		assert.deepEqual(result.failures, []);
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });

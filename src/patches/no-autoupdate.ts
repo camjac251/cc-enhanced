@@ -3,16 +3,6 @@ import { type NodePath, traverse } from "../babel.js";
 import type { Patch, PatchAstPass } from "../types.js";
 import { getMemberPropertyName } from "./ast-helpers.js";
 
-function isProcessReference(node: t.Expression): boolean {
-	if (t.isIdentifier(node)) return node.name === "process";
-	if (!t.isMemberExpression(node)) return false;
-	return (
-		getMemberPropertyName(node) === "process" &&
-		t.isIdentifier(node.object) &&
-		node.object.name === "globalThis"
-	);
-}
-
 /**
  * Disables the automatic core updaters.
  * Without this patch, cli.js would be silently replaced with the
@@ -20,8 +10,8 @@ function isProcessReference(node: t.Expression): boolean {
  *
  * Plugin marketplace autoupdates are preserved.
  *
- * The check function (e.g., A_H) returns null if auto-updates are enabled,
- * or a string reason if disabled. We inject an early return "patched".
+ * The check function returns null if auto-updates are enabled, or a non-null
+ * reason if disabled. We inject an early return "patched".
  */
 function isDisableAutoupdaterCheck(node: t.Node | null | undefined): boolean {
 	if (!node || !t.isMemberExpression(node)) return false;
@@ -29,20 +19,30 @@ function isDisableAutoupdaterCheck(node: t.Node | null | undefined): boolean {
 	return getMemberPropertyName(node) === "DISABLE_AUTOUPDATER";
 }
 
-function isForceAutoupdatePluginsCheck(
+function isForceAutoupdatePluginsMember(
 	node: t.Node | null | undefined,
 ): boolean {
-	if (!node || !t.isCallExpression(node)) return false;
-	if (node.arguments.length !== 1) return false;
+	return (
+		!!node &&
+		t.isMemberExpression(node) &&
+		getMemberPropertyName(node) === "FORCE_AUTOUPDATE_PLUGINS"
+	);
+}
 
-	const arg = node.arguments[0];
-	if (!t.isMemberExpression(arg)) return false;
-	if (!t.isMemberExpression(arg.object)) return false;
+function isPluginAutoupdateGateReturn(stmt: t.Statement): boolean {
+	if (!t.isReturnStatement(stmt)) return false;
+	if (!t.isLogicalExpression(stmt.argument, { operator: "&&" })) return false;
 
-	const innerObj = arg.object;
-	if (!isProcessReference(innerObj.object)) return false;
-	if (getMemberPropertyName(innerObj) !== "env") return false;
-	return getMemberPropertyName(arg) === "FORCE_AUTOUPDATE_PLUGINS";
+	const { left, right } = stmt.argument;
+	if (
+		!t.isCallExpression(left) ||
+		!t.isIdentifier(left.callee) ||
+		left.arguments.length !== 0
+	) {
+		return false;
+	}
+	if (!t.isUnaryExpression(right, { operator: "!" })) return false;
+	return isForceAutoupdatePluginsMember(right.argument);
 }
 
 function hasDisableAutoupdaterCheck(path: NodePath<t.Function>): boolean {
@@ -57,16 +57,9 @@ function hasDisableAutoupdaterCheck(path: NodePath<t.Function>): boolean {
 	return hasDisableCheck;
 }
 
-function hasPluginAutoupdateForceCheck(path: NodePath<t.Function>): boolean {
-	let hasForceCheck = false;
-	path.traverse({
-		CallExpression(callPath) {
-			if (!isForceAutoupdatePluginsCheck(callPath.node)) return;
-			hasForceCheck = true;
-			callPath.stop();
-		},
-	});
-	return hasForceCheck;
+function hasPluginAutoupdateGate(path: NodePath<t.Function>): boolean {
+	if (!t.isBlockStatement(path.node.body)) return false;
+	return path.node.body.body.some(isPluginAutoupdateGateReturn);
 }
 
 function isPluginGatePatchedStatement(
@@ -170,7 +163,7 @@ function createDisableAutoupdaterPasses(): PatchAstPass[] {
 					}
 
 					if (!state.guardFunctionName) return;
-					if (!hasPluginAutoupdateForceCheck(path)) return;
+					if (!hasPluginAutoupdateGate(path)) return;
 
 					const firstStmt = path.node.body.body[0];
 					if (
@@ -268,7 +261,7 @@ export const disableAutoupdater: Patch = {
 			traverse(ast, {
 				Function(path) {
 					if (!t.isBlockStatement(path.node.body)) return;
-					if (!hasPluginAutoupdateForceCheck(path)) return;
+					if (!hasPluginAutoupdateGate(path)) return;
 					pluginGateTargetCount++;
 
 					const firstStmt = path.node.body.body[0];
@@ -291,10 +284,10 @@ export const disableAutoupdater: Patch = {
 		if (guardFunctionNames.size !== 1) {
 			return `Expected exactly one auto-updater guard function name (found ${guardFunctionNames.size})`;
 		}
-		if (pluginGateTargetCount < 1) {
-			return "Plugin autoupdate gate function not found";
+		if (pluginGateTargetCount !== 1) {
+			return `Expected exactly one plugin autoupdate gate function (found ${pluginGateTargetCount})`;
 		}
-		if (pluginGatePatchedCount !== pluginGateTargetCount) {
+		if (pluginGatePatchedCount !== 1) {
 			return `Plugin autoupdate gate not patched at function entry (${pluginGatePatchedCount}/${pluginGateTargetCount})`;
 		}
 		return true;

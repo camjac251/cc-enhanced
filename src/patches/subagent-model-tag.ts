@@ -196,20 +196,9 @@ function nodeContains(
 	if (!node) return false;
 	if (predicate(node)) return true;
 	let found = false;
-	traverse(
-		node,
-		{
-			enter(path) {
-				if (predicate(path.node)) {
-					found = true;
-					path.stop();
-				}
-			},
-			noScope: true,
-		},
-		undefined,
-		undefined,
-	);
+	t.traverseFast(node, (child) => {
+		if (!found && predicate(child)) found = true;
+	});
 	return found;
 }
 
@@ -278,6 +267,177 @@ function isProcessEnvMember(node: t.Node, envName: string): boolean {
 		getObjectKeyName(processObject.property as t.Expression | t.Identifier) ===
 			"process"
 	);
+}
+
+type PatchSiteState = "patched" | "unpatched" | "other";
+
+interface ForkResolutionCandidate {
+	path: NodePath<t.VariableDeclarator>;
+	forkName: string;
+	parentModelName: string;
+	resolverCall: t.CallExpression;
+	state: PatchSiteState;
+}
+
+function hasResolvedAgentModelReference(
+	path: NodePath<t.VariableDeclarator>,
+): boolean {
+	if (!t.isIdentifier(path.node.id)) return false;
+	const binding = path.scope.getBinding(path.node.id.name);
+	return (
+		binding?.referencePaths.some((reference) => {
+			const parent = reference.parent;
+			return (
+				t.isObjectProperty(parent) &&
+				parent.value === reference.node &&
+				getObjectKeyName(parent.key) === "resolvedAgentModel"
+			);
+		}) ?? false
+	);
+}
+
+function getResolverParentModelName(call: t.CallExpression): string | null {
+	const parentModel = call.arguments[1];
+	if (!t.isIdentifier(parentModel)) return null;
+	const definitionModel = call.arguments[0];
+	if (
+		!t.isCallExpression(definitionModel) ||
+		definitionModel.arguments.length < 2 ||
+		!t.isIdentifier(definitionModel.arguments[1], {
+			name: parentModel.name,
+		})
+	) {
+		return null;
+	}
+	return parentModel.name;
+}
+
+function getForkLaunchCallShape(call: t.CallExpression): {
+	forkName: string;
+	parentModelName: string;
+} | null {
+	if (call.arguments.length < 4) return null;
+	const parentModelName = getResolverParentModelName(call);
+	const override = call.arguments[2];
+	if (
+		!parentModelName ||
+		!t.isConditionalExpression(override) ||
+		!t.isIdentifier(override.test) ||
+		!isVoidZero(override.consequent)
+	) {
+		return null;
+	}
+	return { forkName: override.test.name, parentModelName };
+}
+
+function classifyForkLaunchResolution(
+	path: NodePath<t.VariableDeclarator>,
+): ForkResolutionCandidate | null {
+	const initializer = path.node.init;
+	if (t.isCallExpression(initializer)) {
+		const shape = getForkLaunchCallShape(initializer);
+		if (!shape || !hasResolvedAgentModelReference(path)) return null;
+		return { path, resolverCall: initializer, state: "unpatched", ...shape };
+	}
+	if (
+		!t.isConditionalExpression(initializer) ||
+		!t.isIdentifier(initializer.test) ||
+		!t.isIdentifier(initializer.consequent) ||
+		!t.isCallExpression(initializer.alternate)
+	) {
+		return null;
+	}
+	const shape = getForkLaunchCallShape(initializer.alternate);
+	if (!shape || !hasResolvedAgentModelReference(path)) return null;
+	const state: PatchSiteState =
+		initializer.test.name === shape.forkName &&
+		initializer.consequent.name === shape.parentModelName
+			? "patched"
+			: "other";
+	return { path, resolverCall: initializer.alternate, state, ...shape };
+}
+
+function getSelectedAgentForkName(
+	path: NodePath<t.VariableDeclarator>,
+	selectedAgentName: string,
+): string | null {
+	const binding = path.scope.getBinding(selectedAgentName);
+	if (!binding || !t.isVariableDeclarator(binding.path.node)) return null;
+	const initializer = binding.path.node.init;
+	if (
+		!t.isLogicalExpression(initializer, { operator: "??" }) ||
+		!t.isConditionalExpression(initializer.right) ||
+		!t.isIdentifier(initializer.right.test)
+	) {
+		return null;
+	}
+	return initializer.right.test.name;
+}
+
+function getForkResumeCallShape(
+	path: NodePath<t.VariableDeclarator>,
+	call: t.CallExpression,
+): { forkName: string; parentModelName: string } | null {
+	if (call.arguments.length < 4) return null;
+	const parentModelName = getResolverParentModelName(call);
+	const definitionModel = call.arguments[0];
+	const override = call.arguments[2];
+	if (
+		!parentModelName ||
+		!t.isCallExpression(definitionModel) ||
+		!t.isIdentifier(definitionModel.arguments[0]) ||
+		!t.isConditionalExpression(override) ||
+		!isMetadataPropertyExpression(
+			override.test,
+			getOptionalMemberBase(override.test, "isObserver") ?? "",
+			"isObserver",
+		) ||
+		!isVoidZero(override.consequent)
+	) {
+		return null;
+	}
+	const forkName = getSelectedAgentForkName(
+		path,
+		definitionModel.arguments[0].name,
+	);
+	return forkName ? { forkName, parentModelName } : null;
+}
+
+function classifyForkResumeResolution(
+	path: NodePath<t.VariableDeclarator>,
+): ForkResolutionCandidate | null {
+	const initializer = path.node.init;
+	if (t.isCallExpression(initializer)) {
+		const shape = getForkResumeCallShape(path, initializer);
+		if (!shape || !hasResolvedAgentModelReference(path)) return null;
+		return { path, resolverCall: initializer, state: "unpatched", ...shape };
+	}
+	if (
+		!t.isConditionalExpression(initializer) ||
+		!t.isIdentifier(initializer.test) ||
+		!t.isIdentifier(initializer.consequent) ||
+		!t.isCallExpression(initializer.alternate)
+	) {
+		return null;
+	}
+	const shape = getForkResumeCallShape(path, initializer.alternate);
+	if (!shape || !hasResolvedAgentModelReference(path)) return null;
+	const state: PatchSiteState =
+		initializer.test.name === shape.forkName &&
+		initializer.consequent.name === shape.parentModelName
+			? "patched"
+			: "other";
+	return { path, resolverCall: initializer.alternate, state, ...shape };
+}
+
+function applyForkInheritance(candidate: ForkResolutionCandidate): void {
+	if (candidate.state !== "unpatched") return;
+	candidate.path.node.init = t.conditionalExpression(
+		t.identifier(candidate.forkName),
+		t.identifier(candidate.parentModelName),
+		candidate.resolverCall,
+	);
+	candidate.state = "patched";
 }
 
 function testContainsSubagentModelEnvGuard(test: t.Expression): boolean {
@@ -620,10 +780,16 @@ function resolveResumeLifecycleCandidates(
 		);
 		if (!binding || !t.isVariableDeclarator(binding.path.node)) continue;
 		const initializer = binding.path.node.init;
-		if (!t.isCallExpression(initializer) || initializer.arguments.length < 4) {
+		const resolverCall = t.isCallExpression(initializer)
+			? initializer
+			: t.isConditionalExpression(initializer) &&
+					t.isCallExpression(initializer.alternate)
+				? initializer.alternate
+				: null;
+		if (!resolverCall || resolverCall.arguments.length < 4) {
 			continue;
 		}
-		const override = initializer.arguments[2];
+		const override = resolverCall.arguments[2];
 		const resolverState: LifecycleSiteState =
 			isObserverAwareMetadataModelExpression(
 				override as t.Node,
@@ -631,7 +797,7 @@ function resolveResumeLifecycleCandidates(
 			)
 				? "patched"
 				: "other";
-		resolved.push({ options, resolverCall: initializer, resolverState });
+		resolved.push({ options, resolverCall, resolverState });
 	}
 	return resolved;
 }
@@ -642,10 +808,14 @@ function createSubagentModelPasses(): PatchAstPass[] {
 	const launchMetadataCandidates: LaunchMetadataCandidate[] = [];
 	const resumeOptionsCandidates: ResumeOptionsCandidate[] = [];
 	const resolvedModelCandidates: ResolvedModelCandidate[] = [];
+	const forkLaunchCandidates: ForkResolutionCandidate[] = [];
+	const forkResumeCandidates: ForkResolutionCandidate[] = [];
 	let guardedCount = 0;
 	let uiPatched = false;
 	let schemaPatched = false;
 	let lifecyclePatched = false;
+	let forkLaunchPatched = false;
+	let forkResumePatched = false;
 
 	return [
 		{
@@ -674,6 +844,12 @@ function createSubagentModelPasses(): PatchAstPass[] {
 					const resolvedModel = classifyResolvedModelObject(path);
 					if (resolvedModel) resolvedModelCandidates.push(resolvedModel);
 				},
+				VariableDeclarator(path) {
+					const forkLaunch = classifyForkLaunchResolution(path);
+					if (forkLaunch) forkLaunchCandidates.push(forkLaunch);
+					const forkResume = classifyForkResumeResolution(path);
+					if (forkResume) forkResumeCandidates.push(forkResume);
+				},
 			},
 		},
 		{
@@ -681,6 +857,16 @@ function createSubagentModelPasses(): PatchAstPass[] {
 			visitor: {
 				Program: {
 					exit() {
+						if (forkLaunchCandidates.length === 1) {
+							applyForkInheritance(forkLaunchCandidates[0]);
+							forkLaunchPatched = forkLaunchCandidates[0].state === "patched";
+						}
+
+						if (forkResumeCandidates.length === 1) {
+							applyForkInheritance(forkResumeCandidates[0]);
+							forkResumePatched = forkResumeCandidates[0].state === "patched";
+						}
+
 						if (guardedCount === 1 && candidates.length === 0) {
 							uiPatched = true;
 						} else if (candidates.length === 1 && guardedCount === 0) {
@@ -737,6 +923,11 @@ function createSubagentModelPasses(): PatchAstPass[] {
 			visitor: {
 				Program: {
 					exit() {
+						if (!forkLaunchPatched || !forkResumePatched) {
+							console.warn(
+								`Subagent model tag: Could not preserve fork inheritance at launch and resume (launch: ${forkLaunchPatched}, resume: ${forkResumePatched})`,
+							);
+						}
 						if (!uiPatched) {
 							const total = guardedCount + candidates.length;
 							if (total > 1) {
@@ -775,12 +966,12 @@ function createSubagentModelPasses(): PatchAstPass[] {
 }
 
 /**
- * Let Agent-tool calls select aliases or full provider model IDs, while hiding
- * redundant row tags when CLAUDE_CODE_SUBAGENT_MODEL forces one global model.
+ * Let Agent and Workflow calls select full provider model IDs, persist explicit
+ * selections across resume, preserve parent-model inheritance for forks, and
+ * hide redundant row tags when a global subagent model is configured.
  */
 export const subagentModelTag: Patch = {
 	tag: "subagent-model-tag",
-
 	astPasses: () => createSubagentModelPasses(),
 
 	verify: (code, ast) => {
@@ -799,6 +990,8 @@ export const subagentModelTag: Patch = {
 		const launchMetadataCandidates: LaunchMetadataCandidate[] = [];
 		const resumeOptionsCandidates: ResumeOptionsCandidate[] = [];
 		const resolvedModelCandidates: ResolvedModelCandidate[] = [];
+		const forkLaunchCandidates: ForkResolutionCandidate[] = [];
+		const forkResumeCandidates: ForkResolutionCandidate[] = [];
 
 		traverse(verifyAst, {
 			IfStatement(path) {
@@ -826,6 +1019,12 @@ export const subagentModelTag: Patch = {
 				if (resumeOptions) resumeOptionsCandidates.push(resumeOptions);
 				const resolvedModel = classifyResolvedModelObject(path);
 				if (resolvedModel) resolvedModelCandidates.push(resolvedModel);
+			},
+			VariableDeclarator(path) {
+				const forkLaunch = classifyForkLaunchResolution(path);
+				if (forkLaunch) forkLaunchCandidates.push(forkLaunch);
+				const forkResume = classifyForkResumeResolution(path);
+				if (forkResume) forkResumeCandidates.push(forkResume);
 			},
 		});
 
@@ -887,6 +1086,18 @@ export const subagentModelTag: Patch = {
 		}
 		if (resume.resolverState !== "patched") {
 			return "Agent resume resolution does not use the persisted model override";
+		}
+		if (forkLaunchCandidates.length !== 1) {
+			return `Fork launch model resolution is ambiguous or missing (${forkLaunchCandidates.length} sites found)`;
+		}
+		if (forkLaunchCandidates[0].state !== "patched") {
+			return "Fork launch does not preserve the parent model";
+		}
+		if (forkResumeCandidates.length !== 1) {
+			return `Fork resume model resolution is ambiguous or missing (${forkResumeCandidates.length} sites found)`;
+		}
+		if (forkResumeCandidates[0].state !== "patched") {
+			return "Fork resume does not preserve the parent model";
 		}
 		return true;
 	},

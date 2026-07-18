@@ -17,6 +17,12 @@ async function runSubagentModelTagViaPasses(ast: any): Promise<void> {
 	);
 }
 
+async function patchSource(source: string): Promise<string> {
+	const ast = parse(source);
+	await runSubagentModelTagViaPasses(ast);
+	return print(ast);
+}
+
 // Agent-era model row under the automatic JSX runtime: a keyed element whose
 // React key ("model") is the third positional argument of the element-factory
 // call, with the dimColor signal carried on a nested text element.
@@ -32,6 +38,9 @@ const agentInputSchema = A.object({
 
 const AGENT_LIFECYCLE_FIXTURE = `
 async function* runChild({ agentDefinition, model, extraMetadata }) {
+  const parentModel = getParentModel(context);
+  const isFork = agentDefinition.agentType === "fork";
+  const resolvedModel = resolveAgentModel(getAgentModel(agentDefinition, parentModel), parentModel, isFork ? void 0 : model, permissionMode);
   saveAgentMetadata(agentId, model !== undefined || extraMetadata !== undefined, {
     agentType: agentDefinition.agentType,
     ...(parentContext.agentId && { parentAgentId: parentContext.agentId }),
@@ -39,13 +48,25 @@ async function* runChild({ agentDefinition, model, extraMetadata }) {
     ...(model && { model }),
     ...extraMetadata,
   });
+  const launchMetadata = {
+    prompt,
+    resolvedAgentModel: resolvedModel,
+    isBuiltInAgent,
+    startTime,
+    agentType: agentDefinition.agentType,
+    isAsync,
+    agentDepth,
+    source: agentDefinition.source,
+  };
 }
 
 async function resumeChild() {
   const metadata = await readAgentMetadata(agentId);
-  const selectedAgent = getSelectedAgent(metadata);
+  const configuredAgent = getSelectedAgent(metadata);
+  const isFork = metadata?.isFork === true;
+  const selectedAgent = configuredAgent ?? (isFork ? forkAgent : defaultAgent);
   const parentModel = getParentModel(context);
-  const resolvedModel = resolveAgentModel(selectedAgent, parentModel, metadata?.isObserver ? void 0 : metadata?.model, permissionMode);
+  const resolvedModel = resolveAgentModel(getAgentModel(selectedAgent, parentModel), parentModel, metadata?.isObserver ? void 0 : metadata?.model, permissionMode);
   const childOptions = {
     agentDefinition: selectedAgent,
     promptMessages,
@@ -151,6 +172,32 @@ test("subagent-model-tag accepts a nonempty full model ID in the Agent schema", 
 	);
 });
 
+test("subagent-model-tag keeps fork launches and resumes on the parent model", async () => {
+	const output = await patchSource(SUBAGENT_FIXTURE);
+	assert.equal(
+		output.split("isFork ? parentModel : resolveAgentModel").length - 1,
+		2,
+		"both initial and resumed forks must bypass the global subagent model override",
+	);
+	assert.equal(subagentModelTag.verify(output, parse(output)), true);
+});
+
+test("verify rejects partial fork inheritance", async () => {
+	const output = await patchSource(SUBAGENT_FIXTURE);
+
+	const missingForkLaunch = output.replace(
+		"isFork ? parentModel : resolveAgentModel",
+		"resolveAgentModel",
+	);
+	assert.notEqual(missingForkLaunch, output);
+	const forkResult = subagentModelTag.verify(
+		missingForkLaunch,
+		parse(missingForkLaunch),
+	);
+	assert.equal(typeof forkResult, "string");
+	assert.equal(String(forkResult).includes("Fork launch"), true);
+});
+
 test("subagent-model-tag accepts the current child model lifecycle", async () => {
 	const ast = parse(SUBAGENT_FIXTURE);
 	await runSubagentModelTagViaPasses(ast);
@@ -169,7 +216,7 @@ test("subagent-model-tag accepts the current child model lifecycle", async () =>
 	);
 	assert.equal(
 		output.includes(
-			"resolveAgentModel(selectedAgent, parentModel, metadata?.isObserver ? void 0 : metadata?.model, permissionMode)",
+			"resolveAgentModel(getAgentModel(selectedAgent, parentModel), parentModel, metadata?.isObserver ? void 0 : metadata?.model, permissionMode)",
 		),
 		true,
 		"resume model resolution must preserve the observer-aware override",
@@ -196,8 +243,8 @@ test("verify rejects partial child model resume restoration", async () => {
 	assert.equal(String(optionsResult).includes("resume options"), true);
 
 	const missingResolver = patched.replace(
-		"resolveAgentModel(selectedAgent, parentModel, metadata?.isObserver ? void 0 : metadata?.model, permissionMode)",
-		"resolveAgentModel(selectedAgent, parentModel, void 0, permissionMode)",
+		"resolveAgentModel(getAgentModel(selectedAgent, parentModel), parentModel, metadata?.isObserver ? void 0 : metadata?.model, permissionMode)",
+		"resolveAgentModel(getAgentModel(selectedAgent, parentModel), parentModel, void 0, permissionMode)",
 	);
 	assert.notEqual(missingResolver, patched);
 	const missingResolverAst = parse(missingResolver);

@@ -137,11 +137,32 @@ function changedFileGuard(S) {
   return S;
 }
 
-function rebuildReadState(A) {
-  if (typeof A?.file_path === "string" && A.offset === void 0 && A.limit === void 0) {
-    return A;
+function rebuildReadState(messages) {
+  const reads = new Map();
+  for (const message of messages) {
+    if (message.type === "assistant" && Array.isArray(message.message.content)) {
+      for (const block of message.message.content) {
+        if (block.type !== "tool_use") continue;
+        if (block.name === READ_TOOL_NAME) {
+          let input = normalizeReadInput(block.input)?.input ?? block.input,
+            offset = parseReadNumber(input?.offset),
+            limit = parseReadNumber(input?.limit);
+          if (
+            typeof input?.file_path === "string" &&
+            (offset === void 0 || (typeof offset === "number" && Number.isInteger(offset) && offset >= 0)) &&
+            (limit === void 0 || (typeof limit === "number" && Number.isInteger(limit) && limit >= 1))
+          ) {
+            reads.set(block.id, {
+              filePath: resolvePath(input.file_path),
+              offset,
+              limit,
+            });
+          }
+        }
+      }
+    }
   }
-  return null;
+  return reads;
 }
 
 function Gc(OLD, NEXT) {
@@ -470,6 +491,51 @@ test("read-bat verifies escaped render option labels", async () => {
 	assert.equal(output.includes("\\u00b7 pages "), true);
 	assert.equal(output.includes("\\u00b7 range: "), true);
 	assert.equal(readWithBat.verify(output), true);
+});
+
+test("read-bat keeps partial reads out of rebuilt full-file state", async () => {
+	const output = await getPatchedDelegationOutput();
+
+	assert.match(output, /input\?\.range\s*===\s*void 0/);
+	assert.match(
+		output,
+		/!String\(input\?\.file_path\s*\?\?\s*""\)\.endsWith\("\.output"\)/,
+	);
+
+	const withoutRange = output.replace(
+		/\s*&&\s*input\?\.range\s*===\s*void 0/,
+		"",
+	);
+	assert.notEqual(withoutRange, output);
+	assert.equal(typeof readWithBat.verify(withoutRange), "string");
+
+	const withoutOutputExclusion = output.replace(
+		/\s*&&\s*!String\(input\?\.file_path\s*\?\?\s*""\)\.endsWith\("\.output"\)/,
+		"",
+	);
+	assert.notEqual(withoutOutputExclusion, output);
+	assert.equal(typeof readWithBat.verify(withoutOutputExclusion), "string");
+});
+
+test("read-bat ignores non-state lookalikes when finding the rebuild guard", async () => {
+	const fixture = `${READ_DELEGATION_FIXTURE}
+function readStateDecoy(decoyInput) {
+  if (typeof decoyInput?.file_path === "string") {
+    return {
+      filePath: resolvePath(decoyInput.file_path),
+      offset: decoyInput.offset,
+      limit: decoyInput.limit,
+    };
+  }
+  return null;
+}
+`;
+	const ast = parse(fixture);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(readWithBat.verify(output), true);
+	assert.doesNotMatch(output, /decoyInput\?\.range/);
 });
 
 async function loadPatchedReadRuntimeModule() {

@@ -570,17 +570,18 @@ function clampRequest(H, $) {
 function buildRequest(messages, system, tools, model, maxTokens, betas, cacheEnabled, ttl, cacheEdits, pinnedEdits, skipCacheWrite) {
   betas = [];
   let requestPayload = {
-    model: model,
-    messages: buildCacheBreakpoints(messages, cacheEnabled, ttl, true, cacheEdits, pinnedEdits, skipCacheWrite),
-    system: system,
-    tools: tools,
-    tool_choice: undefined,
-    metadata: {},
-    max_tokens: maxTokens,
-    ...(betas.length > 0 && { betas }),
-  };
+      model: model,
+      messages: buildCacheBreakpoints(messages, cacheEnabled, ttl, true, cacheEdits, pinnedEdits, skipCacheWrite),
+      system: system,
+      tools: tools,
+      tool_choice: undefined,
+      metadata: {},
+      max_tokens: maxTokens,
+      ...(betas.length > 0 && { betas }),
+    },
+    requestEffort = requestPayload.output_config?.effort;
   if (requestPayload.thinking?.type === "enabled") requestPayload.thinking = { ...requestPayload.thinking };
-  return requestPayload;
+  return (requestEffort = typeof requestEffort === "string" ? requestEffort : undefined), requestPayload;
 }
 
 async function sendNonStream(client, request) {
@@ -711,6 +712,33 @@ function buildSpreadRequest(model, messages, system, tools, toolChoice) {
 	);
 });
 
+test("cache-tail-policy does not match a request object that is not the final sequence expression", async () => {
+	const WRONG_SEQUENCE_TAIL_BUILDER = `
+function buildWrongSequenceRequest(model, messages, system, tools, toolChoice) {
+  let requestDecoy = {
+      model,
+      messages,
+      system,
+      tools,
+      tool_choice: toolChoice,
+      metadata: {},
+      max_tokens: 1024,
+    },
+    alternateRequest = { ...requestDecoy };
+  return requestDecoy, alternateRequest;
+}
+`;
+	const ast = parse(CACHE_TAIL_FIXTURE + WRONG_SEQUENCE_TAIL_BUILDER);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		output.includes("Array.isArray(requestDecoy.messages)"),
+		false,
+		"a non-final request identifier must not identify the live request builder",
+	);
+});
+
 test("cache-tail-policy injects the live request builder cap exactly once even with a second request-shaped object", async () => {
 	const SECOND_BUILDER = `
 function buildRequestTwo(messages, system, tools, model, maxTokens) {
@@ -756,11 +784,10 @@ function buildRequestTwo(messages, system, tools, model, maxTokens) {
 });
 
 test("cache-tail-policy caps a live request builder declared as the first of multiple declarators", async () => {
-	// The real bundle's live builder shares its `let` with a trailing
-	// non-request declarator: `let req = {7 keys}, sanitized = req.thinking`
-	// then `return req`. Every other builder fixture is single-declarator, so
-	// this locks that the injector's per-declarator loop + splice-after-stmt
-	// correctly caps a request object that is the first of several declarators.
+	// The live builder shares its `let` with a trailing non-request declarator,
+	// then returns the request as the final expression in a sequence. This locks
+	// that the injector's per-declarator loop + splice-after-stmt correctly caps
+	// a request object that is the first of several declarators.
 	const MULTI_DECL_BUILDER = `
 function buildRequestMulti(messages, system, tools, model, maxTokens) {
   let requestMulti = {
@@ -774,7 +801,7 @@ function buildRequestMulti(messages, system, tools, model, maxTokens) {
   },
     sanitized = requestMulti.thinking;
   if (sanitized !== requestMulti.thinking) requestMulti.thinking = sanitized;
-  return requestMulti;
+  return (sanitized = typeof sanitized === "string" ? sanitized : undefined), requestMulti;
 }
 `;
 	const ast = parse(

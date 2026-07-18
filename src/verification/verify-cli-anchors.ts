@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import { parse } from "../loader.js";
 import { hasStrongClaudeMdDisclaimer } from "../patches/claudemd-strong.js";
 import { allPatches } from "../patches/index.js";
+import { hasReadStateRebuildRangeGuard } from "../patches/read-bat.js";
 import type {
 	AnchorFailure,
 	SignatureExpectation,
@@ -115,15 +116,6 @@ const REQUIRED_REGEX_PATCHED: RegexRule[] = [
 		id: "hook-matcher-agent",
 		pattern: /\*\*Common tool matchers:\*\* [^\n]*\\?`Agent\\?`/,
 		reason: "Missing updated hook matcher tool list with Agent",
-	},
-	// changed-file-guard anchor removed: the readFileState.set() compatibility
-	// markers (offset: 1, limit: 1 for partial reads) already cause the
-	// offset/limit guard to fire, making the explicit range check redundant.
-	{
-		id: "read-state-guard",
-		pattern:
-			/if\s*\(\s*typeof\s+[A-Za-z_$][A-Za-z0-9_$]*\??\.file_path\s*===\s*"string"\s*&&\s*[A-Za-z_$][A-Za-z0-9_$]*\??\.offset\s*===\s*void 0\s*&&\s*[A-Za-z_$][A-Za-z0-9_$]*\??\.limit\s*===\s*void 0\s*&&\s*[A-Za-z_$][A-Za-z0-9_$]*\??\.range\s*===\s*void 0[\s\S]{0,260}\)/,
-		reason: "Missing range-aware transcript read-state guard",
 	},
 ];
 
@@ -243,6 +235,34 @@ function checkReadRangeMarker(
 			"patched",
 			"read-bat-range-marker",
 			"Missing read-bat normalized range usage (legacy or native marker)",
+		);
+	}
+	return 1;
+}
+
+function checkReadStateGuard(
+	patchedCode: string,
+	failures: AnchorFailure[],
+): number {
+	let ast: ReturnType<typeof parse>;
+	try {
+		ast = parse(patchedCode);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		pushFailure(
+			failures,
+			"patched",
+			"read-state-guard",
+			`Could not parse patched cli.js while checking the read-state guard: ${reason}`,
+		);
+		return 1;
+	}
+	if (!hasReadStateRebuildRangeGuard(ast)) {
+		pushFailure(
+			failures,
+			"patched",
+			"read-state-guard",
+			"Missing range-aware transcript read-state guard",
 		);
 	}
 	return 1;
@@ -509,6 +529,7 @@ export async function verifyCliAnchors(
 	checksRun += checkRequiredRegex(patchedCode, "patched", failures);
 	checksRun += checkForbiddenRegex(patchedCode, "patched", failures);
 	checksRun += checkReadRangeMarker(patchedCode, failures);
+	checksRun += checkReadStateGuard(patchedCode, failures);
 	checksRun += checkClaudeMdMarkers(patchedCode, failures);
 	checksRun += checkWorkflowSubagentRouting(patchedCode, failures);
 	checksRun += checkPromptPolicyContract(patchedCode, failures);

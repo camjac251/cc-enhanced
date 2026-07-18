@@ -7,13 +7,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
-  <img src="https://img.shields.io/badge/Patches-39-orange.svg" alt="39 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.211-8A2BE2.svg" alt="Tested against Claude Code 2.1.211">
+  <img src="https://img.shields.io/badge/Patches-41-orange.svg" alt="41 Patches">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.214-8A2BE2.svg" alt="Tested against Claude Code 2.1.214">
 </p>
 
 ---
 
-cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 39 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 41 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
 
 Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting and LSP fan-out), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read and batched `edits[]` on Edit), and replace prompt fragments that steer the model toward better shell tooling.
 
@@ -104,6 +104,7 @@ Changes to built-in tools (Read, Edit, Bash, LSP, Task, MCP).
 | [`taskout-ext`](src/patches/taskout-ext.ts) | TaskOutput response exposes structured `<output_file>` and `<output_filename>` fields, and the prompt instructs the model to tail the file first (`range "-500:"`) and chunk forward rather than re-reading the whole transcript. |
 | [`lsp-multi-server`](src/patches/lsp-multi-server.ts) | File lifecycle notifications (`didOpen`/`didChange`/`didSave`) fan out to every language server registered for a file extension. Stacked setups (TypeScript + ESLint + Tailwind) stay in sync. Also routes by filename when the extension yields no server: `getServerForFile` and the lifecycle functions fall back to per-server `filenames` (exact basename) and `filenamePatterns` (glob) so extensionless files like `Dockerfile` and patterns like `Dockerfile.*` reach a server, and `didOpen` uses the matched filename/glob languageId instead of `plaintext`. The primary `[0]` navigation path is preserved. |
 | [`lsp-filename-schema`](src/patches/lsp-filename-schema.ts) | Widens the strict per-server LSP plugin-manifest schema to accept two optional fields, `filenames` and `filenamePatterns` (each `record(name, languageId)`), so a plugin can declare filename/glob matches alongside `extensionToLanguage`. The runtime routing that consumes them lives in `lsp-multi-server`. |
+| [`workflow-inline-allow`](src/patches/workflow-inline-allow.ts) | `CLAUDE_CODE_ALLOW_DYNAMIC_WORKFLOWS=1` explicitly opts validated inline Workflow scripts out of the final interactive review prompt. The patch keeps named and path-backed workflows on the normal review path and revalidates the exact post-hook inline input before allowing it. |
 
 ### System
 
@@ -143,7 +144,8 @@ Which built-in agents and commands are exposed.
 |-------|--------|
 | [`agents-off`](src/patches/agents-off.ts) | Removes `statusline-setup` and `claude-code-guide` from the built-in agent registry. Those flows move to user skills. |
 | [`commands-off`](src/patches/commands-off.ts) | Removes the `/security-review` built-in slash command, leaving `/review` as the single review entry point and freeing the name for local skills to shadow. |
-| [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | Agent model overrides accept a trimmed, nonempty built-in alias, `inherit`, or full model ID exposed by the active provider instead of being limited to the four built-in aliases. The existing model resolver keeps its configured `availableModels` enforcement and fallback behavior. Explicit one-off overrides are persisted in the existing agent metadata sidecar and restored during resume; omitted overrides and `inherit` remain dynamic, and forks still inherit the parent. When `CLAUDE_CODE_SUBAGENT_MODEL` is set globally, Task rows also omit the redundant dimmed `model: ...` label. |
+| [`model-aliases`](src/patches/model-aliases.ts) | `CLAUDE_CODE_MODEL_ALIASES` defines case-insensitive aliases for full provider model IDs across main-model selection, Agent and Workflow calls, explicit teammate models, and resume. The strict JSON map is one-hop, cannot replace native aliases or `inherit`, rejects `[1m]` names and targets, and still passes resolved IDs through stock normalization and `availableModels` enforcement. |
+| [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | Agent model overrides accept a trimmed, nonempty built-in alias, `inherit`, or a full model ID exposed by the active provider instead of being limited to the four built-in aliases. Explicit one-off overrides are persisted and resolved again during resume. Forks bypass the global subagent override at launch and resume so they retain the parent model and context window. When `CLAUDE_CODE_SUBAGENT_MODEL` is set globally, Task rows also omit the redundant dimmed `model: ...` label. |
 | [`skill-paths-invoke`](src/patches/skill-paths-invoke.ts) | Keeps `paths`-scoped skills visible to model invocation while preserving the stored path metadata and explicit model-invocation opt-outs. Skill-cache resets keep the activation guard, so an already-activated path skill is not re-bucketed and re-activated after every skills reload (which otherwise loops into per-cycle registry reloads). |
 | [`skill-global-paths`](src/patches/skill-global-paths.ts) | Adds a `global-paths` skill frontmatter field whose globs path-activate a skill when a matching file is touched anywhere on disk, not only inside the project. Uses the same gitignore syntax (including `!` exclusions) as `paths`, is purely additive, and is ignored by unpatched builds. |
 
@@ -191,6 +193,8 @@ Terminal interface polish.
 | `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS` | [`limits`](src/patches/limits.ts) | 50000 |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | [`model-context-metadata`](src/patches/model-context-metadata.ts) | unset |
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | [`model-context-metadata`](src/patches/model-context-metadata.ts) | fallback for custom models without valid discovered metadata |
+| `CLAUDE_CODE_ALLOW_DYNAMIC_WORKFLOWS` | [`workflow-inline-allow`](src/patches/workflow-inline-allow.ts) | unset; set to `1` only for a trusted orchestrator |
+| `CLAUDE_CODE_MODEL_ALIASES` | [`model-aliases`](src/patches/model-aliases.ts) | unset; JSON object mapping aliases to provider model IDs |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | unset |
 
 `file-link-targets` keeps stock file labels but rewrites WSL absolute-path hyperlink targets so Ctrl-clicks in Windows Terminal resolve outside WSL. The default `wsl-file` mode emits `file://wsl.localhost/<distro>/...`. Set `CLAUDE_CODE_FILE_LINK_MODE=vscode` for `vscode://file...`, `vscode-remote` for VS Code Remote WSL URLs, `zed` for `zed://file...`, `file` for explicit file URLs, or `off`/`vanilla` to keep stock `file:///home/...` links. `CLAUDE_CODE_FILE_LINK_SCHEME` accepts a custom URI scheme when `CLAUDE_CODE_FILE_LINK_MODE` is not one of the built-ins.
@@ -198,6 +202,12 @@ Terminal interface polish.
 `autoDreamEnabled` is a Claude Code setting rather than an env var. When it is explicitly `true`, `session-mem` lets auto-dream run even if the server-side availability flag is off.
 
 When gateway model discovery is enabled, Claude Code manages its model-capability cache under its configured cache directory. Do not edit that cache directly. Matching positive safe-integer `max_input_tokens` values take precedence over `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; the environment value remains the startup, offline, and unknown-model fallback.
+
+`CLAUDE_CODE_MODEL_ALIASES` is alias indirection, not an allowlist bypass. Its value is a JSON object such as `{"sol":"provider/gpt-5.6-sol"}`. Keys are trimmed and matched case-insensitively. The map fails fast when it is malformed, has distinct keys that collide after normalization, replaces a native alias or `inherit`, includes `[1m]`, uses an empty or non-string target, or chains one alias to another. Exact duplicate JSON keys follow normal `JSON.parse` last-value semantics. Each resolved target still goes through stock model normalization and must be admitted by `availableModels`. Aliases work with `--model`, Agent `model`, Workflow `agent({model})`, agent frontmatter, resume, and explicit teammate selection. They do not add synthetic rows to `/model`; provider discovery still owns that menu.
+
+Alias resolution is runtime plumbing, not a routing policy. A launch-scoped system prompt can teach an orchestrator when to select a configured alias without changing normal launches that use the same patched binary. Forks continue to inherit the parent model, and `CLAUDE_CODE_SUBAGENT_MODEL` is unnecessary for per-call alias selection.
+
+`CLAUDE_CODE_ALLOW_DYNAMIC_WORKFLOWS=1` is a separate, explicit permission opt-in for noninteractive or trusted orchestration sessions. It changes only the final review decision for an inline `Workflow({script})` call. The stock workflow enablement, managed-policy, syntax, determinism, and resume checks still run first. The exact post-hook inline input is revalidated immediately before it is allowed. Named or path-backed workflows and sessions without the exact value `1` keep the normal permission-rule and review flow. Inline workflows can launch multiple agents and consume significant quota, so do not set this globally.
 
 Do not set `DISABLE_TELEMETRY`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, or `DISABLE_GROWTHBOOK`. They disable feature-flag evaluation and the server-side flags that depend on it, including features this patcher relies on and the upstream Remote Control surface. Use the individual `DISABLE_ERROR_REPORTING`, `DISABLE_AUTOUPDATER`, and `DISABLE_BUG_COMMAND` switches instead.
 

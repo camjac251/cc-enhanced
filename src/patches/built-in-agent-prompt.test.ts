@@ -426,7 +426,7 @@ test("built-in-agent-prompt verify rejects a surviving tail -50 corpus example",
 });
 
 const WORKER_AGENT_FIXTURE =
-	"return `You are a worker agent executing a task assigned by the coordinator.\n\n## Scope\n\n- If you changed any files, commit your changes when done. Use a clear, descriptive commit message. Only stage files you actually changed \\u2014 never use \\`git add .\\` or \\`git add -A\\`. Report the commit hash in your summary.`;";
+	'return `You are a worker agent executing a task assigned by the coordinator.\n\n## Scope\n\n- If you changed any files, commit your changes when done. Use a clear, descriptive commit message. Only stage files you actually changed \\u2014 never use \\`git add .\\` or \\`git add -A\\`. Report the commit hash in your summary.\n\nGood summary: "Added Redis cache implementation. Tests pass, typecheck clean. Committed abc123."`;';
 
 const WORKER_AGENT_ROUTING_ONLY_FIXTURE =
 	"return `You are a worker agent executing a task assigned by the coordinator. Report back to the coordinator.`;";
@@ -508,6 +508,11 @@ test("built-in-agent-prompt injects modern routing into the worker agent prompt"
 		output.includes(
 			"Do not commit unless the coordinator explicitly asked you to commit.",
 		),
+		true,
+	);
+	assert.equal(output.includes("Committed abc123"), false);
+	assert.equal(
+		output.includes("Changed files: src/cache.ts and src/cache.test.ts."),
 		true,
 	);
 });

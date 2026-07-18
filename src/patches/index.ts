@@ -17,6 +17,7 @@ export { lspFilenameSchema } from "./lsp-filename-schema.js";
 export { lspMultiServer } from "./lsp-multi-server.js";
 export { mcpServerName } from "./mcp-server-name.js";
 export { memoryPromptSoften } from "./memory-prompt-soften.js";
+export { modelAliases } from "./model-aliases.js";
 export { modelContextMetadata } from "./model-context-metadata.js";
 export { disableAutoupdater } from "./no-autoupdate.js";
 export { noCollapse } from "./no-collapse.js";
@@ -39,6 +40,7 @@ export { tabQueue } from "./tab-queue.js";
 export { taskOutputExt } from "./taskout-ext.js";
 export { todo } from "./todo-use.js";
 export { disableTools } from "./tools-off.js";
+export { workflowInlineAllow } from "./workflow-inline-allow.js";
 
 import type { Patch } from "../types.js";
 // Re-export all patches as an array for easy iteration
@@ -59,6 +61,7 @@ import { lspFilenameSchema } from "./lsp-filename-schema.js";
 import { lspMultiServer } from "./lsp-multi-server.js";
 import { mcpServerName } from "./mcp-server-name.js";
 import { memoryPromptSoften } from "./memory-prompt-soften.js";
+import { modelAliases } from "./model-aliases.js";
 import { modelContextMetadata } from "./model-context-metadata.js";
 import { disableAutoupdater } from "./no-autoupdate.js";
 import { noCollapse } from "./no-collapse.js";
@@ -81,6 +84,7 @@ import { tabQueue } from "./tab-queue.js";
 import { taskOutputExt } from "./taskout-ext.js";
 import { todo } from "./todo-use.js";
 import { disableTools } from "./tools-off.js";
+import { workflowInlineAllow } from "./workflow-inline-allow.js";
 
 function parsePatchTagList(value: string | undefined): Set<string> | null {
 	if (!value) return null;
@@ -126,7 +130,9 @@ const basePatches: Patch[] = [
 	skillListingUi,
 	agentListingUi,
 	subagentSystemPrompt,
+	modelAliases,
 	subagentModelTag,
+	workflowInlineAllow,
 	tabQueue,
 	sessionMemory,
 	modelContextMetadata,

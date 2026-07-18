@@ -1079,6 +1079,16 @@ function isMainRequestObjectExpression(obj: t.ObjectExpression): boolean {
 	]);
 }
 
+function isRequestBuilderSequenceReturn(
+	stmt: t.Statement,
+	requestName: string,
+): stmt is t.ReturnStatement {
+	if (!t.isReturnStatement(stmt)) return false;
+	if (!t.isSequenceExpression(stmt.argument)) return false;
+	const returnedExpression = stmt.argument.expressions.at(-1);
+	return t.isIdentifier(returnedExpression, { name: requestName });
+}
+
 function hasCacheControlCapDeclaration(body: t.Statement[]): boolean {
 	return body.some(
 		(stmt) =>
@@ -1339,10 +1349,8 @@ function createCacheControlBlockCapRequestBuilderInjector(): Visitor {
 					const obj = getObjectExpressionFromExpression(decl.init);
 					if (!obj || !isMainRequestObjectExpression(obj)) continue;
 					if (
-						!body.some(
-							(bodyStmt) =>
-								t.isReturnStatement(bodyStmt) &&
-								t.isIdentifier(bodyStmt.argument, { name: requestName }),
+						!body.some((bodyStmt) =>
+							isRequestBuilderSequenceReturn(bodyStmt, requestName),
 						)
 					) {
 						continue;
@@ -1775,9 +1783,17 @@ function verifyCacheControlBlockCap(
 						for (const decl of stmt.declarations) {
 							if (!t.isIdentifier(decl.id)) continue;
 							if (!t.isExpression(decl.init)) continue;
+							const requestName = decl.id.name;
 							const obj = getObjectExpressionFromExpression(decl.init);
 							if (!obj || !isMainRequestObjectExpression(obj)) continue;
-							requestBuilderVarName = decl.id.name;
+							if (
+								!path.node.body.body.some((bodyStmt) =>
+									isRequestBuilderSequenceReturn(bodyStmt, requestName),
+								)
+							) {
+								continue;
+							}
+							requestBuilderVarName = requestName;
 							break;
 						}
 					}

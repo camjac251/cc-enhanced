@@ -262,6 +262,12 @@ const WORKER_AGENT_AUTO_COMMIT_SOURCE =
 const WORKER_AGENT_AUTO_COMMIT_REPLACEMENT =
 	"- If you changed files, report the changed paths and verification results. Do not commit unless the coordinator explicitly asked you to commit.";
 
+const WORKER_AGENT_COMMIT_SUMMARY_SOURCE =
+	'Good summary: "Added Redis cache implementation. Tests pass, typecheck clean. Committed abc123."';
+
+const WORKER_AGENT_COMMIT_SUMMARY_REPLACEMENT =
+	'Good summary: "Added Redis cache implementation. Tests pass, typecheck clean. Changed files: src/cache.ts and src/cache.test.ts."';
+
 const CLAUDE_NOISY_INVESTIGATION_SOURCE =
 	"For noisy investigation (grep sweeps, log trawls, broad search), spawn a subagent and keep only the findings here.";
 
@@ -531,6 +537,10 @@ export const builtInAgentPrompt: Patch = {
 			escapeNonAscii(WORKER_AGENT_AUTO_COMMIT_SOURCE),
 			WORKER_AGENT_AUTO_COMMIT_REPLACEMENT,
 		);
+		result = result.replaceAll(
+			WORKER_AGENT_COMMIT_SUMMARY_SOURCE,
+			WORKER_AGENT_COMMIT_SUMMARY_REPLACEMENT,
+		);
 		for (const anchor of SUBAGENT_ROUTING_ANCHORS) {
 			const injected = subagentRoutingInjection(anchor);
 			if (!result.includes(injected)) {
@@ -764,6 +774,12 @@ export const builtInAgentPrompt: Patch = {
 			"worker no-auto-commit guidance",
 		);
 		if (workerCommitResult !== true) return workerCommitResult;
+		const workerCommitSummaryResult = verifyExactReplacement(
+			WORKER_AGENT_COMMIT_SUMMARY_SOURCE,
+			WORKER_AGENT_COMMIT_SUMMARY_REPLACEMENT,
+			"worker no-auto-commit summary example",
+		);
+		if (workerCommitSummaryResult !== true) return workerCommitSummaryResult;
 
 		for (const anchor of SUBAGENT_ROUTING_ANCHORS) {
 			const anchorCount = countOccurrences(code, anchor);

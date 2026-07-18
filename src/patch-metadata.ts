@@ -141,10 +141,20 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Disable collapse",
 		group: "UX",
 	},
+	"model-aliases": {
+		tag: "model-aliases",
+		label: "Configured model aliases",
+		group: "Agent",
+	},
 	"subagent-model-tag": {
 		tag: "subagent-model-tag",
 		label: "Subagent model selection",
 		group: "Agent",
+	},
+	"workflow-inline-allow": {
+		tag: "workflow-inline-allow",
+		label: "Workflow inline permission",
+		group: "Tooling",
 	},
 	"subagent-system-prompt": {
 		tag: "subagent-system-prompt",

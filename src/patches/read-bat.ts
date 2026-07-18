@@ -615,22 +615,6 @@ function flattenLogicalAndTerms(expr: t.Expression): t.Expression[] {
 	return [expr];
 }
 
-function isVoidZeroEqualsMemberComparison(
-	expr: t.Expression,
-	propertyName: string,
-): boolean {
-	if (!t.isBinaryExpression(expr, { operator: "===" })) return false;
-	if (!isVoidZeroExpression(expr.right)) return false;
-	const left = expr.left;
-	if (t.isMemberExpression(left)) {
-		return !left.computed && isMemberPropertyName(left, propertyName);
-	}
-	if (t.isOptionalMemberExpression(left)) {
-		return !left.computed && isMemberPropertyName(left, propertyName);
-	}
-	return false;
-}
-
 function getObjectPatternBindingName(
 	pattern: t.ObjectPattern,
 	keyName: string,
@@ -890,7 +874,101 @@ function hasReadFileStateCompatMarkers(ast: t.File): {
 	return { hasRange, hasOffsetCompat, hasLimitCompat };
 }
 
-function isImplicitOutputTailExclusion(term: t.Expression): boolean {
+function nodeContains(
+	node: t.Node | null | undefined,
+	predicate: (value: t.Node) => boolean,
+): boolean {
+	if (!node) return false;
+	if (predicate(node)) return true;
+	let found = false;
+	t.traverseFast(node, (child) => {
+		if (!found && predicate(child)) found = true;
+	});
+	return found;
+}
+
+function getTypeofStringMemberObjectName(
+	expr: t.Expression,
+	propertyName: string,
+): string | null {
+	if (
+		!t.isBinaryExpression(expr, { operator: "===" }) ||
+		!t.isStringLiteral(expr.right, { value: "string" }) ||
+		!t.isUnaryExpression(expr.left, { operator: "typeof" })
+	) {
+		return null;
+	}
+	const member = expr.left.argument;
+	if (
+		(t.isOptionalMemberExpression(member) || t.isMemberExpression(member)) &&
+		!member.computed &&
+		isMemberPropertyName(member, propertyName) &&
+		t.isIdentifier(member.object)
+	) {
+		return member.object.name;
+	}
+	return null;
+}
+
+function getVoidZeroMemberObjectName(
+	expr: t.Expression,
+	propertyName: string,
+): string | null {
+	if (
+		!t.isBinaryExpression(expr, { operator: "===" }) ||
+		!isVoidZeroExpression(expr.right)
+	) {
+		return null;
+	}
+	const member = expr.left;
+	if (
+		(t.isOptionalMemberExpression(member) || t.isMemberExpression(member)) &&
+		!member.computed &&
+		isMemberPropertyName(member, propertyName) &&
+		t.isIdentifier(member.object)
+	) {
+		return member.object.name;
+	}
+	return null;
+}
+
+function containsMemberForObject(
+	node: t.Node,
+	objectName: string,
+	propertyName: string,
+): boolean {
+	return nodeContains(
+		node,
+		(child) =>
+			(t.isOptionalMemberExpression(child) || t.isMemberExpression(child)) &&
+			!child.computed &&
+			isMemberPropertyName(child, propertyName) &&
+			t.isIdentifier(child.object, { name: objectName }),
+	);
+}
+
+function isReadStateRebuildSet(node: t.Node, inputName: string): boolean {
+	if (!t.isCallExpression(node) || !t.isMemberExpression(node.callee)) {
+		return false;
+	}
+	if (!isMemberPropertyName(node.callee, "set")) return false;
+	const state = node.arguments[1];
+	if (!t.isObjectExpression(state)) return false;
+	const filePath = getObjectPropertyByName(state, "filePath");
+	if (
+		!filePath ||
+		!getObjectPropertyByName(state, "offset") ||
+		!getObjectPropertyByName(state, "limit")
+	) {
+		return false;
+	}
+	return containsMemberForObject(filePath.value, inputName, "file_path");
+}
+
+function isImplicitOutputTailExclusion(
+	term: t.Expression,
+	inputName: string,
+): boolean {
 	if (!t.isUnaryExpression(term, { operator: "!" })) return false;
 	const call = term.argument;
 	if (!t.isCallExpression(call)) return false;
@@ -905,61 +983,65 @@ function isImplicitOutputTailExclusion(term: t.Expression): boolean {
 	if (!t.isCallExpression(call.callee.object)) return false;
 	if (!t.isIdentifier(call.callee.object.callee, { name: "String" }))
 		return false;
-	return true;
+	const source = call.callee.object.arguments[0];
+	return (
+		t.isExpression(source) &&
+		containsMemberForObject(source, inputName, "file_path")
+	);
 }
 
-function hasReadStateRebuildRangeGuard(ast: t.File): boolean {
-	let found = false;
+interface ReadStateRebuildCandidate {
+	path: NodePath<t.IfStatement>;
+	inputName: string;
+	state: "patched" | "unpatched" | "other";
+}
+
+function classifyReadStateRebuildGuard(
+	path: NodePath<t.IfStatement>,
+): ReadStateRebuildCandidate | null {
+	if (!t.isExpression(path.node.test)) return null;
+	const terms = flattenLogicalAndTerms(path.node.test);
+	const inputNames = new Set(
+		terms
+			.map((term) => getTypeofStringMemberObjectName(term, "file_path"))
+			.filter((value): value is string => value !== null),
+	);
+	if (inputNames.size !== 1) return null;
+	const inputName = [...inputNames][0];
+	if (
+		!nodeContains(path.node.consequent, (node) =>
+			isReadStateRebuildSet(node, inputName),
+		)
+	) {
+		return null;
+	}
+	const hasRangeVoid = terms.some(
+		(term) => getVoidZeroMemberObjectName(term, "range") === inputName,
+	);
+	const hasOutputExclusion = terms.some((term) =>
+		isImplicitOutputTailExclusion(term, inputName),
+	);
+	return {
+		path,
+		inputName,
+		state:
+			hasRangeVoid && hasOutputExclusion
+				? "patched"
+				: !hasRangeVoid && !hasOutputExclusion
+					? "unpatched"
+					: "other",
+	};
+}
+
+export function hasReadStateRebuildRangeGuard(ast: t.File): boolean {
+	const candidates: ReadStateRebuildCandidate[] = [];
 	traverse(ast, {
 		IfStatement(path) {
-			if (!t.isExpression(path.node.test)) return;
-			const terms = flattenLogicalAndTerms(path.node.test);
-			const hasFilePathTruthy = terms.some((term) => {
-				// Upstream shape: `typeof <obj>?.file_path === "string"`.
-				if (
-					!t.isBinaryExpression(term, { operator: "===" }) ||
-					!t.isStringLiteral(term.right, { value: "string" }) ||
-					!t.isUnaryExpression(term.left, { operator: "typeof" })
-				) {
-					return false;
-				}
-				const member = term.left.argument;
-				if (
-					(t.isOptionalMemberExpression(member) ||
-						t.isMemberExpression(member)) &&
-					!member.computed &&
-					isMemberPropertyName(member, "file_path")
-				) {
-					return true;
-				}
-				return false;
-			});
-			const hasOffsetVoid = terms.some((term) =>
-				isVoidZeroEqualsMemberComparison(term, "offset"),
-			);
-			const hasLimitVoid = terms.some((term) =>
-				isVoidZeroEqualsMemberComparison(term, "limit"),
-			);
-			const hasRangeVoid = terms.some((term) =>
-				isVoidZeroEqualsMemberComparison(term, "range"),
-			);
-			const hasOutputExclusion = terms.some((term) =>
-				isImplicitOutputTailExclusion(term),
-			);
-
-			if (
-				hasFilePathTruthy &&
-				hasOffsetVoid &&
-				hasLimitVoid &&
-				hasRangeVoid &&
-				hasOutputExclusion
-			) {
-				found = true;
-				path.stop();
-			}
+			const candidate = classifyReadStateRebuildGuard(path);
+			if (candidate) candidates.push(candidate);
 		},
 	});
-	return found;
+	return candidates.length === 1 && candidates[0].state === "patched";
 }
 
 function hasChangedSnippetCap8000(ast: t.File): boolean {
@@ -1714,60 +1796,6 @@ export const readWithBat: Patch = {
 							node: t.Expression | null | undefined,
 						): t.Expression | null | undefined =>
 							t.isAwaitExpression(node) ? node.argument : node;
-						const getTruthyMemberObjectName = (
-							expr: t.Expression,
-							propName: string,
-						): string | null => {
-							// Upstream shape: `typeof <obj>?.<prop> === "string"`.
-							if (
-								!t.isBinaryExpression(expr, { operator: "===" }) ||
-								!t.isStringLiteral(expr.right, { value: "string" }) ||
-								!t.isUnaryExpression(expr.left, { operator: "typeof" })
-							) {
-								return null;
-							}
-							const member = expr.left.argument;
-							if (
-								(t.isOptionalMemberExpression(member) ||
-									t.isMemberExpression(member)) &&
-								!member.computed &&
-								isMemberPropertyName(member, propName) &&
-								t.isIdentifier(member.object)
-							) {
-								return member.object.name;
-							}
-							return null;
-						};
-						const getVoidZeroEqualsMemberObjectName = (
-							expr: t.Expression,
-							propName: string,
-						): string | null => {
-							if (!t.isBinaryExpression(expr, { operator: "===" })) return null;
-							if (
-								!t.isUnaryExpression(expr.right, { operator: "void" }) ||
-								!t.isNumericLiteral(expr.right.argument, { value: 0 })
-							) {
-								return null;
-							}
-							const left = expr.left;
-							if (
-								t.isOptionalMemberExpression(left) &&
-								!left.computed &&
-								isMemberPropertyName(left, propName) &&
-								t.isIdentifier(left.object)
-							) {
-								return left.object.name;
-							}
-							if (
-								t.isMemberExpression(left) &&
-								!left.computed &&
-								isMemberPropertyName(left, propName) &&
-								t.isIdentifier(left.object)
-							) {
-								return left.object.name;
-							}
-							return null;
-						};
 						const flattenLogicalAndTerms = (
 							expr: t.Expression,
 						): t.Expression[] => {
@@ -3504,93 +3532,68 @@ export const readWithBat: Patch = {
 						// The readFileState.set() compatibility markers (offset: 1, limit: 1
 						// for partial reads) already cause the offset/limit guard to fire.
 
-						// === 7. Harden read-state rebuild on resume/compaction: range reads are partial ===
-						// p8H reconstructs readFileState from transcript tool_use/tool_result
-						// pairs. It only checks offset/limit, so add range===void 0 so range
-						// reads are treated like partial reads and do not get rebuilt as full
-						// snapshots.
-						let patchedHistoryReadGuard = false;
+						// === 7. Keep partial range reads out of reconstructed full-file state ===
+						const historyReadCandidates: ReadStateRebuildCandidate[] = [];
 						traverse(ast, {
 							IfStatement(path) {
-								if (patchedHistoryReadGuard) return;
-								const { test } = path.node;
-								if (!t.isExpression(test)) return;
-								if (!t.isLogicalExpression(test, { operator: "&&" })) return;
-
-								const terms = flattenLogicalAndTerms(test as t.Expression);
-								let filePathObj: string | null = null;
-								let offsetObj: string | null = null;
-								let limitObj: string | null = null;
-								let hasRangeCheck = false;
-
-								for (const term of terms) {
-									const fileObj = getTruthyMemberObjectName(term, "file_path");
-									if (fileObj) filePathObj = filePathObj ?? fileObj;
-
-									const offObj = getVoidZeroEqualsMemberObjectName(
-										term,
-										"offset",
-									);
-									if (offObj) offsetObj = offsetObj ?? offObj;
-
-									const limObj = getVoidZeroEqualsMemberObjectName(
-										term,
-										"limit",
-									);
-									if (limObj) limitObj = limitObj ?? limObj;
-
-									if (getVoidZeroEqualsMemberObjectName(term, "range")) {
-										hasRangeCheck = true;
-									}
-								}
-
-								if (hasRangeCheck) return;
-								if (!filePathObj || !offsetObj || !limitObj) return;
-								if (!(filePathObj === offsetObj && offsetObj === limitObj))
-									return;
-
+								const candidate = classifyReadStateRebuildGuard(path);
+								if (candidate) historyReadCandidates.push(candidate);
+							},
+						});
+						let patchedHistoryReadGuard = false;
+						if (historyReadCandidates.length === 1) {
+							const candidate = historyReadCandidates[0];
+							if (candidate.state === "unpatched") {
 								const rangeCheck = t.binaryExpression(
 									"===",
 									t.optionalMemberExpression(
-										t.identifier(filePathObj),
+										t.identifier(candidate.inputName),
 										t.identifier("range"),
 										false,
 										true,
 									),
 									t.unaryExpression("void", t.numericLiteral(0)),
 								);
-								const outputPathExpr = t.optionalMemberExpression(
-									t.identifier(filePathObj),
+								const outputPath = t.optionalMemberExpression(
+									t.identifier(candidate.inputName),
 									t.identifier("file_path"),
 									false,
 									true,
 								);
-								const isImplicitOutputTail = t.callExpression(
-									t.memberExpression(
-										t.callExpression(t.identifier("String"), [
-											t.logicalExpression(
-												"??",
-												t.cloneNode(outputPathExpr, true),
-												t.stringLiteral(""),
-											),
-										]),
-										t.identifier("endsWith"),
+								const outputTailCheck = t.unaryExpression(
+									"!",
+									t.callExpression(
+										t.memberExpression(
+											t.callExpression(t.identifier("String"), [
+												t.logicalExpression(
+													"??",
+													t.cloneNode(outputPath, true),
+													t.stringLiteral(""),
+												),
+											]),
+											t.identifier("endsWith"),
+										),
+										[t.stringLiteral(".output")],
 									),
-									[t.stringLiteral(".output")],
 								);
-								path.node.test = t.logicalExpression(
+								candidate.path.node.test = t.logicalExpression(
 									"&&",
 									t.logicalExpression(
 										"&&",
-										t.cloneNode(test, true) as t.Expression,
+										t.cloneNode(candidate.path.node.test, true),
 										rangeCheck,
 									),
-									t.unaryExpression("!", isImplicitOutputTail),
+									outputTailCheck,
 								);
-								patchedHistoryReadGuard = true;
-								path.stop();
-							},
-						});
+								candidate.state = "patched";
+							}
+							patchedHistoryReadGuard = candidate.state === "patched";
+						}
+						if (!patchedHistoryReadGuard) {
+							console.warn(
+								`Read with bat: Could not patch unique read-state reconstruction guard (${historyReadCandidates.length} candidates)`,
+							);
+						}
 
 						// === 8. Reduce changed-file attachment token spikes ===
 						// The changed-file handler computes diffs for edited_text_file attachments.
