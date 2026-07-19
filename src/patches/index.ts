@@ -3,6 +3,7 @@
 export { agentListingUi } from "./agent-listing-ui.js";
 export { agentTools } from "./agents-off.js";
 export { bashPrompt } from "./bash-prompt.js";
+export { billingLabel } from "./billing-label.js";
 export { builtInAgentPrompt } from "./built-in-agent-prompt.js";
 export { cacheTailPolicy } from "./cache-tail-policy.js";
 export { claudeMdSystemPrompt } from "./claudemd-strong.js";
@@ -46,6 +47,7 @@ import type { Patch } from "../types.js";
 import { agentListingUi } from "./agent-listing-ui.js";
 import { agentTools } from "./agents-off.js";
 import { bashPrompt } from "./bash-prompt.js";
+import { billingLabel } from "./billing-label.js";
 import { builtInAgentPrompt } from "./built-in-agent-prompt.js";
 import { cacheTailPolicy } from "./cache-tail-policy.js";
 import { claudeMdSystemPrompt } from "./claudemd-strong.js";
@@ -111,6 +113,7 @@ const basePatches: Patch[] = [
 	effortStack,
 	featureFlags,
 	fileLinkTargets,
+	billingLabel,
 	imageLimits,
 	planDiffUi,
 	planCompactExecute,

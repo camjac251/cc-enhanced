@@ -7,13 +7,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
-  <img src="https://img.shields.io/badge/Patches-40-orange.svg" alt="40 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.214-8A2BE2.svg" alt="Tested against Claude Code 2.1.214">
+  <img src="https://img.shields.io/badge/Patches-41-orange.svg" alt="41 Patches">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.215-8A2BE2.svg" alt="Tested against Claude Code 2.1.215">
 </p>
 
 ---
 
-cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 40 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 41 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
 
 Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting and LSP fan-out), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read and batched `edits[]` on Edit), and replace prompt fragments that steer the model toward better shell tooling.
 
@@ -154,6 +154,7 @@ Terminal interface polish.
 
 | Patch | Effect |
 |-------|--------|
+| [`billing-label`](src/patches/billing-label.ts) | `CLAUDE_CODE_BILLING_LABEL` replaces only the generic `API Usage Billing` status label when the client cannot identify its upstream account type, which is useful for subscription-backed local gateways. The value is trimmed, line breaks are normalized, and display text is capped at 64 characters. With the variable unset or blank, stock labeling is unchanged. This is display-only and does not alter authentication, routing, account selection, or billing. |
 | [`file-link-targets`](src/patches/file-link-targets.ts) | File-path hyperlinks keep the stock visible label but point WSL paths at Windows-readable targets, so Ctrl-clicks in Windows Terminal can open files instead of dead `file:///home/...` URLs. Default mode emits `file://wsl.localhost/<distro>/...`; env modes support VS Code (`vscode://file...`), VS Code Remote WSL (`vscode://vscode-remote/wsl+...`), Zed-style custom URLs, custom schemes, and an opt-out back to stock links. |
 | [`plan-diff-ui`](src/patches/plan-diff-ui.ts) | Plan mode shows the real diff for plan-backed Edit and Write instead of "Updated plan" / "Reading Plan" placeholders, and stops hiding the preview hint or the tool-use row for plan-backed file writes. |
 | [`plan-compact-execute`](src/patches/plan-compact-execute.ts) | Plan approval adds a non-bypass "compact context and execute" path that summarizes the current conversation before submitting the approved implementation prompt. The approval selector expands to the option count when space allows, so the extra choice does not hide normal actions. |
@@ -186,6 +187,7 @@ Terminal interface polish.
 | Variable | Consumed by | Default |
 |----------|-------------|---------|
 | `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE` | [`sys-prompt-file`](src/patches/sys-prompt-file.ts) | `/etc/claude-code/system-prompt.md` |
+| `CLAUDE_CODE_BILLING_LABEL` | [`billing-label`](src/patches/billing-label.ts) | unset; stock `API Usage Billing` fallback |
 | `CLAUDE_CODE_FILE_LINK_MODE` | [`file-link-targets`](src/patches/file-link-targets.ts) | `wsl-file` |
 | `CLAUDE_CODE_FILE_LINK_SCHEME` | [`file-link-targets`](src/patches/file-link-targets.ts) | unset |
 | `CLAUDE_CODE_FILE_LINK_WSL_DISTRO` | [`file-link-targets`](src/patches/file-link-targets.ts) | `WSL_DISTRO_NAME` or `Ubuntu` |
@@ -194,6 +196,8 @@ Terminal interface polish.
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | [`model-context-metadata`](src/patches/model-context-metadata.ts) | fallback for custom models without valid discovered metadata |
 | `CLAUDE_CODE_MODEL_ALIASES` | [`model-aliases`](src/patches/model-aliases.ts) | unset; JSON object mapping aliases to provider model IDs |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | unset |
+
+`CLAUDE_CODE_BILLING_LABEL` changes only the fallback text shown by the client when it cannot infer an account plan through its own authentication state. It does not select a credential or change how a provider charges a request. Scope it to the launcher that needs the clarification rather than placing it in shared Claude settings.
 
 `file-link-targets` keeps stock file labels but rewrites WSL absolute-path hyperlink targets so Ctrl-clicks in Windows Terminal resolve outside WSL. The default `wsl-file` mode emits `file://wsl.localhost/<distro>/...`. Set `CLAUDE_CODE_FILE_LINK_MODE=vscode` for `vscode://file...`, `vscode-remote` for VS Code Remote WSL URLs, `zed` for `zed://file...`, `file` for explicit file URLs, or `off`/`vanilla` to keep stock `file:///home/...` links. `CLAUDE_CODE_FILE_LINK_SCHEME` accepts a custom URI scheme when `CLAUDE_CODE_FILE_LINK_MODE` is not one of the built-ins.
 
@@ -204,7 +208,6 @@ When gateway model discovery is enabled, Claude Code manages its model-capabilit
 `CLAUDE_CODE_MODEL_ALIASES` is alias indirection, not an allowlist bypass. Its value is a JSON object such as `{"sol":"provider/gpt-5.6-sol"}`. Keys are trimmed and matched case-insensitively. The map fails fast when it is malformed, has distinct keys that collide after normalization, replaces a native alias or `inherit`, includes `[1m]`, uses an empty or non-string target, or chains one alias to another. Exact duplicate JSON keys follow normal `JSON.parse` last-value semantics. Each resolved target still goes through stock model normalization and must be admitted by `availableModels`. Aliases work with `--model`, Agent `model`, Workflow `agent({model})`, agent frontmatter, resume, and explicit teammate selection. They do not add synthetic rows to `/model`; provider discovery still owns that menu.
 
 Alias resolution is runtime plumbing, not a routing policy. A launch-scoped system prompt can teach an orchestrator when to select a configured alias without changing normal launches that use the same patched binary. Forks continue to inherit the parent model, and `CLAUDE_CODE_SUBAGENT_MODEL` is unnecessary for per-call alias selection.
-
 
 Do not set `DISABLE_TELEMETRY`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, or `DISABLE_GROWTHBOOK`. They disable feature-flag evaluation and the server-side flags that depend on it, including features this patcher relies on and the upstream Remote Control surface. Use the individual `DISABLE_ERROR_REPORTING`, `DISABLE_AUTOUPDATER`, and `DISABLE_BUG_COMMAND` switches instead.
 

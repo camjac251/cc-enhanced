@@ -76,6 +76,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Feature flags",
 		group: "System",
 	},
+	"billing-label": {
+		tag: "billing-label",
+		label: "Billing label",
+		group: "UX",
+	},
 	"file-link-targets": {
 		tag: "file-link-targets",
 		label: "File link targets",
