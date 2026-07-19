@@ -151,11 +151,6 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Subagent model selection",
 		group: "Agent",
 	},
-	"workflow-inline-allow": {
-		tag: "workflow-inline-allow",
-		label: "Workflow inline permission",
-		group: "Tooling",
-	},
 	"subagent-system-prompt": {
 		tag: "subagent-system-prompt",
 		label: "Subagent system prompt",
