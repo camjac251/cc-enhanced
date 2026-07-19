@@ -593,7 +593,7 @@ async function sendStream(client, request, signal) {
 }
 `;
 
-const PRE_WARMING_MOCK_FIXTURE = `
+const STARTUP_MOCK_FIXTURE = `
 async function sideQueryFn(arg) {
   var q = "sideQuery";
   var s = "tengu_lone_surrogate_sanitized";
@@ -612,8 +612,7 @@ const FULL_VERIFY_FIXTURE =
 	SYSPROMPT_SCOPE_FIXTURE +
 	CACHE_CONTROL_BUILDER_FIXTURE +
 	CACHE_TTL_ALLOWLIST_FIXTURE +
-	CACHE_CONTROL_BLOCK_CAP_FIXTURE +
-	PRE_WARMING_MOCK_FIXTURE;
+	CACHE_CONTROL_BLOCK_CAP_FIXTURE;
 
 const PARTIAL_DECL_FIXTURE =
 	`
@@ -640,8 +639,19 @@ function buildCacheBreakpoints(messages) {
 	SYSPROMPT_SCOPE_FIXTURE +
 	CACHE_CONTROL_BUILDER_FIXTURE +
 	CACHE_TTL_ALLOWLIST_FIXTURE +
-	CACHE_CONTROL_BLOCK_CAP_FIXTURE +
-	PRE_WARMING_MOCK_FIXTURE;
+	CACHE_CONTROL_BLOCK_CAP_FIXTURE;
+
+test("cache-tail-policy does not issue a synthetic request during CLI startup", async () => {
+	const ast = parse(STARTUP_MOCK_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		output.includes('content: "warm"') || output.includes("max_tokens: 0"),
+		false,
+		"startup must not issue a synthetic side query before the UI initializes",
+	);
+});
 
 test("cache-tail-policy caps cache_control blocks in the live request builder and request clamp helper", async () => {
 	const ast = parse(CACHE_TAIL_FIXTURE + CACHE_CONTROL_BLOCK_CAP_FIXTURE);

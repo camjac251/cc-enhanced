@@ -2,7 +2,6 @@ import * as t from "@babel/types";
 import { type NodePath, template, traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
-	getCallableFunctionName,
 	getObjectKeyName,
 	getVerifyAst,
 	isMemberPropertyName,
@@ -1965,150 +1964,6 @@ function verifyOneHourTtlEnforced(ast: t.File): true | string {
 	return true;
 }
 
-function verifyPreWarmingUtility(
-	ast: t.File,
-	sideQueryFnName: string | null,
-): true | string {
-	if (!sideQueryFnName) {
-		return "Pre-warming verification skipped: side query function name not resolved";
-	}
-	let foundPreWarmCall = false;
-
-	traverse(ast, {
-		CallExpression(path) {
-			if (!t.isIdentifier(path.node.callee, { name: sideQueryFnName })) return;
-			if (path.node.arguments.length !== 1) return;
-			const arg = path.node.arguments[0];
-			if (!t.isObjectExpression(arg)) return;
-
-			const maxTokensProp = arg.properties.find(
-				(prop): prop is t.ObjectProperty =>
-					t.isObjectProperty(prop) &&
-					getObjectKeyName(prop.key) === "max_tokens" &&
-					t.isNumericLiteral(prop.value, { value: 0 }),
-			);
-			const querySourceProp = arg.properties.find(
-				(prop): prop is t.ObjectProperty =>
-					t.isObjectProperty(prop) &&
-					getObjectKeyName(prop.key) === "querySource" &&
-					t.isStringLiteral(prop.value, { value: "repl_main_thread" }),
-			);
-
-			if (maxTokensProp && querySourceProp) {
-				foundPreWarmCall = true;
-			}
-		},
-	});
-
-	if (!foundPreWarmCall) {
-		return "Pre-warming utility call not found";
-	}
-	return true;
-}
-
-function createPreWarmingMutator(): Visitor {
-	let done = false;
-	let sideQueryFnName: string | null = null;
-	let resolvedInitialModelVarName: string | null = null;
-	let optionsVarName: string | null = null;
-
-	return {
-		Function(path) {
-			if (done) return;
-			if (path.node.async && path.node.params.length === 1) {
-				let hasSideQuery = false;
-				let hasSanitized = false;
-				path.traverse({
-					StringLiteral(strPath) {
-						if (strPath.node.value === "sideQuery") hasSideQuery = true;
-						if (strPath.node.value === "tengu_lone_surrogate_sanitized")
-							hasSanitized = true;
-					},
-				});
-				if (hasSideQuery && hasSanitized) {
-					const fnName = getCallableFunctionName(path);
-					if (fnName) {
-						sideQueryFnName = fnName;
-					}
-				}
-			}
-
-			if (t.isBlockStatement(path.node.body)) {
-				for (const stmt of path.node.body.body) {
-					if (t.isVariableDeclaration(stmt)) {
-						for (const decl of stmt.declarations) {
-							if (t.isObjectPattern(decl.id)) {
-								for (const prop of decl.id.properties) {
-									if (
-										t.isObjectProperty(prop) &&
-										getObjectKeyName(prop.key) === "resolvedInitialModel"
-									) {
-										if (t.isIdentifier(prop.value)) {
-											resolvedInitialModelVarName = prop.value.name;
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		},
-		CallExpression(path) {
-			if (done) return;
-			if (
-				t.isMemberExpression(path.node.callee) &&
-				isMemberPropertyName(path.node.callee, "action")
-			) {
-				const callback = path.node.arguments[0];
-				if (t.isFunction(callback) && callback.params.length >= 2) {
-					const secondParam = callback.params[1];
-					if (t.isIdentifier(secondParam)) {
-						optionsVarName = secondParam.name;
-					}
-				}
-			}
-
-			if (
-				path.node.arguments.length >= 1 &&
-				t.isStringLiteral(path.node.arguments[0], {
-					value: "tengu_startup_manual_model_config",
-				})
-			) {
-				if (optionsVarName && resolvedInitialModelVarName && sideQueryFnName) {
-					const stmt = path.findParent((p) => p.isExpressionStatement());
-					if (stmt?.parentPath && t.isBlockStatement(stmt.parentPath.node)) {
-						const preWarmStmt = template.statement(
-							`
-							if (!OPTIONS.print) {
-								SIDE_QUERY({
-									model: MODEL,
-									system: [],
-									messages: [{ role: "user", content: "warm" }],
-									max_tokens: 0,
-									querySource: "repl_main_thread"
-								}).catch(() => {});
-							}
-							`,
-						)({
-							OPTIONS: t.identifier(optionsVarName),
-							SIDE_QUERY: t.identifier(sideQueryFnName),
-							MODEL: t.identifier(resolvedInitialModelVarName),
-						});
-						const index = stmt.parentPath.node.body.indexOf(
-							stmt.node as t.Statement,
-						);
-						if (index >= 0) {
-							stmt.parentPath.node.body.splice(index, 0, preWarmStmt);
-							done = true;
-						}
-					}
-				}
-			}
-		},
-	};
-}
-
 // ---------------------------------------------------------------------------
 // Patch export
 // ---------------------------------------------------------------------------
@@ -2137,10 +1992,6 @@ export const cacheTailPolicy: Patch = {
 			pass: "mutate",
 			visitor: createAgentCacheTtlAllowlistMutator(),
 		},
-		{
-			pass: "mutate",
-			visitor: createPreWarmingMutator(),
-		},
 	],
 
 	verify: (code, ast) => {
@@ -2158,32 +2009,6 @@ export const cacheTailPolicy: Patch = {
 			() => verifyAgentCacheTtlAllowlist(verifyAst),
 			() => verifyCacheControlBlockCap(verifyAst, requestClampAnchor),
 			() => verifyOneHourTtlEnforced(verifyAst),
-			() => {
-				let sideQueryFnName: string | null = null;
-				traverse(verifyAst, {
-					Function(path) {
-						if (sideQueryFnName) return;
-						if (path.node.async && path.node.params.length === 1) {
-							let hasSideQuery = false;
-							let hasSanitized = false;
-							path.traverse({
-								StringLiteral(strPath) {
-									if (strPath.node.value === "sideQuery") hasSideQuery = true;
-									if (strPath.node.value === "tengu_lone_surrogate_sanitized")
-										hasSanitized = true;
-								},
-							});
-							if (hasSideQuery && hasSanitized) {
-								const fnName = getCallableFunctionName(path);
-								if (fnName) {
-									sideQueryFnName = fnName;
-								}
-							}
-						}
-					},
-				});
-				return verifyPreWarmingUtility(verifyAst, sideQueryFnName);
-			},
 		];
 		for (const check of checks) {
 			const result = check();
