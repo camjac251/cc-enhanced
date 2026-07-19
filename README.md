@@ -6,7 +6,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
-  <img src="https://img.shields.io/badge/Runtime-Bun_1.3-fbf0df.svg" alt="Bun 1.3">
+  <img src="https://img.shields.io/badge/Runtime-Bun_1.4_canary-fbf0df.svg" alt="Bun 1.4 canary">
   <img src="https://img.shields.io/badge/Patches-41-orange.svg" alt="41 Patches">
   <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.215-8A2BE2.svg" alt="Tested against Claude Code 2.1.215">
 </p>
@@ -403,7 +403,7 @@ Current target: **Claude Code 2.1.211**. Tracks the latest upstream release and 
 
 ## Requirements
 
-- **bun 1.3+** (managed via `mise`)
+- **Bun 1.4 canary** (the Rust rewrite, managed via `mise`'s GitHub backend)
 - **mise** for task-runner aliases; build and verification logic lives in Bun/TypeScript scripts
 - **Linux x86_64** (native ELF support is built in; other platforms require `node-lief`)
 - A working **Claude Code** installation

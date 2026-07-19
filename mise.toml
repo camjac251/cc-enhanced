@@ -1,5 +1,5 @@
 [tools]
-bun = "latest"
+"github:oven-sh/bun" = "canary"
 lefthook = "latest"
 
 [hooks]

@@ -2,5 +2,18 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "Keep the coupled Babel AST stack on v7 until its migration is ready",
+      "matchPackageNames": [
+        "@babel/generator",
+        "@babel/parser",
+        "@babel/template",
+        "@babel/traverse",
+        "@babel/types"
+      ],
+      "allowedVersions": "<8"
+    }
   ]
 }
