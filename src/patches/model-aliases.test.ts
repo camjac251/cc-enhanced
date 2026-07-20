@@ -69,6 +69,68 @@ function resolveTeammateModel(explicitModel, parentModel) {
   }
   return explicitModel ?? defaultTeammate(parentModel);
 }
+
+function canonicalModel(model) {
+  return model.trim().toLowerCase();
+}
+
+function knownModelDisplayName(model) {
+  if (model === "claude-opus-4-8") return "Opus";
+  return undefined;
+}
+
+const workflowModelArrow = "→";
+
+function formatWorkflowModel(model, fallbackModel) {
+  let displayName = (candidate) => knownModelDisplayName(candidate) ?? candidate;
+  if (fallbackModel != null) {
+    return (
+      (model == null ? "" : displayName(model) + " ") +
+      workflowModelArrow +
+      " " +
+      displayName(fallbackModel)
+    );
+  }
+  return model != null ? displayName(model) : "";
+}
+
+function collectWorkflowModel(requestedModel, responseModel) {
+  let canonicalRequestedModel = canonicalModel(requestedModel);
+  let fallbackModel;
+  const assistant = {
+    type: "assistant",
+    isApiErrorMessage: false,
+    message: { model: responseModel, content: [], usage: {} },
+  };
+  if (assistant.type === "assistant" && !assistant.isApiErrorMessage) {
+    let actualModel = assistant.message.model;
+    if (
+      actualModel &&
+      canonicalRequestedModel &&
+      actualModel !== requestedModel &&
+      canonicalModel(actualModel) !== canonicalRequestedModel
+    ) {
+      fallbackModel = actualModel;
+    }
+  }
+  return {
+    type: "workflow_agent",
+    model: requestedModel,
+    fallbackModel,
+  };
+}
+
+function renderWorkflowAgent(agent) {
+  const details = [];
+  if (agent.model != null) {
+    details.push(formatWorkflowModel(agent.model, agent.fallbackModel));
+  }
+  return details.join(" · ");
+}
+
+function renderWorkflowCompact(agent) {
+  return formatWorkflowModel(agent.model, agent.fallbackModel);
+}
 `;
 
 function loadNormalizer(
@@ -78,6 +140,34 @@ function loadNormalizer(
 	return new Function("process", `${code}; return normalizeModel;`)({
 		env,
 	}) as (model: string) => string;
+}
+
+function loadWorkflowFunctions(
+	code: string,
+	env: Record<string, string | undefined>,
+): {
+	collectWorkflowModel: (
+		requestedModel: string,
+		responseModel: string,
+	) => { model: string; fallbackModel?: string };
+	renderWorkflowAgent: (agent: {
+		model: string;
+		fallbackModel?: string;
+	}) => string;
+} {
+	return new Function(
+		"process",
+		`${code}; return { collectWorkflowModel, renderWorkflowAgent };`,
+	)({ env }) as {
+		collectWorkflowModel: (
+			requestedModel: string,
+			responseModel: string,
+		) => { model: string; fallbackModel?: string };
+		renderWorkflowAgent: (agent: {
+			model: string;
+			fallbackModel?: string;
+		}) => string;
+	};
 }
 
 function disableValidationGuard(code: string, errorNeedle: string): string {
@@ -107,6 +197,39 @@ function disableValidationGuard(code: string, errorNeedle: string): string {
 	return print(ast);
 }
 
+function disableRoutedEquivalenceResult(code: string): string {
+	const ast = parse(code);
+	let changed = 0;
+	traverse(ast, {
+		FunctionDeclaration(path) {
+			let isRoutedEquivalenceHelper = false;
+			t.traverseFast(path.node.body, (child) => {
+				if (
+					t.isStringLiteral(child) &&
+					child.value === "^anthropic\\/claude-ccr-h([0-9a-f]+)$"
+				) {
+					isRoutedEquivalenceHelper = true;
+				}
+			});
+			if (!isRoutedEquivalenceHelper) return;
+			path.traverse({
+				ReturnStatement(returnPath) {
+					if (
+						t.isLogicalExpression(returnPath.node.argument, {
+							operator: "&&",
+						})
+					) {
+						returnPath.node.argument = t.booleanLiteral(false);
+						changed++;
+					}
+				},
+			});
+		},
+	});
+	assert.equal(changed, 1);
+	return print(ast);
+}
+
 test("model-aliases resolves a case-insensitive configured alias before stock normalization", async () => {
 	const output = await patchSource(MODEL_ROUTING_FIXTURE);
 	const normalizeModel = loadNormalizer(output, {
@@ -128,6 +251,52 @@ test("model-aliases normalizes explicit teammate models and forwards the alias m
 		3,
 		"every subagent environment registry must forward the alias map",
 	);
+});
+
+test("model-aliases renders an exact configured target with its friendly alias", async () => {
+	const output = await patchSource(MODEL_ROUTING_FIXTURE);
+	const routedModel =
+		"anthropic/claude-ccr-h6f70656e61692f6770742d352e362d736f6c";
+	const { renderWorkflowAgent } = loadWorkflowFunctions(output, {
+		CLAUDE_CODE_MODEL_ALIASES: JSON.stringify({ sol: routedModel }),
+	});
+
+	assert.equal(renderWorkflowAgent({ model: routedModel }), "Sol");
+});
+
+test("model-aliases hides only equivalent routed fallback labels", async () => {
+	const output = await patchSource(MODEL_ROUTING_FIXTURE);
+	const routedModel =
+		"anthropic/claude-ccr-h6f70656e61692f6770742d352e362d736f6c";
+	const { collectWorkflowModel, renderWorkflowAgent } = loadWorkflowFunctions(
+		output,
+		{
+			CLAUDE_CODE_MODEL_ALIASES: JSON.stringify({ sol: routedModel }),
+		},
+	);
+
+	const equivalent = collectWorkflowModel(routedModel, "gpt-5.6-sol");
+	assert.deepEqual(equivalent, {
+		type: "workflow_agent",
+		model: routedModel,
+		fallbackModel: "gpt-5.6-sol",
+	});
+	assert.equal(renderWorkflowAgent(equivalent), "Sol");
+
+	const exact = collectWorkflowModel(routedModel, "openai/gpt-5.6-sol");
+	assert.equal(renderWorkflowAgent(exact), "Sol");
+
+	const otherProvider = collectWorkflowModel(
+		routedModel,
+		"other-provider/gpt-5.6-sol",
+	);
+	assert.equal(
+		renderWorkflowAgent(otherProvider),
+		"Sol → other-provider/gpt-5.6-sol",
+	);
+
+	const otherModel = collectWorkflowModel(routedModel, "gpt-5.6-other");
+	assert.equal(renderWorkflowAgent(otherModel), "Sol → gpt-5.6-other");
 });
 
 test("model-aliases fails fast on malformed or unsafe alias maps", async () => {
@@ -215,6 +384,9 @@ test("model-aliases verifier rejects partial routing integration", async () => {
 		String(modelAliases.verify(missingForwarding)),
 		/environment forwarding/,
 	);
+
+	const weakenedEquivalence = disableRoutedEquivalenceResult(patched);
+	assert.notEqual(modelAliases.verify(weakenedEquivalence), true);
 });
 
 test("model-aliases verifier rejects weakened alias-map validation", async () => {

@@ -9,6 +9,7 @@ import {
 } from "./ast-helpers.js";
 
 const MODEL_ALIASES_ENV = "CLAUDE_CODE_MODEL_ALIASES";
+const CCR_SELECTOR_PATTERN = "^anthropic\\/claude-ccr-h([0-9a-f]+)$";
 const MODEL_NORMALIZER_CASES = [
 	"fable",
 	"opusplan",
@@ -46,6 +47,18 @@ interface TeammateResolverShape {
 	path: NodePath<t.FunctionDeclaration>;
 	explicitModelName: string;
 	validationIndex: number;
+}
+
+interface WorkflowModelFormatterCandidate {
+	path: NodePath<t.FunctionDeclaration>;
+	displayResolver: t.ArrowFunctionExpression;
+	displayParameterName: string;
+	modelParameterName: string;
+	fallbackParameterName: string;
+	fallbackStatement: t.IfStatement;
+	displayHelperName?: string;
+	equivalenceHelperName?: string;
+	state: PatchSiteState;
 }
 
 function getMemberCall(
@@ -852,18 +865,447 @@ function patchEnvironmentArray(node: t.ArrayExpression): boolean {
 	return getEnvironmentArrayState(node) === "patched";
 }
 
+function getMemberObjectName(
+	node: t.Node | null | undefined,
+	propertyName: string,
+): string | null {
+	if (!t.isMemberExpression(node) || !t.isIdentifier(node.object)) return null;
+	return getMemberPropertyName(node) === propertyName ? node.object.name : null;
+}
+
+function isNonNullComparison(
+	node: t.Node | null | undefined,
+	identifierName: string,
+): boolean {
+	if (
+		!t.isBinaryExpression(node) ||
+		(node.operator !== "!=" && node.operator !== "!==")
+	) {
+		return false;
+	}
+	return (
+		(t.isIdentifier(node.left, { name: identifierName }) &&
+			t.isNullLiteral(node.right)) ||
+		(t.isIdentifier(node.right, { name: identifierName }) &&
+			t.isNullLiteral(node.left))
+	);
+}
+
+function isCallWithIdentifierArgument(
+	node: t.Node | null | undefined,
+	calleeName: string,
+	argumentName: string,
+): boolean {
+	return (
+		t.isCallExpression(node) &&
+		t.isIdentifier(node.callee, { name: calleeName }) &&
+		node.arguments.length === 1 &&
+		t.isIdentifier(node.arguments[0], { name: argumentName })
+	);
+}
+
+function isStockDisplayResolverBody(
+	node: t.Node | null | undefined,
+	parameterName: string,
+): boolean {
+	if (!t.isExpression(node)) return false;
+	const operands = flattenNullish(node);
+	return (
+		operands.length === 2 &&
+		t.isCallExpression(operands[0]) &&
+		operands[0].arguments.length === 1 &&
+		t.isIdentifier(operands[0].arguments[0], { name: parameterName }) &&
+		t.isIdentifier(operands[1], { name: parameterName })
+	);
+}
+
+function flattenNullish(node: t.Expression): t.Expression[] {
+	if (t.isLogicalExpression(node, { operator: "??" })) {
+		return [...flattenNullish(node.left), ...flattenNullish(node.right)];
+	}
+	return [node];
+}
+
+function getWorkflowFormatterReferenceCount(
+	path: NodePath<t.FunctionDeclaration>,
+): number {
+	const functionName = path.node.id?.name;
+	if (!functionName) return 0;
+	const binding = path.scope.getBinding(functionName);
+	if (!binding) return 0;
+	return binding.referencePaths.filter((referencePath) => {
+		const call = referencePath.parentPath?.node;
+		if (
+			!t.isCallExpression(call) ||
+			call.callee !== referencePath.node ||
+			call.arguments.length !== 2
+		) {
+			return false;
+		}
+		const modelObject = getMemberObjectName(call.arguments[0], "model");
+		const fallbackObject = getMemberObjectName(
+			call.arguments[1],
+			"fallbackModel",
+		);
+		return modelObject !== null && modelObject === fallbackObject;
+	}).length;
+}
+
+function getRouteEquivalenceGuardHelper(
+	node: t.Node,
+	modelName: string,
+	fallbackName: string,
+): string | null {
+	if (
+		!t.isLogicalExpression(node, { operator: "&&" }) ||
+		!isNonNullComparison(node.left, fallbackName) ||
+		!t.isUnaryExpression(node.right, { operator: "!" }) ||
+		!t.isCallExpression(node.right.argument) ||
+		!t.isIdentifier(node.right.argument.callee) ||
+		node.right.argument.arguments.length !== 2 ||
+		!t.isIdentifier(node.right.argument.arguments[0], { name: modelName }) ||
+		!t.isIdentifier(node.right.argument.arguments[1], { name: fallbackName })
+	) {
+		return null;
+	}
+	return node.right.argument.callee.name;
+}
+
+function classifyWorkflowModelFormatter(
+	path: NodePath<t.FunctionDeclaration>,
+): WorkflowModelFormatterCandidate | null {
+	if (
+		path.node.params.length !== 2 ||
+		!t.isIdentifier(path.node.params[0]) ||
+		!t.isIdentifier(path.node.params[1]) ||
+		getWorkflowFormatterReferenceCount(path) !== 2
+	) {
+		return null;
+	}
+	const modelParameter = path.node.params[0];
+	const fallbackParameter = path.node.params[1];
+	const statements = path.node.body.body;
+	if (statements.length !== 3) return null;
+	const [resolverStatement, fallbackStatement, defaultStatement] = statements;
+	if (
+		!t.isVariableDeclaration(resolverStatement) ||
+		resolverStatement.declarations.length !== 1 ||
+		!t.isIdentifier(resolverStatement.declarations[0].id) ||
+		!t.isArrowFunctionExpression(resolverStatement.declarations[0].init) ||
+		resolverStatement.declarations[0].init.params.length !== 1 ||
+		!t.isIdentifier(resolverStatement.declarations[0].init.params[0]) ||
+		!t.isIfStatement(fallbackStatement) ||
+		!t.isReturnStatement(defaultStatement)
+	) {
+		return null;
+	}
+	const fallbackIsStock = isNonNullComparison(
+		fallbackStatement.test,
+		fallbackParameter.name,
+	);
+	const equivalenceHelperName = getRouteEquivalenceGuardHelper(
+		fallbackStatement.test,
+		modelParameter.name,
+		fallbackParameter.name,
+	);
+	if (!fallbackIsStock && !equivalenceHelperName) return null;
+	const resolverName = resolverStatement.declarations[0].id.name;
+	const displayResolver = resolverStatement.declarations[0].init;
+	const displayParameter = displayResolver.params[0];
+	if (!t.isIdentifier(displayParameter)) return null;
+	const displayParameterName = displayParameter.name;
+	if (
+		!nodeContains(fallbackStatement.consequent, (child) =>
+			isCallWithIdentifierArgument(child, resolverName, modelParameter.name),
+		) ||
+		!nodeContains(fallbackStatement.consequent, (child) =>
+			isCallWithIdentifierArgument(child, resolverName, fallbackParameter.name),
+		) ||
+		!nodeContains(defaultStatement.argument, (child) =>
+			isCallWithIdentifierArgument(child, resolverName, modelParameter.name),
+		)
+	) {
+		return null;
+	}
+	const base = {
+		path,
+		displayResolver,
+		displayParameterName,
+		modelParameterName: modelParameter.name,
+		fallbackParameterName: fallbackParameter.name,
+		fallbackStatement,
+	};
+	if (
+		fallbackIsStock &&
+		isStockDisplayResolverBody(displayResolver.body, displayParameterName)
+	) {
+		return {
+			...base,
+			state: "unpatched",
+		};
+	}
+	const displayOperands = t.isExpression(displayResolver.body)
+		? flattenNullish(displayResolver.body)
+		: [];
+	if (
+		equivalenceHelperName &&
+		displayOperands.length === 3 &&
+		t.isCallExpression(displayOperands[0]) &&
+		t.isIdentifier(displayOperands[0].callee) &&
+		displayOperands[0].arguments.length === 1 &&
+		t.isIdentifier(displayOperands[0].arguments[0], {
+			name: displayParameterName,
+		}) &&
+		t.isCallExpression(displayOperands[1]) &&
+		displayOperands[1].arguments.length === 1 &&
+		t.isIdentifier(displayOperands[1].arguments[0], {
+			name: displayParameterName,
+		}) &&
+		t.isIdentifier(displayOperands[2], { name: displayParameterName })
+	) {
+		return {
+			...base,
+			displayHelperName: displayOperands[0].callee.name,
+			equivalenceHelperName,
+			state: "patched",
+		};
+	}
+	return {
+		...base,
+		state: "other",
+	};
+}
+
+function buildWorkflowAliasHelpers(path: NodePath<t.FunctionDeclaration>): {
+	displayHelper: t.FunctionDeclaration;
+	equivalenceHelper: t.FunctionDeclaration;
+} {
+	const displayHelperName = path.scope.generateUidIdentifier(
+		"configuredModelAliasLabel",
+	).name;
+	const equivalenceHelperName = path.scope.generateUidIdentifier(
+		"configuredModelsEquivalent",
+	).name;
+	const source = parse(`
+function ${displayHelperName}(model) {
+  if (typeof model !== "string" || process.env.${MODEL_ALIASES_ENV} === void 0) return;
+  let aliases;
+  try {
+    aliases = JSON.parse(process.env.${MODEL_ALIASES_ENV});
+  } catch {
+    return;
+  }
+  if (aliases === null || Array.isArray(aliases) || typeof aliases !== "object") return;
+  for (const [rawAlias, rawTarget] of Object.entries(aliases)) {
+    if (typeof rawTarget !== "string" || rawTarget.trim() !== model.trim()) continue;
+    const alias = rawAlias.trim();
+    if (!alias) return;
+    return alias.charAt(0).toUpperCase() + alias.slice(1);
+  }
+}
+
+function ${equivalenceHelperName}(requestedModel, responseModel) {
+  if (typeof requestedModel !== "string" || typeof responseModel !== "string") return false;
+  if (${displayHelperName}(requestedModel) === void 0) return false;
+  const match = new RegExp(${JSON.stringify(CCR_SELECTOR_PATTERN)}, "i").exec(requestedModel.trim());
+  if (!match || match[1].length === 0 || match[1].length % 2 !== 0) return false;
+  const pairs = match[1].match(/.{2}/g);
+  if (!pairs) return false;
+  const routedTarget = new TextDecoder().decode(
+    Uint8Array.from(pairs, (pair) => Number.parseInt(pair, 16)),
+  );
+  const trimmedResponse = responseModel.trim();
+  if (trimmedResponse === routedTarget) return true;
+  if (trimmedResponse.includes("/")) return false;
+  const providerSeparator = routedTarget.indexOf("/");
+  return providerSeparator >= 0 && routedTarget.slice(providerSeparator + 1) === trimmedResponse;
+}
+`);
+	const [displayHelper, equivalenceHelper] = source.program.body;
+	if (
+		!t.isFunctionDeclaration(displayHelper) ||
+		!t.isFunctionDeclaration(equivalenceHelper)
+	) {
+		throw new Error("model-aliases: failed to build workflow model helpers");
+	}
+	return { displayHelper, equivalenceHelper };
+}
+
+function patchWorkflowModelFormatter(
+	candidate: WorkflowModelFormatterCandidate,
+	displayHelperName: string,
+	equivalenceHelperName: string,
+): boolean {
+	if (candidate.state === "patched") return true;
+	if (candidate.state !== "unpatched") return false;
+	if (!t.isExpression(candidate.displayResolver.body)) return false;
+	candidate.displayResolver.body = t.logicalExpression(
+		"??",
+		t.callExpression(t.identifier(displayHelperName), [
+			t.identifier(candidate.displayParameterName),
+		]),
+		candidate.displayResolver.body,
+	);
+	candidate.fallbackStatement.test = t.logicalExpression(
+		"&&",
+		candidate.fallbackStatement.test,
+		t.unaryExpression(
+			"!",
+			t.callExpression(t.identifier(equivalenceHelperName), [
+				t.identifier(candidate.modelParameterName),
+				t.identifier(candidate.fallbackParameterName),
+			]),
+		),
+	);
+	candidate.displayHelperName = displayHelperName;
+	candidate.equivalenceHelperName = equivalenceHelperName;
+	candidate.state = "patched";
+	return true;
+}
+
+function getFunctionBinding(
+	path: NodePath<t.Node>,
+	name: string | undefined,
+): t.FunctionDeclaration | null {
+	if (!name) return null;
+	const binding = path.scope.getBinding(name);
+	return binding && t.isFunctionDeclaration(binding.path.node)
+		? binding.path.node
+		: null;
+}
+
+function isAliasDisplayHelper(node: t.FunctionDeclaration | null): boolean {
+	if (node?.params.length !== 1 || !t.isIdentifier(node.params[0])) {
+		return false;
+	}
+	return (
+		nodeContains(node.body, (child) =>
+			isProcessEnvMember(child, MODEL_ALIASES_ENV),
+		) &&
+		nodeContains(node.body, (child) => isObjectEntriesCall(child, "aliases")) &&
+		nodeContains(
+			node.body,
+			(child) => getMemberCall(child, "toUpperCase") !== null,
+		)
+	);
+}
+
+function ifReturnsBoolean(node: t.IfStatement, value: boolean): boolean {
+	const statement = t.isBlockStatement(node.consequent)
+		? node.consequent.body.length === 1
+			? node.consequent.body[0]
+			: null
+		: node.consequent;
+	return (
+		t.isReturnStatement(statement) &&
+		t.isBooleanLiteral(statement.argument, { value })
+	);
+}
+
+function isProviderlessTargetComparison(node: t.Node): boolean {
+	if (
+		!t.isReturnStatement(node) ||
+		!t.isLogicalExpression(node.argument, { operator: "&&" }) ||
+		!t.isBinaryExpression(node.argument.left, { operator: ">=" }) ||
+		!t.isNumericLiteral(node.argument.left.right, { value: 0 }) ||
+		!t.isBinaryExpression(node.argument.right, { operator: "===" })
+	) {
+		return false;
+	}
+	const equality = node.argument.right;
+	for (const [sliceSide, responseSide] of [
+		[equality.left, equality.right],
+		[equality.right, equality.left],
+	] as const) {
+		const sliceCall = getMemberCall(sliceSide, "slice");
+		if (
+			sliceCall?.arguments.length !== 1 ||
+			!t.isBinaryExpression(sliceCall.arguments[0], { operator: "+" }) ||
+			!t.isNumericLiteral(sliceCall.arguments[0].right, { value: 1 }) ||
+			!t.isIdentifier(responseSide)
+		) {
+			continue;
+		}
+		return true;
+	}
+	return false;
+}
+
+function isRouteEquivalenceHelper(
+	node: t.FunctionDeclaration | null,
+	displayHelperName: string | undefined,
+): boolean {
+	if (
+		!node ||
+		!displayHelperName ||
+		node.params.length !== 2 ||
+		!t.isIdentifier(node.params[0]) ||
+		!t.isIdentifier(node.params[1])
+	) {
+		return false;
+	}
+	const requestedParameter = node.params[0];
+	const responseParameter = node.params[1];
+	if (
+		!t.isIdentifier(requestedParameter) ||
+		!t.isIdentifier(responseParameter)
+	) {
+		return false;
+	}
+	return (
+		nodeContains(node.body, (child) =>
+			isCallWithIdentifierArgument(
+				child,
+				displayHelperName,
+				requestedParameter.name,
+			),
+		) &&
+		nodeContains(
+			node.body,
+			(child) => getStaticString(child) === CCR_SELECTOR_PATTERN,
+		) &&
+		nodeContains(
+			node.body,
+			(child) =>
+				t.isNewExpression(child) &&
+				t.isIdentifier(child.callee, { name: "TextDecoder" }),
+		) &&
+		nodeContains(
+			node.body,
+			(child) =>
+				t.isIfStatement(child) &&
+				t.isBinaryExpression(child.test, { operator: "===" }) &&
+				ifReturnsBoolean(child, true),
+		) &&
+		nodeContains(
+			node.body,
+			(child) =>
+				t.isIfStatement(child) &&
+				getMemberCall(child.test, "includes") !== null &&
+				ifReturnsBoolean(child, false),
+		) &&
+		nodeContains(node.body, isProviderlessTargetComparison)
+	);
+}
+
 function createModelAliasPasses(): PatchAstPass[] {
 	const modelNormalizers: ModelNormalizerCandidate[] = [];
 	const teammateResolverShapes: TeammateResolverShape[] = [];
 	const environmentArrays: t.ArrayExpression[] = [];
+	const workflowModelFormatters: WorkflowModelFormatterCandidate[] = [];
 	let normalizerPatched = false;
 	let teammateResolverPatched = false;
 	let environmentForwardingPatched = false;
+	let workflowModelFormatterPatched = false;
 
 	return [
 		{
 			pass: "discover",
 			visitor: {
+				FunctionDeclaration(path) {
+					const candidate = classifyWorkflowModelFormatter(path);
+					if (candidate) workflowModelFormatters.push(candidate);
+				},
 				SwitchStatement(path) {
 					if (!switchHasNormalizerCases(path.node)) return;
 					const functionPath = path.getFunctionParent();
@@ -956,6 +1398,29 @@ function createModelAliasPasses(): PatchAstPass[] {
 						environmentForwardingPatched =
 							environmentArrays.length === 3 &&
 							environmentArrays.every((array) => patchEnvironmentArray(array));
+
+						if (workflowModelFormatters.length === 1) {
+							const formatter = workflowModelFormatters[0];
+							if (formatter.state === "unpatched") {
+								const { displayHelper, equivalenceHelper } =
+									buildWorkflowAliasHelpers(normalizer.path);
+								normalizer.path.insertBefore([
+									displayHelper,
+									equivalenceHelper,
+								]);
+								const displayHelperName = displayHelper.id?.name;
+								const equivalenceHelperName = equivalenceHelper.id?.name;
+								if (displayHelperName && equivalenceHelperName) {
+									workflowModelFormatterPatched = patchWorkflowModelFormatter(
+										formatter,
+										displayHelperName,
+										equivalenceHelperName,
+									);
+								}
+							} else {
+								workflowModelFormatterPatched = formatter.state === "patched";
+							}
+						}
 					},
 				},
 			},
@@ -980,6 +1445,11 @@ function createModelAliasPasses(): PatchAstPass[] {
 								`Model aliases: Expected three subagent environment arrays, found ${environmentArrays.length}`,
 							);
 						}
+						if (!workflowModelFormatterPatched) {
+							console.warn(
+								`Model aliases: Could not patch the unique workflow model formatter (${workflowModelFormatters.length} candidates)`,
+							);
+						}
 					},
 				},
 			},
@@ -997,7 +1467,12 @@ export const modelAliases: Patch = {
 		const candidates: ModelNormalizerCandidate[] = [];
 		const teammateResolverShapes: TeammateResolverShape[] = [];
 		const environmentArrays: t.ArrayExpression[] = [];
+		const workflowModelFormatters: WorkflowModelFormatterCandidate[] = [];
 		traverse(verifyAst, {
+			FunctionDeclaration(path) {
+				const candidate = classifyWorkflowModelFormatter(path);
+				if (candidate) workflowModelFormatters.push(candidate);
+			},
 			SwitchStatement(path) {
 				if (!switchHasNormalizerCases(path.node)) return;
 				const functionPath = path.getFunctionParent();
@@ -1075,6 +1550,32 @@ export const modelAliases: Patch = {
 			)
 		) {
 			return "Subagent environment forwarding omits the model alias map";
+		}
+		if (workflowModelFormatters.length !== 1) {
+			return `Workflow model formatter is ambiguous or missing (${workflowModelFormatters.length} sites found)`;
+		}
+		const workflowFormatter = workflowModelFormatters[0];
+		if (workflowFormatter.state !== "patched") {
+			return "Workflow model formatter does not display configured aliases";
+		}
+		const displayHelper = getFunctionBinding(
+			workflowFormatter.path,
+			workflowFormatter.displayHelperName,
+		);
+		if (!isAliasDisplayHelper(displayHelper)) {
+			return "Workflow model formatter alias-label helper is missing or invalid";
+		}
+		const equivalenceHelper = getFunctionBinding(
+			workflowFormatter.path,
+			workflowFormatter.equivalenceHelperName,
+		);
+		if (
+			!isRouteEquivalenceHelper(
+				equivalenceHelper,
+				workflowFormatter.displayHelperName,
+			)
+		) {
+			return "Workflow model formatter routed-equivalence helper is missing or invalid";
 		}
 		return true;
 	},
