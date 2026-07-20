@@ -138,6 +138,288 @@ function findReadToolObjectPath(
 	return found;
 }
 
+interface ReadCoerceShape {
+	body: t.BlockStatement;
+	normalizedInputName: string;
+	repairListName: string;
+	insertAfterIndex: number;
+}
+
+function getReadCoerceFunction(
+	readToolPath: NodePath<t.ObjectExpression>,
+): t.FunctionDeclaration | null {
+	const property = readToolPath.node.properties.find(
+		(candidate): candidate is t.ObjectProperty =>
+			t.isObjectProperty(candidate) &&
+			hasObjectKeyName(candidate, "coerceInput"),
+	);
+	if (!property || !t.isIdentifier(property.value)) return null;
+	const binding = readToolPath.scope.getBinding(property.value.name);
+	const bindingNode = binding?.path.node;
+	return t.isFunctionDeclaration(bindingNode) ? bindingNode : null;
+}
+
+function getReadCoerceReturnNames(
+	body: t.BlockStatement,
+): { normalizedInputName: string; repairListName: string } | null {
+	for (const statement of body.body) {
+		if (
+			!t.isReturnStatement(statement) ||
+			!t.isConditionalExpression(statement.argument) ||
+			!t.isMemberExpression(statement.argument.test) ||
+			!isMemberPropertyName(statement.argument.test, "length") ||
+			!t.isIdentifier(statement.argument.test.object) ||
+			!t.isObjectExpression(statement.argument.consequent) ||
+			!t.isNullLiteral(statement.argument.alternate)
+		) {
+			continue;
+		}
+		const repairListName = statement.argument.test.object.name;
+		const inputProperty = statement.argument.consequent.properties.find(
+			(property): property is t.ObjectProperty =>
+				t.isObjectProperty(property) && hasObjectKeyName(property, "input"),
+		);
+		const shapeProperty = statement.argument.consequent.properties.find(
+			(property): property is t.ObjectProperty =>
+				t.isObjectProperty(property) &&
+				hasObjectKeyName(property, "shapeClass"),
+		);
+		const joinCall =
+			shapeProperty &&
+			t.isCallExpression(shapeProperty.value) &&
+			t.isMemberExpression(shapeProperty.value.callee) &&
+			isMemberPropertyName(shapeProperty.value.callee, "join")
+				? shapeProperty.value
+				: null;
+		if (
+			!inputProperty ||
+			!t.isIdentifier(inputProperty.value) ||
+			!joinCall ||
+			!t.isMemberExpression(joinCall.callee) ||
+			!t.isIdentifier(joinCall.callee.object, { name: repairListName }) ||
+			joinCall.arguments.length !== 1 ||
+			!t.isStringLiteral(joinCall.arguments[0], { value: "," })
+		) {
+			continue;
+		}
+		return {
+			normalizedInputName: inputProperty.value.name,
+			repairListName,
+		};
+	}
+	return null;
+}
+
+function getReadCoerceShape(
+	readToolPath: NodePath<t.ObjectExpression>,
+): ReadCoerceShape | null {
+	const functionNode = getReadCoerceFunction(readToolPath);
+	if (!functionNode) return null;
+	const firstParam = functionNode.params[0];
+	if (!t.isIdentifier(firstParam)) return null;
+	const returnNames = getReadCoerceReturnNames(functionNode.body);
+	if (!returnNames) return null;
+	let normalizedStatementIndex = -1;
+	let repairListStatementIndex = -1;
+	for (const [statementIndex, statement] of functionNode.body.body.entries()) {
+		if (!t.isVariableDeclaration(statement)) continue;
+		for (const declarator of statement.declarations) {
+			if (!t.isIdentifier(declarator.id)) continue;
+			if (
+				declarator.id.name === returnNames.normalizedInputName &&
+				t.isObjectExpression(declarator.init) &&
+				declarator.init.properties.some(
+					(property) =>
+						t.isSpreadElement(property) &&
+						t.isIdentifier(property.argument, { name: firstParam.name }),
+				)
+			) {
+				normalizedStatementIndex = statementIndex;
+			}
+			if (
+				declarator.id.name === returnNames.repairListName &&
+				t.isArrayExpression(declarator.init) &&
+				declarator.init.elements.length === 0
+			) {
+				repairListStatementIndex = statementIndex;
+			}
+		}
+	}
+	if (normalizedStatementIndex < 0 || repairListStatementIndex < 0) {
+		return null;
+	}
+	return {
+		body: functionNode.body,
+		...returnNames,
+		insertAfterIndex: Math.max(
+			normalizedStatementIndex,
+			repairListStatementIndex,
+		),
+	};
+}
+
+function isNamedMember(
+	node: t.Node | null | undefined,
+	objectName: string,
+	propertyName: string,
+): node is t.MemberExpression {
+	return (
+		t.isMemberExpression(node) &&
+		!node.computed &&
+		t.isIdentifier(node.object, { name: objectName }) &&
+		t.isIdentifier(node.property, { name: propertyName })
+	);
+}
+
+function isBlankOptionalInputRepair(
+	statement: t.Statement,
+	normalizedInputName: string,
+	repairListName: string,
+	fieldName: string,
+	marker: string,
+): boolean {
+	if (
+		!t.isIfStatement(statement) ||
+		!t.isLogicalExpression(statement.test, { operator: "&&" }) ||
+		!t.isBlockStatement(statement.consequent)
+	) {
+		return false;
+	}
+	const typeCheck = statement.test.left;
+	const blankCheck = statement.test.right;
+	if (
+		!t.isBinaryExpression(typeCheck, { operator: "===" }) ||
+		!t.isUnaryExpression(typeCheck.left, { operator: "typeof" }) ||
+		!isNamedMember(typeCheck.left.argument, normalizedInputName, fieldName) ||
+		!t.isStringLiteral(typeCheck.right, { value: "string" })
+	) {
+		return false;
+	}
+	if (
+		!t.isBinaryExpression(blankCheck, { operator: "===" }) ||
+		!t.isCallExpression(blankCheck.left) ||
+		!t.isMemberExpression(blankCheck.left.callee) ||
+		!isMemberPropertyName(blankCheck.left.callee, "trim") ||
+		!isNamedMember(
+			blankCheck.left.callee.object,
+			normalizedInputName,
+			fieldName,
+		) ||
+		blankCheck.left.arguments.length !== 0 ||
+		!t.isStringLiteral(blankCheck.right, { value: "" })
+	) {
+		return false;
+	}
+
+	let deletesField = false;
+	let recordsRepair = false;
+	for (const bodyStatement of statement.consequent.body) {
+		if (
+			t.isExpressionStatement(bodyStatement) &&
+			t.isUnaryExpression(bodyStatement.expression, { operator: "delete" }) &&
+			isNamedMember(
+				bodyStatement.expression.argument,
+				normalizedInputName,
+				fieldName,
+			)
+		) {
+			deletesField = true;
+		}
+		if (
+			t.isExpressionStatement(bodyStatement) &&
+			t.isCallExpression(bodyStatement.expression) &&
+			isNamedMember(bodyStatement.expression.callee, repairListName, "push") &&
+			bodyStatement.expression.arguments.length === 1 &&
+			t.isStringLiteral(bodyStatement.expression.arguments[0], {
+				value: marker,
+			})
+		) {
+			recordsRepair = true;
+		}
+	}
+	return deletesField && recordsRepair;
+}
+
+function buildBlankOptionalInputRepair(
+	normalizedInputName: string,
+	repairListName: string,
+	fieldName: string,
+	marker: string,
+): t.IfStatement {
+	const inputField = () =>
+		t.memberExpression(
+			t.identifier(normalizedInputName),
+			t.identifier(fieldName),
+		);
+	return t.ifStatement(
+		t.logicalExpression(
+			"&&",
+			t.binaryExpression(
+				"===",
+				t.unaryExpression("typeof", inputField()),
+				t.stringLiteral("string"),
+			),
+			t.binaryExpression(
+				"===",
+				t.callExpression(
+					t.memberExpression(inputField(), t.identifier("trim")),
+					[],
+				),
+				t.stringLiteral(""),
+			),
+		),
+		t.blockStatement([
+			t.expressionStatement(t.unaryExpression("delete", inputField())),
+			t.expressionStatement(
+				t.callExpression(
+					t.memberExpression(
+						t.identifier(repairListName),
+						t.identifier("push"),
+					),
+					[t.stringLiteral(marker)],
+				),
+			),
+		]),
+	);
+}
+
+function patchBlankOptionalReadInputs(
+	readToolPath: NodePath<t.ObjectExpression>,
+): boolean {
+	const shape = getReadCoerceShape(readToolPath);
+	if (!shape) return false;
+	const repairs = [
+		{ fieldName: "pages", marker: "pages_empty" },
+		{ fieldName: "range", marker: "range_empty" },
+	] as const;
+	const states = repairs.map(({ fieldName, marker }) =>
+		shape.body.body.some((statement) =>
+			isBlankOptionalInputRepair(
+				statement,
+				shape.normalizedInputName,
+				shape.repairListName,
+				fieldName,
+				marker,
+			),
+		),
+	);
+	if (states.every(Boolean)) return true;
+	if (states.some(Boolean)) return false;
+	shape.body.body.splice(
+		shape.insertAfterIndex + 1,
+		0,
+		...repairs.map(({ fieldName, marker }) =>
+			buildBlankOptionalInputRepair(
+				shape.normalizedInputName,
+				shape.repairListName,
+				fieldName,
+				marker,
+			),
+		),
+	);
+	return true;
+}
+
 function getReadToolPromptText(ast: t.File): string | null {
 	const readToolPath = findReadToolObjectPath(ast);
 	if (!readToolPath) return null;
@@ -1469,6 +1751,29 @@ function hasMiddleDotLabel(code: string, label: string): boolean {
 
 function verifyReadExamplesAndValidate(ctx: ReadVerifyContext): string | null {
 	const { code, validateKeys } = ctx;
+	const readToolPath = findReadToolObjectPath(ctx.ast);
+	const coerceShape = readToolPath ? getReadCoerceShape(readToolPath) : null;
+	if (!coerceShape) {
+		return "Unable to resolve Read.coerceInput normalization shape";
+	}
+	for (const { fieldName, marker } of [
+		{ fieldName: "pages", marker: "pages_empty" },
+		{ fieldName: "range", marker: "range_empty" },
+	]) {
+		if (
+			!coerceShape.body.body.some((statement) =>
+				isBlankOptionalInputRepair(
+					statement,
+					coerceShape.normalizedInputName,
+					coerceShape.repairListName,
+					fieldName,
+					marker,
+				),
+			)
+		) {
+			return `Read.coerceInput does not drop blank ${fieldName} values`;
+		}
+	}
 	// input_examples may be absent in newer bundles. Skip checks when absent.
 	if (code.includes("input_examples")) {
 		if (
@@ -1953,6 +2258,7 @@ export const readWithBat: Patch = {
 								};
 
 								const callMethodPath = findMethodPath("call");
+								patchBlankOptionalReadInputs(path);
 								if (!callMethodPath?.isObjectMethod()) return;
 								const callMethod = callMethodPath.node;
 								const callBodyPath = callMethodPath.get(

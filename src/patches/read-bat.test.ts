@@ -96,6 +96,12 @@ const z = {
   boolean() { return { optional() { return this; }, describe() { return this; } }; },
 };
 function eG1() { return false; }
+function normalizeReadInput(input) {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
+  const normalized = { ...input };
+  const repairs = [];
+  return repairs.length ? { input: normalized, shapeClass: repairs.join(",") } : null;
+}
 
 const ReadTool = {
   name: "Read",
@@ -114,6 +120,7 @@ const ReadTool = {
     limit: z.number().optional().describe("Legacy limit"),
     pages: z.string().optional().describe("Use the pages parameter to read specific page ranges"),
   }),
+  coerceInput: normalizeReadInput,
   async validateInput({ file_path: A, offset: Q, limit: B, pages: Y }, G) {
     if (!eG1(Y) && !Q && !B) return { result: false };
     return { result: true };
@@ -400,6 +407,12 @@ const z = {
   boolean() { return { optional() { return this; }, describe() { return this; } }; },
 };
 function eG1() { return false; }
+function normalizeReadInput(input) {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
+  const normalized = { ...input };
+  const repairs = [];
+  return repairs.length ? { input: normalized, shapeClass: repairs.join(",") } : null;
+}
 const MAX_BYTES = 4096;
 const SIGNAL = { tag: "signal" };
 const EXTRA1 = {};
@@ -428,6 +441,7 @@ const ReadTool = {
     limit: z.number().optional().describe("Legacy limit"),
     pages: z.string().optional().describe("Use the pages parameter to read specific page ranges"),
   }),
+  coerceInput: normalizeReadInput,
   async validateInput({ file_path: A, offset: Q, limit: B, pages: Y }, G) {
     if (!eG1(Y) && !Q && !B) return { result: false };
     return { result: true };
@@ -553,11 +567,57 @@ export { ReadTool, helperRead, changedSnippet, setChangedFileMtime };`,
 	const mod = await import(pathToFileURL(modulePath).href);
 	return {
 		mod,
+		output,
 		cleanup: async () => {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		},
 	};
 }
+
+test("read-bat drops blank optional string inputs before validation", async () => {
+	const { mod, output, cleanup } = await loadPatchedReadRuntimeModule();
+	try {
+		assert.deepEqual(
+			mod.ReadTool.coerceInput({
+				file_path: "/tmp/example.txt",
+				pages: "",
+				range: "1:20",
+			}),
+			{
+				input: {
+					file_path: "/tmp/example.txt",
+					range: "1:20",
+				},
+				shapeClass: "pages_empty",
+			},
+		);
+		assert.deepEqual(
+			mod.ReadTool.coerceInput({
+				file_path: "/tmp/example.txt",
+				pages: "  ",
+				range: "\t",
+			}),
+			{
+				input: { file_path: "/tmp/example.txt" },
+				shapeClass: "pages_empty,range_empty",
+			},
+		);
+		assert.equal(
+			mod.ReadTool.coerceInput({
+				file_path: "/tmp/example.pdf",
+				pages: "1-2",
+				range: "1:20",
+			}),
+			null,
+		);
+
+		const weakened = output.replace('"pages_empty"', '"pages_ignored"');
+		assert.notEqual(weakened, output);
+		assert.match(String(readWithBat.verify(weakened)), /blank pages/);
+	} finally {
+		await cleanup();
+	}
+});
 
 test("read-bat render uses the discovered element factory, never a stale default", async () => {
 	const output = await getPatchedDelegationOutput();
