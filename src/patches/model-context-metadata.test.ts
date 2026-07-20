@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as t from "@babel/types";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
+import { traverse } from "../babel.js";
 import { parse, print } from "../loader.js";
 import { modelContextMetadata } from "./model-context-metadata.js";
 
@@ -15,6 +17,26 @@ async function runModelContextMetadataViaPasses(ast: any): Promise<void> {
 			throw error;
 		},
 	);
+}
+
+function removeMetadataEligibilityBranch(code: string): string {
+	const ast = parse(code);
+	let changed = 0;
+	traverse(ast, {
+		ReturnStatement(path) {
+			if (
+				!t.isLogicalExpression(path.node.argument, { operator: "||" }) ||
+				!t.isBinaryExpression(path.node.argument.left, { operator: "!==" }) ||
+				!t.isStringLiteral(path.node.argument.left.right, { value: "auto" })
+			) {
+				return;
+			}
+			path.node.argument = path.node.argument.left;
+			changed++;
+		},
+	});
+	assert.equal(changed, 1);
+	return print(ast);
 }
 
 const MODEL_CONTEXT_FIXTURE = `
@@ -57,6 +79,16 @@ function contextWindow(model, betas) {
   if (fallback !== undefined && fallback > 0 && !normalizeModel(model).startsWith("claude-")) return fallback;
   return 200000;
 }
+function autoCompactConfig(model, configured) {
+  return {
+    window: contextWindow(model),
+    configured,
+    source: configured === undefined ? "auto" : "settings",
+  };
+}
+function hasConfiguredAutoCompactWindow(model, configured) {
+  return autoCompactConfig(model, configured).source !== "auto";
+}
 function outputLimit(model) {
   let upper = 32000;
   const capability = getModelCapability(model);
@@ -69,6 +101,10 @@ function evaluatePatched(code: string): {
 	setModels: (models: unknown[]) => void;
 	setDiscovery: (enabled: boolean) => void;
 	contextWindow: (model: string, betas?: string[]) => number;
+	hasConfiguredAutoCompactWindow: (
+		model: string,
+		configured?: number,
+	) => boolean;
 	outputLimit: (model: string) => number;
 } {
 	return Function(
@@ -79,6 +115,7 @@ return {
   setModels(models) { cachedModels = models; },
   setDiscovery(enabled) { env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = enabled; },
   contextWindow,
+  hasConfiguredAutoCompactWindow,
   outputLimit,
 };`,
 	)((...parts: string[]) => parts.join("/"), {
@@ -115,6 +152,57 @@ test("uses discovered model context before the global custom-model fallback", as
 	assert.equal(runtime.contextWindow("provider/unknown"), 333000);
 	assert.equal(runtime.outputLimit("provider/worker-258k"), 128000);
 	assert.equal(modelContextMetadata.verify(output, ast), true);
+});
+
+test("treats discovered context metadata as configured for auto compaction", async () => {
+	const ast = parse(MODEL_CONTEXT_FIXTURE);
+	await runModelContextMetadataViaPasses(ast);
+	const output = print(ast);
+	const runtime = evaluatePatched(output);
+
+	runtime.setModels([{ id: "provider/worker-258k", max_input_tokens: 258400 }]);
+	assert.equal(
+		runtime.hasConfiguredAutoCompactWindow("provider/worker-258k"),
+		true,
+	);
+	assert.equal(
+		runtime.hasConfiguredAutoCompactWindow("provider/unknown", 200000),
+		true,
+	);
+
+	runtime.setDiscovery(false);
+	assert.equal(
+		runtime.hasConfiguredAutoCompactWindow("provider/worker-258k"),
+		false,
+	);
+	assert.equal(
+		runtime.hasConfiguredAutoCompactWindow("provider/unknown", 200000),
+		true,
+	);
+	runtime.setDiscovery(true);
+	for (const value of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+		runtime.setModels([{ id: "provider/invalid", max_input_tokens: value }]);
+		assert.equal(
+			runtime.hasConfiguredAutoCompactWindow("provider/invalid"),
+			false,
+		);
+	}
+	runtime.setModels([{ id: "provider/missing" }]);
+	assert.equal(
+		runtime.hasConfiguredAutoCompactWindow("provider/missing"),
+		false,
+	);
+	runtime.setModels([]);
+	assert.equal(
+		runtime.hasConfiguredAutoCompactWindow("provider/unknown"),
+		false,
+	);
+
+	const weakened = removeMetadataEligibilityBranch(output);
+	assert.match(
+		String(modelContextMetadata.verify(weakened)),
+		/Auto-compact eligibility/,
+	);
 });
 
 test("validates and caps discovered context windows", async () => {

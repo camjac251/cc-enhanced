@@ -25,11 +25,20 @@ interface ContextResolverCandidate {
 	state: SiteState;
 }
 
+interface AutoCompactEligibilityCandidate {
+	path: NodePath<t.Function>;
+	modelName: string;
+	configuredWindowName: string;
+	returnIndex: number;
+	state: SiteState;
+}
+
 interface PatchAnalysis {
 	lookup: CapabilityLookupCandidate;
 	gate: t.FunctionDeclaration;
 	gateState: SiteState;
 	context: ContextResolverCandidate;
+	eligibility: AutoCompactEligibilityCandidate;
 }
 
 function nodeHasMemberProperty(node: t.Node, propertyName: string): boolean {
@@ -194,6 +203,148 @@ function isCappedMetadataReturn(node: t.Statement, valueName: string): boolean {
 	);
 }
 
+function isAutoSourceComparison(
+	node: t.Node | null | undefined,
+	modelName: string,
+	configuredWindowName: string,
+): node is t.BinaryExpression {
+	return (
+		t.isBinaryExpression(node, { operator: "!==" }) &&
+		t.isMemberExpression(node.left) &&
+		getMemberPropertyName(node.left) === "source" &&
+		t.isCallExpression(node.left.object) &&
+		node.left.object.arguments.length === 2 &&
+		t.isIdentifier(node.left.object.arguments[0], { name: modelName }) &&
+		t.isIdentifier(node.left.object.arguments[1], {
+			name: configuredWindowName,
+		}) &&
+		t.isStringLiteral(node.right, { value: "auto" })
+	);
+}
+
+function isPositiveMetadataCheck(node: t.Node, valueName: string): boolean {
+	return (
+		t.isBinaryExpression(node, { operator: ">" }) &&
+		t.isIdentifier(node.left, { name: valueName }) &&
+		t.isNumericLiteral(node.right, { value: 0 })
+	);
+}
+
+function hasMetadataEligibilityBlock(
+	statements: t.Statement[],
+	returnIndex: number,
+	lookupName: string,
+	modelName: string,
+	configuredWindowName: string,
+): boolean {
+	if (returnIndex < 1) return false;
+	const declaration = statements[returnIndex - 1];
+	const returnStatement = statements[returnIndex];
+	if (
+		!t.isVariableDeclaration(declaration) ||
+		declaration.declarations.length !== 2 ||
+		!t.isReturnStatement(returnStatement) ||
+		!t.isLogicalExpression(returnStatement.argument, { operator: "||" }) ||
+		!isAutoSourceComparison(
+			returnStatement.argument.left,
+			modelName,
+			configuredWindowName,
+		) ||
+		!t.isLogicalExpression(returnStatement.argument.right, {
+			operator: "&&",
+		})
+	) {
+		return false;
+	}
+	const capability = declaration.declarations[0];
+	const context = declaration.declarations[1];
+	if (
+		!t.isIdentifier(capability.id) ||
+		!t.isCallExpression(capability.init) ||
+		!t.isIdentifier(capability.init.callee, { name: lookupName }) ||
+		capability.init.arguments.length !== 1 ||
+		!t.isIdentifier(capability.init.arguments[0], { name: modelName }) ||
+		!t.isIdentifier(context.id) ||
+		!isOptionalMaxInputRead(context.init, capability.id.name)
+	) {
+		return false;
+	}
+	return (
+		isNumberSafeIntegerCall(
+			returnStatement.argument.right.left,
+			context.id.name,
+		) &&
+		isPositiveMetadataCheck(
+			returnStatement.argument.right.right,
+			context.id.name,
+		)
+	);
+}
+
+function classifyAutoCompactEligibility(
+	path: NodePath<t.Function>,
+	lookupName: string,
+): AutoCompactEligibilityCandidate | null {
+	if (!t.isBlockStatement(path.node.body)) return null;
+	if (path.node.params.length !== 2) return null;
+	const modelParameter = path.node.params[0];
+	const configuredWindowParameter = path.node.params[1];
+	if (
+		!t.isIdentifier(modelParameter) ||
+		!t.isIdentifier(configuredWindowParameter)
+	) {
+		return null;
+	}
+	const candidates = path.node.body.body
+		.map((statement, index) => ({ statement, index }))
+		.filter(({ statement }) => {
+			if (!t.isReturnStatement(statement) || !statement.argument) return false;
+			if (
+				isAutoSourceComparison(
+					statement.argument,
+					modelParameter.name,
+					configuredWindowParameter.name,
+				)
+			) {
+				return true;
+			}
+			return (
+				t.isLogicalExpression(statement.argument, { operator: "||" }) &&
+				isAutoSourceComparison(
+					statement.argument.left,
+					modelParameter.name,
+					configuredWindowParameter.name,
+				)
+			);
+		});
+	if (candidates.length !== 1) return null;
+	const candidate = candidates[0];
+	const patched = hasMetadataEligibilityBlock(
+		path.node.body.body,
+		candidate.index,
+		lookupName,
+		modelParameter.name,
+		configuredWindowParameter.name,
+	);
+	const state: SiteState = patched
+		? "patched"
+		: t.isReturnStatement(candidate.statement) &&
+				isAutoSourceComparison(
+					candidate.statement.argument,
+					modelParameter.name,
+					configuredWindowParameter.name,
+				)
+			? "stock"
+			: "other";
+	return {
+		path,
+		modelName: modelParameter.name,
+		configuredWindowName: configuredWindowParameter.name,
+		returnIndex: candidate.index,
+		state,
+	};
+}
+
 function hasMetadataContextBlock(
 	statements: t.Statement[],
 	fallbackIndex: number,
@@ -329,6 +480,14 @@ function analyzePatchSites(
 		return `Context resolver is ambiguous or missing (${contexts.length} sites found)`;
 	}
 	const context = contexts[0];
+	const eligibilitySites = functionPaths
+		.map((path) => classifyAutoCompactEligibility(path, lookup.functionName))
+		.filter((candidate): candidate is AutoCompactEligibilityCandidate =>
+			Boolean(candidate),
+		);
+	if (eligibilitySites.length !== 1) {
+		return `Auto-compact eligibility is ambiguous or missing (${eligibilitySites.length} sites found)`;
+	}
 	const binding = lookup.path.scope.getBinding(lookup.gateName);
 	if (!binding || !t.isFunctionDeclaration(binding.path.node)) {
 		return "Model capability feature gate binding was not found";
@@ -339,6 +498,7 @@ function analyzePatchSites(
 		gate,
 		gateState: classifyGate(gate, context.environmentName),
 		context,
+		eligibility: eligibilitySites[0],
 	};
 }
 
@@ -394,6 +554,70 @@ function buildMetadataContextStatements(
 	];
 }
 
+function patchMetadataEligibility(
+	candidate: AutoCompactEligibilityCandidate,
+	lookupName: string,
+): boolean {
+	if (candidate.state === "patched") return true;
+	if (
+		candidate.state !== "stock" ||
+		!t.isBlockStatement(candidate.path.node.body)
+	) {
+		return false;
+	}
+	const statements = candidate.path.node.body.body;
+	const returnStatement = statements[candidate.returnIndex];
+	if (
+		!t.isReturnStatement(returnStatement) ||
+		!returnStatement.argument ||
+		!isAutoSourceComparison(
+			returnStatement.argument,
+			candidate.modelName,
+			candidate.configuredWindowName,
+		)
+	) {
+		return false;
+	}
+	const capability =
+		candidate.path.scope.generateUidIdentifier("modelCapabilities");
+	const contextTokens =
+		candidate.path.scope.generateUidIdentifier("modelContextTokens");
+	const declaration = t.variableDeclaration("let", [
+		t.variableDeclarator(
+			capability,
+			t.callExpression(t.identifier(lookupName), [
+				t.identifier(candidate.modelName),
+			]),
+		),
+		t.variableDeclarator(
+			contextTokens,
+			t.optionalMemberExpression(
+				t.cloneNode(capability),
+				t.identifier("max_input_tokens"),
+				false,
+				true,
+			),
+		),
+	]);
+	returnStatement.argument = t.logicalExpression(
+		"||",
+		returnStatement.argument,
+		t.logicalExpression(
+			"&&",
+			t.callExpression(
+				t.memberExpression(
+					t.identifier("Number"),
+					t.identifier("isSafeInteger"),
+				),
+				[t.cloneNode(contextTokens)],
+			),
+			t.binaryExpression(">", t.cloneNode(contextTokens), t.numericLiteral(0)),
+		),
+	);
+	statements.splice(candidate.returnIndex, 0, declaration);
+	return true;
+}
+
 function createModelContextMetadataPasses(): PatchAstPass[] {
 	const functionPaths: NodePath<t.Function>[] = [];
 	let schemaCount = 0;
@@ -419,7 +643,8 @@ function createModelContextMetadataPasses(): PatchAstPass[] {
 						if (typeof analysis === "string") return;
 						if (
 							analysis.gateState === "other" ||
-							analysis.context.state === "other"
+							analysis.context.state === "other" ||
+							analysis.eligibility.state === "other"
 						) {
 							return;
 						}
@@ -445,7 +670,10 @@ function createModelContextMetadataPasses(): PatchAstPass[] {
 								),
 							);
 						}
-						patched = true;
+						patched = patchMetadataEligibility(
+							analysis.eligibility,
+							analysis.lookup.functionName,
+						);
 					},
 				},
 			},
@@ -492,6 +720,9 @@ export const modelContextMetadata: Patch = {
 		}
 		if (analysis.context.state !== "patched") {
 			return "Context resolver does not use validated max_input_tokens metadata before the global fallback";
+		}
+		if (analysis.eligibility.state !== "patched") {
+			return "Auto-compact eligibility does not recognize validated max_input_tokens metadata";
 		}
 		return true;
 	},
