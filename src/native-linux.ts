@@ -12,6 +12,7 @@ import {
 	SIZEOF_OFFSETS,
 	toWriteError,
 } from "./bun-format.js";
+import { emitMemoryCheckpoint } from "./profiling.js";
 
 const ELF_MAGIC = Buffer.from([0x7f, 0x45, 0x4c, 0x46]); // \x7fELF
 
@@ -29,6 +30,11 @@ interface BunCjsWrapper {
 	prefix: string;
 	body: string;
 	suffix: string;
+}
+
+export interface BunCjsByteEnvelope {
+	prefix: Buffer;
+	suffix: Buffer;
 }
 
 const BUN_CJS_HEADER = "// @bun @bytecode @bun-cjs";
@@ -63,6 +69,25 @@ export function unwrapBunCjsModule(code: string): BunCjsWrapper | null {
 
 export function wrapBunCjsModule(wrapper: BunCjsWrapper, body: string): string {
 	return `${wrapper.prefix}${body}${wrapper.suffix}`;
+}
+
+export function copyBunCjsEnvelope(
+	wrapper: Pick<BunCjsWrapper, "prefix" | "suffix">,
+): BunCjsByteEnvelope {
+	return {
+		prefix: Buffer.from(wrapper.prefix, "utf-8"),
+		suffix: Buffer.from(wrapper.suffix, "utf-8"),
+	};
+}
+
+export function wrapBunCjsModuleBuffer(
+	envelope: BunCjsByteEnvelope,
+	body: Buffer,
+): Buffer {
+	return Buffer.concat(
+		[envelope.prefix, body, envelope.suffix],
+		envelope.prefix.length + body.length + envelope.suffix.length,
+	);
 }
 
 function parseLinuxBunBlob(binary: Buffer): {
@@ -234,6 +259,7 @@ export function repackNativeLinuxBinary(
 	outputPath: string = filePath,
 ): void {
 	const extracted = extractClaudeJsFromNativeLinux(filePath);
+	emitMemoryCheckpoint("linux-repack.extracted");
 
 	// Bun 1.3+ validates overlay integrity via memory-mapped PT_LOAD segments.
 	// Rebuilding the overlay (appending data, changing byteCount) breaks this.
@@ -253,6 +279,7 @@ export function repackNativeLinuxBinary(
 
 	// Copy the full binary (we patch in-place)
 	const patchedBinary = Buffer.from(extracted.binary);
+	emitMemoryCheckpoint("linux-repack.binary-copied");
 	const dataStart = extracted.bunBlobStart;
 
 	// Write new content over the bytecode region
@@ -277,11 +304,13 @@ export function repackNativeLinuxBinary(
 
 	if (outputPath === filePath) {
 		writeBinaryAtomically(filePath, patchedBinary);
+		emitMemoryCheckpoint("linux-repack.written");
 		return;
 	}
 	try {
 		fs.writeFileSync(outputPath, patchedBinary);
 		fs.chmodSync(outputPath, fs.statSync(filePath).mode);
+		emitMemoryCheckpoint("linux-repack.written");
 	} catch (error) {
 		throw toWriteError(error, outputPath);
 	}

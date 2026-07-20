@@ -175,7 +175,8 @@ function materializePassVisitor(
 				continue;
 			}
 			const pathWithStop = path as NodePath<t.Node> & { stop: () => void };
-			const originalStop = pathWithStop.stop.bind(pathWithStop);
+			const hadOwnStop = Object.hasOwn(pathWithStop, "stop");
+			const originalStop = pathWithStop.stop;
 			pathWithStop.stop = () => {
 				if (!warnedStopTags.has(handler.tag)) {
 					warnedStopTags.add(handler.tag);
@@ -193,7 +194,11 @@ function materializePassVisitor(
 				globallyFailedTags.add(handler.tag);
 				onPatchError(handler.tag, err);
 			} finally {
-				pathWithStop.stop = originalStop;
+				if (hadOwnStop) {
+					pathWithStop.stop = originalStop;
+				} else {
+					Reflect.deleteProperty(pathWithStop, "stop");
+				}
 			}
 		}
 	};

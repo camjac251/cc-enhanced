@@ -180,7 +180,7 @@ Terminal interface polish.
 | `CLAUDE_PATCHER_EXCLUDE_TAGS` | Comma-separated blocklist. Listed patches are skipped. |
 | `CLAUDE_PATCHER_REVISION` | Override the revision recorded in `.patch-meta.json` and the patched-build cache key. |
 | `CLAUDE_PATCHER_CACHE_KEEP` | Retain extra cached builds beyond the default rotation. |
-| `CLAUDE_PATCHER_PROFILE` | Set to `1` to emit a stderr summary of per-phase and per-tag verify timings after each patch run. |
+| `CLAUDE_PATCHER_PROFILE` | Set to `1` to emit per-phase and per-tag verify timings plus passive process-memory checkpoints to stderr during each patch run. |
 
 ### Runtime (installed binary)
 

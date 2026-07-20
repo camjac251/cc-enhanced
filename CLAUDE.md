@@ -149,7 +149,7 @@ Use this command map instead of opening task files for orientation:
 
 Useful CLI flags on `src/index.ts` not always reflected in the alias table: `--dry-run`, `--force`, `--diff`, `--fast-verify` (skip duplicate per-patch verifier pass during update), `--skip-smoke-test`, `--summary-path <file>` for JSON dry-run summaries.
 
-Build-time env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS`, `CLAUDE_PATCHER_CACHE_KEEP`, `CLAUDE_PATCHER_REVISION`, `CLAUDE_PATCHER_PROFILE` (set to `1` to emit a stderr summary of per-phase and per-tag verify timings after each patch run). Runtime env vars consumed by patches are documented in `README.md`.
+Build-time env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS`, `CLAUDE_PATCHER_CACHE_KEEP`, `CLAUDE_PATCHER_REVISION`, `CLAUDE_PATCHER_PROFILE` (set to `1` to emit per-phase and per-tag verify timings plus passive process-memory checkpoints to stderr during each patch run). Runtime env vars consumed by patches are documented in `README.md`.
 
 ## Adding Patches
 

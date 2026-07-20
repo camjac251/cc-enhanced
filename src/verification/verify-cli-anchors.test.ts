@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
+import { parse } from "../loader.js";
 import { allPatches } from "../patches/index.js";
 import {
 	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
@@ -82,6 +83,67 @@ test("verifyCliAnchors can skip duplicate per-patch verifier pass", async () => 
 			false,
 		);
 		assert.equal(fastResult.checksRun < fullResult.checksRun, true);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("verifyCliAnchors parses the patched bundle once", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "anchor-verify-single-parse-"),
+	);
+	const patchedCliPath = path.join(tempDir, "patched-cli.js");
+	const cleanCliPath = path.join(tempDir, "clean-cli.js");
+	let parseCalls = 0;
+
+	try {
+		await fs.writeFile(patchedCliPath, "const marker = 1;", "utf-8");
+		await fs.writeFile(cleanCliPath, "const marker = 2;", "utf-8");
+
+		await verifyCliAnchors(
+			{ patchedCliPath, cleanCliPath },
+			{
+				parse(code) {
+					parseCalls += 1;
+					return parse(code);
+				},
+				clearTraverseCache() {},
+			},
+		);
+
+		assert.equal(parseCalls, 1);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("verifyCliAnchors clears the traversal cache after parse failure", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "anchor-verify-parse-cleanup-"),
+	);
+	const patchedCliPath = path.join(tempDir, "patched-cli.js");
+	const cleanCliPath = path.join(tempDir, "clean-cli.js");
+	let clearCalls = 0;
+
+	try {
+		await fs.writeFile(patchedCliPath, "const = broken;", "utf-8");
+		await fs.writeFile(cleanCliPath, "const marker = 2;", "utf-8");
+
+		const result = await verifyCliAnchors(
+			{ patchedCliPath, cleanCliPath },
+			{
+				parse,
+				clearTraverseCache() {
+					clearCalls += 1;
+				},
+			},
+		);
+
+		assert.equal(
+			result.failures.some((failure) => failure.id === "read-state-guard"),
+			true,
+		);
+		assert.equal(clearCalls, 1);
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}

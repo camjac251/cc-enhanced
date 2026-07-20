@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import { clearTraverseCache } from "../babel.js";
 import { parse } from "../loader.js";
 import { hasStrongClaudeMdDisclaimer } from "../patches/claudemd-strong.js";
 import { allPatches } from "../patches/index.js";
@@ -13,6 +14,16 @@ import { verifyPromptPolicyContract } from "./prompt-policy-contract.js";
 
 type AnchorRule = { id: string; needle: string; reason: string };
 type RegexRule = { id: string; pattern: RegExp; reason: string };
+
+interface VerifyCliAnchorsRuntime {
+	parse: typeof parse;
+	clearTraverseCache: typeof clearTraverseCache;
+}
+
+const DEFAULT_RUNTIME: VerifyCliAnchorsRuntime = {
+	parse,
+	clearTraverseCache,
+};
 
 const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 	{
@@ -241,22 +252,9 @@ function checkReadRangeMarker(
 }
 
 function checkReadStateGuard(
-	patchedCode: string,
+	ast: ReturnType<typeof parse>,
 	failures: AnchorFailure[],
 ): number {
-	let ast: ReturnType<typeof parse>;
-	try {
-		ast = parse(patchedCode);
-	} catch (error) {
-		const reason = error instanceof Error ? error.message : String(error);
-		pushFailure(
-			failures,
-			"patched",
-			"read-state-guard",
-			`Could not parse patched cli.js while checking the read-state guard: ${reason}`,
-		);
-		return 1;
-	}
 	if (!hasReadStateRebuildRangeGuard(ast)) {
 		pushFailure(
 			failures,
@@ -392,26 +390,10 @@ function checkSignatureParity(
 
 function runPatchVerifiers(
 	patchedCode: string,
+	ast: ReturnType<typeof parse>,
 	failures: AnchorFailure[],
 ): number {
 	let checksRun = 0;
-	let ast: any;
-	try {
-		ast = parse(patchedCode);
-	} catch (error) {
-		const reason =
-			error instanceof Error
-				? error.message
-				: `Unknown parse error: ${String(error)}`;
-		pushFailure(
-			failures,
-			"patch-verify",
-			"patch-verify-parse-failed",
-			`Failed to parse patched cli.js for patch verification: ${reason}`,
-		);
-		return 1;
-	}
-
 	for (const patch of allPatches) {
 		if (patch.tag === "signature") continue;
 		checksRun++;
@@ -497,6 +479,7 @@ async function readCliInputs(
 
 export async function verifyCliAnchors(
 	input: VerifyCliAnchorsInput,
+	runtime: VerifyCliAnchorsRuntime = DEFAULT_RUNTIME,
 ): Promise<VerifyCliAnchorsResult> {
 	const failures: AnchorFailure[] = [];
 	let checksRun = 0;
@@ -513,42 +496,73 @@ export async function verifyCliAnchors(
 		};
 	}
 	const { patchedCode, cleanCode } = codes;
+	try {
+		checksRun++;
+		if (cleanCode.includes("(Claude Code; patched:")) {
+			pushFailure(
+				failures,
+				"clean",
+				"clean-has-signature",
+				"Found forbidden signature in clean cli.js",
+			);
+		}
 
-	checksRun++;
-	if (cleanCode.includes("(Claude Code; patched:")) {
-		pushFailure(
+		checksRun += checkRequiredFixed(patchedCode, "patched", failures);
+		checksRun += checkForbiddenFixed(patchedCode, "patched", failures);
+		checksRun += checkRequiredRegex(patchedCode, "patched", failures);
+		checksRun += checkForbiddenRegex(patchedCode, "patched", failures);
+		checksRun += checkReadRangeMarker(patchedCode, failures);
+		let patchedAst: ReturnType<typeof parse> | undefined;
+		let parseFailureReason: string | undefined;
+		try {
+			patchedAst = runtime.parse(patchedCode);
+		} catch (error) {
+			parseFailureReason =
+				error instanceof Error ? error.message : String(error);
+		}
+		if (patchedAst) {
+			checksRun += checkReadStateGuard(patchedAst, failures);
+		} else {
+			checksRun++;
+			pushFailure(
+				failures,
+				"patched",
+				"read-state-guard",
+				`Could not parse patched cli.js while checking the read-state guard: ${parseFailureReason}`,
+			);
+		}
+		checksRun += checkClaudeMdMarkers(patchedCode, failures);
+		checksRun += checkWorkflowSubagentRouting(patchedCode, failures);
+		checksRun += checkPromptPolicyContract(patchedCode, failures);
+		if (!input.skipPatchVerifiers) {
+			if (patchedAst) {
+				checksRun += runPatchVerifiers(patchedCode, patchedAst, failures);
+			} else {
+				checksRun++;
+				pushFailure(
+					failures,
+					"patch-verify",
+					"patch-verify-parse-failed",
+					`Failed to parse patched cli.js for patch verification: ${parseFailureReason}`,
+				);
+			}
+		}
+
+		const signatureCheck = checkSignatureParity(
+			patchedCode,
 			failures,
-			"clean",
-			"clean-has-signature",
-			"Found forbidden signature in clean cli.js",
+			input.signatureExpectation ?? "selected",
 		);
+		checksRun += signatureCheck.checksRun;
+
+		return {
+			ok: failures.length === 0,
+			checksRun,
+			failures,
+			expectedPatchTags: collectSelectedPatchTags(),
+			actualSignatureTags: signatureCheck.actualSignatureTags,
+		};
+	} finally {
+		runtime.clearTraverseCache();
 	}
-
-	checksRun += checkRequiredFixed(patchedCode, "patched", failures);
-	checksRun += checkForbiddenFixed(patchedCode, "patched", failures);
-	checksRun += checkRequiredRegex(patchedCode, "patched", failures);
-	checksRun += checkForbiddenRegex(patchedCode, "patched", failures);
-	checksRun += checkReadRangeMarker(patchedCode, failures);
-	checksRun += checkReadStateGuard(patchedCode, failures);
-	checksRun += checkClaudeMdMarkers(patchedCode, failures);
-	checksRun += checkWorkflowSubagentRouting(patchedCode, failures);
-	checksRun += checkPromptPolicyContract(patchedCode, failures);
-	if (!input.skipPatchVerifiers) {
-		checksRun += runPatchVerifiers(patchedCode, failures);
-	}
-
-	const signatureCheck = checkSignatureParity(
-		patchedCode,
-		failures,
-		input.signatureExpectation ?? "selected",
-	);
-	checksRun += signatureCheck.checksRun;
-
-	return {
-		ok: failures.length === 0,
-		checksRun,
-		failures,
-		expectedPatchTags: collectSelectedPatchTags(),
-		actualSignatureTags: signatureCheck.actualSignatureTags,
-	};
 }

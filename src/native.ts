@@ -16,11 +16,13 @@ import {
 	toWriteError,
 } from "./bun-format.js";
 import {
+	copyBunCjsEnvelope,
 	extractClaudeJsFromNativeLinux,
 	isElfBinary,
 	repackNativeLinuxBinary,
 	unwrapBunCjsModule,
 	wrapBunCjsModule,
+	wrapBunCjsModuleBuffer,
 } from "./native-linux.js";
 
 const require = createRequire(import.meta.url);
@@ -485,4 +487,9 @@ export function repackNativeBinary(
 	writeLiefBinary(extracted.binary, filePath, outputPath, "PE");
 }
 
-export { unwrapBunCjsModule, wrapBunCjsModule };
+export {
+	copyBunCjsEnvelope,
+	unwrapBunCjsModule,
+	wrapBunCjsModule,
+	wrapBunCjsModuleBuffer,
+};

@@ -7,11 +7,13 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import {
+	copyBunCjsEnvelope,
 	extractClaudeJsFromNativeBinary,
 	isNativeBinary,
 	repackNativeBinary,
 	unwrapBunCjsModule,
 	wrapBunCjsModule,
+	wrapBunCjsModuleBuffer,
 } from "./native.js";
 import {
 	fetchNativeRelease,
@@ -21,6 +23,7 @@ import { normalize } from "./normalizer.js";
 import { getPatchMetadata } from "./patch-metadata.js";
 import { PatchRunner } from "./patch-runner.js";
 import { allPatches } from "./patches/index.js";
+import { emitMemoryCheckpoint } from "./profiling.js";
 import {
 	status as getStatus,
 	type PromoteOptions,
@@ -337,11 +340,12 @@ export class Manager {
 
 	private async processNativeTarget(targetPath: string) {
 		console.log(chalk.blue(`→ Extracting embedded JS from ${targetPath}`));
-		const extractedCliText =
+		let extractedCliText: string | null =
 			extractClaudeJsFromNativeBinary(targetPath).toString("utf-8");
-		const wrapper = unwrapBunCjsModule(extractedCliText);
-		const bodyToCheck = wrapper ? wrapper.body : extractedCliText;
-		if (this.isAlreadyPatched(bodyToCheck) && !this.options.force) {
+		let wrapper = unwrapBunCjsModule(extractedCliText);
+		let pristineBody: string | null = wrapper?.body ?? extractedCliText;
+		emitMemoryCheckpoint("native.source-extracted");
+		if (this.isAlreadyPatched(pristineBody) && !this.options.force) {
 			console.log(
 				chalk.yellow(
 					"   Target already contains patch signature. Use --force to re-patch, or start from a clean binary.",
@@ -350,18 +354,20 @@ export class Manager {
 			const outputPath = this.options.outputPath ?? targetPath;
 			return { target: targetPath, outputPath, mode: "native" };
 		}
+		const wrapperEnvelope = wrapper ? copyBunCjsEnvelope(wrapper) : null;
 		const tempDir = await fs.mkdtemp(
 			path.join(os.tmpdir(), "claude-native-patch-"),
 		);
 		const tempCliPath = path.join(tempDir, "cli.js");
 
 		try {
-			await fs.writeFile(
-				tempCliPath,
-				wrapper ? wrapper.body : extractedCliText,
-				"utf-8",
-			);
+			await fs.writeFile(tempCliPath, pristineBody, "utf-8");
+			pristineBody = null;
+			wrapper = null;
+			extractedCliText = null;
+			emitMemoryCheckpoint("native.source-released");
 			await this.normalizeCliJs(tempCliPath);
+			emitMemoryCheckpoint("native.normalized");
 			const previousNativeMode = process.env.CLAUDE_PATCHER_NATIVE_MODE;
 			process.env.CLAUDE_PATCHER_NATIVE_MODE = "1";
 			let patched: { result?: PatchResult; error?: string };
@@ -374,6 +380,7 @@ export class Manager {
 					process.env.CLAUDE_PATCHER_NATIVE_MODE = previousNativeMode;
 				}
 			}
+			emitMemoryCheckpoint("native.patch-complete");
 
 			const outputPath = this.options.outputPath ?? targetPath;
 			if (!this.options.dryRun && outputPath !== targetPath) {
@@ -393,20 +400,19 @@ export class Manager {
 				!this.options.dryRun &&
 				!patched.error
 			) {
-				const patchedBody = await fs.readFile(tempCliPath, "utf-8");
-				const patchedJsText = wrapper
-					? wrapBunCjsModule(wrapper, patchedBody)
+				let patchedBody: Buffer | null = await fs.readFile(tempCliPath);
+				const patchedJs = wrapperEnvelope
+					? wrapBunCjsModuleBuffer(wrapperEnvelope, patchedBody)
 					: patchedBody;
+				patchedBody = null;
+				emitMemoryCheckpoint("native.repack-input");
 				console.log(
 					chalk.blue(
 						`→ Repacking patched JS into native binary ${outputPath === targetPath ? "(in-place)" : ""}`,
 					),
 				);
-				repackNativeBinary(
-					targetPath,
-					Buffer.from(patchedJsText, "utf-8"),
-					outputPath,
-				);
+				repackNativeBinary(targetPath, patchedJs, outputPath);
+				emitMemoryCheckpoint("native.repack-complete");
 			}
 
 			return {

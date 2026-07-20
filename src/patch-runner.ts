@@ -10,6 +10,7 @@ import { clearTraverseCache } from "./babel.js";
 import { parse, print } from "./loader.js";
 import { buildGroupResults, getPatchMetadata } from "./patch-metadata.js";
 import { allPatches, getLimitsChanged, signature } from "./patches/index.js";
+import { emitMemoryCheckpoint, isPatcherProfileEnabled } from "./profiling.js";
 import type {
 	Patch,
 	PatchAstPass,
@@ -19,15 +20,31 @@ import type {
 
 export type SignatureInjectionPolicy = "auto" | "force" | "off";
 
+interface PatchRunnerRuntime {
+	print: typeof print;
+	clearTraverseCache: typeof clearTraverseCache;
+	memoryUsage: () => NodeJS.MemoryUsage;
+	profileSink: (line: string) => void;
+}
+
+const DEFAULT_RUNTIME: PatchRunnerRuntime = {
+	print,
+	clearTraverseCache,
+	memoryUsage: () => process.memoryUsage(),
+	profileSink: (line) => console.error(line),
+};
+
 export class PatchRunner {
 	private patches: Patch[] = [];
 	private injectSignature: boolean;
+	private runtime: PatchRunnerRuntime;
 
 	constructor(
 		patches?: Patch[],
 		options?: {
 			signaturePolicy?: SignatureInjectionPolicy;
 			injectSignature?: boolean;
+			runtime?: Partial<PatchRunnerRuntime>;
 		},
 	) {
 		const selectedPatches = patches ?? allPatches;
@@ -50,21 +67,44 @@ export class PatchRunner {
 				: signaturePolicy === "off"
 					? false
 					: hasSignatureSelected;
+		this.runtime = { ...DEFAULT_RUNTIME, ...options?.runtime };
 	}
 
 	async run(
 		filePath: string,
 		options: { dryRun?: boolean; showDiff?: boolean } = {},
 	): Promise<PatchResult> {
+		try {
+			return await this.runPipeline(filePath, options);
+		} finally {
+			// A populated cache keeps the complete NodePath/Scope graph resident.
+			// Always release it, including when parsing, generation, or writing throws.
+			this.profileMemory("patch.cache-before-clear");
+			this.runtime.clearTraverseCache();
+			this.profileMemory("patch.cache-cleared");
+		}
+	}
+
+	private profileMemory(checkpoint: string): void {
+		emitMemoryCheckpoint(
+			checkpoint,
+			isPatcherProfileEnabled(),
+			this.runtime.memoryUsage,
+			this.runtime.profileSink,
+		);
+	}
+
+	private async runPipeline(
+		filePath: string,
+		options: { dryRun?: boolean; showDiff?: boolean },
+	): Promise<PatchResult> {
 		const originalCode = await fs.readFile(filePath, "utf-8");
 		let code = originalCode;
 
 		// Optional pipeline profiling, gated by CLAUDE_PATCHER_PROFILE=1.
-		// Emits one stderr summary line at the end of the run with
-		// parse/passes/print/verify times and the slowest verify tags.
-		const profileEnabled =
-			process.env.CLAUDE_PATCHER_PROFILE === "1" ||
-			process.env.CLAUDE_PATCHER_PROFILE === "true";
+		// Emits phase timings and passive process-memory checkpoints to stderr.
+		const profileEnabled = isPatcherProfileEnabled();
+		this.profileMemory("patch.source-loaded");
 		const verifyTimings = new Map<string, number>();
 
 		const appliedTags: string[] = [];
@@ -72,7 +112,6 @@ export class PatchRunner {
 		const verifications: PatchVerification[] = [];
 		const errors: { tag: string; error: Error }[] = [];
 		const patchExecutionErrors = new Map<string, string>();
-
 		// Phase 1: Run string-based patches
 		for (const patch of this.patches) {
 			if (!patch.string) continue;
@@ -105,6 +144,7 @@ export class PatchRunner {
 		const ast = parse(code);
 		parseSpinner.succeed("AST parsed");
 		const tAfterParse = performance.now();
+		this.profileMemory("patch.ast-parsed");
 
 		// Phase 3: Run AST-based patches
 		const combinedPatchEntries: Array<{ tag: string; pass: PatchAstPass }> = [];
@@ -154,10 +194,12 @@ export class PatchRunner {
 		}
 
 		const tAfterPasses = performance.now();
+		this.profileMemory("patch.passes-complete");
 
 		// Phase 4: Print AST to code
-		const output = print(ast);
+		const output = this.runtime.print(ast);
 		const tAfterPrint = performance.now();
+		this.profileMemory("patch.first-print");
 
 		// Phase 5: Verify all patches
 		for (const patch of this.patches) {
@@ -211,6 +253,7 @@ export class PatchRunner {
 				failedTags.push(patch.tag);
 			}
 		}
+		this.profileMemory("patch.verifiers-complete");
 
 		// Phase 6: Inject signature with applied tags (use same AST, don't re-parse)
 		if (
@@ -243,7 +286,8 @@ export class PatchRunner {
 		}
 
 		// Phase 7: Print final output
-		const finalOutput = print(ast);
+		const finalOutput = this.runtime.print(ast);
+		this.profileMemory("patch.final-print");
 
 		// Generate diff using external diff command (much faster than JS diff on large files)
 		if (options.showDiff) {
@@ -352,6 +396,7 @@ export class PatchRunner {
 				),
 			);
 		}
+		this.profileMemory("patch.output-complete");
 
 		const groupResults = buildGroupResults(verifications);
 
@@ -366,16 +411,10 @@ export class PatchRunner {
 				.slice(0, 6)
 				.map(([tag, ms]) => `${tag}=${ms.toFixed(1)}ms`)
 				.join(" ");
-			console.error(
+			this.runtime.profileSink(
 				`[profile] parse=${parseMs}ms passes=${passesMs}ms print=${printMs}ms verify=${verifyMs}ms top: ${topVerify}`,
 			);
 		}
-
-		// Release Babel's path/scope cache for this run before returning. Callers
-		// hold the result across memory-heavy work (post-update verification spawns
-		// its own full pipeline), and a populated cache keeps the entire NodePath
-		// graph resident the whole time.
-		clearTraverseCache();
 
 		return {
 			appliedTags,
@@ -383,7 +422,10 @@ export class PatchRunner {
 			verifications,
 			groupResults,
 			limits: getLimitsChanged(),
-			errors: errors.map(({ tag, error }) => ({ tag, reason: error.message })),
+			errors: errors.map(({ tag, error }) => ({
+				tag,
+				reason: error.message,
+			})),
 		};
 	}
 }

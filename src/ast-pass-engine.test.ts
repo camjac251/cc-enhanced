@@ -71,6 +71,46 @@ test("combined pass engine treats path.stop as local skip and preserves peer han
 	);
 });
 
+test("combined pass engine restores the inherited path.stop method", async () => {
+	const ast = parse("const value = 1;\n");
+	let visitedPath: any;
+
+	const entries: PatchPassEntry[] = [
+		{
+			tag: "first",
+			pass: {
+				pass: "mutate",
+				visitor: {
+					VariableDeclaration(path: any) {
+						visitedPath = path;
+					},
+				},
+			},
+		},
+		{
+			tag: "second",
+			pass: {
+				pass: "mutate",
+				visitor: {
+					VariableDeclaration() {},
+				},
+			},
+		},
+	];
+
+	await runCombinedAstPasses(
+		ast,
+		entries,
+		() => {},
+		() => {},
+		() => {},
+	);
+
+	assert.ok(visitedPath);
+	assert.equal(Object.hasOwn(visitedPath, "stop"), false);
+	assert.equal(visitedPath.stop, Object.getPrototypeOf(visitedPath).stop);
+});
+
 test("combined pass engine skips later passes for tags that fail early", async () => {
 	const ast = parse('const x = "before";\n');
 	const errors: string[] = [];
