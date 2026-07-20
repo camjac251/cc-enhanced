@@ -23,7 +23,7 @@ import { normalize } from "./normalizer.js";
 import { getPatchMetadata } from "./patch-metadata.js";
 import { PatchRunner } from "./patch-runner.js";
 import { allPatches } from "./patches/index.js";
-import { emitMemoryCheckpoint } from "./profiling.js";
+import { emitMemoryCheckpoint, forceGarbageCollection } from "./profiling.js";
 import {
 	status as getStatus,
 	type PromoteOptions,
@@ -381,6 +381,8 @@ export class Manager {
 				}
 			}
 			emitMemoryCheckpoint("native.patch-complete");
+			forceGarbageCollection();
+			emitMemoryCheckpoint("native.patch-state-released");
 
 			const outputPath = this.options.outputPath ?? targetPath;
 			if (!this.options.dryRun && outputPath !== targetPath) {

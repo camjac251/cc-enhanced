@@ -166,6 +166,7 @@ function functionCallsPathToFileURL(
 				found = true;
 			}
 		},
+		noScope: true,
 	});
 	return found;
 }
@@ -249,6 +250,7 @@ function hasHelper(ast: t.File): boolean {
 				path.stop();
 			}
 		},
+		noScope: true,
 	});
 	return found;
 }
@@ -309,8 +311,10 @@ function verifyPatchedFilePathComponent(ast: t.File): true | string {
 						foundUnpatchedUrl = true;
 					}
 				},
+				noScope: true,
 			});
 		},
+		noScope: true,
 	});
 
 	if (!foundComponent) return "File hyperlink component not found";

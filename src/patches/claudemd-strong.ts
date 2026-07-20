@@ -72,6 +72,7 @@ function countSlimSubagentClaudeMdOmitGates(ast: t.File | t.Program): number {
 			if (!isSlimSubagentClaudeMdOmitGate(path.node.init)) return;
 			count++;
 		},
+		noScope: true,
 	});
 	return count;
 }

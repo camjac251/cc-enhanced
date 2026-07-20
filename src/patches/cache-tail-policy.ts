@@ -1294,6 +1294,7 @@ function findRequestClampFunction(ast: t.File): RequestClampAnchor | null {
 			};
 			path.stop();
 		},
+		noScope: true,
 	});
 
 	clampAnchorCache.set(ast, match);
@@ -1479,10 +1480,12 @@ function verifyTailWindowPolicy(ast: t.File): true | string {
 						hasDecimationGate = true;
 					}
 				},
+				noScope: true,
 			});
 
 			path.stop();
 		},
+		noScope: true,
 	});
 
 	if (!foundMarkerFunction) {
@@ -1586,6 +1589,7 @@ function verifySyspromptGlobalScope(ast: t.File): true | string {
 				return;
 			}
 		},
+		noScope: true,
 	});
 
 	if (!foundSyspromptMarker) {
@@ -1648,6 +1652,7 @@ function verifyCacheControlTtlRespectsCaller(ast: t.File): true | string {
 						hasEphemeral = true;
 					}
 				},
+				noScope: true,
 			});
 			if (!hasEphemeral) return;
 
@@ -1689,10 +1694,12 @@ function verifyCacheControlTtlRespectsCaller(ast: t.File): true | string {
 						hasScopeForcedTtlGate = true;
 					}
 				},
+				noScope: true,
 			});
 
 			path.stop();
 		},
+		noScope: true,
 	});
 
 	if (!foundCacheControlBuilder) {
@@ -1734,6 +1741,7 @@ function verifyAgentCacheTtlAllowlist(ast: t.File): true | string {
 				path.stop();
 			}
 		},
+		noScope: true,
 	});
 
 	if (!foundAllowlist) {
@@ -1830,8 +1838,10 @@ function verifyCacheControlBlockCap(
 						}
 					}
 				},
+				noScope: true,
 			});
 		},
+		noScope: true,
 	});
 
 	if (fixedClampDeclCount === 0) {
@@ -1950,6 +1960,7 @@ function verifyOneHourTtlEnforced(ast: t.File): true | string {
 				}
 			}
 		},
+		noScope: true,
 	});
 
 	if (!hasSystemTtlSet) {

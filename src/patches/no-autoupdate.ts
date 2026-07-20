@@ -53,6 +53,7 @@ function hasDisableAutoupdaterCheck(path: NodePath<t.Function>): boolean {
 			hasDisableCheck = true;
 			ifPath.stop();
 		},
+		noScope: true,
 	});
 	return hasDisableCheck;
 }
@@ -255,6 +256,7 @@ export const disableAutoupdater: Patch = {
 					patchedFunctionCount++;
 				}
 			},
+			noScope: true,
 		});
 
 		if (guardFunctionNames.size === 1) {
@@ -272,6 +274,7 @@ export const disableAutoupdater: Patch = {
 						pluginGatePatchedCount++;
 					}
 				},
+				noScope: true,
 			});
 		}
 

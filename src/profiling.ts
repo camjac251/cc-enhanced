@@ -1,5 +1,11 @@
 const MEBIBYTE = 1024 * 1024;
 
+interface GarbageCollectionRuntime {
+	Bun?: {
+		gc?: (force?: boolean) => void;
+	};
+}
+
 function formatMebibytes(bytes: number): string {
 	return `${(bytes / MEBIBYTE).toFixed(1)}MiB`;
 }
@@ -33,4 +39,10 @@ export function emitMemoryCheckpoint(
 ): void {
 	if (!enabled) return;
 	sink(formatMemoryCheckpoint(checkpoint, memoryUsage()));
+}
+
+export function forceGarbageCollection(
+	runtime: GarbageCollectionRuntime = globalThis as GarbageCollectionRuntime,
+): void {
+	runtime.Bun?.gc?.(true);
 }

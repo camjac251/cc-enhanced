@@ -8,6 +8,7 @@ import { hideBin } from "yargs/helpers";
 import { detectInstalledClaudeTarget } from "./installation-detection.js";
 import { Manager } from "./manager.js";
 import { allPatches } from "./patches/index.js";
+import { forceGarbageCollection } from "./profiling.js";
 import type {
 	PatchedVersionInfo,
 	PromoteResult,
@@ -640,9 +641,7 @@ async function main() {
 				// blocked, so force one now to free this run's AST and Babel path
 				// cache before the child's peak; otherwise the parent's resident set
 				// stacks on the child's and the pair can exhaust memory.
-				(globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(
-					true,
-				);
+				forceGarbageCollection();
 				runPostUpdateVerification(result.promoteResult?.target);
 			}
 		} catch (e) {
