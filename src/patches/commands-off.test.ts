@@ -362,3 +362,18 @@ const COMMANDS = memoize(() => [aliasCmd, keepCmd, dropCmd]);
 	);
 	assert.equal(commandsOff.verify(output, ast), true);
 });
+
+test("commands-off verify flags surviving command content when the name lookup misses", () => {
+	const renamedFixture = `
+let cmd = {
+  name: "branch-security-scan",
+  type: "prompt",
+  description: "Complete a security review of the pending changes on the current branch",
+};
+let registry = [cmd];
+`;
+	const ast = parse(renamedFixture);
+	const result = commandsOff.verify(renamedFixture, ast);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("renamed or reshaped"), true);
+});

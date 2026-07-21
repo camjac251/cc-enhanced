@@ -3,13 +3,15 @@ import { type NodePath, traverse } from "../babel.js";
 import { parse } from "../loader.js";
 import type { Patch, PatchAstPass } from "../types.js";
 import {
+	collectSubagentModelEnvArrays,
 	getMemberPropertyName,
 	getObjectKeyName,
 	getVerifyAst,
+	isSubagentModelEnvArray,
+	SUBAGENT_MODEL_ENV,
 } from "./ast-helpers.js";
 
 const MODEL_ALIASES_ENV = "CLAUDE_CODE_MODEL_ALIASES";
-const CCR_SELECTOR_PATTERN = "^anthropic\\/claude-ccr-h([0-9a-f]+)$";
 const MODEL_NORMALIZER_CASES = [
 	"fable",
 	"opusplan",
@@ -53,11 +55,7 @@ interface WorkflowModelFormatterCandidate {
 	path: NodePath<t.FunctionDeclaration>;
 	displayResolver: t.ArrowFunctionExpression;
 	displayParameterName: string;
-	modelParameterName: string;
-	fallbackParameterName: string;
-	fallbackStatement: t.IfStatement;
 	displayHelperName?: string;
-	equivalenceHelperName?: string;
 	state: PatchSiteState;
 }
 
@@ -771,7 +769,7 @@ function getTeammateResolverShape(
 	const explicitModelName = firstParameter.name;
 	if (
 		!nodeContains(path.node.body, (child) =>
-			isProcessEnvMember(child, "CLAUDE_CODE_SUBAGENT_MODEL"),
+			isProcessEnvMember(child, SUBAGENT_MODEL_ENV),
 		)
 	) {
 		return null;
@@ -839,7 +837,7 @@ function getEnvironmentArrayState(node: t.ArrayExpression): PatchSiteState {
 	const subagentIndexes: number[] = [];
 	const aliasIndexes: number[] = [];
 	for (const [index, element] of node.elements.entries()) {
-		if (t.isStringLiteral(element, { value: "CLAUDE_CODE_SUBAGENT_MODEL" })) {
+		if (t.isStringLiteral(element, { value: SUBAGENT_MODEL_ENV })) {
 			subagentIndexes.push(index);
 		}
 		if (t.isStringLiteral(element, { value: MODEL_ALIASES_ENV })) {
@@ -858,7 +856,7 @@ function patchEnvironmentArray(node: t.ArrayExpression): boolean {
 	if (state === "patched") return true;
 	if (state !== "unpatched") return false;
 	const index = node.elements.findIndex((element) =>
-		t.isStringLiteral(element, { value: "CLAUDE_CODE_SUBAGENT_MODEL" }),
+		t.isStringLiteral(element, { value: SUBAGENT_MODEL_ENV }),
 	);
 	if (index < 0) return false;
 	node.elements.splice(index + 1, 0, t.stringLiteral(MODEL_ALIASES_ENV));
@@ -951,26 +949,6 @@ function getWorkflowFormatterReferenceCount(
 	}).length;
 }
 
-function getRouteEquivalenceGuardHelper(
-	node: t.Node,
-	modelName: string,
-	fallbackName: string,
-): string | null {
-	if (
-		!t.isLogicalExpression(node, { operator: "&&" }) ||
-		!isNonNullComparison(node.left, fallbackName) ||
-		!t.isUnaryExpression(node.right, { operator: "!" }) ||
-		!t.isCallExpression(node.right.argument) ||
-		!t.isIdentifier(node.right.argument.callee) ||
-		node.right.argument.arguments.length !== 2 ||
-		!t.isIdentifier(node.right.argument.arguments[0], { name: modelName }) ||
-		!t.isIdentifier(node.right.argument.arguments[1], { name: fallbackName })
-	) {
-		return null;
-	}
-	return node.right.argument.callee.name;
-}
-
 function classifyWorkflowModelFormatter(
 	path: NodePath<t.FunctionDeclaration>,
 ): WorkflowModelFormatterCandidate | null {
@@ -999,16 +977,9 @@ function classifyWorkflowModelFormatter(
 	) {
 		return null;
 	}
-	const fallbackIsStock = isNonNullComparison(
-		fallbackStatement.test,
-		fallbackParameter.name,
-	);
-	const equivalenceHelperName = getRouteEquivalenceGuardHelper(
-		fallbackStatement.test,
-		modelParameter.name,
-		fallbackParameter.name,
-	);
-	if (!fallbackIsStock && !equivalenceHelperName) return null;
+	if (!isNonNullComparison(fallbackStatement.test, fallbackParameter.name)) {
+		return null;
+	}
 	const resolverName = resolverStatement.declarations[0].id.name;
 	const displayResolver = resolverStatement.declarations[0].init;
 	const displayParameter = displayResolver.params[0];
@@ -1031,14 +1002,8 @@ function classifyWorkflowModelFormatter(
 		path,
 		displayResolver,
 		displayParameterName,
-		modelParameterName: modelParameter.name,
-		fallbackParameterName: fallbackParameter.name,
-		fallbackStatement,
 	};
-	if (
-		fallbackIsStock &&
-		isStockDisplayResolverBody(displayResolver.body, displayParameterName)
-	) {
+	if (isStockDisplayResolverBody(displayResolver.body, displayParameterName)) {
 		return {
 			...base,
 			state: "unpatched",
@@ -1048,7 +1013,6 @@ function classifyWorkflowModelFormatter(
 		? flattenNullish(displayResolver.body)
 		: [];
 	if (
-		equivalenceHelperName &&
 		displayOperands.length === 3 &&
 		t.isCallExpression(displayOperands[0]) &&
 		t.isIdentifier(displayOperands[0].callee) &&
@@ -1066,7 +1030,6 @@ function classifyWorkflowModelFormatter(
 		return {
 			...base,
 			displayHelperName: displayOperands[0].callee.name,
-			equivalenceHelperName,
 			state: "patched",
 		};
 	}
@@ -1076,15 +1039,11 @@ function classifyWorkflowModelFormatter(
 	};
 }
 
-function buildWorkflowAliasHelpers(path: NodePath<t.FunctionDeclaration>): {
-	displayHelper: t.FunctionDeclaration;
-	equivalenceHelper: t.FunctionDeclaration;
-} {
+function buildWorkflowAliasHelper(
+	path: NodePath<t.FunctionDeclaration>,
+): t.FunctionDeclaration {
 	const displayHelperName = path.scope.generateUidIdentifier(
 		"configuredModelAliasLabel",
-	).name;
-	const equivalenceHelperName = path.scope.generateUidIdentifier(
-		"configuredModelsEquivalent",
 	).name;
 	const source = parse(`
 function ${displayHelperName}(model) {
@@ -1103,38 +1062,17 @@ function ${displayHelperName}(model) {
     return alias.charAt(0).toUpperCase() + alias.slice(1);
   }
 }
-
-function ${equivalenceHelperName}(requestedModel, responseModel) {
-  if (typeof requestedModel !== "string" || typeof responseModel !== "string") return false;
-  if (${displayHelperName}(requestedModel) === void 0) return false;
-  const match = new RegExp(${JSON.stringify(CCR_SELECTOR_PATTERN)}, "i").exec(requestedModel.trim());
-  if (!match || match[1].length === 0 || match[1].length % 2 !== 0) return false;
-  const pairs = match[1].match(/.{2}/g);
-  if (!pairs) return false;
-  const routedTarget = new TextDecoder().decode(
-    Uint8Array.from(pairs, (pair) => Number.parseInt(pair, 16)),
-  );
-  const trimmedResponse = responseModel.trim();
-  if (trimmedResponse === routedTarget) return true;
-  if (trimmedResponse.includes("/")) return false;
-  const providerSeparator = routedTarget.indexOf("/");
-  return providerSeparator >= 0 && routedTarget.slice(providerSeparator + 1) === trimmedResponse;
-}
 `);
-	const [displayHelper, equivalenceHelper] = source.program.body;
-	if (
-		!t.isFunctionDeclaration(displayHelper) ||
-		!t.isFunctionDeclaration(equivalenceHelper)
-	) {
-		throw new Error("model-aliases: failed to build workflow model helpers");
+	const displayHelper = source.program.body[0];
+	if (!t.isFunctionDeclaration(displayHelper)) {
+		throw new Error("model-aliases: failed to build workflow model helper");
 	}
-	return { displayHelper, equivalenceHelper };
+	return displayHelper;
 }
 
 function patchWorkflowModelFormatter(
 	candidate: WorkflowModelFormatterCandidate,
 	displayHelperName: string,
-	equivalenceHelperName: string,
 ): boolean {
 	if (candidate.state === "patched") return true;
 	if (candidate.state !== "unpatched") return false;
@@ -1146,19 +1084,7 @@ function patchWorkflowModelFormatter(
 		]),
 		candidate.displayResolver.body,
 	);
-	candidate.fallbackStatement.test = t.logicalExpression(
-		"&&",
-		candidate.fallbackStatement.test,
-		t.unaryExpression(
-			"!",
-			t.callExpression(t.identifier(equivalenceHelperName), [
-				t.identifier(candidate.modelParameterName),
-				t.identifier(candidate.fallbackParameterName),
-			]),
-		),
-	);
 	candidate.displayHelperName = displayHelperName;
-	candidate.equivalenceHelperName = equivalenceHelperName;
 	candidate.state = "patched";
 	return true;
 }
@@ -1187,104 +1113,6 @@ function isAliasDisplayHelper(node: t.FunctionDeclaration | null): boolean {
 			node.body,
 			(child) => getMemberCall(child, "toUpperCase") !== null,
 		)
-	);
-}
-
-function ifReturnsBoolean(node: t.IfStatement, value: boolean): boolean {
-	const statement = t.isBlockStatement(node.consequent)
-		? node.consequent.body.length === 1
-			? node.consequent.body[0]
-			: null
-		: node.consequent;
-	return (
-		t.isReturnStatement(statement) &&
-		t.isBooleanLiteral(statement.argument, { value })
-	);
-}
-
-function isProviderlessTargetComparison(node: t.Node): boolean {
-	if (
-		!t.isReturnStatement(node) ||
-		!t.isLogicalExpression(node.argument, { operator: "&&" }) ||
-		!t.isBinaryExpression(node.argument.left, { operator: ">=" }) ||
-		!t.isNumericLiteral(node.argument.left.right, { value: 0 }) ||
-		!t.isBinaryExpression(node.argument.right, { operator: "===" })
-	) {
-		return false;
-	}
-	const equality = node.argument.right;
-	for (const [sliceSide, responseSide] of [
-		[equality.left, equality.right],
-		[equality.right, equality.left],
-	] as const) {
-		const sliceCall = getMemberCall(sliceSide, "slice");
-		if (
-			sliceCall?.arguments.length !== 1 ||
-			!t.isBinaryExpression(sliceCall.arguments[0], { operator: "+" }) ||
-			!t.isNumericLiteral(sliceCall.arguments[0].right, { value: 1 }) ||
-			!t.isIdentifier(responseSide)
-		) {
-			continue;
-		}
-		return true;
-	}
-	return false;
-}
-
-function isRouteEquivalenceHelper(
-	node: t.FunctionDeclaration | null,
-	displayHelperName: string | undefined,
-): boolean {
-	if (
-		!node ||
-		!displayHelperName ||
-		node.params.length !== 2 ||
-		!t.isIdentifier(node.params[0]) ||
-		!t.isIdentifier(node.params[1])
-	) {
-		return false;
-	}
-	const requestedParameter = node.params[0];
-	const responseParameter = node.params[1];
-	if (
-		!t.isIdentifier(requestedParameter) ||
-		!t.isIdentifier(responseParameter)
-	) {
-		return false;
-	}
-	return (
-		nodeContains(node.body, (child) =>
-			isCallWithIdentifierArgument(
-				child,
-				displayHelperName,
-				requestedParameter.name,
-			),
-		) &&
-		nodeContains(
-			node.body,
-			(child) => getStaticString(child) === CCR_SELECTOR_PATTERN,
-		) &&
-		nodeContains(
-			node.body,
-			(child) =>
-				t.isNewExpression(child) &&
-				t.isIdentifier(child.callee, { name: "TextDecoder" }),
-		) &&
-		nodeContains(
-			node.body,
-			(child) =>
-				t.isIfStatement(child) &&
-				t.isBinaryExpression(child.test, { operator: "===" }) &&
-				ifReturnsBoolean(child, true),
-		) &&
-		nodeContains(
-			node.body,
-			(child) =>
-				t.isIfStatement(child) &&
-				getMemberCall(child.test, "includes") !== null &&
-				ifReturnsBoolean(child, false),
-		) &&
-		nodeContains(node.body, isProviderlessTargetComparison)
 	);
 }
 
@@ -1325,7 +1153,7 @@ function createModelAliasPasses(): PatchAstPass[] {
 					}
 				},
 				MemberExpression(path) {
-					if (!isProcessEnvMember(path.node, "CLAUDE_CODE_SUBAGENT_MODEL")) {
+					if (!isProcessEnvMember(path.node, SUBAGENT_MODEL_ENV)) {
 						return;
 					}
 					const functionPath = path.getFunctionParent();
@@ -1345,13 +1173,7 @@ function createModelAliasPasses(): PatchAstPass[] {
 					}
 				},
 				ArrayExpression(path) {
-					if (
-						path.node.elements.some((element) =>
-							t.isStringLiteral(element, {
-								value: "CLAUDE_CODE_SUBAGENT_MODEL",
-							}),
-						)
-					) {
+					if (isSubagentModelEnvArray(path.node)) {
 						environmentArrays.push(path.node);
 					}
 				},
@@ -1396,25 +1218,19 @@ function createModelAliasPasses(): PatchAstPass[] {
 						}
 
 						environmentForwardingPatched =
-							environmentArrays.length === 3 &&
+							environmentArrays.length > 0 &&
 							environmentArrays.every((array) => patchEnvironmentArray(array));
 
 						if (workflowModelFormatters.length === 1) {
 							const formatter = workflowModelFormatters[0];
 							if (formatter.state === "unpatched") {
-								const { displayHelper, equivalenceHelper } =
-									buildWorkflowAliasHelpers(normalizer.path);
-								normalizer.path.insertBefore([
-									displayHelper,
-									equivalenceHelper,
-								]);
+								const displayHelper = buildWorkflowAliasHelper(normalizer.path);
+								normalizer.path.insertBefore(displayHelper);
 								const displayHelperName = displayHelper.id?.name;
-								const equivalenceHelperName = equivalenceHelper.id?.name;
-								if (displayHelperName && equivalenceHelperName) {
+								if (displayHelperName) {
 									workflowModelFormatterPatched = patchWorkflowModelFormatter(
 										formatter,
 										displayHelperName,
-										equivalenceHelperName,
 									);
 								}
 							} else {
@@ -1442,7 +1258,7 @@ function createModelAliasPasses(): PatchAstPass[] {
 						}
 						if (!environmentForwardingPatched) {
 							console.warn(
-								`Model aliases: Expected three subagent environment arrays, found ${environmentArrays.length}`,
+								`Model aliases: Could not forward the alias map to every subagent environment array (${environmentArrays.length} found)`,
 							);
 						}
 						if (!workflowModelFormatterPatched) {
@@ -1466,7 +1282,7 @@ export const modelAliases: Patch = {
 			return "Unable to parse AST during model-aliases verification";
 		const candidates: ModelNormalizerCandidate[] = [];
 		const teammateResolverShapes: TeammateResolverShape[] = [];
-		const environmentArrays: t.ArrayExpression[] = [];
+		const environmentArrays = collectSubagentModelEnvArrays(verifyAst);
 		const workflowModelFormatters: WorkflowModelFormatterCandidate[] = [];
 		traverse(verifyAst, {
 			FunctionDeclaration(path) {
@@ -1492,7 +1308,7 @@ export const modelAliases: Patch = {
 				}
 			},
 			MemberExpression(path) {
-				if (!isProcessEnvMember(path.node, "CLAUDE_CODE_SUBAGENT_MODEL")) {
+				if (!isProcessEnvMember(path.node, SUBAGENT_MODEL_ENV)) {
 					return;
 				}
 				const functionPath = path.getFunctionParent();
@@ -1509,17 +1325,6 @@ export const modelAliases: Patch = {
 					)
 				) {
 					teammateResolverShapes.push(candidate);
-				}
-			},
-			ArrayExpression(path) {
-				if (
-					path.node.elements.some((element) =>
-						t.isStringLiteral(element, {
-							value: "CLAUDE_CODE_SUBAGENT_MODEL",
-						}),
-					)
-				) {
-					environmentArrays.push(path.node);
 				}
 			},
 		});
@@ -1541,8 +1346,8 @@ export const modelAliases: Patch = {
 		if (teammateResolvers[0].state !== "patched") {
 			return "Teammate model resolver does not normalize explicit aliases";
 		}
-		if (environmentArrays.length !== 3) {
-			return `Subagent environment forwarding is ambiguous (${environmentArrays.length} arrays found)`;
+		if (environmentArrays.length === 0) {
+			return "Subagent environment forwarding not found";
 		}
 		if (
 			environmentArrays.some(
@@ -1564,18 +1369,6 @@ export const modelAliases: Patch = {
 		);
 		if (!isAliasDisplayHelper(displayHelper)) {
 			return "Workflow model formatter alias-label helper is missing or invalid";
-		}
-		const equivalenceHelper = getFunctionBinding(
-			workflowFormatter.path,
-			workflowFormatter.equivalenceHelperName,
-		);
-		if (
-			!isRouteEquivalenceHelper(
-				equivalenceHelper,
-				workflowFormatter.displayHelperName,
-			)
-		) {
-			return "Workflow model formatter routed-equivalence helper is missing or invalid";
 		}
 		return true;
 	},

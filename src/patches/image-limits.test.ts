@@ -62,6 +62,9 @@ function zWn() {
 function CVf(e, t) {
   return { messagesPreNormalize: e, messagesForAPI: e, midConvFallback: () => e };
 }
+function Wq(x) {
+  return x;
+}
 async function* query(e, s) {
   q("tengu_api_before_normalize", { preNormalizedMessageCount: e.length });
   Xp("query_message_normalization_start");
@@ -86,14 +89,20 @@ async function* query(e, s) {
     }),
     N = O,
     M = j;
-  let Ct = null;
-  if (M && zWn(Ct))
-    return (
-      (N = M()),
-      (M = null),
-      "retry:mid-conv-system"
-    );
+  let Ct = null,
+    el = (Qo) => {
+      let Fo = zWn(Qo),
+        lo = p.includes("z") && !Fo;
+      if (M && (Fo || lo)) {
+        if (((N = Fo ? M() : Wq(N)), (M = null), Fo))
+          p = p.filter((Do) => Do !== "v");
+        return "retry:mid-conv-system";
+      }
+      return;
+    };
   q("tengu_api_after_normalize", { postNormalizedMessageCount: N.length });
+  let Pi = el(Ct);
+  if (Pi) return Pi;
   return N;
 }
 `;
@@ -335,9 +344,12 @@ test("image-limits downscales high-resolution many-image requests before API sub
 	);
 	assert.match(
 		output,
-		/M = async \(\) => await __ccEnhancedDownscaleManyImageMessages/,
+		/let __ccEnhancedDownscaledMidConvFallback = await __ccEnhancedDownscaleManyImageMessages\(\s*M\(\),/,
 	);
-	assert.match(output, /N = await M\(\)/);
+	assert.match(output, /M = \(\) => __ccEnhancedDownscaledMidConvFallback/);
+	assert.doesNotMatch(output, /M = async \(\)/);
+	assert.match(output, /N = Fo \? M\(\) : Wq\(N\)/);
+	assert.doesNotMatch(output, /await M\(\)/);
 	assert.doesNotMatch(output, /\[media removed: request limit\]/);
 
 	const guardIndex = output.indexOf("__ccEnhancedVisualBlockCount");
@@ -347,6 +359,20 @@ test("image-limits downscales high-resolution many-image requests before API sub
 		normalizeEndIndex > guardIndex,
 		"guard must run before the API request proceeds",
 	);
+});
+
+test("verify rejects a fallback wrapper that returns a promise", async () => {
+	const { output } = await patchImageLimitsFixture(
+		withRequestPipeline(ALREADY_RESTORED_FIXTURE),
+	);
+	const broken = output.replace(
+		"M = () => __ccEnhancedDownscaledMidConvFallback",
+		"M = async () => __ccEnhancedDownscaledMidConvFallback",
+	);
+	assert.notEqual(broken, output);
+	const ast = parse(broken);
+	const result = imageLimits.verify(broken, ast);
+	assert.notEqual(result, true);
 });
 
 test("verify treats a non-literal override value as a missing entry", () => {

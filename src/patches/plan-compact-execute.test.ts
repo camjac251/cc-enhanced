@@ -80,9 +80,10 @@ function UP4({ toolUseConfirm: H, setStickyFooter: _ }) {
       HH === "yes-resume-auto-mode";
     if (HH !== "no") uW5(Q, z, !wH);
     if (
-      HH === "yes-bypass-permissions" ||
-      HH === "yes-accept-edits" ||
-      HH === "yes-auto-clear-context"
+      Ny &&
+      (HH === "yes-bypass-permissions" ||
+        HH === "yes-accept-edits" ||
+        HH === "yes-auto-clear-context")
     ) {
       let GH = "default";
       if (HH === "yes-bypass-permissions") GH = "bypassPermissions";
@@ -352,37 +353,45 @@ test("plan-compact-execute verify rejects selector whose visibleOptionCount is n
 	);
 });
 
-test("plan-compact-execute extends an AND-wrapped plan-exit gate", async () => {
-	// Mirror the shipping shape where the value allowlist is nested under an
-	// outer guard: `if (J && (HH === ... || ...)) { let GH = "default"; ... }`.
-	const wrapped = PLAN_COMPACT_EXECUTE_FIXTURE.replace(
-		'    if (\n      HH === "yes-bypass-permissions" ||\n      HH === "yes-accept-edits" ||\n      HH === "yes-auto-clear-context"\n    ) {',
-		'    if (\n      J9 &&\n      (HH === "yes-bypass-permissions" ||\n        HH === "yes-accept-edits" ||\n        HH === "yes-auto-clear-context")\n    ) {',
-	);
-	assert.notEqual(
-		wrapped,
-		PLAN_COMPACT_EXECUTE_FIXTURE,
-		"precondition: gate text rewritten",
-	);
-	const ast = parse(wrapped);
+test("plan-compact-execute compact-option split gates on auto-mode availability, not the visibility guard", async () => {
+	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
 	await runPlanCompactExecuteViaPasses(ast);
 	const output = print(ast);
-	const gateMatch = output.match(
-		/if\s*\(([\s\S]*?)\)\s*\{\s*let\s+\w+\s*=\s*"default"/,
+	// The option builder wraps the compact split under the show-clear-context
+	// guard (H). The inner split must gate on the auto-mode availability param
+	// (K), not re-test H. If it re-tested H the else branch (accept-edits)
+	// would be unreachable and the auto option would be offered even when auto
+	// mode is unavailable.
+	assert.doesNotMatch(
+		output,
+		/if\s*\(H\)\s*if\s*\(H\)/,
+		"compact split must not duplicate the show-clear-context guard",
 	);
-	assert.ok(
-		gateMatch,
-		"AND-wrapped plan-exit gate not found in patched output",
-	);
-	assert.ok(
-		gateMatch[1].includes('=== "yes-compact-auto"'),
-		`gate must include yes-compact-auto, got: ${gateMatch[1]}`,
-	);
-	assert.ok(
-		gateMatch[1].includes('=== "yes-compact-accept-edits"'),
-		`gate must include yes-compact-accept-edits, got: ${gateMatch[1]}`,
+	assert.match(
+		output,
+		/if\s*\(H\)\s*if\s*\(K\)/,
+		"compact split must gate on the auto-mode availability param",
 	);
 	assert.equal(planCompactExecute.verify(output), true);
+});
+
+test("plan-compact-execute verify rejects a compact split that duplicates the visibility guard", async () => {
+	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+	// Regress the split so the inner guard re-tests the show-clear-context
+	// guard (H) instead of the availability param (K). That is the unreachable
+	// shape the matcher must not produce: the accept-edits option can never be
+	// offered because its else branch is dead.
+	const regressed = output.replace(/if\s*\(H\)\s*if\s*\(K\)/, "if (H) if (H)");
+	assert.notEqual(
+		regressed,
+		output,
+		"precondition: compact split rewritten to duplicate the guard",
+	);
+	const result = planCompactExecute.verify(regressed);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("unreachable"), true);
 });
 
 test("plan-compact-execute handler reads messages ref via .current", async () => {

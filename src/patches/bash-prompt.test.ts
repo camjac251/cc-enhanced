@@ -22,7 +22,6 @@ test("bash-prompt rewrites stock oversized-output warnings", () => {
 	const fixture = String.raw`
 const posix = "Pipe output through head, tail, or grep to reduce result size. Avoid cat on large files \u2014 use Read with offset/limit instead.";
 const powershell = "Pipe output through Select-Object -First/-Last or Select-String to reduce result size. Avoid Get-Content on large files \u2014 use Read with offset/limit instead.";
-const cwd = "The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).";
 `;
 	const output = bashPrompt.string?.(fixture) ?? fixture;
 
@@ -35,16 +34,6 @@ const cwd = "The working directory persists between commands, but shell state do
 		false,
 	);
 	assert.equal(output.split(MODERN_OUTPUT_LIMIT_WARNING).length - 1, 2);
-	assert.equal(
-		output.includes("The working directory persists between commands"),
-		false,
-	);
-	assert.equal(
-		output.includes(
-			"Working-directory behavior is controlled by runtime policy. Do not rely on `cd`, shell variables, or other shell state carrying between calls; use explicit paths.",
-		),
-		true,
-	);
 	assert.equal(
 		MODERN_OUTPUT_LIMIT_WARNING.includes(
 			"If Bash saves the full output, inspect the saved file with Read range -200: first, then narrow further.",
@@ -72,33 +61,33 @@ function ws_() {
 function A4D() {
   let unrelated = shouldStay(),
     H = HO(),
+    n = [
+      ...(H
+        ? []
+        : [
+            \`File search: Use \${gd} (NOT find or ls)\`,
+            \`Content search: Use \${ud} (NOT grep or rg)\`,
+          ]),
+      \`Read files: Use \${$i} (NOT cat/head/tail)\`,
+      \`Edit files: Use \${il} (NOT sed/awk)\`,
+      \`Write files: Use \${Jc} (NOT echo >/cat <<EOF)\`,
+      "Communication: Output text directly (NOT echo/printf)",
+    ],
     A = H
       ? "\`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`"
       : "\`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`";
-  let M = [
-    \`To read files use \${wf} instead of cat, head, tail, or sed\`,
-    \`To edit files use \${ef} instead of sed or awk\`,
-    \`To create files use \${s9} instead of cat with heredoc or echo redirection\`,
-    ...(H
-      ? []
-      : [
-          \`To search for files use \${AK} instead of find or ls\`,
-          \`To search the content of files, use \${V_} instead of grep or rg\`,
-        ]),
-  ];
   return [
     "Executes a given bash command and returns its output.",
-    "Working-directory behavior is controlled by runtime policy. Do not rely on \`cd\`, shell variables, or other shell state carrying between calls; use explicit paths.",
+    "The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).",
     \`IMPORTANT: Avoid using this tool to run \${A} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\`,
     "If your command will create new directories or files, first use this tool to run \`ls\` to verify the parent directory exists and is the correct location.",
-    "gh pr create --title \\"the pr title\\" --body \\"$(cat <<'EOF'\\n## Summary\\n<1-3 bullet points>\\n\\n## Test plan\\n[Bulleted markdown checklist of TODOs for testing the pull request...]\\n\\n\`file viewing, editing, creation, or output formatting\`\\nEOF\\n)\\"",
     ...(H
       ? [
           "When running \`find\`, search from \`.\` (or a specific path), not \`/\` \u2014 scanning the full filesystem can exhaust system resources on large trees.",
           "When using \`find -regex\` with alternation, put the longest alternative first. Example: use '.*\\\\.\\\\(tsx\\\\|ts\\\\)' not '.*\\\\.\\\\(ts\\\\|tsx\\\\)' — the second form silently skips .tsx files.",
         ]
       : []),
-    ...M,
+    ...n,
   ].join("\\n");
 }
 
@@ -120,26 +109,15 @@ function nl1() {
   ].join("\\n");
 }
 
-function js6(H, $) {
-  let f = jO(),
-    _ = f ? "\`find\` or \`grep\`" : \`the \${AK} or \${V_}\`,
-    M = [
-      \`To read files use \${wf} instead of cat, head, tail, or sed\`,
-      \`To edit files use \${ef} instead of sed or awk\`,
-      \`To create files use \${s9} instead of cat with heredoc or echo redirection\`,
-      ...(f
-        ? []
-        : [
-            \`To search for files use \${AK} instead of find or ls\`,
-            \`To search the content of files, use \${V_} instead of grep or rg\`,
-          ]),
-      \`Reserve using Bash exclusively for system commands and terminal operations.\`,
-    ],
-    K = [
-      \`Do NOT use Bash to run commands when a relevant dedicated tool is provided. This is CRITICAL to assisting the user:\`,
-      M,
+function js6(e) {
+  let g = HO(),
+    n = e.has(X1),
+    o = n ? X1 : X2,
+    i = [T1, T2, T3, ...(g && n ? [] : [G1, G2])].join(", "),
+    s = [
+      \`Prefer dedicated tools over \${o} when one fits (\${i}) — reserve \${o} for shell-only operations.\`,
     ];
-  return ["# Using your tools", ...K].join("\\n");
+  return ["# Using your tools", ...s].join("\\n");
 }
 `;
 
@@ -184,7 +162,7 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 	);
 	assert.equal(output.includes("or `bat` for shell-native viewing"), false);
 	assert.equal(output.includes("or \\`bat\\` for shell-native viewing"), false);
-	assert.equal(output.includes("code rewrites use"), true);
+	assert.equal(output.includes("structural code rewrites"), true);
 	assert.equal(
 		output.includes("use `sd` only for non-code text") ||
 			output.includes("use \\`sd\\` only for non-code text"),
@@ -212,22 +190,6 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 	assert.equal(output.includes("find or ls"), false);
 	assert.equal(output.includes("grep or rg"), false);
 	assert.equal(output.includes("--body \"$(cat <<'EOF'"), false);
-	assert.equal(output.includes("tee \"$pr_body\" >/dev/null <<'EOF'"), false);
-	assert.equal(
-		output.includes("tee \\\"$pr_body\\\" >/dev/null <<'EOF'"),
-		false,
-	);
-	assert.equal(
-		output.includes("tee \"$pr_body\" >/dev/null <<'PR_BODY'") ||
-			output.includes("tee \\\"$pr_body\\\" >/dev/null <<'PR_BODY'"),
-		true,
-	);
-	assert.equal(output.includes("pr_body=$(mktemp)"), true);
-	assert.equal(
-		output.includes('--body-file "$pr_body"') ||
-			output.includes('--body-file \\"$pr_body\\"'),
-		true,
-	);
 	assert.equal(output.includes("(NOT cat/head/tail)"), false);
 	assert.equal(output.includes("When running `find`"), false);
 	assert.equal(output.includes("find -regex"), false);
@@ -326,8 +288,8 @@ function A4D() {
       ...(H
         ? []
         : [
-            \`To search for files use \${AK} instead of find or ls\`,
-            \`To search the content of files, use \${V_} instead of grep or rg\`,
+            \`File search: Use \${AK} (NOT find or ls)\`,
+            \`Content search: Use \${V_} (NOT grep or rg)\`,
           ]),
     ],
     W = platformNotice();
@@ -499,25 +461,30 @@ test("bash-prompt forces a logical-&& conditional-init guide-agent gate and veri
 	const fixture = `
 function A4D() {
   let H = HO(),
-    A = H
-      ? "\`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`"
-      : "\`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`",
-    M = [
-      \`To read files use \${wf} instead of cat, head, tail, or sed\`,
-      \`To edit files use \${ef} instead of sed or awk\`,
-      \`To create files use \${s9} instead of cat with heredoc or echo redirection\`,
+    n = [
       ...(H
         ? []
         : [
-            \`To search for files use \${AK} instead of find or ls\`,
-            \`To search the content of files, use \${V_} instead of grep or rg\`,
+            \`File search: Use \${AK} (NOT find or ls)\`,
+            \`Content search: Use \${V_} (NOT grep or rg)\`,
           ]),
-    ];
+      \`Read files: Use \${wf} (NOT cat/head/tail)\`,
+      \`Edit files: Use \${ef} (NOT sed/awk)\`,
+      \`Write files: Use \${s9} (NOT echo >/cat <<EOF)\`,
+    ],
+    A = H
+      ? "\`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`"
+      : "\`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`";
   return [
     "Executes a given bash command and returns its output.",
-    "Working-directory behavior is controlled by runtime policy. Do not rely on \`cd\`, shell variables, or other shell state carrying between calls; use explicit paths.",
+    "The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).",
     \`IMPORTANT: Avoid using this tool to run \${A} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\`,
-    ...M,
+    ...(H
+      ? [
+          "When running \`find\`, search from \`.\` (or a specific path), not \`/\` — scanning the full filesystem can exhaust system resources on large trees.",
+        ]
+      : []),
+    ...n,
   ].join("\\n");
 }
 
@@ -566,22 +533,20 @@ function js6(H, $) {
 	assert.equal(bashPrompt.verify(output, ast), true);
 });
 
-test("bash-prompt leaves a gh-pr-create heredoc in an unanchored function, so verify still rejects it", async () => {
-	// bash-prompt only rewrites functions carrying a prompt anchor. A gh-pr-create
-	// heredoc lives in an unanchored helper, so bash-prompt's own pass never
-	// touches it and the legacy bare-quote form survives. verify forbids that
-	// form globally, so it depends on another patch's string phase to clear the
-	// block before the bundle reaches verify. This pins that cross-patch
-	// dependency: dropping it would force this test to be updated.
+test("bash-prompt leaves a gh-pr-create heredoc untouched", async () => {
+	// bash-prompt does not rewrite gh pr create heredocs. Even inside an anchored
+	// function, the interpolated (multi-quasi) heredoc passes through unchanged and
+	// none of the mktemp/body-file rewrite artifacts appear in the output.
 	const fixture = `
-function IFp(e) {
+function A4D() {
   return [
+    "Executes a given bash command and returns its output.",
     \`gh pr create --title "the pr title" --body "$(cat <<'EOF'
 ## Summary
-<1-3 bullet points>
+\${Nir()}
 
 ## Test plan
-[Bulleted markdown checklist of TODOs for testing the pull request...]
+\${Fir()}
 EOF
 )"\`,
   ].join("\\n");
@@ -591,7 +556,8 @@ EOF
 	await runBashPromptViaPasses(ast);
 	const output = print(ast);
 	assert.equal(output.includes("--body \"$(cat <<'EOF'"), true);
-	assert.notEqual(bashPrompt.verify(output, ast), true);
+	assert.equal(output.includes("pr_body=$(mktemp)"), false);
+	assert.equal(output.includes("--body-file"), false);
 });
 
 test("bash-prompt forces the short Bash builder gate even though verify does not inspect it", async () => {
@@ -616,4 +582,53 @@ function kFp(e) {
 	const output = print(ast);
 	assert.match(output, /o = !0 \?/);
 	assert.equal(output.includes("appropriate dedicated tool"), false);
+});
+
+test("bash-prompt replaces a reworded working-directory line with the runtime-neutral wording", async () => {
+	// The working-directory replacement anchors on a durable fragment rather than
+	// the exact legacy sentence, so an upstream reword is still neutralized instead
+	// of silently passing through.
+	const fixture = `
+function A4D() {
+  return [
+    "Executes a given bash command and returns its output.",
+    "Working directory persists between calls, but prefer absolute paths. Shell state does not persist; the shell is initialized from the user's profile.",
+  ].join("\\n");
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes(
+			"Working-directory behavior is controlled by runtime policy. Do not rely on `cd`, shell variables, or other shell state carrying between calls; use explicit paths.",
+		),
+		true,
+	);
+	assert.equal(output.includes("prefer absolute paths"), false);
+});
+
+test("bash-prompt leaves the short Bash builder's working-directory guidance in place", async () => {
+	// The replacement is scoped to the full builder, identified by "Executes a
+	// given bash command", so the short builder's own working-directory guidance
+	// is not rewritten even though it matches the same durable fragment.
+	const fixture = `
+function kFp(e) {
+  let s = "- Working directory persists between calls. Shell state does not persist; the shell is initialized from the user's profile.";
+  return ["Executes a bash command and returns its output.", s].join("\\n");
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+	assert.equal(
+		output.includes("Working directory persists between calls"),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"Working-directory behavior is controlled by runtime policy",
+		),
+		false,
+	);
 });

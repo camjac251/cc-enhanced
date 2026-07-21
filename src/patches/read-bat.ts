@@ -1323,7 +1323,14 @@ export function hasReadStateRebuildRangeGuard(ast: t.File): boolean {
 			if (candidate) candidates.push(candidate);
 		},
 	});
-	return candidates.length === 1 && candidates[0].state === "patched";
+	// At least one guard must be patched and none may be left unpatched. Keying
+	// on state rather than an exact candidate count tolerates an added sibling
+	// rebuild guard for another tool without a false count-mismatch failure.
+	if (candidates.length === 0) return false;
+	if (candidates.some((candidate) => candidate.state !== "patched")) {
+		return false;
+	}
+	return true;
 }
 
 function hasChangedSnippetCap8000(ast: t.File): boolean {

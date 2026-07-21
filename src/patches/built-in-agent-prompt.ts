@@ -10,6 +10,9 @@ import {
 	PROHIBITED_BASH_OPS,
 } from "./prompt-policy.js";
 
+// Only the full whenToUse variant is rewritten. The lean orchestrator-facing
+// variant keeps stock wording deliberately: it renders in compact listings
+// where the deep-research framing adds no routing signal.
 const EXPLORE_WHEN_TO_USE_SOURCE =
 	'Fast read-only search agent for locating code. Use it to find files by pattern (eg. "src/components/**/*.tsx"), grep for symbols or keywords (eg. "API endpoints"), or answer "where is X defined / which files reference Y." Do NOT use it for code review, design-doc auditing, cross-file consistency checks, or open-ended analysis — it reads excerpts rather than whole files and will miss content past its read window. When calling, specify search breadth: "quick" for a single targeted lookup, "medium" for moderate exploration, or "very thorough" to search across multiple locations and naming conventions.';
 
@@ -626,10 +629,11 @@ export const builtInAgentPrompt: Patch = {
 			}
 		}
 		// Token-independent transcript-search guard. The grep corpus example
-		// interpolates a minified path token that changes between releases, so a
-		// surviving "| tail -50" means the rewrite no-oped regardless of which
-		// token the bundle used. Catch the behavior, not the exact source string.
-		if (code.includes("| tail -50")) {
+		// interpolates a minified path token that changes between releases, so
+		// the guard keys on the durable jsonl-include + tail adjacency instead
+		// of the exact source string. An unrelated "| tail -50" elsewhere in
+		// the bundle does not trip it.
+		if (code.includes('--include="*.jsonl" | tail -50')) {
 			return "Unpatched transcript-search corpus example remains (| tail -50 survived)";
 		}
 
@@ -704,14 +708,14 @@ export const builtInAgentPrompt: Patch = {
 		if (!scopedPrompts.some((scope) => scope.includes(MODERN_STDOUT_CAP))) {
 			return "Missing stdout-cap guidance in built-in agent prompts";
 		}
-		// Legacy-leftover guard. Any one of the legacy fragments surviving in
-		// a built-in agent scope without the modern replacement is a failure
-		// signal. The audit flagged the previous "both fragments must coexist"
-		// requirement as easily defeated by partial upstream rewording; check
-		// fragments independently instead.
+		// Legacy-leftover guard, checked fragment-by-fragment. The bundle stores
+		// these lines with live interpolations (the tool-name and platform
+		// branches are template expressions), so the guards match the raw
+		// interpolated shape rather than a resolved rendering that never
+		// appears in bundle text.
 		const LEGACY_READONLY_FRAGMENTS = [
-			"ONLY for read-only operations (ls, git status, git log, git diff, find",
-			"For read-only operations (ls, git status, git log, git diff, find",
+			"ONLY for read-only operations (${",
+			"For read-only operations (${",
 			"cat, head, tail",
 		];
 		for (const scope of scopedPrompts) {
@@ -722,7 +726,15 @@ export const builtInAgentPrompt: Patch = {
 				}
 			}
 		}
-		for (const fragment of ["Use `find` via", "Use `grep` via"]) {
+		// The bundle stores these lines with escaped backticks inside template
+		// literals; the plain form is checked too since escaping is not
+		// consistent across bundle surfaces.
+		for (const fragment of [
+			"Use \\`find\\` via",
+			"Use \\`grep\\` via",
+			"Use `find` via",
+			"Use `grep` via",
+		]) {
 			if (code.includes(fragment)) {
 				return `Legacy enhanced search guidance still present in built-in agent prompt: ${fragment}`;
 			}

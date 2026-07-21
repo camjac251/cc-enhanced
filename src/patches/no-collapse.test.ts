@@ -33,7 +33,8 @@ function classifyToolResult(H, $, A) {
     isRead: obj.isRead,
     isREPL: obj.isREPL,
     isMemoryWrite: obj.isMemoryWrite,
-    isCollapsible: obj.isSearch || obj.isRead
+    isCollapsible: obj.isSearch || obj.isRead,
+    isBash: obj.isBash ? !0 : void 0
   };
 }
 
@@ -178,7 +179,8 @@ function classifyToolResult(H, $, A) {
     isRead: obj.isRead,
     isREPL: obj.isREPL,
     isMemoryWrite: obj.isMemoryWrite,
-    isCollapsible: obj.isSearch || obj.isRead
+    isCollapsible: obj.isSearch || obj.isRead,
+    isBash: obj.isBash ? !0 : void 0
   };
 }
 function guardOne(H) {
@@ -226,7 +228,8 @@ function classifyToolResult(H, $, A) {
     isList: obj.isList,
     isREPL: obj.isREPL,
     isMemoryWrite: obj.isMemoryWrite,
-    isCollapsible: obj.isSearch ? !0 : obj.isRead
+    isCollapsible: obj.isSearch ? !0 : obj.isRead,
+    isBash: obj.isBash ? !0 : void 0
   };
 }
 function getCollapseMetadata(H) {
@@ -264,7 +267,8 @@ function classifyToolResult(H, $, A) {
     isList: H.isList,
     isREPL: H.isREPL,
     isMemoryWrite: H.isMemoryWrite,
-    isCollapsible: !hidden
+    isCollapsible: !hidden,
+    isBash: H.isBash ? !0 : void 0
   };
 }
 function getCollapseMetadata(H) {
@@ -299,7 +303,8 @@ function classifyA(H) {
     isList: H.isList,
     isREPL: H.isREPL,
     isMemoryWrite: H.isMemoryWrite,
-    isCollapsible: !hidden
+    isCollapsible: !hidden,
+    isBash: H.isBash ? !0 : void 0
   };
 }
 function classifyB(H) {
@@ -310,7 +315,8 @@ function classifyB(H) {
     isList: H.isList,
     isREPL: H.isREPL,
     isMemoryWrite: H.isMemoryWrite,
-    isCollapsible: a || (b ? !0 : !1)
+    isCollapsible: a || (b ? !0 : !1),
+    isBash: H.isBash ? !0 : void 0
   };
 }
 function getCollapseMetadata(H) {
@@ -332,7 +338,8 @@ function renderMemoryWriteResult(H, A) {
 	// Both non-literal factory values survive (neither is mutated).
 	assert.equal(output.includes("isCollapsible: !hidden"), true);
 	assert.equal(output.includes("isCollapsible: a || (b ? !0 : !1)"), true);
-	// Check 2 is an existence check: passes with either/both present.
+	// Check 2 is an existence check over isBash-bearing containers: passes
+	// with either/both present.
 	assert.equal(noCollapse.verify(output, ast), true);
 });
 

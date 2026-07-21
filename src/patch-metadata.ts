@@ -96,6 +96,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Per-model context metadata",
 		group: "System",
 	},
+	"configured-model-catalog": {
+		tag: "configured-model-catalog",
+		label: "Configured model catalog",
+		group: "Agent",
+	},
 	"plan-diff-ui": {
 		tag: "plan-diff-ui",
 		label: "Plan diff UI",
@@ -150,6 +155,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		tag: "model-aliases",
 		label: "Configured model aliases",
 		group: "Agent",
+	},
+	"model-picker-session-only": {
+		tag: "model-picker-session-only",
+		label: "Session-only model picker",
+		group: "UX",
 	},
 	"subagent-model-tag": {
 		tag: "subagent-model-tag",

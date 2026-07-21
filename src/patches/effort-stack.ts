@@ -897,89 +897,6 @@ function buildUltracodeMenuConditional(
 	);
 }
 
-function objectHasEffortStateUpdate(object: t.ObjectExpression): boolean {
-	return Boolean(
-		getObjectProp(object, "effortValue") && getObjectProp(object, "ultracode"),
-	);
-}
-
-function expressionHasEffortStateUpdate(expr: t.Expression): boolean {
-	let found = false;
-	traverse(t.file(t.program([t.expressionStatement(t.cloneNode(expr))])), {
-		ObjectExpression(path) {
-			if (objectHasEffortStateUpdate(path.node)) found = true;
-		},
-	});
-	return found;
-}
-
-function patchEffortStateUpdaterArrow(fn: t.ArrowFunctionExpression): boolean {
-	if (t.isBlockStatement(fn.body)) {
-		if (fn.body.body.some(isSessionOverrideStatement)) return true;
-		const updatesEffortState = fn.body.body.some(
-			(stmt) =>
-				t.isReturnStatement(stmt) &&
-				stmt.argument &&
-				t.isExpression(stmt.argument) &&
-				expressionHasEffortStateUpdate(stmt.argument),
-		);
-		if (!updatesEffortState) return false;
-		fn.body.body.unshift(buildSessionOverrideStatement());
-		return true;
-	}
-	if (t.isSequenceExpression(fn.body)) {
-		if (fn.body.expressions.some(isSessionOverrideAssignment)) return true;
-	}
-	if (!expressionHasEffortStateUpdate(fn.body)) return false;
-	fn.body = t.sequenceExpression([
-		buildSessionOverrideAssignment(),
-		t.cloneNode(fn.body),
-	]);
-	return true;
-}
-
-function patchEffortUpdateStateOverride(
-	path: NodePath<t.IfStatement>,
-): boolean | null {
-	const test = path.node.test;
-	if (!t.isMemberExpression(test)) return null;
-	if (!t.isIdentifier(test.property, { name: "effortUpdate" })) return null;
-	let found = false;
-	path.traverse({
-		ArrowFunctionExpression(arrowPath) {
-			if (patchEffortStateUpdaterArrow(arrowPath.node)) found = true;
-		},
-	});
-	return found ? true : null;
-}
-
-function hasPatchedEffortUpdateStateOverride(
-	path: NodePath<t.IfStatement>,
-): boolean {
-	const test = path.node.test;
-	if (!t.isMemberExpression(test)) return false;
-	if (!t.isIdentifier(test.property, { name: "effortUpdate" })) return false;
-	let found = false;
-	path.traverse({
-		ArrowFunctionExpression(arrowPath) {
-			const body = arrowPath.node.body;
-			if (
-				t.isBlockStatement(body) &&
-				body.body.some(isSessionOverrideStatement)
-			) {
-				found = true;
-			}
-			if (
-				t.isSequenceExpression(body) &&
-				body.expressions.some(isSessionOverrideAssignment)
-			) {
-				found = true;
-			}
-		},
-	});
-	return found;
-}
-
 function getRollbackEffortResultName(expr: t.Expression): string | null {
 	if (!t.isLogicalExpression(expr, { operator: "&&" })) return null;
 	const right = expr.right;
@@ -1358,11 +1275,6 @@ function createEffortStackMutator(): Visitor {
 
 	return {
 		IfStatement(path) {
-			const stateOverridePatched = patchEffortUpdateStateOverride(path);
-			if (stateOverridePatched) {
-				patchedSessionOverrideUpdate += 1;
-				return;
-			}
 			const noopGuardPatched = patchEffectiveEffortNoopGuard(path.node);
 			if (noopGuardPatched) {
 				patchedEffectiveNoopGuard += 1;
@@ -1659,9 +1571,6 @@ export const effortStack: Patch = {
 
 		traverse(verifyAst, {
 			IfStatement(path) {
-				if (hasPatchedEffortUpdateStateOverride(path)) {
-					hasPatchedSessionOverrideUpdate = true;
-				}
 				if (isLegacyEffectiveEffortNoopGuard(path.node)) {
 					hasLegacyEffectiveNoopGuard = true;
 				}
@@ -1839,18 +1748,13 @@ export const effortStack: Patch = {
 			return "Did not find session-aware effort auto/unset env override message";
 		}
 		if (!hasPatchedHy8) {
-			console.warn(
-				"effort-stack[soft]: current-effort env-stacking branch not present; /effort no-args display may understate the state",
-			);
+			return "Did not find current-effort env-stacking display branch";
 		}
 		if (hasLegacyUltracodeMenu) {
-			console.warn(
-				"effort-stack[soft]: ultracode description anchor drifted; upstream 'xhigh effort' text returned",
-			);
-		} else if (!hasPatchedUltracodeMenu) {
-			console.warn(
-				"effort-stack[soft]: ultracode description anchor not found; menu sublabel may be stale",
-			);
+			return "Ultracode menu sublabel still shows the upstream xhigh effort text";
+		}
+		if (!hasPatchedUltracodeMenu) {
+			return "Did not find patched ultracode menu sublabel";
 		}
 		return true;
 	},

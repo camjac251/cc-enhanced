@@ -224,51 +224,64 @@ test("subagent-model-tag accepts the current child model lifecycle", async () =>
 	assert.equal(subagentModelTag.verify(output, ast), true);
 });
 
-test("verify rejects partial child model resume restoration", async () => {
+test("subagent-model-tag treats resume options drift as non-fatal", async () => {
 	const patchedAst = parse(SUBAGENT_FIXTURE);
 	await runSubagentModelTagViaPasses(patchedAst);
 	const patched = print(patchedAst);
 
-	const missingOptions = patched.replace(
+	const driftedOptions = patched.replace(
 		"model: metadata?.isObserver ? void 0 : metadata?.model",
 		"model: void 0",
 	);
-	assert.notEqual(missingOptions, patched);
-	const missingOptionsAst = parse(missingOptions);
-	const optionsResult = subagentModelTag.verify(
-		print(missingOptionsAst),
-		missingOptionsAst,
+	assert.notEqual(driftedOptions, patched);
+	const driftedAst = parse(driftedOptions);
+	assert.equal(
+		subagentModelTag.verify(print(driftedAst), driftedAst),
+		true,
+		"resume options are observational, so their drift must not fail the patch",
 	);
-	assert.equal(typeof optionsResult, "string");
-	assert.equal(String(optionsResult).includes("resume options"), true);
+});
 
-	const missingResolver = patched.replace(
+test("subagent-model-tag fails fork resume when the resolver override drifts", async () => {
+	const patchedAst = parse(SUBAGENT_FIXTURE);
+	await runSubagentModelTagViaPasses(patchedAst);
+	const patched = print(patchedAst);
+
+	const driftedResolver = patched.replace(
 		"resolveAgentModel(getAgentModel(selectedAgent, parentModel), parentModel, metadata?.isObserver ? void 0 : metadata?.model, permissionMode)",
 		"resolveAgentModel(getAgentModel(selectedAgent, parentModel), parentModel, void 0, permissionMode)",
 	);
-	assert.notEqual(missingResolver, patched);
-	const missingResolverAst = parse(missingResolver);
-	const resolverResult = subagentModelTag.verify(
-		print(missingResolverAst),
-		missingResolverAst,
+	assert.notEqual(driftedResolver, patched);
+	const driftedAst = parse(driftedResolver);
+	const result = subagentModelTag.verify(print(driftedAst), driftedAst);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("Fork resume"),
+		true,
+		"the fork-resume mutation locates its target through the resolver override shape",
 	);
-	assert.equal(typeof resolverResult, "string");
-	assert.equal(String(resolverResult).includes("resume resolution"), true);
 });
 
-test("subagent-model-tag refuses ambiguous launch metadata writers", async () => {
-	const duplicateLaunch = AGENT_LIFECYCLE_FIXTURE.slice(
-		AGENT_LIFECYCLE_FIXTURE.indexOf("async function* runChild"),
-		AGENT_LIFECYCLE_FIXTURE.indexOf("async function resumeChild"),
-	).replace("runChild", "runChildDuplicate");
-	const ast = parse(`${SUBAGENT_FIXTURE}\n${duplicateLaunch}`);
+test("subagent-model-tag treats launch metadata drift as non-fatal", async () => {
+	const drifted = SUBAGENT_FIXTURE.replace(
+		"...(model && { model }),\n    ...extraMetadata,",
+		"...extraMetadata,\n    ...(model && { model }),",
+	);
+	assert.notEqual(drifted, SUBAGENT_FIXTURE);
+	const ast = parse(drifted);
 	await runSubagentModelTagViaPasses(ast);
 	const output = print(ast);
 
-	assert.equal(output.includes("model && { model }"), true);
-	const verifyResult = subagentModelTag.verify(output, ast);
-	assert.equal(typeof verifyResult, "string");
-	assert.equal(String(verifyResult).includes("launch model metadata"), true);
+	assert.equal(
+		output.includes("entry.model && !process.env.CLAUDE_CODE_SUBAGENT_MODEL"),
+		true,
+		"the UI guard still lands when launch metadata drifts",
+	);
+	assert.equal(
+		subagentModelTag.verify(output, ast),
+		true,
+		"launch metadata is observational, so its drift must not fail the patch",
+	);
 });
 
 test("subagent-model-tag ignores a schema decoy with unrelated model guidance", async () => {
@@ -313,7 +326,7 @@ test("subagent-model-tag refuses ambiguous Agent input schemas", async () => {
 	assert.equal(String(verifyResult).includes("ambiguous"), true);
 });
 
-test("subagent-model-tag refuses a drifted Agent model enum", async () => {
+test("subagent-model-tag widens an Agent model enum that adds an alias", async () => {
 	const input = SUBAGENT_FIXTURE.replace(
 		'"haiku", "fable"]',
 		'"haiku", "fable", "future"]',
@@ -322,8 +335,34 @@ test("subagent-model-tag refuses a drifted Agent model enum", async () => {
 	await runSubagentModelTagViaPasses(ast);
 	const output = print(ast);
 
-	assert.equal(output.includes(".string().trim().min(1)"), false);
-	assert.equal(output.includes('"future"'), true);
+	assert.equal(
+		output.includes("model: A.string().trim().min(1).optional().describe"),
+		true,
+		"an enum that still lists every known alias is widened even with an added alias",
+	);
+	assert.equal(
+		output.includes('"future"'),
+		false,
+		"widening discards the enum, including the added alias",
+	);
+	assert.equal(output.includes("full model ID available through /model"), true);
+	assert.equal(subagentModelTag.verify(output, ast), true);
+});
+
+test("subagent-model-tag refuses an Agent model enum missing a known alias", async () => {
+	const input = SUBAGENT_FIXTURE.replace(
+		'A.enum(["sonnet", "opus", "haiku", "fable"])',
+		'A.enum(["opus", "haiku", "fable"])',
+	);
+	const ast = parse(input);
+	await runSubagentModelTagViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		output.includes(".string().trim().min(1)"),
+		false,
+		"an enum that drops a known alias is not recognized and stays unwidened",
+	);
 	const verifyResult = subagentModelTag.verify(output, ast);
 	assert.equal(typeof verifyResult, "string");
 	assert.equal(String(verifyResult).includes("does not accept"), true);

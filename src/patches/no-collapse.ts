@@ -33,19 +33,24 @@ import {
  * results and can skip them during eviction scanning.
  */
 
+let memoryWritesPatched = 0;
+
 export const noCollapse: Patch = {
 	tag: "no-collapse",
 
-	astPasses: () => [
-		{
-			pass: "mutate",
-			visitor: createNoCollapseMutator(),
-		},
-		{
-			pass: "mutate",
-			visitor: createMemoryWriteUiMutator(),
-		},
-	],
+	astPasses: () => {
+		memoryWritesPatched = 0;
+		return [
+			{
+				pass: "mutate",
+				visitor: createNoCollapseMutator(),
+			},
+			{
+				pass: "mutate",
+				visitor: createMemoryWriteUiMutator(),
+			},
+		];
+	},
 
 	verify: (_code, ast) => {
 		if (!ast) return "Missing AST for no-collapse verification";
@@ -110,14 +115,12 @@ export const noCollapse: Patch = {
 				}
 			},
 
-			// Check 2: factory still has isCollapsible set to a non-literal,
-			// non-boolean value, AND the containing object carries the
-			// expected sibling properties (isSearch/isRead/isREPL/
-			// isMemoryWrite). The exact AST shape of the value varies
-			// across upstream releases (some wrap the value in a
-			// conditional expression rather than a plain disjunction).
-			// Asserting the value SHAPE was too restrictive; the sibling-
-			// properties guard plus non-literal value is the durable invariant.
+			// Check 2: the search/read classification tail still computes
+			// isCollapsible from a non-literal value. That tail is the only
+			// branch carrying an isBash sibling alongside the classification
+			// flags, which pins the check to the object the cache-tail
+			// eviction scanner reads; other branches with non-literal
+			// isCollapsible values do not satisfy it.
 			ObjectProperty(path) {
 				if (getObjectKeyName(path.node.key) !== "isCollapsible") return;
 				const val = path.node.value;
@@ -137,11 +140,15 @@ export const noCollapse: Patch = {
 				const hasIsMemoryWriteProp = container.properties.some((p) =>
 					hasObjectKeyName(p, "isMemoryWrite"),
 				);
+				const hasIsBashProp = container.properties.some((p) =>
+					hasObjectKeyName(p, "isBash"),
+				);
 				if (
 					hasIsSearchProp &&
 					hasIsReadProp &&
 					hasIsReplProp &&
-					hasIsMemoryWriteProp
+					hasIsMemoryWriteProp &&
+					hasIsBashProp
 				) {
 					isCollapsibleInFactory = true;
 				}
@@ -155,7 +162,7 @@ export const noCollapse: Patch = {
 			return "Patched collapse-metadata guard (isREPL || isMemoryWrite) not found";
 		}
 		if (!isCollapsibleInFactory) {
-			return "Result-object factory isCollapsible: isSearch || isRead not found. Cache tail eviction broken";
+			return "Result-object factory isCollapsible tail (isBash-bearing branch) not found. Cache tail eviction broken";
 		}
 		return true;
 	},
@@ -167,7 +174,6 @@ export const noCollapse: Patch = {
 
 function verifyMemoryWriteUi(ast: t.File): true | string {
 	let foundResultObject = false;
-	let patchedCorrectly = false;
 	let foundUnpatchedResultObject = false;
 
 	traverse(ast, {
@@ -189,12 +195,6 @@ function verifyMemoryWriteUi(ast: t.File): true | string {
 			foundResultObject = true;
 
 			if (
-				isFalseLike(collapsibleProp.value) &&
-				isFalseLike(memoryWriteProp.value)
-			) {
-				patchedCorrectly = true;
-			}
-			if (
 				isTrueLike(collapsibleProp.value) &&
 				isTrueLike(memoryWriteProp.value)
 			) {
@@ -209,8 +209,10 @@ function verifyMemoryWriteUi(ast: t.File): true | string {
 	if (foundUnpatchedResultObject) {
 		return "Unpatched memory write result object still marks isCollapsible/isMemoryWrite as true";
 	}
-	if (!patchedCorrectly) {
-		return "Memory writes still marked as collapsible or memory write";
+	// The both-false proof must come from this run's mutation. A naturally
+	// both-false object elsewhere in the bundle cannot stand in for it.
+	if (memoryWritesPatched === 0) {
+		return "Memory write collapsibility was not repointed this run";
 	}
 
 	return true;
@@ -242,6 +244,7 @@ function createMemoryWriteUiMutator(): Visitor {
 			collapsibleProp.value = t.unaryExpression("!", t.numericLiteral(1));
 			memoryWriteProp.value = t.unaryExpression("!", t.numericLiteral(1));
 			patched = true;
+			memoryWritesPatched++;
 		},
 		Program: {
 			exit() {

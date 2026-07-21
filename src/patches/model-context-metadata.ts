@@ -85,9 +85,10 @@ function getFunctionDeclarationName(path: NodePath<t.Function>): string | null {
 
 function getLeadingGateName(path: NodePath<t.Function>): string | null {
 	if (!t.isBlockStatement(path.node.body)) return null;
-	const first = path.node.body.body[0];
-	if (!t.isIfStatement(first)) return null;
-	const test = first.test;
+	const [first, second] = path.node.body.body;
+	const gate = t.isBlockStatement(first) ? second : first;
+	if (!t.isIfStatement(gate)) return null;
+	const test = gate.test;
 	if (
 		!t.isUnaryExpression(test, { operator: "!" }) ||
 		!t.isCallExpression(test.argument) ||
@@ -96,9 +97,9 @@ function getLeadingGateName(path: NodePath<t.Function>): string | null {
 	) {
 		return null;
 	}
-	const consequent = t.isBlockStatement(first.consequent)
-		? first.consequent.body[0]
-		: first.consequent;
+	const consequent = t.isBlockStatement(gate.consequent)
+		? gate.consequent.body[0]
+		: gate.consequent;
 	if (!t.isReturnStatement(consequent) || consequent.argument !== null) {
 		return null;
 	}

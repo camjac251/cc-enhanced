@@ -350,7 +350,10 @@ function runLimitsPatch(ast: t.File): void {
 			if (!hasTrigger) return;
 
 			const code = print(path.node);
-			if (code.includes("Reads a file from the local filesystem.")) {
+			// Same period-less prefix as READ_PROMPT_TRIGGERS and the verify-side
+			// template gate, so a punctuation reword cannot desync mutate from
+			// verify and strand linesCap at the stale value.
+			if (code.includes(READ_PROMPT_TRIGGERS[0])) {
 				const exprs = path.node.expressions;
 
 				for (let i = 0; i < quasis.length; i++) {

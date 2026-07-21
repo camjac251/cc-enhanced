@@ -1,9 +1,53 @@
 import * as t from "@babel/types";
+import { traverse } from "../babel.js";
 import { parse } from "../loader.js";
 
 /**
  * Shared AST helpers for patch implementations and verifiers.
  */
+
+/**
+ * Child-process environment allowlist entry that gates whether a globally
+ * configured subagent model name is forwarded to spawned children. Model-facing
+ * patches append their own env keys into every forwarding array alongside this
+ * entry, so they share this anchor and the array-discovery helpers below rather
+ * than each carrying a private copy.
+ */
+export const SUBAGENT_MODEL_ENV = "CLAUDE_CODE_SUBAGENT_MODEL";
+
+/**
+ * Whether an ArrayExpression is one of the child-process env passthrough lists,
+ * identified by carrying the SUBAGENT_MODEL_ENV string literal among its
+ * elements. Count-agnostic: matches every such array wherever it appears.
+ */
+export function isSubagentModelEnvArray(
+	node: t.Node | null | undefined,
+): node is t.ArrayExpression {
+	return (
+		t.isArrayExpression(node) &&
+		node.elements.some((element) =>
+			t.isStringLiteral(element, { value: SUBAGENT_MODEL_ENV }),
+		)
+	);
+}
+
+/**
+ * Collect every child-process env passthrough array in an AST. Returns the
+ * ArrayExpression nodes in traversal order without asserting how many exist, so
+ * patches append their keys to whatever forwarding arrays the current bundle
+ * carries instead of hard-coding a count.
+ */
+export function collectSubagentModelEnvArrays(
+	ast: t.File,
+): t.ArrayExpression[] {
+	const arrays: t.ArrayExpression[] = [];
+	traverse(ast, {
+		ArrayExpression(path) {
+			if (isSubagentModelEnvArray(path.node)) arrays.push(path.node);
+		},
+	});
+	return arrays;
+}
 
 /**
  * Resolve object/member key name for Identifier or StringLiteral keys.

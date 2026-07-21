@@ -168,18 +168,6 @@ function getStartupAppendDefault(
 	return { appendValue: appendProp.value, subagentProp };
 }
 
-function hasMatchingStartupAppendDefault(node: t.ObjectExpression): boolean {
-	const appendProp = getObjectPropertyByName(node, "appendSystemPrompt");
-	const subagentProp = getObjectPropertyByName(
-		node,
-		"appendSubagentSystemPrompt",
-	);
-	if (!appendProp || !subagentProp) return false;
-	if (!t.isExpression(appendProp.value) || !t.isExpression(subagentProp.value))
-		return false;
-	return t.isNodesEquivalent(appendProp.value, subagentProp.value);
-}
-
 function isFallbackAppendDeclarator(node: t.VariableDeclarator): boolean {
 	if (!t.isIdentifier(node.id, { name: APPEND_VAR_NAME })) return false;
 	const init = node.init;
@@ -203,20 +191,20 @@ function hasFallbackAppendDeclarator(ast: t.File | t.Program): boolean {
 	return found;
 }
 
+// A void-0 subagent append default means the startup channel no longer
+// forwards the append prompt natively; verify fails on any such object so
+// the patch gets repointed instead of the channel silently dying.
 function countStartupAppendDefaults(ast: t.File | t.Program): {
 	legacy: number;
-	patched: number;
 } {
 	let legacy = 0;
-	let patched = 0;
 	const root = t.isFile(ast) ? ast : t.file(ast);
 	traverse(root, {
 		ObjectExpression(path) {
 			if (getStartupAppendDefault(path.node)) legacy++;
-			if (hasMatchingStartupAppendDefault(path.node)) patched++;
 		},
 	});
-	return { legacy, patched };
+	return { legacy };
 }
 
 function isCallWithPromptAppend(
@@ -400,13 +388,6 @@ function createSubagentSystemPromptPasses(): PatchAstPass[] {
 						);
 						patched = true;
 					},
-				},
-				ObjectExpression(path) {
-					const startupDefault = getStartupAppendDefault(path.node);
-					if (!startupDefault) return;
-					startupDefault.subagentProp.value = t.cloneNode(
-						startupDefault.appendValue,
-					);
 				},
 			},
 		},

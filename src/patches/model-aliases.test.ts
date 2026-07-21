@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as t from "@babel/types";
-import { runCombinedAstPasses } from "../ast-pass-engine.js";
+import {
+	type PatchPassEntry,
+	runCombinedAstPasses,
+} from "../ast-pass-engine.js";
 import { traverse } from "../babel.js";
 import { parse, print } from "../loader.js";
+import { configuredModelCatalog } from "./configured-model-catalog.js";
 import { modelAliases } from "./model-aliases.js";
+import { modelPickerSessionOnly } from "./model-picker-session-only.js";
 
 async function patchSource(source: string): Promise<string> {
 	const ast = parse(source);
@@ -197,39 +202,6 @@ function disableValidationGuard(code: string, errorNeedle: string): string {
 	return print(ast);
 }
 
-function disableRoutedEquivalenceResult(code: string): string {
-	const ast = parse(code);
-	let changed = 0;
-	traverse(ast, {
-		FunctionDeclaration(path) {
-			let isRoutedEquivalenceHelper = false;
-			t.traverseFast(path.node.body, (child) => {
-				if (
-					t.isStringLiteral(child) &&
-					child.value === "^anthropic\\/claude-ccr-h([0-9a-f]+)$"
-				) {
-					isRoutedEquivalenceHelper = true;
-				}
-			});
-			if (!isRoutedEquivalenceHelper) return;
-			path.traverse({
-				ReturnStatement(returnPath) {
-					if (
-						t.isLogicalExpression(returnPath.node.argument, {
-							operator: "&&",
-						})
-					) {
-						returnPath.node.argument = t.booleanLiteral(false);
-						changed++;
-					}
-				},
-			});
-		},
-	});
-	assert.equal(changed, 1);
-	return print(ast);
-}
-
 test("model-aliases resolves a case-insensitive configured alias before stock normalization", async () => {
 	const output = await patchSource(MODEL_ROUTING_FIXTURE);
 	const normalizeModel = loadNormalizer(output, {
@@ -255,8 +227,7 @@ test("model-aliases normalizes explicit teammate models and forwards the alias m
 
 test("model-aliases renders an exact configured target with its friendly alias", async () => {
 	const output = await patchSource(MODEL_ROUTING_FIXTURE);
-	const routedModel =
-		"anthropic/claude-ccr-h6f70656e61692f6770742d352e362d736f6c";
+	const routedModel = "clodex:openai-oauth:gpt-5.6-sol";
 	const { renderWorkflowAgent } = loadWorkflowFunctions(output, {
 		CLAUDE_CODE_MODEL_ALIASES: JSON.stringify({ sol: routedModel }),
 	});
@@ -264,10 +235,9 @@ test("model-aliases renders an exact configured target with its friendly alias",
 	assert.equal(renderWorkflowAgent({ model: routedModel }), "Sol");
 });
 
-test("model-aliases hides only equivalent routed fallback labels", async () => {
+test("model-aliases preserves canonical workflow identity and real fallbacks", async () => {
 	const output = await patchSource(MODEL_ROUTING_FIXTURE);
-	const routedModel =
-		"anthropic/claude-ccr-h6f70656e61692f6770742d352e362d736f6c";
+	const routedModel = "clodex:openai-oauth:gpt-5.6-sol";
 	const { collectWorkflowModel, renderWorkflowAgent } = loadWorkflowFunctions(
 		output,
 		{
@@ -275,28 +245,19 @@ test("model-aliases hides only equivalent routed fallback labels", async () => {
 		},
 	);
 
-	const equivalent = collectWorkflowModel(routedModel, "gpt-5.6-sol");
-	assert.deepEqual(equivalent, {
+	const canonical = collectWorkflowModel(routedModel, routedModel);
+	assert.deepEqual(canonical, {
 		type: "workflow_agent",
 		model: routedModel,
-		fallbackModel: "gpt-5.6-sol",
+		fallbackModel: undefined,
 	});
-	assert.equal(renderWorkflowAgent(equivalent), "Sol");
+	assert.equal(renderWorkflowAgent(canonical), "Sol");
 
-	const exact = collectWorkflowModel(routedModel, "openai/gpt-5.6-sol");
-	assert.equal(renderWorkflowAgent(exact), "Sol");
-
-	const otherProvider = collectWorkflowModel(
-		routedModel,
-		"other-provider/gpt-5.6-sol",
-	);
-	assert.equal(
-		renderWorkflowAgent(otherProvider),
-		"Sol → other-provider/gpt-5.6-sol",
-	);
-
-	const otherModel = collectWorkflowModel(routedModel, "gpt-5.6-other");
-	assert.equal(renderWorkflowAgent(otherModel), "Sol → gpt-5.6-other");
+	const mismatch = collectWorkflowModel(routedModel, "gpt-5.6-other");
+	assert.equal(renderWorkflowAgent(mismatch), "Sol → gpt-5.6-other");
+	assert.equal(output.includes("claude-ccr-h"), false);
+	assert.equal(output.includes("TextDecoder"), false);
+	assert.equal(output.includes("configuredModelsEquivalent"), false);
 });
 
 test("model-aliases fails fast on malformed or unsafe alias maps", async () => {
@@ -364,6 +325,41 @@ test("model-aliases does not rewrite shared prompts", () => {
 	assert.equal(modelAliases.string, undefined);
 });
 
+const FORWARDED_ENV_C =
+	'const forwardedEnvC = ["ANTHROPIC_BEDROCK_SERVICE_TIER", "CLAUDE_CODE_SUBAGENT_MODEL", "ANTHROPIC_BASE_URL"];';
+
+test("model-aliases forwards the alias map to two subagent environment arrays", async () => {
+	const twoArrayFixture = MODEL_ROUTING_FIXTURE.replace(
+		`${FORWARDED_ENV_C}\n`,
+		"",
+	);
+	assert.notEqual(twoArrayFixture, MODEL_ROUTING_FIXTURE);
+	const output = await patchSource(twoArrayFixture);
+
+	assert.equal(
+		output.split('"CLAUDE_CODE_MODEL_ALIASES"').length - 1,
+		2,
+		"every remaining forwarding array must receive the alias map",
+	);
+	assert.equal(modelAliases.verify(output), true);
+});
+
+test("model-aliases forwards the alias map to four subagent environment arrays", async () => {
+	const fourArrayFixture = MODEL_ROUTING_FIXTURE.replace(
+		FORWARDED_ENV_C,
+		`${FORWARDED_ENV_C}\nconst forwardedEnvD = ["ANTHROPIC_CUSTOM_MODEL_OPTION", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CONFIG_DIR"];`,
+	);
+	assert.notEqual(fourArrayFixture, MODEL_ROUTING_FIXTURE);
+	const output = await patchSource(fourArrayFixture);
+
+	assert.equal(
+		output.split('"CLAUDE_CODE_MODEL_ALIASES"').length - 1,
+		4,
+		"a fourth forwarding array must also receive the alias map",
+	);
+	assert.equal(modelAliases.verify(output), true);
+});
+
 test("model-aliases verifier rejects partial routing integration", async () => {
 	const patched = await patchSource(MODEL_ROUTING_FIXTURE);
 	assert.equal(modelAliases.verify(patched), true);
@@ -385,8 +381,9 @@ test("model-aliases verifier rejects partial routing integration", async () => {
 		/environment forwarding/,
 	);
 
-	const weakenedEquivalence = disableRoutedEquivalenceResult(patched);
-	assert.notEqual(modelAliases.verify(weakenedEquivalence), true);
+	const weakenedLabelHelper = patched.replace(".toUpperCase()", "");
+	assert.notEqual(weakenedLabelHelper, patched);
+	assert.notEqual(modelAliases.verify(weakenedLabelHelper), true);
 });
 
 test("model-aliases verifier rejects weakened alias-map validation", async () => {
@@ -403,3 +400,132 @@ test("model-aliases verifier rejects weakened alias-map validation", async () =>
 		assert.notEqual(modelAliases.verify(weakened), true, errorNeedle);
 	}
 });
+
+// Surfaces the two finalize-pass env forwarders (configured-model-catalog and
+// model-picker-session-only) need to classify, minus their own forwarding
+// arrays. Combined with the model-aliases surfaces they share ONE array set, so
+// a single combined-engine run exercises all three forwarders composing on the
+// same nodes across the mutate and finalize passes.
+const MODEL_ALIAS_SURFACES = MODEL_ROUTING_FIXTURE.slice(
+	MODEL_ROUTING_FIXTURE.indexOf("function isBuiltInAlias"),
+);
+
+const CATALOG_SURFACE = `
+const env = {
+  ANTHROPIC_CUSTOM_MODEL_OPTION: undefined,
+  ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: undefined,
+  ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: undefined,
+};
+let cachedModels = [];
+function capabilitiesEnabled() { return false; }
+function readCapabilities() { return cachedModels; }
+function getModelCapability(model) {
+  if (!capabilitiesEnabled()) return;
+  const models = readCapabilities();
+  if (!models || models.length === 0) return;
+  const normalized = model.toLowerCase();
+  const exact = models.find((entry) => entry.id.toLowerCase() === normalized);
+  if (exact) return exact;
+  return models.find((entry) => normalized.includes(entry.id.toLowerCase()));
+}
+let baseModelOptions = [{ value: "fable", label: "Fable", description: "Native model" }];
+function baseOptions() { return baseModelOptions.map((option) => ({ ...option })); }
+function addModelOption(options, model) { options.push({ value: model.id, label: model.name, description: "From gateway" }); }
+function providerModels() { return []; }
+function serverModels() { return []; }
+function settings() { return {}; }
+function buildModelOptions(includeLongContext) {
+  let options = baseOptions(includeLongContext),
+    custom = env.ANTHROPIC_CUSTOM_MODEL_OPTION;
+  if (custom && !options.some((option) => option.value === custom)) {
+    options.push({
+      value: custom,
+      label: env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME ?? custom,
+      description: env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION ?? "Custom model",
+    });
+  }
+  for (const model of providerModels()) addModelOption(options, model);
+  for (const model of serverModels()) addModelOption(options, model);
+  return options;
+}
+`;
+
+const PICKER_SURFACE = `
+function renderModelPicker(props) {
+  let {
+    initial,
+    sessionModel,
+    onSelect,
+    onSetDefault,
+    onCancel,
+    isStandaloneCommand,
+    showFastModeNotice,
+    headerText,
+    options,
+    skipSettingsWrite,
+  } = props,
+    state = initial;
+  function select(value) {
+    if (onSetDefault) onSetDefault(value);
+    onSelect(value);
+    state = value;
+  }
+  const header = headerText ?? "Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.";
+  return { select, header, canSetDefault: Boolean(onSetDefault), state };
+}
+`;
+
+function buildCombinedEnvFixture(arrayCount: number): string {
+	const arrays = Array.from(
+		{ length: arrayCount },
+		(_unused, index) =>
+			`const forwardedEnv${index} = ["ANTHROPIC_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL", "ANTHROPIC_BASE_URL"];`,
+	).join("\n");
+	return `${arrays}\n${MODEL_ALIAS_SURFACES}\n${CATALOG_SURFACE}\n${PICKER_SURFACE}`;
+}
+
+async function runCombinedEnvPatches(ast: t.File): Promise<void> {
+	const entries: PatchPassEntry[] = [];
+	for (const patch of [
+		modelAliases,
+		configuredModelCatalog,
+		modelPickerSessionOnly,
+	]) {
+		const passes = (await patch.astPasses?.(ast)) ?? [];
+		for (const pass of passes) entries.push({ tag: patch.tag, pass });
+	}
+	await runCombinedAstPasses(
+		ast,
+		entries,
+		() => {},
+		() => {},
+		(_tag, error) => {
+			throw error;
+		},
+	);
+}
+
+for (const arrayCount of [2, 3, 4]) {
+	test(`model env forwarders compose across ${arrayCount} passthrough arrays`, async () => {
+		const ast = parse(buildCombinedEnvFixture(arrayCount));
+		await runCombinedEnvPatches(ast);
+		const output = print(ast);
+
+		for (const envKey of [
+			"CLAUDE_CODE_MODEL_ALIASES",
+			"CLAUDE_CODE_CONFIGURED_MODEL_CATALOG",
+			"CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY",
+		]) {
+			assert.equal(
+				output.split(`"${envKey}"`).length - 1,
+				arrayCount,
+				`${envKey} must land in every one of the ${arrayCount} forwarding arrays`,
+			);
+		}
+
+		const reparsed = parse(output);
+		assert.equal(modelAliases.verify(output, reparsed), true);
+		assert.equal(configuredModelCatalog.verify(output, reparsed), true);
+		assert.equal(modelPickerSessionOnly.verify(output, reparsed), true);
+	});
+}

@@ -242,6 +242,38 @@ test("uses the global fallback while gateway discovery is disabled", async () =>
 	assert.equal(runtime.contextWindow("provider/model"), 333000);
 });
 
+test("verifies a configured catalog prelude before the gateway gate", async () => {
+	const ast = parse(MODEL_CONTEXT_FIXTURE);
+	await runModelContextMetadataViaPasses(ast);
+	const preludeAst = parse(`
+function configuredLookup(model) {
+  {
+    const models = configuredModelCatalog();
+    const normalized = String(model).trim().toLowerCase();
+    const match = models.find((entry) => entry.id.toLowerCase() === normalized);
+    if (match) return match;
+  }
+}
+`);
+	const preludeFunction = preludeAst.program.body[0];
+	assert.equal(t.isFunctionDeclaration(preludeFunction), true);
+	if (!t.isFunctionDeclaration(preludeFunction)) return;
+	const prelude = preludeFunction.body.body[0];
+	assert.equal(t.isBlockStatement(prelude), true);
+	if (!t.isBlockStatement(prelude)) return;
+	let changed = 0;
+	traverse(ast, {
+		FunctionDeclaration(path) {
+			if (path.node.id?.name !== "getModelCapability") return;
+			path.node.body.body.unshift(t.cloneNode(prelude, true));
+			changed++;
+		},
+	});
+	assert.equal(changed, 1);
+
+	assert.equal(modelContextMetadata.verify(print(ast), ast), true);
+});
+
 test("model-context-metadata is idempotent", async () => {
 	const ast = parse(MODEL_CONTEXT_FIXTURE);
 	await runModelContextMetadataViaPasses(ast);

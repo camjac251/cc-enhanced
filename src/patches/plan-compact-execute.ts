@@ -186,6 +186,13 @@ function findClearContextSuffixName(path: NodePath<t.Function>): string | null {
 	return suffixName;
 }
 
+function consequentNestsAutoClearContextGuard(consequent: t.Node): boolean {
+	return visitNodeValues(consequent, (candidate) => {
+		if (!t.isIfStatement(candidate)) return false;
+		return nodeContainsText(candidate.consequent, "yes-auto-clear-context");
+	});
+}
+
 function findAutoClearContextOptionCondition(
 	path: NodePath<t.Function>,
 ): t.Expression | null {
@@ -196,8 +203,17 @@ function findAutoClearContextOptionCondition(
 		},
 		IfStatement(ifPath) {
 			if (condition) return;
+			// The auto-mode availability test directly guards the
+			// yes-auto-clear-context push. Its consequent contains that push and
+			// does not itself wrap a nested guard around the same push. The outer
+			// visibility guard also carries the push in its consequent (through
+			// this availability guard), so anchoring on the innermost guard keeps
+			// the injected compact split gated on auto-mode availability. Anchoring
+			// on the outer guard would duplicate the visibility test and leave the
+			// accept-edits branch unreachable.
 			if (!nodeContainsText(ifPath.node.consequent, "yes-auto-clear-context"))
 				return;
+			if (consequentNestsAutoClearContextGuard(ifPath.node.consequent)) return;
 			condition = t.cloneNode(ifPath.node.test, true) as t.Expression;
 		},
 	});
@@ -963,6 +979,8 @@ export const planCompactExecute: Patch = {
 
 		let compactAutoOption = false;
 		let compactAcceptEditsOption = false;
+		let compactOptionSplitFound = false;
+		let compactOptionSplitReusesGuard = false;
 		let compactBypassOption = false;
 		let compactBranchAssignsBypass = false;
 		let initialMessageWithCompactContext = false;
@@ -1036,6 +1054,46 @@ export const planCompactExecute: Patch = {
 				}
 			},
 			IfStatement(path) {
+				// Reachability of the two compact options: the option builder
+				// injects `if (showClearContext) if (isAutoModeAvailable)
+				// push(auto) else push(accept)`. Detect that split by the branch
+				// whose consequent pushes the auto value and whose alternate
+				// pushes the accept-edits value (and neither branch carries the
+				// other value). The accept-edits branch is only reachable when the
+				// inner availability guard can be false, which requires it to be
+				// distinct from the enclosing visibility guard. If the two guards
+				// are structurally identical the else branch is dead and the auto
+				// option shows even when auto mode is unavailable.
+				const alternate = path.node.alternate;
+				const consequentHasAuto = nodeContainsText(
+					path.node.consequent,
+					COMPACT_AUTO_VALUE,
+				);
+				const consequentHasAccept = nodeContainsText(
+					path.node.consequent,
+					COMPACT_ACCEPT_EDITS_VALUE,
+				);
+				const alternateHasAccept =
+					!!alternate &&
+					nodeContainsText(alternate, COMPACT_ACCEPT_EDITS_VALUE);
+				const alternateHasAuto =
+					!!alternate && nodeContainsText(alternate, COMPACT_AUTO_VALUE);
+				if (
+					consequentHasAuto &&
+					alternateHasAccept &&
+					!consequentHasAccept &&
+					!alternateHasAuto
+				) {
+					compactOptionSplitFound = true;
+					const enclosing = path.findParent((parent) => parent.isIfStatement());
+					if (
+						enclosing &&
+						t.isIfStatement(enclosing.node) &&
+						t.isNodesEquivalent(enclosing.node.test, path.node.test)
+					) {
+						compactOptionSplitReusesGuard = true;
+					}
+				}
 				if (
 					(nodeContainsText(path.node.test, COMPACT_AUTO_VALUE) ||
 						nodeContainsText(path.node.test, COMPACT_ACCEPT_EDITS_VALUE)) &&
@@ -1102,6 +1160,12 @@ export const planCompactExecute: Patch = {
 			return "Compact auto-mode plan approval option not found";
 		if (!compactAcceptEditsOption) {
 			return "Compact accept-edits plan approval option not found";
+		}
+		if (!compactOptionSplitFound) {
+			return "Compact plan options are not offered as an auto-mode availability split";
+		}
+		if (compactOptionSplitReusesGuard) {
+			return "Compact accept-edits plan option is unreachable behind a duplicated visibility guard";
 		}
 		if (compactBypassOption)
 			return "Compact plan option includes bypass-permissions wording";

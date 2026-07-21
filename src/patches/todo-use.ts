@@ -115,8 +115,16 @@ export const todo: Patch = {
 				return "Stale <example> blocks survived in Todo NOT-to-use section";
 			}
 		}
-		if (!code.includes(TRIGGER) && code.includes('name: "TodoWrite"')) {
-			return "Todo tool found but expected prompt section missing (bundle drift)";
+		// The Task States heading co-locates with the example sections in the
+		// Todo prompt. Its presence without either example heading means the
+		// sections were reworded out from under the patch, so the heading-gated
+		// checks above never ran.
+		if (
+			!code.includes(TRIGGER) &&
+			!code.includes(SKIP_HEADING) &&
+			code.includes(NEXT_SECTION_HEADING)
+		) {
+			return "Todo prompt present but example headings are missing (bundle drift)";
 		}
 		return true;
 	},

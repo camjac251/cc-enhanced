@@ -95,10 +95,10 @@ function versionText(VERSION) {
 	);
 	assert.equal(typeof result, "string");
 	assert.equal(
-		String(result).toLowerCase().includes("marketplace") ||
+		String(result).toLowerCase().includes("non-title template") ||
 			String(result).toLowerCase().includes("not decorated"),
 		true,
-		`expected marketplace-pollution or not-decorated error, got: ${result}`,
+		`expected wrong-anchor or not-decorated error, got: ${result}`,
 	);
 });
 

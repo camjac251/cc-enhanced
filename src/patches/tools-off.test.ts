@@ -566,3 +566,96 @@ const skillConfig = { filePatternTools: ["Read", "Bash"] };
 	assert.match(output, /isEnabled\(\)\s*\{\s*return\s+(?:false|!1)\s*;?\s*\}/);
 	assert.equal(disableTools.verify(output, ast), true);
 });
+
+// ---------------------------------------------------------------------------
+// Escaping-form regression: skill-doc WebFetch and REPL/ToolSearch leak guards.
+// The live bundle stores backticks and the em dash inconsistently (plain in some
+// double-quoted skill strings, escaped in some template literals), so rewrites and
+// guards must handle the form that actually ships at each site.
+// ---------------------------------------------------------------------------
+
+async function disabledToolsAst(): Promise<any> {
+	const ast = parse(disableTools.string?.(TOOL_FIXTURE) ?? TOOL_FIXTURE);
+	await runToolsOffViaPasses(ast);
+	return ast;
+}
+
+test("tools-off neutralizes the plain-backtick 'Full docs via WebFetch' skill-doc reference", async () => {
+	// The live reference ships with plain backticks inside a double-quoted string,
+	// alongside skill markers that gate the skill-doc rewrite block.
+	const input = [
+		TOOL_FIXTURE,
+		'const apiSkill = { name: "claude-api", allowedTools: ["Read", "Bash"] };',
+		'const doc = "Full docs via WebFetch in `shared/live-sources.md`.";',
+	].join("\n");
+	const { output, ast } = await applyFullPatch(input);
+	assert.equal(output.includes("Full docs via WebFetch"), false);
+	assert.equal(
+		output.includes(
+			"Full docs via MCP doc tools (context7, perplexity, firecrawl) using URLs in `shared/live-sources.md`.",
+		),
+		true,
+	);
+	assert.equal(disableTools.verify(output, ast), true);
+});
+
+test("tools-off verify fails when a plain-backtick 'Full docs via WebFetch' reference survives", async () => {
+	// Tools disabled via AST, but the reference was never scrubbed, so verify must
+	// catch the surviving WebFetch instruction.
+	const ast = await disabledToolsAst();
+	const survivor =
+		print(ast) +
+		'\nconst doc = "Full docs via WebFetch in `shared/live-sources.md`.";';
+	const result = disableTools.verify(survivor, ast);
+	assert.notEqual(result, true);
+	assert.match(String(result), /Full docs via WebFetch|full-docs/);
+});
+
+test("tools-off leak guard catches an escaped-backtick REPL filesystem Glob survivor", async () => {
+	// The bundle stores this line's backticks escaped inside a template literal, so a
+	// surviving (unrewritten) line carries \`Glob\`. The escaping-tolerant guard must
+	// still catch it.
+	const ast = await disabledToolsAst();
+	const survivor =
+		print(ast) +
+		'\nconst repl = "For filesystem access use \\`Read\\`/\\`Write\\`/\\`Glob\\`; for shell use \\`${r}\\`.";';
+	const result = disableTools.verify(survivor, ast);
+	assert.notEqual(result, true);
+	assert.match(String(result), /Glob/);
+});
+
+test("tools-off leak guard catches an escaped-backtick 'All tools work as async' survivor", async () => {
+	// Same escaped template-literal shape; the guard keys on the backtick-free prefix
+	// so a form flip cannot blind it.
+	const ast = await disabledToolsAst();
+	const survivor =
+		print(ast) +
+		'\nconst repl = "All tools work as async functions: \\`Read\\`, \\`Write\\`, \\`Edit\\`, \\`Glob\\`, \\`Grep\\`, \\`${r}\\`, etc.";';
+	const result = disableTools.verify(survivor, ast);
+	assert.notEqual(result, true);
+	assert.match(String(result), /lists disabled Glob\/Grep/);
+});
+
+test("tools-off leak guard catches a ToolSearch Grep example regardless of dash escaping", async () => {
+	// The bundle stores the em dash as the literal — escape; the guard keys on the
+	// dash-free 'select:Read,Edit,Grep' substring so a dash-form flip cannot blind it.
+	const ast = await disabledToolsAst();
+	const survivor =
+		print(ast) +
+		"\nconst ts = '- \"select:Read,Edit,Grep\" \\u2014 fetch these exact tools by name';";
+	const result = disableTools.verify(survivor, ast);
+	assert.notEqual(result, true);
+	assert.match(String(result), /ToolSearch|Grep/);
+});
+
+test("tools-off strips Glob from filePatternTools but keeps NotebookEdit and NotebookRead", async () => {
+	// Real bundle array shape: FORBIDDEN Glob must drop while the disabled-but-not-
+	// forbidden NotebookEdit and the untouched NotebookRead are retained.
+	const input = `${TOOL_FIXTURE}
+const cfg = { filePatternTools: ["Read", "Write", "Edit", "Glob", "NotebookRead", "NotebookEdit", "Cd"] };`;
+	const { output, ast } = await applyFullPatch(input);
+	assert.doesNotMatch(output, /filePatternTools:[^\]]*"Glob"/);
+	assert.match(output, /filePatternTools:[^\]]*"NotebookEdit"/);
+	assert.match(output, /filePatternTools:[^\]]*"NotebookRead"/);
+	assert.equal(disableTools.verify(output, ast), true);
+});

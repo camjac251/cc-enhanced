@@ -8,6 +8,7 @@ export { builtInAgentPrompt } from "./built-in-agent-prompt.js";
 export { cacheTailPolicy } from "./cache-tail-policy.js";
 export { claudeMdSystemPrompt } from "./claudemd-strong.js";
 export { commandsOff } from "./commands-off.js";
+export { configuredModelCatalog } from "./configured-model-catalog.js";
 export { editTool } from "./edit-extended.js";
 export { effortStack } from "./effort-stack.js";
 export { featureFlags } from "./feature-flags.js";
@@ -20,6 +21,7 @@ export { mcpServerName } from "./mcp-server-name.js";
 export { memoryPromptSoften } from "./memory-prompt-soften.js";
 export { modelAliases } from "./model-aliases.js";
 export { modelContextMetadata } from "./model-context-metadata.js";
+export { modelPickerSessionOnly } from "./model-picker-session-only.js";
 export { disableAutoupdater } from "./no-autoupdate.js";
 export { noCollapse } from "./no-collapse.js";
 export { planCompactExecute } from "./plan-compact-execute.js";
@@ -52,6 +54,7 @@ import { builtInAgentPrompt } from "./built-in-agent-prompt.js";
 import { cacheTailPolicy } from "./cache-tail-policy.js";
 import { claudeMdSystemPrompt } from "./claudemd-strong.js";
 import { commandsOff } from "./commands-off.js";
+import { configuredModelCatalog } from "./configured-model-catalog.js";
 import { editTool } from "./edit-extended.js";
 import { effortStack } from "./effort-stack.js";
 import { featureFlags } from "./feature-flags.js";
@@ -64,6 +67,7 @@ import { mcpServerName } from "./mcp-server-name.js";
 import { memoryPromptSoften } from "./memory-prompt-soften.js";
 import { modelAliases } from "./model-aliases.js";
 import { modelContextMetadata } from "./model-context-metadata.js";
+import { modelPickerSessionOnly } from "./model-picker-session-only.js";
 import { disableAutoupdater } from "./no-autoupdate.js";
 import { noCollapse } from "./no-collapse.js";
 import { planCompactExecute } from "./plan-compact-execute.js";
@@ -122,6 +126,7 @@ const basePatches: Patch[] = [
 	readWithBat,
 	agentTools,
 	commandsOff,
+	configuredModelCatalog,
 	lspMultiServer,
 	lspFilenameSchema,
 	noCollapse,
@@ -132,6 +137,7 @@ const basePatches: Patch[] = [
 	agentListingUi,
 	subagentSystemPrompt,
 	modelAliases,
+	modelPickerSessionOnly,
 	subagentModelTag,
 	tabQueue,
 	sessionMemory,

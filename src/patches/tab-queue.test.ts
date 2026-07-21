@@ -24,11 +24,12 @@ function countOccurrences(value: string, needle: RegExp): number {
 const TAB_QUEUE_FIXTURE = `
 function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, setPastedContents }) {
   function submit(value, isSubmittingSlashCommand = false) {
+    let forwardOptions = value.startsWith("/") ? { fromSlash: true } : void 0;
     return submitPrompt(value, {
       setCursorOffset,
       clearBuffer,
       resetHistory,
-    });
+    }, forwardOptions);
   }
   function change(value) {
     input = value;
@@ -135,7 +136,7 @@ function renderFooterLeft(footerProps) {
   return React.jsx(Box, { children: parts });
 }
 
-async function replSubmit(input, helpers, speculation, options) {
+async function replSubmit(input, helpers, options) {
   addToHistory({ display: input, pastedContents });
   await submitPromptRuntime({
     input,
@@ -148,6 +149,7 @@ async function replSubmit(input, helpers, speculation, options) {
     setPastedContents,
     onQuery: runPrompt,
     setMessages,
+    suppressWorkflowKeyword: options?.suppressWorkflowKeyword,
   });
 }
 
@@ -247,6 +249,51 @@ test("tab-queue receiver guard pushes the trimmed draft and resets the buffer", 
 	assert.match(output, /helpers\.setCursorOffset\(0\)/);
 	assert.match(output, /helpers\.clearBuffer\(\)/);
 	assert.equal(tabQueue.verify(output, ast), true);
+});
+
+test("tab-queue injects the queue producer against a three-param submit receiver", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	// The receiver caller takes (input, helpers, options); the injected producer
+	// must read the options param and push the trimmed draft onto the queue.
+	assert.match(
+		output,
+		/if \(options && options\.deferUntilTurnEnd && input\.trim\(\) !== ""\)/,
+	);
+	assert.match(output, /globalThis\.__ccEnhancedTabQueue \?\?/);
+	assert.match(output, /\.push\(input\.trim\(\)\)/);
+	assert.equal(tabQueue.verify(output, ast), true);
+});
+
+test("tab-queue merges the defer flag into the forward options argument", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	// The flag rides in the third positional argument (input, helpers, options),
+	// the same slot the receiver reads its options from, so the two sides agree.
+	assert.match(
+		output,
+		/isSubmittingSlashCommand === "__cc_enhanced_tab_queue" \? \{ \.\.\.forwardOptions, deferUntilTurnEnd: true \} : forwardOptions/,
+	);
+	assert.equal(tabQueue.verify(output, ast), true);
+});
+
+test("tab-queue verify fails when the submit receiver has no options param", async () => {
+	const noOptions = TAB_QUEUE_FIXTURE.replace(
+		"async function replSubmit(input, helpers, options) {",
+		"async function replSubmit(input, helpers) {",
+	);
+	assert.notEqual(noOptions, TAB_QUEUE_FIXTURE);
+	const ast = parse(noOptions);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	// Without an options param the sole queue producer can never be injected, so
+	// verify must refuse the build rather than tolerate a silent no-op.
+	assert.doesNotMatch(output, /globalThis\.__ccEnhancedTabQueue \?\?/);
+	const result = tabQueue.verify(output);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("submit receiver not found"), true);
 });
 
 test("tab-queue widens the footer push without dropping the showHint branch", async () => {

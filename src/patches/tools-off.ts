@@ -283,6 +283,11 @@ const PROMPT_REWRITE_PATCHED_SIGNALS = [
 	"available content-search tooling for targeted discovery",
 ];
 
+// Escaping-agnostic leak needles: each is a distinctive substring that appears
+// identically whether the surrounding skill text stores its backticks (or the em
+// dash) plainly or escaped, so a form flip in the source cannot blind the guard.
+// The backtick-wrapped filesystem-routing line has no such stable substring; it is
+// guarded by a form-tolerant regex in verifyPromptRewrite instead.
 const DISABLED_TOOL_PROMPT_LEAKS = [
 	{
 		needle: "ALWAYS use Grep for search tasks.",
@@ -293,16 +298,11 @@ const DISABLED_TOOL_PROMPT_LEAKS = [
 		reason: "REPL prompt still demonstrates disabled Glob",
 	},
 	{
-		needle:
-			"All tools work as async functions: `Read`, `Write`, `Edit`, `Glob`, `Grep`",
+		needle: "All tools work as async functions:",
 		reason: "REPL prompt still lists disabled Glob/Grep",
 	},
 	{
-		needle: "For filesystem access use `Read`/`Write`/`Glob`",
-		reason: "REPL prompt still routes file discovery through disabled Glob",
-	},
-	{
-		needle: '"select:Read,Edit,Grep" — fetch these exact tools by name',
+		needle: "select:Read,Edit,Grep",
 		reason: "ToolSearch prompt still demonstrates disabled Grep",
 	},
 	{
@@ -369,23 +369,13 @@ const SKILL_DOC_TEXT_REPLACEMENTS: Array<[RegExp, string]> = [
 		/Use WebFetch to get the latest documentation when:/g,
 		`Use ${MCP_DOC_HINT_SHORT} to get the latest documentation when:`,
 	],
+	// Literal backticks: this reference ships inside a double-quoted string,
+	// not a template literal, so its backticks are unescaped here.
 	[
-		/WebFetch URLs for fetching the latest official documentation\./g,
-		`Live documentation URLs; fetch via ${MCP_DOC_HINT_SHORT} or curl.`,
-	],
-	[
-		/WebFetch URLs for current Agent SDK docs\./g,
-		`Live documentation URLs for current Agent SDK docs; fetch via ${MCP_DOC_HINT_SHORT} or curl.`,
-	],
-	[
-		/Full docs via WebFetch in <code>shared\/live-sources\.md<\/code>\./g,
-		`Full docs via ${MCP_DOC_HINT_SHORT} using URLs in <code>shared/live-sources.md</code>.`,
-	],
-	[
-		/Full docs via WebFetch in \\`shared\/live-sources\.md\\`\./g,
+		/Full docs via WebFetch in `shared\/live-sources\.md`\./g,
 		"Full docs via " +
 			MCP_DOC_HINT_SHORT +
-			" using URLs in \\`shared/live-sources.md\\`.",
+			" using URLs in `shared/live-sources.md`.",
 	],
 	[
 		/For the latest information, WebFetch the Models Overview URL in <code>shared\/live-sources\.md<\/code>[^"<]*/g,
@@ -410,13 +400,10 @@ const SKILL_DOC_TEXT_REPLACEMENTS: Array<[RegExp, string]> = [
 		`For full documentation, fetch the listed URL via ${MCP_DOC_HINT_SHORT}:`,
 	],
 	[/Latest docs via WebFetch:/g, `Latest docs via ${MCP_DOC_HINT_SHORT}:`],
+	// Literal backticks: this reference ships inside a double-quoted string.
 	[
-		/Live documentation URLs are in <code>shared\/live-sources\.md<\/code>\./g,
-		`Live documentation URLs are in <code>shared/live-sources.md</code>; fetch via ${MCP_DOC_HINT_SHORT}.`,
-	],
-	[
-		/Live documentation URLs are in \\`shared\/live-sources\.md\\`\./g,
-		"Live documentation URLs are in \\`shared/live-sources.md\\`; fetch via " +
+		/Live documentation URLs are in `shared\/live-sources\.md`\./g,
+		"Live documentation URLs are in `shared/live-sources.md`; fetch via " +
 			MCP_DOC_HINT_SHORT +
 			".",
 	],
@@ -808,6 +795,16 @@ function verifyPromptRewrite(code: string): true | string {
 	) {
 		return "Disabled Grep tool prompt still tells the model to use Grep";
 	}
+	// Backtick-wrapped filesystem-routing line: match Read/Write/Glob whether the
+	// backticks are stored plainly or escaped, so a form flip cannot hide a Glob
+	// survivor. The rewrite swaps Glob for Edit, so a match here means it no-oped.
+	if (
+		/For filesystem access use \\?`Read\\?`\/\\?`Write\\?`\/\\?`Glob\\?`/.test(
+			code,
+		)
+	) {
+		return "REPL prompt still routes file discovery through disabled Glob";
+	}
 	for (const leak of ACTIONABLE_LEGACY_COMMAND_PROMPT_LEAKS) {
 		if (code.includes(leak.needle)) {
 			return leak.reason;
@@ -927,6 +924,9 @@ function verifySkillTools(code: string, ast: t.File): true | string {
 	}
 	if (code.includes("This file contains WebFetch URLs")) {
 		return "Live-sources skill doc still references WebFetch URLs";
+	}
+	if (code.includes("Full docs via WebFetch")) {
+		return "Skill docs still route full-docs guidance through WebFetch";
 	}
 	if (code.includes("If WebFetch fails")) {
 		return "Live-sources fallback guidance still references WebFetch";

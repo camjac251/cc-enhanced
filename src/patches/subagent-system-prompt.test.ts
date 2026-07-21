@@ -83,14 +83,39 @@ test("subagent-system-prompt bridges main append prompt into subagents", async (
 	assert.equal(subagentSystemPrompt.verify(output, ast), true);
 });
 
-test("subagent-system-prompt copies startup append prompt into subagent option", async () => {
+test("subagent-system-prompt flags a void-0 startup default instead of rewriting it", async () => {
 	const ast = parse(`${SUBAGENT_PROMPT_FIXTURE}\n${STARTUP_OPTIONS_FIXTURE}`);
 	await runSubagentSystemPromptViaPasses(ast);
 	const output = print(ast);
 
-	assert.match(output, /appendSystemPrompt:\s*ke/);
-	assert.match(output, /appendSubagentSystemPrompt:\s*ke/);
-	assert.equal(output.includes("appendSubagentSystemPrompt: void 0"), false);
+	// The mutator leaves startup objects alone; a void-0 subagent default is a
+	// drift signal the verifier must surface for repointing.
+	assert.match(output, /appendSubagentSystemPrompt:\s*void 0/);
+	const result = subagentSystemPrompt.verify(output, ast);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("Subagent append prompt still defaults to void 0"),
+		true,
+	);
+});
+
+test("subagent-system-prompt accepts the native startup pass-through shape", async () => {
+	const passThrough = `
+function startCli(r) {
+  return hd("messages", {
+    appendSystemPrompt: r.options.appendSystemPrompt,
+    appendSubagentSystemPrompt: r.options.appendSubagentSystemPrompt,
+  });
+}
+`;
+	const ast = parse(`${SUBAGENT_PROMPT_FIXTURE}\n${passThrough}`);
+	await runSubagentSystemPromptViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(
+		output,
+		/appendSubagentSystemPrompt:\s*r\.options\.appendSubagentSystemPrompt/,
+	);
 	assert.equal(subagentSystemPrompt.verify(output, ast), true);
 });
 
@@ -303,7 +328,7 @@ ${SUBAGENT_PROMPT_FIXTURE}
 	assert.equal(subagentSystemPrompt.verify(output, ast), true);
 });
 
-test("subagent-system-prompt copies every startup void-0 subagent default", async () => {
+test("subagent-system-prompt verify counts every surviving void-0 default", async () => {
 	const twoObjects = `
 function startA(ke) {
   return hd("messages", { appendSystemPrompt: ke, appendSubagentSystemPrompt: void 0 });
@@ -316,10 +341,9 @@ function startB(kx) {
 	await runSubagentSystemPromptViaPasses(ast);
 	const output = print(ast);
 
-	assert.match(output, /appendSubagentSystemPrompt:\s*ke/);
-	assert.match(output, /appendSubagentSystemPrompt:\s*kx/);
-	assert.equal(output.includes("appendSubagentSystemPrompt: void 0"), false);
-	assert.equal(subagentSystemPrompt.verify(output, ast), true);
+	const result = subagentSystemPrompt.verify(output, ast);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("(2 surviving)"), true);
 });
 
 test("subagent-system-prompt leaves a null startup subagent default untouched", async () => {

@@ -3,6 +3,9 @@ import { test } from "node:test";
 import type * as t from "@babel/types";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
+import { editTool } from "./edit-extended.js";
+import { allPatches } from "./index.js";
+import { planDiffUi } from "./plan-diff-ui.js";
 import { skillActivationNotice } from "./skill-activation-notice.js";
 import { skillGlobalPaths } from "./skill-global-paths.js";
 import { skillPathsInvoke } from "./skill-paths-invoke.js";
@@ -108,5 +111,64 @@ test("skill-global-paths reshaping the matcher does not break the activation not
 	assert.ok(
 		/q\.length > 0[\s\S]{0,500}__ccPathActivations\.push/.test(output),
 		"notice record must land inside the q.length>0 emit branch after global-paths reshaping",
+	);
+});
+
+// --- plan-diff-ui neutralizes Edit's plan-preview guard before edit-extended ---
+// plan-diff-ui rewrites `if (f.startsWith(v6())) return "";` to `if (false)
+// return "";` in its mutate pass. edit-extended appends the batch/replace_all
+// chip to the same Edit renderer at Program.exit of the same pass, so it must
+// anchor on the durable `if (!f) return null;` early guard plus the shape of a
+// second empty-string guard rather than on the startsWith test that plan-diff-ui
+// destroys. This is the one cross-patch cascade that has regressed in practice.
+const EDIT_RENDER_FIXTURE = `
+function renderEditMessage({ file_path: f }, { verbose: v }) {
+  if (!f) return null;
+  if (f.startsWith(v6())) return "";
+  return v ? f : f.split("/").pop();
+}
+`;
+
+test("edit-extended still tags the Edit chip after plan-diff-ui rewrites the plan-preview guard", async () => {
+	const ast = parse(EDIT_RENDER_FIXTURE);
+	// Registration order runs plan-diff-ui's guard rewrite before edit-extended's
+	// Program.exit render patch consumes the same function.
+	await runMutateTogether(ast, [planDiffUi, editTool]);
+	const output = print(ast);
+
+	// plan-diff-ui neutralized the plan-preview guard...
+	assert.ok(
+		!output.includes('f.startsWith(v6())) return "";'),
+		"plan-diff-ui must rewrite the startsWith plan-preview guard",
+	);
+	// ...and edit-extended still located the renderer and injected its chip
+	// helper despite the guard test being gone.
+	assert.ok(
+		output.includes("_editAppendOpts"),
+		"edit-extended must still inject its chip helper into the Edit renderer",
+	);
+	assert.ok(
+		output.includes("_claudeEditEdits") &&
+			output.includes("_claudeEditReplaceAll"),
+		"edit-extended must still add the batch/replace_all bindings to the renderer param",
+	);
+});
+
+// --- read-bat rewrites the Read tool object before limits ---
+// read-bat statically replaces the Read prompt body (dropping the "reads up to"
+// quasi limits keys linesCap on) and mutates the Read tool object; limits then
+// rewrites numeric caps on that same object at Program.exit. limits treats
+// linesCap as optional precisely because read-bat may have removed its anchor,
+// but the numeric caps still depend on read-bat running first. This pins that
+// registration order so a barrel reorder cannot silently invert it.
+test("read-bat is registered before limits so the Read-tool rewrite order holds", () => {
+	const tags = allPatches.map((patch) => patch.tag);
+	const readBatIndex = tags.indexOf("read-bat");
+	const limitsIndex = tags.indexOf("limits");
+	assert.ok(readBatIndex >= 0, "read-bat must be in the patch roster");
+	assert.ok(limitsIndex >= 0, "limits must be in the patch roster");
+	assert.ok(
+		readBatIndex < limitsIndex,
+		`read-bat (index ${readBatIndex}) must precede limits (index ${limitsIndex}) so limits sees the post-read-bat Read tool object`,
 	);
 });

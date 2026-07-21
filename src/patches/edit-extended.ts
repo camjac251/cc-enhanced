@@ -1669,42 +1669,6 @@ Error recovery:
 				path.replaceWith(t.stringLiteral(newPrompt));
 			}
 		},
-		FunctionDeclaration(path: any) {
-			if (
-				path.node.params.length === 1 &&
-				t.isObjectPattern(path.node.params[0])
-			) {
-				const props = path.node.params[0].properties;
-				const patchProp = props.find(
-					(p: any): p is t.ObjectProperty =>
-						t.isObjectProperty(p) && hasObjectKeyName(p, "structuredPatch"),
-				);
-
-				if (patchProp && t.isIdentifier(patchProp.value)) {
-					const patchVarName = patchProp.value.name;
-
-					traverse(t.file(t.program([path.node])), {
-						CallExpression(innerPath: any) {
-							if (
-								t.isMemberExpression(innerPath.node.callee) &&
-								t.isIdentifier(innerPath.node.callee.property) &&
-								(innerPath.node.callee.property.name === "reduce" ||
-									innerPath.node.callee.property.name === "map")
-							) {
-								const object = innerPath.node.callee.object;
-								if (t.isIdentifier(object) && object.name === patchVarName) {
-									innerPath.node.callee.object = t.logicalExpression(
-										"||",
-										object,
-										t.arrayExpression([]),
-									);
-								}
-							}
-						},
-					});
-				}
-			}
-		},
 	});
 
 	patchEditRenderToolUseMessage(ast);
@@ -1865,10 +1829,16 @@ function verifyEditValidateAndCallFlow(ctx: EditVerifyContext): string | null {
 	if (validateFlow.hasEarlyReturnTrue) {
 		return "validateInput still bypasses legacy string-mode checks for extended edit modes";
 	}
+	// The canonicalization helper preserves notebook rejection by guarding on
+	// an .ipynb path suffix and returning the notebook-tool redirect. Requiring
+	// both the suffix guard and the redirect message pins the check to that
+	// specific return rather than to the two tokens existing anywhere.
 	if (
 		!code.includes("_claudeEditCanonicalizeInput") ||
-		!code.includes(".ipynb") ||
-		!code.includes("NotebookEdit")
+		!code.includes('.endsWith(".ipynb")') ||
+		!code.includes(
+			"File is a Jupyter Notebook. Use the NotebookEdit tool to edit this file.",
+		)
 	) {
 		return "Extended edit canonicalization does not preserve structural notebook edit rejection";
 	}

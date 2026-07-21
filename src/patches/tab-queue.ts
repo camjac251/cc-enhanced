@@ -842,7 +842,6 @@ function hasSubmitForwardDeferOption(target: DraftQueueTarget): boolean {
 		CallExpression(path) {
 			if (found || !isPromptSubmitForwardCall(path.node, inputParam)) return;
 			if (
-				expressionHasStringProp(path.node, "value", TAB_QUEUE_SENTINEL) ||
 				expressionHasBooleanProp(path.node, DEFER_UNTIL_TURN_END_OPTION, true)
 			) {
 				found = true;
@@ -867,24 +866,31 @@ function patchSubmitForward(target: DraftQueueTarget): boolean {
 		},
 		CallExpression(path) {
 			if (patched || !isPromptSubmitForwardCall(path.node, inputParam)) return;
+			// The receiver reads its defer signal from the third positional
+			// argument (input, helpers, options). Merge the flag into that options
+			// argument so the injected receiver guard sees it; spreading the
+			// original options keeps every non-queued submit unchanged.
 			while (path.node.arguments.length < 3) {
 				path.node.arguments.push(
 					t.unaryExpression("void", t.numericLiteral(0)),
 				);
 			}
-			path.node.arguments[3] = t.conditionalExpression(
+			const options = path.node.arguments[2];
+			if (!t.isExpression(options)) return;
+			path.node.arguments[2] = t.conditionalExpression(
 				t.binaryExpression(
 					"===",
 					t.identifier(queueFlagParam.name),
 					t.stringLiteral(TAB_QUEUE_SENTINEL),
 				),
 				t.objectExpression([
+					t.spreadElement(t.cloneNode(options, true)),
 					t.objectProperty(
 						t.identifier(DEFER_UNTIL_TURN_END_OPTION),
 						t.booleanLiteral(true),
 					),
 				]),
-				t.unaryExpression("void", t.numericLiteral(0)),
+				t.cloneNode(options, true),
 			);
 			patched = true;
 		},
@@ -1332,7 +1338,7 @@ function getDeferredSubmitReceiverTarget(
 
 	const inputParam = getParamIdentifier(functionPath, 0);
 	const helpersParam = getParamIdentifier(functionPath, 1);
-	const optionsParam = getParamIdentifier(functionPath, 3);
+	const optionsParam = getParamIdentifier(functionPath, 2);
 	if (!inputParam || !helpersParam || !optionsParam) return null;
 
 	const inputExpr = getObjectPropertyValue(path.node, "input");
@@ -2186,11 +2192,9 @@ function createTabQueuePasses(): PatchAstPass[] {
 							);
 						}
 						if (uniqueReceiverTargets.length !== 1 || !patchedReceiver) {
-							if (uniqueReceiverTargets.length > 0) {
-								console.warn(
-									`Tab queue: expected one deferred submit receiver target, found ${uniqueReceiverTargets.length}`,
-								);
-							}
+							console.warn(
+								`Tab queue: expected one deferred submit receiver target, found ${uniqueReceiverTargets.length}`,
+							);
 						}
 						if (uniqueDrainTargets.length !== 1 || !patchedDrain) {
 							console.warn(
@@ -2332,6 +2336,9 @@ export const tabQueue: Patch = {
 			return `Draft Tab queue typeahead bypass is ambiguous (${counts.typeahead} bypasses found)`;
 		}
 
+		if (counts.deferredSubmitReceiver === 0) {
+			return "Deferred Tab queue submit receiver not found";
+		}
 		if (counts.deferredSubmitReceiver > 1) {
 			return `Deferred Tab queue submit receiver is ambiguous (${counts.deferredSubmitReceiver} receivers found)`;
 		}

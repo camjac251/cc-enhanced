@@ -54,19 +54,6 @@ const MODERN_BASH_IMPORTANT_LINE =
 	"IMPORTANT: Prefer dedicated symbol/semantic tools and modern CLI utilities whenever possible. Recommended defaults:";
 
 const MODERN_GUIDE_FINDING_TOOLS = MODERN_FINDING_TOOLS;
-const GH_PR_CREATE_CAT_HEREDOC_PATTERN =
-	/gh pr create --title "([^"]+)" --body "\$\(cat <<'EOF'\n([\s\S]*?)\nEOF\n\)"/g;
-
-function rewriteGhPrCreateCatHeredocs(text: string): string {
-	return text.replace(
-		GH_PR_CREATE_CAT_HEREDOC_PATTERN,
-		(_match, title: string, body: string) => `pr_body=$(mktemp)
-tee "$pr_body" >/dev/null <<'PR_BODY'
-${body}
-PR_BODY
-gh pr create --title "${title}" --body-file "$pr_body"`,
-	);
-}
 
 function templatePattern(node: t.TemplateLiteral): string {
 	return node.quasis
@@ -122,7 +109,7 @@ function createTwoExpressionTemplate(
 }
 
 function rewriteLegacyText(text: string): string {
-	let next = rewriteGhPrCreateCatHeredocs(text)
+	let next = text
 		.replace(
 			"If your command will create new directories or files, first use this tool to run `ls` to verify the parent directory exists and is the correct location.",
 			"If your command will create new directories or files, first use this tool to run `eza` or `fd` to verify the parent directory exists and is the correct location.",
@@ -436,45 +423,6 @@ function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 				case "IMPORTANT: Avoid using this tool to run ${} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:":
 					templatePath.replaceWith(t.stringLiteral(MODERN_BASH_IMPORTANT_LINE));
 					return;
-				case "To read files use ${} instead of cat, head, tail, or sed":
-					templatePath.replaceWith(
-						createSingleExpressionTemplate(
-							templatePath.node.expressions[0],
-							"To read files use ",
-							" for non-code files or known code ranges; use `bat -r START:END` for shell file slices.",
-						),
-					);
-					return;
-				case "To edit files use ${} instead of sed or awk":
-					templatePath.replaceWith(
-						createSingleExpressionTemplate(
-							templatePath.node.expressions[0],
-							"To edit files use ",
-							"; for code rewrites use `sg`; use `sd` only for non-code text.",
-						),
-					);
-					return;
-				case "To create files use ${} instead of cat with heredoc or echo redirection":
-					templatePath.replaceWith(
-						createSingleExpressionTemplate(
-							templatePath.node.expressions[0],
-							"To create files use ",
-							" for file creation or large rewrites.",
-						),
-					);
-					return;
-				case "To search for files use ${} instead of find or ls":
-					templatePath.replaceWith(
-						t.stringLiteral(
-							"For shell-native file discovery use `fd` and `eza`.",
-						),
-					);
-					return;
-				case "To search the content of files, use ${} instead of grep or rg":
-					templatePath.replaceWith(
-						t.stringLiteral(MODERN_BASH_SEARCH_GUIDANCE),
-					);
-					return;
 				case "Read files: Use ${} (NOT cat/head/tail)":
 					templatePath.replaceWith(
 						createSingleExpressionTemplate(
@@ -564,6 +512,40 @@ function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 	});
 }
 
+/**
+ * Runtime policy governs working-directory behavior, so the full Bash builder's
+ * working-directory guidance is replaced with the runtime-neutral wording. The
+ * builder is identified by its "Executes a given bash command" surface, and the
+ * guidance line by a durable fragment ("working directory persists between" plus
+ * "the user's profile") so an upstream reword of the exact sentence does not
+ * silently skip the replacement.
+ */
+function forceRuntimeNeutralWorkingDirectory(path: NodePath<t.Function>): void {
+	let isFullBuilder = false;
+	path.traverse({
+		StringLiteral(inner) {
+			if (inner.node.value.startsWith("Executes a given bash command")) {
+				isFullBuilder = true;
+				inner.stop();
+			}
+		},
+	});
+	if (!isFullBuilder) return;
+
+	path.traverse({
+		StringLiteral(inner) {
+			const lower = inner.node.value.toLowerCase();
+			if (
+				lower.includes("working directory persists between") &&
+				lower.includes("the user's profile")
+			) {
+				inner.node.value = RUNTIME_NEUTRAL_WORKING_DIRECTORY_GUIDANCE;
+				inner.stop();
+			}
+		},
+	});
+}
+
 function findAnchor(path: NodePath<t.Function>): string | null {
 	let matched: string | null = null;
 	path.traverse({
@@ -608,10 +590,6 @@ export const bashPrompt: Patch = {
 	tag: "bash-prompt",
 	string: (code) =>
 		code
-			.replaceAll(
-				LEGACY_WORKING_DIRECTORY_GUIDANCE,
-				RUNTIME_NEUTRAL_WORKING_DIRECTORY_GUIDANCE,
-			)
 			.replace(LEGACY_TOKEN_WARNING_RE, MODERN_OUTPUT_LIMIT_WARNING)
 			.replace(LEGACY_POWERSHELL_TOKEN_WARNING_RE, MODERN_OUTPUT_LIMIT_WARNING),
 
@@ -625,6 +603,7 @@ export const bashPrompt: Patch = {
 					if (!containsAnchor(path)) return;
 					patchGateInFunction(path);
 					patchPromptTextInFunction(path);
+					forceRuntimeNeutralWorkingDirectory(path);
 					path.skip();
 				},
 			},
@@ -650,10 +629,6 @@ export const bashPrompt: Patch = {
 			return "Runtime-neutral Bash working-directory guidance missing";
 		}
 
-		if (code.includes("Avoid using Bash with the `find`")) {
-			return "Old 'Avoid using Bash with' text still present";
-		}
-
 		if (
 			code.includes("find or ls") ||
 			code.includes("grep or rg") ||
@@ -663,11 +638,6 @@ export const bashPrompt: Patch = {
 			code.includes("find -regex") ||
 			code.includes("When running `find`") ||
 			code.includes("run `ls` to verify") ||
-			code.includes("--body \"$(cat <<'EOF'") ||
-			code.includes("for shell-native viewing use `bat`") ||
-			code.includes("for shell-native viewing use \\`bat\\`") ||
-			code.includes("or `bat` for shell-native viewing") ||
-			code.includes("or \\`bat\\` for shell-native viewing") ||
 			code.includes("appropriate dedicated tool") ||
 			code.includes("when one fits (")
 		) {

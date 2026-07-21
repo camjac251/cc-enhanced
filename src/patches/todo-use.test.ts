@@ -231,16 +231,21 @@ test("todo-use fixture headings are unique (drift guard)", () => {
 	assert.equal(count(TODO_FIXTURE, "## Task States and Management"), 1);
 });
 
-test("todo-use verify flags tool-present-but-section-missing as drift", () => {
-	// No trigger heading, but a Todo tool marker is present.
-	const noSection = 'const tool = { name: "TodoWrite" };';
+test("todo-use verify flags neighbor-present-but-headings-missing as drift", () => {
+	// The durable neighbor heading survives, but both example headings were
+	// reworded away, so every heading-gated check would be skipped.
+	const noSection = `## Task Rules
+Some prose.
+## Task States and Management
+More prose.`;
 	const result = todo.verify(noSection);
 	assert.notEqual(
 		result,
 		true,
-		"verify must flag bundle drift when the Todo prompt section vanished",
+		"verify must flag bundle drift when the example headings vanished",
 	);
 	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("example headings are missing"), true);
 });
 
 test("todo-use stale-prose guard matches the upstream npm-install line despite trailing period", () => {

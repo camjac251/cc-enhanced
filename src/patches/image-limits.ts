@@ -16,6 +16,7 @@ const MANY_IMAGE_DIMENSION_LIMIT = 2000;
 const MANY_IMAGE_COLLECTOR_NAME = "__ccEnhancedCollectManyImageBlock";
 const MANY_IMAGE_DOWNSCALE_HELPER_NAME =
 	"__ccEnhancedDownscaleManyImageMessages";
+const MANY_IMAGE_FALLBACK_RESULT_NAME = "__ccEnhancedDownscaledMidConvFallback";
 const HEADER_BASE64_SAMPLE_CHARS = 87400;
 
 interface ImageLimitEntry {
@@ -343,8 +344,8 @@ function functionHasManyImageDownscale(path: NodePath<t.Function>): boolean {
 	let helperSeen = false;
 	let normalizerCallSeen = false;
 	let requestAwaitSeen = false;
+	let fallbackDownscaleSeen = false;
 	let fallbackWrapSeen = false;
-	let fallbackAwaitSeen = false;
 	let collectorSeen = false;
 	let base64DecodeSeen = false;
 	let countLimitSeen = false;
@@ -410,33 +411,39 @@ function functionHasManyImageDownscale(path: NodePath<t.Function>): boolean {
 		AwaitExpression(innerPath) {
 			const arg = innerPath.node.argument;
 			if (
-				t.isCallExpression(arg) &&
-				t.isIdentifier(arg.callee, {
+				!t.isCallExpression(arg) ||
+				!t.isIdentifier(arg.callee, {
 					name: MANY_IMAGE_DOWNSCALE_HELPER_NAME,
 				})
+			) {
+				return;
+			}
+			const parent = innerPath.parentPath;
+			if (
+				parent?.isAssignmentExpression() &&
+				t.isIdentifier(parent.node.left)
 			) {
 				requestAwaitSeen = true;
 			}
 			if (
-				t.isCallExpression(arg) &&
-				t.isIdentifier(arg.callee) &&
-				arg.callee.name !== MANY_IMAGE_DOWNSCALE_HELPER_NAME
+				parent?.isVariableDeclarator() &&
+				t.isIdentifier(parent.node.id, {
+					name: MANY_IMAGE_FALLBACK_RESULT_NAME,
+				})
 			) {
-				const parent = innerPath.parentPath;
-				if (
-					parent?.isAssignmentExpression() &&
-					t.isIdentifier(parent.node.left)
-				) {
-					fallbackAwaitSeen = true;
-				}
+				fallbackDownscaleSeen = true;
 			}
 		},
 
 		AssignmentExpression(innerPath) {
+			const right = innerPath.node.right;
 			if (
 				innerPath.node.operator === "=" &&
-				t.isArrowFunctionExpression(innerPath.node.right) &&
-				innerPath.node.right.async
+				t.isArrowFunctionExpression(right) &&
+				!right.async &&
+				t.isIdentifier(right.body, {
+					name: MANY_IMAGE_FALLBACK_RESULT_NAME,
+				})
 			) {
 				fallbackWrapSeen = true;
 			}
@@ -465,8 +472,8 @@ function functionHasManyImageDownscale(path: NodePath<t.Function>): boolean {
 		normalizerFallbackSeen &&
 		normalizerCallSeen &&
 		requestAwaitSeen &&
-		fallbackWrapSeen &&
-		fallbackAwaitSeen
+		fallbackDownscaleSeen &&
+		fallbackWrapSeen
 	);
 }
 
@@ -558,6 +565,9 @@ function buildRequestDownscaleStatements(
 	modelExpr: t.Expression,
 	imageLimitsResolverName: string,
 ): t.Statement[] {
+	// The fallback rebuild runs in sync callers, so the downscaled fallback is
+	// computed eagerly here (async context) and the fallback stays a sync
+	// function returning the precomputed array. Call sites never need an await.
 	const buildStmts = template.statements(
 		`
 		let __ccEnhancedManyImageLimits = {
@@ -567,12 +577,11 @@ function buildRequestDownscaleStatements(
 		};
 		MESSAGES = await ${MANY_IMAGE_DOWNSCALE_HELPER_NAME}(MESSAGES, __ccEnhancedManyImageLimits);
 		if (FALLBACK) {
-			let __ccEnhancedOriginalMidConvFallback = FALLBACK;
-			FALLBACK = async () =>
-				await ${MANY_IMAGE_DOWNSCALE_HELPER_NAME}(
-					__ccEnhancedOriginalMidConvFallback(),
-					__ccEnhancedManyImageLimits,
-				);
+			let ${MANY_IMAGE_FALLBACK_RESULT_NAME} = await ${MANY_IMAGE_DOWNSCALE_HELPER_NAME}(
+				FALLBACK(),
+				__ccEnhancedManyImageLimits,
+			);
+			FALLBACK = () => ${MANY_IMAGE_FALLBACK_RESULT_NAME};
 		}
 	`,
 		{
@@ -585,37 +594,6 @@ function buildRequestDownscaleStatements(
 		MESSAGES: t.identifier(messagesName),
 		FALLBACK: t.identifier(fallbackName),
 	});
-}
-
-function patchFallbackAwait(
-	path: NodePath<t.Function>,
-	messagesName: string,
-	fallbackName: string,
-): boolean {
-	let patched = false;
-	path.traverse({
-		AssignmentExpression(innerPath) {
-			if (patched) return;
-			if (innerPath.node.operator !== "=") return;
-			if (!t.isIdentifier(innerPath.node.left, { name: messagesName })) return;
-			const right = innerPath.node.right;
-			if (
-				t.isCallExpression(right) &&
-				t.isIdentifier(right.callee, { name: fallbackName })
-			) {
-				innerPath.node.right = t.awaitExpression(right);
-				patched = true;
-			}
-			if (
-				t.isAwaitExpression(right) &&
-				t.isCallExpression(right.argument) &&
-				t.isIdentifier(right.argument.callee, { name: fallbackName })
-			) {
-				patched = true;
-			}
-		},
-	});
-	return patched;
 }
 
 function patchRequestDownscale(
@@ -656,7 +634,7 @@ function patchRequestDownscale(
 		0,
 		...requestStatements,
 	);
-	return patchFallbackAwait(path, target.messagesName, target.fallbackName);
+	return true;
 }
 
 function createImageLimitsMutator(state: {

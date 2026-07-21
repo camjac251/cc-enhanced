@@ -13,6 +13,14 @@ import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 
 const COMMANDS_TO_DISABLE = new Set(["security-review"]);
 
+// Durable per-command content markers. A definition rename would make the
+// name lookup miss while the command's own text still ships, so verify keys
+// the removed-upstream conclusion on the content being gone too.
+const COMMAND_CONTENT_MARKERS: Record<string, string> = {
+	"security-review":
+		"Complete a security review of the pending changes on the current branch",
+};
+
 function getCommandNameFromObject(obj: t.ObjectExpression): string | null {
 	for (const prop of obj.properties) {
 		if (
@@ -136,7 +144,7 @@ function createCommandsRegistryMutator(): Visitor {
 	};
 }
 
-function verifyCommandRegistry(ast: t.File): true | string {
+function verifyCommandRegistry(ast: t.File, code: string): true | string {
 	let foundDefinitions = false;
 	let foundRegistry = false;
 	let leakedCommandName: string | null = null;
@@ -196,6 +204,11 @@ function verifyCommandRegistry(ast: t.File): true | string {
 	});
 
 	if (!foundDefinitions) {
+		for (const [name, marker] of Object.entries(COMMAND_CONTENT_MARKERS)) {
+			if (code.includes(marker)) {
+				return `Command content for "${name}" is present but no definition matched its name (renamed or reshaped)`;
+			}
+		}
 		return true;
 	}
 	if (!foundRegistry) {
@@ -222,6 +235,6 @@ export const commandsOff: Patch = {
 		if (!verifyAst) {
 			return "Unable to parse AST during commands-off verification";
 		}
-		return verifyCommandRegistry(verifyAst);
+		return verifyCommandRegistry(verifyAst, code);
 	},
 };

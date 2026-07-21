@@ -13,7 +13,7 @@ const STRONG =
 	"The instructions above are MANDATORY when they apply to your current task. Follow them exactly as written.";
 const SUBAGENT_OMIT_FIXTURE = `
 function launchSubagent(H, f, r) {
-  let HH = H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd", !0),
+  let HH = H.omitClaudeMd && !f?.userContext,
     { claudeMd: t, ...e } = r,
     fH = HH ? e : r;
   return fH;
@@ -72,19 +72,19 @@ test("claudemd-strong line checks reject incomplete strong wrapper text", () => 
 	);
 });
 
-test("claudemd-strong disables slim subagent CLAUDE.md omission", async () => {
+test("claudemd-strong disables subagent CLAUDE.md omission", async () => {
 	const ast = parse(SUBAGENT_OMIT_FIXTURE);
 	await runClaudeMdStrongViaPasses(ast);
 	const output = print(ast);
 
-	assert.equal(output.includes("tengu_slim_subagent_claudemd"), false);
+	assert.equal(output.includes("omitClaudeMd &&"), false);
 	assert.equal(output.includes("HH = false"), true);
 
 	const verifiedCode = `${STRONG_DISCLAIMER_LINES.join("\n")}\n${output}`;
 	assert.equal(claudeMdSystemPrompt.verify(verifiedCode, ast), true);
 });
 
-test("claudemd-strong verify rejects slim subagent CLAUDE.md omission", () => {
+test("claudemd-strong verify rejects a surviving subagent CLAUDE.md omission gate", () => {
 	const ast = parse(SUBAGENT_OMIT_FIXTURE);
 	const result = claudeMdSystemPrompt.verify(
 		`${STRONG_DISCLAIMER_LINES.join("\n")}\n${SUBAGENT_OMIT_FIXTURE}`,
@@ -92,26 +92,26 @@ test("claudemd-strong verify rejects slim subagent CLAUDE.md omission", () => {
 	);
 	assert.equal(typeof result, "string");
 	assert.equal(
-		String(result).includes("Slim subagent CLAUDE.md omission gate"),
+		String(result).includes("Subagent CLAUDE.md omission gate"),
 		true,
 	);
 });
 
-test("claudemd-strong disables every slim subagent CLAUDE.md omission gate", async () => {
+test("claudemd-strong disables every subagent CLAUDE.md omission gate", async () => {
 	const twoGates = `
 function a(H, f) {
-  let G1 = H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd", !0);
+  let G1 = H.omitClaudeMd && !f?.userContext;
   return G1;
 }
 function b(H, f) {
-  let G2 = H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd", !0);
+  let G2 = H.omitClaudeMd && !f?.userContext;
   return G2;
 }
 `;
 	const ast = parse(twoGates);
 	await runClaudeMdStrongViaPasses(ast);
 	const output = print(ast);
-	assert.equal(output.includes("tengu_slim_subagent_claudemd"), false);
+	assert.equal(output.includes("omitClaudeMd &&"), false);
 	assert.equal((output.match(/=\s*false/g) ?? []).length >= 2, true);
 	assert.equal(
 		claudeMdSystemPrompt.verify(
@@ -126,7 +126,7 @@ test("claudemd-strong leaves non-gate omitClaudeMd object properties untouched",
 	const withDecoy = `
 let agent = { model: "haiku", omitClaudeMd: !0, getSystemPrompt: () => x() };
 function launch(H, f) {
-  let G = H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd", !0);
+  let G = H.omitClaudeMd && !f?.userContext;
   return G;
 }
 `;
@@ -134,13 +134,13 @@ function launch(H, f) {
 	await runClaudeMdStrongViaPasses(ast);
 	const output = print(ast);
 	assert.equal(output.includes("omitClaudeMd: !0"), true);
-	assert.equal(output.includes("tengu_slim_subagent_claudemd"), false);
+	assert.equal(output.includes("G = false"), true);
 });
 
-test("claudemd-strong verify fails when any slim subagent gate survives", () => {
+test("claudemd-strong verify fails when any subagent gate survives", () => {
 	const oneLive = `
 let G1 = false;
-let G2 = H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd", !0);
+let G2 = H.omitClaudeMd && !f?.userContext;
 `;
 	const ast = parse(oneLive);
 	const result = claudeMdSystemPrompt.verify(
@@ -149,29 +149,31 @@ let G2 = H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd",
 	);
 	assert.equal(typeof result, "string");
 	assert.equal(
-		String(result).includes("Slim subagent CLAUDE.md omission gate"),
+		String(result).includes("Subagent CLAUDE.md omission gate"),
 		true,
 	);
 });
 
-test("claudemd-strong currently only neutralizes VariableDeclarator-init gates (if-test gate is a known blind spot)", async () => {
+test("claudemd-strong verify fails when a run neutralizes no gate", async () => {
 	const ifGate = `
 function launch(H, f) {
-  if (H.omitClaudeMd && !f?.userContext && Z$("tengu_slim_subagent_claudemd", !0)) return slim();
+  if (H.omitClaudeMd && !f?.userContext) return slim();
   return full();
 }
 `;
 	const ast = parse(ifGate);
 	await runClaudeMdStrongViaPasses(ast);
 	const output = print(ast);
-	// mutator does not touch if-test gates today
-	assert.equal(output.includes("tengu_slim_subagent_claudemd"), true);
-	// and verify (gate-counter is VariableDeclarator-scoped) does not flag it
+	// The mutator targets VariableDeclarator-init gates; a bundle whose only
+	// gate sits in an if-test yields zero neutralizations and must fail verify
+	// loudly instead of shipping the omission behavior live.
+	const result = claudeMdSystemPrompt.verify(
+		`${STRONG_DISCLAIMER_LINES.join("\n")}\n${output}`,
+		ast,
+	);
+	assert.equal(typeof result, "string");
 	assert.equal(
-		claudeMdSystemPrompt.verify(
-			`${STRONG_DISCLAIMER_LINES.join("\n")}\n${output}`,
-			ast,
-		),
+		String(result).includes("No subagent CLAUDE.md omission gate"),
 		true,
 	);
 });
@@ -181,5 +183,5 @@ test("claudemd-strong neutralizes exactly one gate on the single-gate fixture", 
 	await runClaudeMdStrongViaPasses(ast);
 	const output = print(ast);
 	assert.equal((output.match(/=\s*false/g) ?? []).length, 1);
-	assert.equal(output.includes("tengu_slim_subagent_claudemd"), false);
+	assert.equal(output.includes("omitClaudeMd &&"), false);
 });

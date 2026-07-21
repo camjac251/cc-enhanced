@@ -8,10 +8,6 @@ const PATCHED_VERSION_MARKER = "(Claude Code; patched:";
 const PATCHED_TITLE_MARKER = " • patched";
 const TITLE_BRAND_LITERAL = "Claude Code";
 
-// Marketplace error template that previously absorbed the patched suffix
-// because its first quasi started with "Claude Code v" (= "Claude Code version...").
-const MARKETPLACE_ERROR_FRAGMENT = "Run 'claude plugin marketplace remove ";
-
 function replaceVersionSuffix(text: string, sigFull: string): string {
 	return text.replace(VERSION_SUFFIX, ` (Claude Code; ${sigFull})`);
 }
@@ -69,12 +65,6 @@ function hasPatchedCompositeUiTitle(node: t.TemplateLiteral): boolean {
 	);
 }
 
-function isMarketplaceErrorTemplate(node: t.TemplateLiteral): boolean {
-	return node.quasis.some((q) =>
-		getTemplateText(q).includes(MARKETPLACE_ERROR_FRAGMENT),
-	);
-}
-
 export const signature: Patch = {
 	tag: "signature",
 
@@ -124,7 +114,7 @@ export const signature: Patch = {
 		let hasLegacyVersionTemplate = false;
 		let compositeTitleCount = 0;
 		let patchedTitleCount = 0;
-		let marketplaceErrorPolluted = false;
+		let nonTitleTemplateDecorated = false;
 
 		traverse(verifyAst, {
 			StringLiteral(path) {
@@ -145,12 +135,11 @@ export const signature: Patch = {
 					if (hasPatchedCompositeUiTitle(path.node)) {
 						patchedTitleCount++;
 					}
-				}
-				if (
-					isMarketplaceErrorTemplate(path.node) &&
-					hasPatchedCompositeUiTitle(path.node)
-				) {
-					marketplaceErrorPolluted = true;
+				} else if (hasPatchedCompositeUiTitle(path.node)) {
+					// postApply appends the title marker only to composite UI title
+					// templates; the marker in any other template means a wrong anchor
+					// decorated foreign text.
+					nonTitleTemplateDecorated = true;
 				}
 			},
 		});
@@ -161,8 +150,8 @@ export const signature: Patch = {
 		if (!hasPatchedVersion) {
 			return "Did not find patched version output";
 		}
-		if (marketplaceErrorPolluted) {
-			return "Marketplace error template was polluted with patched marker (wrong anchor)";
+		if (nonTitleTemplateDecorated) {
+			return "Patched title marker leaked into a non-title template (wrong anchor)";
 		}
 		if (compositeTitleCount === 0) {
 			return "Composite UI title template not found (upstream may have restructured)";
