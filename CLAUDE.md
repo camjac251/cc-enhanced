@@ -111,7 +111,7 @@ When orienting in this repo, reach for these by purpose:
 | Bundle inspector (string/AST search with breadcrumbs) | `src/inspector.ts` |
 | Local user skills (slash commands) | `.claude/skills/{new-patch,update}/SKILL.md` |
 | Local subagent (verification-only) | `.claude/agents/patch-verifier.md` |
-| Project workflows (multi-agent, read-only) | `.claude/workflows/{patch-audit,patch-update}.js` (index: `.claude/workflows/README.md`) |
+| Project workflows (multi-agent, read-only) | `.claude/workflows/*.js` (index: `.claude/workflows/README.md`) |
 
 ## Patch Groups
 
@@ -444,5 +444,7 @@ Local workflows (`.claude/workflows/`, auto-register as read-only slash skills; 
 
 - `/patch-update`: validates every patch and watched prompt surface against a target clean bundle through deep `cli.js` inspection, then returns a severity-ordered fix plan. Run when a new upstream release appears.
 - `/patch-audit`: deeper health audit. Adds verifier-robustness, pipeline-interaction, docs-and-counts, and per-patch test-hardening on top of `patch-update`'s anchor inspection. Run as a periodic or pre-push gate.
+- `/release-triage`: run first on a new release. Sequential focused bundle diffs between two pulled clean versions, then parallel analysts for feature inventory, patch-risk clustering (shared-shape clusters called out), and watched prompt-surface impact, ending in an upstream-tracking-style report. Requires bundles already in `versions_clean/`.
+- `/patch-smoke`: post-promote smoke check that the PROMOTED binary carries the current patch roster and post-patch invariants (signature tag list vs roster, needle probes in the unpacked live bundle). Catches stale promotes and verify-green-but-missing drift. Run after `mise run native:update`.
 
-Both accept `mode` / `group` / `tag` / `focus` through `args` and lean on the `patch-verifier` subagent for inspection. See `.claude/workflows/README.md`. The dynamic-workflow scripting contract lives in the Workflow tool description inside `cli.js` (extract with `mise run prompts:export`); authoring best practices live in the global `workflow-authoring` skill.
+`patch-update` and `patch-audit` accept `mode` / `group` / `tag` / `focus` / `models` through `args` and lean on the `patch-verifier` subagent for inspection; `release-triage` and `patch-smoke` document their own args in `.claude/workflows/README.md`. The dynamic-workflow scripting contract lives in the Workflow tool description inside `cli.js` (extract with `mise run prompts:export`); authoring best practices live in the global `workflow-authoring` skill.

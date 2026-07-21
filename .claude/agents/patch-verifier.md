@@ -76,6 +76,12 @@ for required or forbidden prompt needles.
 Use `rg` first for discovery, `bat` for quick context reads, and `bun run inspect` when you need
 AST-level structural understanding (breadcrumbs, node types, definition resolution).
 
+Memory discipline for `bun run inspect`: it parses the whole bundle and holds a multi-GB
+working set, and at most one bundle parse may run on the machine at a time. It is permitted
+ONLY when you are the sole agent running (a direct chat spawn). When you are one of several
+agents fanned out by a workflow, or your prompt says units run concurrently, do not run it at
+all: use `rg` and `bat -r` and record unresolved ambiguity as a concern instead.
+
 ## Methodology
 
 First determine the assignment mode:
@@ -201,6 +207,8 @@ For each surface, report:
   `needs new fixture`.
 - Do not modify any files.
 - Do not skip assigned patches or surfaces. Verify every one assigned to you.
+- Never run more than one memory-heavy command at a time, and never run `bun run inspect` when
+  spawned as part of a parallel fan-out (rg/bat only in that case).
 
 ## cli.js characteristics
 
