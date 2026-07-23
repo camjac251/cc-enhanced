@@ -43,6 +43,7 @@ export { tabQueue } from "./tab-queue.js";
 export { taskOutputExt } from "./taskout-ext.js";
 export { todo } from "./todo-use.js";
 export { disableTools } from "./tools-off.js";
+export { workflowSafety } from "./workflow-safety.js";
 
 import type { Patch } from "../types.js";
 // Re-export all patches as an array for easy iteration
@@ -89,6 +90,7 @@ import { tabQueue } from "./tab-queue.js";
 import { taskOutputExt } from "./taskout-ext.js";
 import { todo } from "./todo-use.js";
 import { disableTools } from "./tools-off.js";
+import { workflowSafety } from "./workflow-safety.js";
 
 function parsePatchTagList(value: string | undefined): Set<string> | null {
 	if (!value) return null;
@@ -145,6 +147,7 @@ const basePatches: Patch[] = [
 	systemPromptFile,
 	limits,
 	promptDashStyle,
+	workflowSafety,
 
 	// Signature runs last
 	signature,

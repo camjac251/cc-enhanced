@@ -7,13 +7,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.4_canary-fbf0df.svg" alt="Bun 1.4 canary">
-  <img src="https://img.shields.io/badge/Patches-43-orange.svg" alt="43 Patches">
+  <img src="https://img.shields.io/badge/Patches-44-orange.svg" alt="44 Patches">
   <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.216-8A2BE2.svg" alt="Tested against Claude Code 2.1.216">
 </p>
 
 ---
 
-cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 43 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 44 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
 
 Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting and LSP fan-out), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read and batched `edits[]` on Edit), and replace prompt fragments that steer the model toward better shell tooling.
 
@@ -147,6 +147,7 @@ Which built-in agents and commands are exposed.
 | [`configured-model-catalog`](src/patches/configured-model-catalog.ts) | `CLAUDE_CODE_CONFIGURED_MODEL_CATALOG` supplies validated provider model IDs plus friendly names, descriptions, context windows, and output limits. Exact catalog matches participate in capability lookup before the gateway-cache gate without enabling unrelated cached metadata, and `/model` gains matching rows subject to stock `availableModels` policy. The catalog is forwarded to child processes so parent agents and Agent/Workflow children use the same metadata. |
 | [`model-aliases`](src/patches/model-aliases.ts) | `CLAUDE_CODE_MODEL_ALIASES` defines case-insensitive aliases for full provider model IDs across main-model selection, Agent and Workflow calls, explicit teammate models, and resume. Workflow status renders an exact configured target with its friendly alias while preserving stock fallback reporting when the response identifies a genuinely different model. The strict JSON map is one-hop, cannot replace native aliases or `inherit`, rejects `[1m]` names and targets, and still passes resolved IDs through stock normalization and `availableModels` enforcement. |
 | [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | Agent model overrides accept a trimmed, nonempty built-in alias, `inherit`, or a full model ID exposed by the active provider instead of being limited to the four built-in aliases. Explicit one-off overrides are persisted and resolved again during resume. Forks bypass the global subagent override at launch and resume so they retain the parent model and context window. When `CLAUDE_CODE_SUBAGENT_MODEL` is set globally, Task rows also omit the redundant dimmed `model: ...` label. |
+| [`workflow-safety`](src/patches/workflow-safety.ts) | Workflow agent metadata retains its owning run ID and is durably written before launch. `SendMessage` fails closed when agent metadata is unavailable, and refuses to deliver to or resume workflow-owned agents outside the workflow lifecycle. Structured-output validation also detects when required properties were embedded as XML-like tags inside another string and returns a targeted correction without accepting malformed output or changing the retry cap. |
 | [`skill-paths-invoke`](src/patches/skill-paths-invoke.ts) | Keeps `paths`-scoped skills visible to model invocation while preserving the stored path metadata and explicit model-invocation opt-outs. Skill-cache resets keep the activation guard, so an already-activated path skill is not re-bucketed and re-activated after every skills reload (which otherwise loops into per-cycle registry reloads). |
 | [`skill-global-paths`](src/patches/skill-global-paths.ts) | Adds a `global-paths` skill frontmatter field whose globs path-activate a skill when a matching file is touched anywhere on disk, not only inside the project. Uses the same gitignore syntax (including `!` exclusions) as `paths`, is purely additive, and is ignored by unpatched builds. |
 
@@ -406,7 +407,7 @@ When a prompt patch changes live guidance, update both the patch verifier and th
 
 ## Compatibility
 
-Current target: **Claude Code 2.1.215**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
+Current target: **Claude Code 2.1.216**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
 
 `native:update` accepts `latest`, `next`, `stable`, or an explicit `X.Y.Z`. The `latest` resolver cross-checks the native release bucket with the npm `latest` and `next` dist-tags so release promotion can follow npm when a new version appears there before the bucket alias moves.
 

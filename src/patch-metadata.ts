@@ -166,6 +166,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Subagent model selection",
 		group: "Agent",
 	},
+	"workflow-safety": {
+		tag: "workflow-safety",
+		label: "Workflow agent safety",
+		group: "Agent",
+	},
 	"subagent-system-prompt": {
 		tag: "subagent-system-prompt",
 		label: "Subagent system prompt",
