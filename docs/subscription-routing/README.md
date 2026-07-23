@@ -85,6 +85,7 @@ overwrite or restore one another's build.
 The promoted client must report all of these tags:
 
 - `configured-model-catalog`
+- `billing-label`
 - `model-aliases`
 - `model-context-metadata`
 - `model-picker-session-only`
@@ -333,6 +334,7 @@ sed \
   -e "s|@CLODEX_MODEL_ALIAS@|$CLODEX_MODEL_ALIAS|g" \
   -e "s|@CLODEX_MODEL_DISPLAY_NAME@|$CLODEX_MODEL_DISPLAY_NAME|g" \
   -e "s|@CLODEX_MODEL_DESCRIPTION@|$CLODEX_MODEL_DESCRIPTION|g" \
+  -e "s|@CLODEX_BILLING_LABEL@|$CLODEX_BILLING_LABEL|g" \
   -e "s|@CLODEX_MODEL_MAX_INPUT_TOKENS@|$CLODEX_MODEL_MAX_INPUT_TOKENS|g" \
   -e "s|@CLODEX_MODEL_MAX_OUTPUT_TOKENS@|$CLODEX_MODEL_MAX_OUTPUT_TOKENS|g" \
   templates/claudex >"$rendered_dir/claudex"
@@ -445,6 +447,10 @@ CC_ENHANCED_SOURCE_DIR=/path/to/cc-enhanced \
 CLODEX_SOURCE_DIR=/path/to/clodex \
 ./verify-static.sh
 ```
+
+The client source check accepts an exact pinned checkout or a descendant whose
+only tracked differences are this handoff package and the root README link. Any
+runtime source, patch, dependency, toolchain, or baseline difference fails.
 
 Live service and authentication verification:
 
@@ -618,10 +624,12 @@ work, then stop dependent phases if the result remains missing.
 
 ## Billing display
 
-The client may display an estimated dollar amount for translated requests.
-That is a local price estimate and does not change the authentication route.
-Verify the provider authentication mode with `./verify-live.sh`; it must report
-external OAuth.
+The routed launcher sets the fallback billing label to the pinned
+`CLODEX_BILLING_LABEL` value. The label is display-only. It does not select a
+credential, change an authentication route, or change how either provider
+accounts for usage. The client may still display a local estimated dollar
+amount for translated requests. Verify the provider authentication mode with
+`./verify-live.sh`; it must report external OAuth.
 
 ## Removal
 

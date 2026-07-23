@@ -70,8 +70,16 @@ pnpm_version=$(
 
 if [ -n "${CC_ENHANCED_SOURCE_DIR:-}" ]; then
 	command -v git >/dev/null 2>&1 || fail "git is unavailable"
-	[ "$(git -C "$CC_ENHANCED_SOURCE_DIR" rev-parse HEAD)" = "$CC_ENHANCED_REVISION" ] ||
-		fail "client source checkout does not match versions.env"
+	if [ "$(git -C "$CC_ENHANCED_SOURCE_DIR" rev-parse HEAD)" != "$CC_ENHANCED_REVISION" ]; then
+		git -C "$CC_ENHANCED_SOURCE_DIR" merge-base --is-ancestor \
+			"$CC_ENHANCED_REVISION" HEAD ||
+			fail "client source checkout does not contain the pinned revision"
+		git -C "$CC_ENHANCED_SOURCE_DIR" diff --quiet "$CC_ENHANCED_REVISION" -- \
+			. \
+			':(exclude)README.md' \
+			':(exclude)docs/subscription-routing/**' ||
+			fail "client runtime source differs from the pinned revision"
+	fi
 fi
 if [ -n "${CLODEX_SOURCE_DIR:-}" ]; then
 	command -v git >/dev/null 2>&1 || fail "git is unavailable"
@@ -139,6 +147,7 @@ sed \
 	-e "s|@CLODEX_MODEL_ALIAS@|$CLODEX_MODEL_ALIAS|g" \
 	-e "s|@CLODEX_MODEL_DISPLAY_NAME@|$CLODEX_MODEL_DISPLAY_NAME|g" \
 	-e "s|@CLODEX_MODEL_DESCRIPTION@|$CLODEX_MODEL_DESCRIPTION|g" \
+	-e "s|@CLODEX_BILLING_LABEL@|$CLODEX_BILLING_LABEL|g" \
 	-e "s|@CLODEX_MODEL_MAX_INPUT_TOKENS@|$CLODEX_MODEL_MAX_INPUT_TOKENS|g" \
 	-e "s|@CLODEX_MODEL_MAX_OUTPUT_TOKENS@|$CLODEX_MODEL_MAX_OUTPUT_TOKENS|g" \
 	"$setup_dir/templates/claudex" | cmp -s - "$claudex_bin" ||
@@ -182,6 +191,7 @@ case "$claude_version" in
 *) fail "promoted client version does not match versions.env" ;;
 esac
 for patch_tag in \
+	billing-label \
 	configured-model-catalog \
 	model-aliases \
 	model-context-metadata \
