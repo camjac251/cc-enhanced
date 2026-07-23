@@ -1,0 +1,26 @@
+[Unit]
+Description=Isolated subscription model bridge
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@HOME@/.local/share/claudex-clodex/runtime/current
+Environment=CLODEX_HOME=@HOME@/.local/share/claudex-clodex
+Environment=CLODEX_CREDENTIAL_HELPER=@CLODEX_CREDENTIAL_HELPER@
+EnvironmentFile=-@HOME@/.config/claudex-clodex/network.env
+UnsetEnvironment=CLODEX_NO_DISCOVERY CLODEX_KEY_OPENAI CLODEX_KEY_OPENAI_OAUTH ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_API_BASE_URL ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL ANTHROPIC_DEFAULT_FABLE_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_AWS_API_KEY ANTHROPIC_AWS_BASE_URL ANTHROPIC_AWS_WORKSPACE_ID ANTHROPIC_BEDROCK_BASE_URL ANTHROPIC_FOUNDRY_API_KEY ANTHROPIC_FOUNDRY_BASE_URL ANTHROPIC_VERTEX_BASE_URL ANTHROPIC_VERTEX_PROJECT_ID OPENAI_API_KEY OPENAI_BASE_URL CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_GATEWAY CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
+ExecStart=@NODE_BIN@ @HOME@/.local/share/claudex-clodex/runtime/current/dist/cli.js server --proxy --port @CLODEX_PORT@
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=15s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,34 @@
+#!/bin/sh
+
+set -eu
+
+runtime="$HOME/.local/share/claudex-clodex/runtime/current/dist/cli.js"
+credential_helper='@CLODEX_CREDENTIAL_HELPER@'
+node_bin='@NODE_BIN@'
+
+if [ "${1:-}" = 'patch' ]; then
+	printf '%s\n' 'clodex: binary patching is disabled because cc-enhanced owns the client binary' >&2
+	exit 2
+fi
+
+for required_file in "$runtime" "$credential_helper" "$node_bin"; do
+	if [ ! -x "$required_file" ]; then
+		printf 'clodex: required executable is missing: %s\n' "$required_file" >&2
+		exit 1
+	fi
+done
+
+unset \
+	CLODEX_NO_DISCOVERY CLODEX_KEY_OPENAI CLODEX_KEY_OPENAI_OAUTH \
+	ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_API_BASE_URL \
+	ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL ANTHROPIC_DEFAULT_FABLE_MODEL \
+	ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL \
+	ANTHROPIC_AWS_API_KEY ANTHROPIC_AWS_BASE_URL ANTHROPIC_AWS_WORKSPACE_ID \
+	ANTHROPIC_BEDROCK_BASE_URL ANTHROPIC_FOUNDRY_API_KEY ANTHROPIC_FOUNDRY_BASE_URL \
+	ANTHROPIC_VERTEX_BASE_URL ANTHROPIC_VERTEX_PROJECT_ID OPENAI_API_KEY OPENAI_BASE_URL \
+	CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_FOUNDRY \
+	CLAUDE_CODE_USE_GATEWAY CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
+export CLODEX_HOME="$HOME/.local/share/claudex-clodex"
+export CLODEX_CREDENTIAL_HELPER="$credential_helper"
+
+exec "$node_bin" "$runtime" "$@"

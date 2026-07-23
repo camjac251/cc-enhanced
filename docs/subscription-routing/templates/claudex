@@ -1,0 +1,111 @@
+#!/bin/sh
+
+set -eu
+
+clodex_home="$HOME/.local/share/claudex-clodex"
+credential_helper='@CLODEX_CREDENTIAL_HELPER@'
+process_wrapper="$clodex_home/runtime/current/dist/claude-wrapper.js"
+claude_path='@CLAUDE_BIN@'
+default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
+system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
+requested_model=''
+
+case "${1:-}" in
+fable)
+	requested_model='fable[1m]'
+	shift
+	;;
+opus)
+	requested_model='opus[1m]'
+	shift
+	;;
+@CLODEX_MODEL_ALIAS@)
+	requested_model='@CLODEX_MODEL_ALIAS@'
+	shift
+	;;
+esac
+
+has_model=0
+for arg; do
+	case "$arg" in
+	--)
+		break
+		;;
+	--model | --model=*)
+		has_model=1
+		;;
+	esac
+done
+
+if [ -n "$requested_model" ] && [ "$has_model" -eq 1 ]; then
+	printf '%s\n' 'claudex: do not combine a model shortcut with --model' >&2
+	exit 2
+fi
+if [ -n "$requested_model" ]; then
+	set -- --model "$requested_model" "$@"
+fi
+
+for required_file in "$credential_helper" "$process_wrapper" "$claude_path"; do
+	if [ ! -x "$required_file" ]; then
+		printf 'claudex: required executable is missing: %s\n' "$required_file" >&2
+		exit 1
+	fi
+done
+if [ ! -r "$system_prompt_file" ]; then
+	printf 'claudex: system prompt file is not readable: %s\n' "$system_prompt_file" >&2
+	exit 1
+fi
+
+unset \
+	ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_API_BASE_URL \
+	ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL ANTHROPIC_DEFAULT_FABLE_MODEL \
+	ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL \
+	ANTHROPIC_AWS_API_KEY ANTHROPIC_AWS_BASE_URL ANTHROPIC_AWS_WORKSPACE_ID \
+	ANTHROPIC_BEDROCK_BASE_URL ANTHROPIC_FOUNDRY_API_KEY ANTHROPIC_FOUNDRY_BASE_URL \
+	ANTHROPIC_VERTEX_BASE_URL ANTHROPIC_VERTEX_PROJECT_ID OPENAI_API_KEY OPENAI_BASE_URL \
+	CLODEX_KEY_OPENAI CLODEX_KEY_OPENAI_OAUTH CLODEX_NO_DISCOVERY \
+	CLAUDE_CONFIG_DIR CLAUDE_CODE_BILLING_LABEL CLAUDE_CODE_USE_VERTEX \
+	CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_GATEWAY \
+	CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY CLAUDE_CODE_MAX_CONTEXT_TOKENS \
+	CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_MODEL_ALIAS_SOL CLAUDE_CODE_MODEL_ALIASES \
+	CLAUDE_CODE_CONFIGURED_MODEL_CATALOG CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY \
+	CLAUDE_CODE_ALWAYS_ENABLE_EFFORT CLAUDE_CODE_EFFORT_LEVEL \
+	CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY ENABLE_TOOL_SEARCH \
+	CCR_INTERNAL_HOME_DIR CCR_PROFILE_SURFACE CCR_NODE_BIN CCR_CLAUDE_CODE_BIN \
+	CCR_REAL_CLAUDE_CODE_BIN CCR_CLAUDE_CODE_AUTH_HELPER CCR_CLAUDE_CODE_CONFIG_MODE \
+	CCR_CLAUDE_CODE_MANAGED_SETTINGS CCR_CLAUDE_CODE_WRAPPER CODEXL_CLAUDE_CODE_BIN
+
+export CLODEX_HOME="$clodex_home"
+export CLODEX_CREDENTIAL_HELPER="$credential_helper"
+export CLODEX_CLAUDE_PATH="$claude_path"
+export CLODEX_REQUIRE_SERVER=1
+export CLAUDE_CODE_PROCESS_WRAPPER="$process_wrapper"
+export CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE="$system_prompt_file"
+export CLAUDE_CODE_MODEL_ALIASES='{"@CLODEX_MODEL_ALIAS@":"clodex:@CLODEX_PROVIDER_ID@:@CLODEX_MODEL_ID@"}'
+export CLAUDE_CODE_CONFIGURED_MODEL_CATALOG='[{"id":"clodex:@CLODEX_PROVIDER_ID@:@CLODEX_MODEL_ID@","displayName":"@CLODEX_MODEL_DISPLAY_NAME@","description":"@CLODEX_MODEL_DESCRIPTION@","maxInputTokens":@CLODEX_MODEL_MAX_INPUT_TOKENS@,"maxOutputTokens":@CLODEX_MODEL_MAX_OUTPUT_TOKENS@}]'
+export CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY=1
+export ENABLE_TOOL_SEARCH=true
+
+systemctl --user start claudex-clodex.service
+
+ready=0
+attempt=0
+while [ "$attempt" -lt 50 ]; do
+	if "$process_wrapper" --check; then
+		ready=1
+		break
+	fi
+	if systemctl --user is-failed --quiet claudex-clodex.service; then
+		break
+	fi
+	attempt=$((attempt + 1))
+	sleep 0.2
+done
+
+if [ "$ready" -ne 1 ]; then
+	printf '%s\n' 'claudex: local routing service did not become ready within 10 seconds' >&2
+	systemctl --user status claudex-clodex.service --no-pager >&2 || true
+	exit 1
+fi
+
+exec "$process_wrapper" "$claude_path" "$@"

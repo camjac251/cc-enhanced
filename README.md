@@ -20,6 +20,15 @@ Use it to unlock capabilities the CLI ships with but does not expose, fix long-s
 > [!NOTE]
 > This tool patches your local copy of the Claude Code binary. It does not distribute Claude Code binaries or npm packages. All modifications happen on your machine.
 
+## Subscription routing
+
+The [subscription routing guide](docs/subscription-routing/README.md) documents
+a pinned, reproducible two-launcher setup that keeps normal Claude Max sessions
+direct while adding an isolated mixed-model launcher backed by Claude Max and
+ChatGPT Pro subscriptions. It includes immutable source and artifact pins,
+secure external credential storage, static and live verification, safe restart
+gates, per-model context metadata, and workflow delegation policy.
+
 ## How It Works
 
 ```mermaid
