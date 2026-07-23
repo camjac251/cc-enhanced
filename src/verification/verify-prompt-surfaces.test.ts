@@ -95,6 +95,31 @@ test("verifyPromptSurfaces rejects dynamic Read prompt exports", async () => {
 	}
 });
 
+test("verifyPromptSurfaces allows a dynamic prompt on a metadata-only surface", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "verify-prompt-surfaces-dynamic-metadata-"),
+	);
+	try {
+		await createValidSurfaceFixture(tempDir);
+		const rule = ruleFor("skills/claude-api.md");
+		await writeSurface(
+			tempDir,
+			rule.file,
+			[
+				validContentForRule(rule),
+				"## Prompt",
+				"(Dynamic prompt: not statically resolved from cli.js AST.)",
+			].join("\n"),
+		);
+
+		const result = await verifyPromptSurfaces({ exportDir: tempDir });
+		assert.equal(result.ok, true);
+		assert.deepEqual(result.failures, []);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
 test("verifyPromptSurfaces passes for patched live prompt surfaces", async () => {
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "verify-prompt-surfaces-valid-"),

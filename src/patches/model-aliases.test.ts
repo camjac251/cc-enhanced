@@ -434,6 +434,41 @@ function addModelOption(options, model) { options.push({ value: model.id, label:
 function providerModels() { return []; }
 function serverModels() { return []; }
 function settings() { return {}; }
+function preferredCatalogModel() { return undefined; }
+function fallbackCatalogModel() { return undefined; }
+function normalizeCatalogModel(value) { return String(value).trim().toLowerCase(); }
+function isCatalogEarlyAccess() { return false; }
+function isCatalogAllowed(model) { return ["fable", "opus"].includes(normalizeCatalogModel(model)); }
+function isCatalogGatewayModel() { return false; }
+function isCatalogRetired() { return false; }
+function restoreCatalogSessionModel(entries, currentModel) {
+  const knownModels = new Set(["fable", "opus"]);
+  const normalizedCurrent = currentModel ? normalizeCatalogModel(currentModel) : undefined;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (
+      entry?.type !== "assistant" ||
+      entry.isMeta ||
+      typeof entry.message?.model !== "string" ||
+      entry.message.model === "<synthetic>"
+    ) continue;
+    const model = entry.message.model;
+    const reason = !(
+      knownModels.has(normalizeCatalogModel(model)) ||
+      isCatalogEarlyAccess(model) ||
+      normalizeCatalogModel(model) === normalizedCurrent
+    )
+      ? "unknown_family"
+      : !isCatalogAllowed(model) && !isCatalogGatewayModel(model)
+        ? "not_allowed"
+        : isCatalogRetired(model)
+          ? "retired"
+          : undefined;
+    if (reason) return { kind: "declined", model, reason };
+    return { kind: "ok", model };
+  }
+  return { kind: "none" };
+}
 function buildModelOptions(includeLongContext) {
   let options = baseOptions(includeLongContext),
     custom = env.ANTHROPIC_CUSTOM_MODEL_OPTION;
@@ -446,6 +481,9 @@ function buildModelOptions(includeLongContext) {
   }
   for (const model of providerModels()) addModelOption(options, model);
   for (const model of serverModels()) addModelOption(options, model);
+  let selectedModel = null,
+    preferred = preferredCatalogModel(),
+    fallback = fallbackCatalogModel();
   return options;
 }
 `;

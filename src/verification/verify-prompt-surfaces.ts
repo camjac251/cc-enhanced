@@ -67,7 +67,7 @@ function verifyResolvedSurface(
 		failures.push({ file, id, reason });
 	};
 
-	if (content.includes(DYNAMIC_PROMPT_MARKER)) {
+	if (!rule.allowDynamicPrompt && content.includes(DYNAMIC_PROMPT_MARKER)) {
 		pushOnce(
 			"surface-dynamic-prompt",
 			"Surface still contains a dynamic prompt marker instead of resolved prompt text",

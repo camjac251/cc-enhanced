@@ -30,6 +30,21 @@ function removeLastOccurrence(source: string, needle: string): string {
 }
 
 const SKILL_LISTING_FIXTURE = `
+function recordSkillListingError() {}
+async function spawnAgent(messages) {
+  let hasSkillListing = messages.some(
+      (message) =>
+        message.type === "attachment" &&
+        message.attachment.type === "skill_listing",
+    ),
+    currentSkillListing = await buildCurrentSkillListing().catch(
+      (error) => (recordSkillListingError(error), []),
+    );
+  if (!hasSkillListing)
+    for (let attachment of currentSkillListing) messages.push(attachment);
+  return messages;
+}
+
 function renderAttachment(H) {
   switch (H.type) {
     case "dynamic_skill": {
@@ -72,6 +87,21 @@ function buildAttachment(z, O, Y) {
 `;
 
 const MEMOIZED_SKILL_LISTING_FIXTURE = `
+function recordSkillListingError() {}
+async function spawnAgent(messages) {
+  let hasSkillListing = messages.some(
+      (message) =>
+        message.type === "attachment" &&
+        message.attachment.type === "skill_listing",
+    ),
+    currentSkillListing = await buildCurrentSkillListing().catch(
+      (error) => (recordSkillListingError(error), []),
+    );
+  if (!hasSkillListing)
+    for (let attachment of currentSkillListing) messages.push(attachment);
+  return messages;
+}
+
 function renderAttachment(q, $) {
   switch (q.type) {
     case "dynamic_skill": {
@@ -175,6 +205,75 @@ test("skill-listing-ui adds skillNames metadata and a visible summary", async ()
 		false,
 		"skillNames must not reuse the content-call scoring formatter",
 	);
+	assert.equal(skillListingUi.verify(output, ast), true);
+});
+
+test("skill-listing-ui replaces inherited listings before an agent fork", async () => {
+	const ast = parse(SKILL_LISTING_FIXTURE);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(
+		output,
+		/const _claudePatchInheritedSkillListings = messages\.filter/,
+	);
+	assert.match(
+		output,
+		/messages = messages\.filter\(\(_claudePatchSkillListingMessage\) =>/,
+	);
+	assert.match(
+		output,
+		/_claudePatchSkillListingMessage\.attachment\.type !== "skill_listing"/,
+	);
+});
+
+test("skill-listing-ui preserves inherited listings when refresh fails", async () => {
+	const ast = parse(SKILL_LISTING_FIXTURE);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+	const spawnAgent = Function(
+		"buildCurrentSkillListing",
+		`${output}; return spawnAgent;`,
+	)(async () => {
+		throw new Error("registry unavailable");
+	}) as (messages: unknown[]) => Promise<unknown[]>;
+	const inherited = {
+		type: "attachment",
+		attachment: { type: "skill_listing", marker: "inherited" },
+	};
+	const other = { type: "user", message: "work" };
+
+	assert.deepEqual(await spawnAgent([inherited, other]), [other, inherited]);
+});
+
+test("skill-listing-ui replaces inherited listings after a successful refresh", async () => {
+	const ast = parse(SKILL_LISTING_FIXTURE);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+	const current = {
+		type: "attachment",
+		attachment: { type: "skill_listing", marker: "current" },
+	};
+	const spawnAgent = Function(
+		"buildCurrentSkillListing",
+		`${output}; return spawnAgent;`,
+	)(async () => [current]) as (messages: unknown[]) => Promise<unknown[]>;
+	const inherited = {
+		type: "attachment",
+		attachment: { type: "skill_listing", marker: "inherited" },
+	};
+	const other = { type: "user", message: "work" };
+
+	assert.deepEqual(await spawnAgent([inherited, other]), [other, current]);
+});
+
+test("inherited skill-listing refresh is idempotent", async () => {
+	const ast = parse(SKILL_LISTING_FIXTURE);
+	await runSkillListingUiViaPasses(ast);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.match(/messages = messages\.filter/g)?.length, 1);
 	assert.equal(skillListingUi.verify(output, ast), true);
 });
 

@@ -538,7 +538,12 @@ function collectStringBindings(ast: t.File, context: RenderContext): void {
 		},
 		AssignmentExpression(pathRef) {
 			if (!t.isIdentifier(pathRef.node.left)) return;
-			if (pathRef.getFunctionParent()) return;
+			if (pathRef.getFunctionParent()) {
+				const binding = pathRef.scope.getBinding(pathRef.node.left.name);
+				if (!binding?.scope.path.isProgram()) return;
+			}
+			rawBindings.delete(pathRef.node.left.name);
+			context.stringBindings.delete(pathRef.node.left.name);
 			const right = pathRef.node.right;
 			if (t.isExpression(right)) {
 				context.expressionBindings.set(pathRef.node.left.name, right);

@@ -6,6 +6,7 @@ export { bashPrompt } from "./bash-prompt.js";
 export { billingLabel } from "./billing-label.js";
 export { builtInAgentPrompt } from "./built-in-agent-prompt.js";
 export { cacheTailPolicy } from "./cache-tail-policy.js";
+export { claudeApiScope } from "./claude-api-scope.js";
 export { claudeMdSystemPrompt } from "./claudemd-strong.js";
 export { commandsOff } from "./commands-off.js";
 export { configuredModelCatalog } from "./configured-model-catalog.js";
@@ -53,6 +54,7 @@ import { bashPrompt } from "./bash-prompt.js";
 import { billingLabel } from "./billing-label.js";
 import { builtInAgentPrompt } from "./built-in-agent-prompt.js";
 import { cacheTailPolicy } from "./cache-tail-policy.js";
+import { claudeApiScope } from "./claude-api-scope.js";
 import { claudeMdSystemPrompt } from "./claudemd-strong.js";
 import { commandsOff } from "./commands-off.js";
 import { configuredModelCatalog } from "./configured-model-catalog.js";
@@ -107,6 +109,7 @@ const basePatches: Patch[] = [
 	shellQuoteFix,
 	bashPrompt,
 	builtInAgentPrompt,
+	claudeApiScope,
 	claudeMdSystemPrompt,
 	memoryPromptSoften,
 	mcpServerName,

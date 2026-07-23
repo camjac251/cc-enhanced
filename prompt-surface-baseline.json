@@ -1,5 +1,5 @@
 {
-  "version": "2.1.214",
+  "version": "2.1.216",
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
@@ -10,7 +10,7 @@
     "agents/workflow-subagent.md": "804922198b47f80ed571e748d099799faf680c1decb247a4171c7c8472e18945",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge-2.md": "8d24296a1459ba9472328887c294278e8be614df3168e70b1134b7ae13dd2ff9",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge.md": "ca6cf36e2d06d7db385d9b760fb409f7969299b56c91d185a35605259c40fd6f",
-    "system/sections/dream-memory-consolidation.md": "5b4a4da972aefdb6520bea7fdcebb301af3ad89f0bfb1b5ed07ce5f12b5c098b",
+    "system/sections/dream-memory-consolidation.md": "385bbbcd521c80fabc786eb6c799916e3f948d9e5e5652e4538be41cc455d42d",
     "system/sections/session-specific-guidance.md": "d1bd8ebfc82fc5643ae7022ea8e2fa8f032501e1f4e1d367b49805d246b11e48",
     "system/sections/using-your-tools.md": "9f7e7a7321436c63b1a06629cfb11caefa722e8ab81b87ad744c8598b375ea7c",
     "tools/builtin/agent.md": "8f3018e8aed3f8f7b594f55f1e80f0da842f1fb3fba736918589c382c4f53ca3"

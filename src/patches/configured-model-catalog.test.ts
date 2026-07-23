@@ -47,9 +47,41 @@ function baseOptions() {
 function addModelOption(options, model) {
   options.push({ value: model.id, label: model.name, description: "From gateway" });
 }
-function providerModels() { return []; }
+let providerModelOptions = [];
+function providerModels() { return providerModelOptions; }
 function serverModels() { return []; }
 function settings() { return {}; }
+function preferredModel() { return undefined; }
+function fallbackModel() { return undefined; }
+function normalizeModel(value) { return String(value).trim().toLowerCase(); }
+function isEarlyAccess() { return false; }
+function isAllowed(model) { return ["fable", "opus"].includes(normalizeModel(model)); }
+function isGatewayModel() { return false; }
+function isRetired() { return false; }
+function restoreSessionModel(entries, currentModel) {
+  const knownModels = new Set(["fable", "opus"]);
+  const normalizedCurrent = currentModel ? normalizeModel(currentModel) : undefined;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (
+      entry?.type !== "assistant" ||
+      entry.isMeta ||
+      typeof entry.message?.model !== "string" ||
+      entry.message.model === "<synthetic>"
+    ) continue;
+    const model = entry.message.model;
+    const reason = !(knownModels.has(normalizeModel(model)) || isEarlyAccess(model) || normalizeModel(model) === normalizedCurrent)
+      ? "unknown_family"
+      : !isAllowed(model) && !isGatewayModel(model)
+        ? "not_allowed"
+        : isRetired(model)
+          ? "retired"
+          : undefined;
+    if (reason) return { kind: "declined", model, reason };
+    return { kind: "ok", model };
+  }
+  return { kind: "none" };
+}
 function buildModelOptions(includeLongContext) {
   let options = baseOptions(includeLongContext),
     custom = env.ANTHROPIC_CUSTOM_MODEL_OPTION;
@@ -66,6 +98,9 @@ function buildModelOptions(includeLongContext) {
   if (availableModels) {
     for (const model of availableModels) options.push({ value: model, label: model, description: "Custom model" });
   }
+  let selectedModel = null,
+    preferred = preferredModel(),
+    fallback = fallbackModel();
   return options;
 }
 `;
@@ -83,8 +118,10 @@ return {
   setRawCatalog(value) { process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG = value; },
   setCachedModels(value) { cachedModels = value; },
   setBaseOptions(value) { baseModelOptions = value; },
+  setProviderModels(value) { providerModelOptions = value; },
   getModelCapability,
   buildModelOptions,
+  restoreSessionModel,
   childEnvs: [childEnvOne, [...childEnvTwo], childEnvThree],
 };`,
 	)(processValue);
@@ -95,6 +132,7 @@ return {
 		setBaseOptions: (
 			value: Array<{ value: string; label: string; description: string }>,
 		) => void;
+		setProviderModels: (value: Array<{ id: string; name: string }>) => void;
 		getModelCapability: (model: string) =>
 			| {
 					id: string;
@@ -109,6 +147,21 @@ return {
 			label: string;
 			description: string;
 		}>;
+		restoreSessionModel: (
+			entries: Array<{
+				type: string;
+				isMeta?: boolean;
+				message?: { model?: string };
+			}>,
+			currentModel?: string,
+		) =>
+			| { kind: "none" }
+			| { kind: "ok"; model: string }
+			| {
+					kind: "declined";
+					model: string;
+					reason: "unknown_family" | "not_allowed" | "retired";
+			  };
 		childEnvs: string[][];
 	};
 }
@@ -171,6 +224,37 @@ test("leaves model behavior unchanged while the catalog is absent", async () => 
 	assert.deepEqual(runtime.buildModelOptions(), [
 		{ value: "fable", label: "Fable", description: "Native model" },
 	]);
+	assert.deepEqual(
+		runtime.restoreSessionModel([
+			{
+				type: "assistant",
+				message: { model: "provider/unknown" },
+			},
+		]),
+		{
+			kind: "declined",
+			model: "provider/unknown",
+			reason: "unknown_family",
+		},
+	);
+});
+
+test("restores a session model that remains in the configured catalog", async () => {
+	const ast = parse(CATALOG_FIXTURE);
+	await runConfiguredCatalogViaPasses(ast);
+	const runtime = evaluatePatched(print(ast));
+	const model = "clodex:openai-oauth:gpt-5.6-sol";
+	runtime.setCatalog([{ id: model }]);
+
+	assert.deepEqual(
+		runtime.restoreSessionModel([
+			{
+				type: "assistant",
+				message: { model },
+			},
+		]),
+		{ kind: "ok", model },
+	);
 });
 
 test("does not activate unrelated cached capabilities while a catalog is present", async () => {
@@ -214,10 +298,42 @@ test("does not duplicate an existing picker model with different id casing", asy
 	assert.deepEqual(runtime.buildModelOptions(), [
 		{
 			value: "Provider/Model",
-			label: "Existing model",
-			description: "Provider entry",
+			label: "Configured model",
+			description: "Configured model",
 		},
 	]);
+});
+
+test("reconciles a configured model added by a later provider source", async () => {
+	const ast = parse(CATALOG_FIXTURE);
+	await runConfiguredCatalogViaPasses(ast);
+	const runtime = evaluatePatched(print(ast));
+	runtime.setProviderModels([
+		{
+			id: "Provider/Model",
+			name: "Discovered model",
+		},
+	]);
+	runtime.setCatalog([
+		{
+			id: "provider/model",
+			displayName: "Configured model",
+			description: "Configured route",
+		},
+	]);
+
+	assert.deepEqual(
+		runtime
+			.buildModelOptions()
+			.filter((option) => option.value.toLowerCase() === "provider/model"),
+		[
+			{
+				value: "Provider/Model",
+				label: "Configured model",
+				description: "Configured route",
+			},
+		],
+	);
 });
 
 test("rejects malformed, duplicate, reserved, and unsafe catalog entries", async () => {

@@ -31,6 +31,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "CLAUDE.md system prompt",
 		group: "Prompt",
 	},
+	"claude-api-scope": {
+		tag: "claude-api-scope",
+		label: "Claude API skill scope",
+		group: "Prompt",
+	},
 	"memory-prompt-soften": {
 		tag: "memory-prompt-soften",
 		label: "Memory prompt",

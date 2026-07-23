@@ -12,10 +12,18 @@ import {
 } from "./ast-helpers.js";
 
 const SKILL_LISTING_SUMMARY_HELPER = "_claudePatchFormatSkillListingSummary";
+const SKILL_LISTING_REFRESH_PARAM = "_claudePatchSkillListingMessage";
+const INHERITED_SKILL_LISTINGS = "_claudePatchInheritedSkillListings";
 
 type RenderRoot = {
 	rootCall: t.CallExpression;
 	cacheGuard?: t.IfStatement;
+};
+
+type SkillListingRefreshCandidate = {
+	path: NodePath<t.VariableDeclaration>;
+	catchHandler: t.ArrowFunctionExpression;
+	messagesName: string;
 };
 
 function buildSkillListingSummaryHelper(): t.Statement {
@@ -61,6 +69,255 @@ function nodeContains(
 		}
 	}
 	return false;
+}
+
+function containsStringLiteral(
+	node: t.Node | null | undefined,
+	value: string,
+): boolean {
+	return nodeContains(
+		node,
+		(child) => t.isStringLiteral(child) && child.value === value,
+	);
+}
+
+function isMessagesPushCall(node: t.Node, messagesName: string): boolean {
+	return (
+		t.isCallExpression(node) &&
+		t.isMemberExpression(node.callee) &&
+		t.isIdentifier(node.callee.object, { name: messagesName }) &&
+		isMemberPropertyName(node.callee, "push")
+	);
+}
+
+function getSkillListingCatchFallback(
+	handler: t.ArrowFunctionExpression,
+): t.Expression | null {
+	if (t.isBlockStatement(handler.body)) return null;
+	if (t.isSequenceExpression(handler.body)) {
+		return handler.body.expressions.at(-1) ?? null;
+	}
+	return handler.body;
+}
+
+function hasInheritedSkillListingFallback(
+	handler: t.ArrowFunctionExpression,
+): boolean {
+	return t.isIdentifier(getSkillListingCatchFallback(handler), {
+		name: INHERITED_SKILL_LISTINGS,
+	});
+}
+
+function replaceSkillListingCatchFallback(
+	handler: t.ArrowFunctionExpression,
+): boolean {
+	const fallback = getSkillListingCatchFallback(handler);
+	if (!t.isArrayExpression(fallback) || fallback.elements.length !== 0) {
+		return false;
+	}
+	const replacement = t.identifier(INHERITED_SKILL_LISTINGS);
+	if (t.isSequenceExpression(handler.body)) {
+		handler.body.expressions[handler.body.expressions.length - 1] = replacement;
+	} else {
+		handler.body = replacement;
+	}
+	return true;
+}
+
+function getSkillListingCatchHandler(
+	declaration: t.VariableDeclaration,
+): t.ArrowFunctionExpression | null {
+	const handlers = declaration.declarations.flatMap((declarator) => {
+		if (!t.isAwaitExpression(declarator.init)) return [];
+		const awaited = declarator.init.argument;
+		if (!t.isCallExpression(awaited)) return [];
+		if (!t.isMemberExpression(awaited.callee)) return [];
+		if (!isMemberPropertyName(awaited.callee, "catch")) return [];
+		const handler = awaited.arguments[0];
+		if (!t.isArrowFunctionExpression(handler)) return [];
+		const fallback = getSkillListingCatchFallback(handler);
+		const isStockFallback =
+			t.isArrayExpression(fallback) && fallback.elements.length === 0;
+		const isPatchedFallback = hasInheritedSkillListingFallback(handler);
+		return isStockFallback || isPatchedFallback ? [handler] : [];
+	});
+	return handlers.length === 1 ? handlers[0] : null;
+}
+
+function getSkillListingRefreshCandidate(
+	path: NodePath<t.VariableDeclaration>,
+): SkillListingRefreshCandidate | null {
+	const parent = path.parentPath;
+	if (!parent?.isBlockStatement()) return null;
+	const catchHandler = getSkillListingCatchHandler(path.node);
+	if (!catchHandler) return null;
+
+	for (const declarator of path.node.declarations) {
+		if (!t.isIdentifier(declarator.id)) continue;
+		const init = declarator.init;
+		if (!t.isCallExpression(init)) continue;
+		if (!t.isMemberExpression(init.callee)) continue;
+		if (!isMemberPropertyName(init.callee, "some")) continue;
+		if (!t.isIdentifier(init.callee.object)) continue;
+		const messagesName = init.callee.object.name;
+		if (!containsStringLiteral(init, "attachment")) continue;
+		if (!containsStringLiteral(init, "skill_listing")) continue;
+
+		const statementIndex = parent.node.body.indexOf(path.node);
+		if (statementIndex === -1) return null;
+		const nextStatement = parent.node.body[statementIndex + 1];
+		if (!t.isIfStatement(nextStatement)) return null;
+		if (
+			!t.isUnaryExpression(nextStatement.test, { operator: "!" }) ||
+			!t.isIdentifier(nextStatement.test.argument, {
+				name: declarator.id.name,
+			})
+		) {
+			return null;
+		}
+		if (
+			!nodeContains(nextStatement.consequent, (node) =>
+				isMessagesPushCall(node, messagesName),
+			)
+		) {
+			return null;
+		}
+
+		return {
+			path,
+			catchHandler,
+			messagesName,
+		};
+	}
+
+	return null;
+}
+
+function buildInheritedSkillListingCapture(
+	messagesName: string,
+): t.VariableDeclaration {
+	const message = t.identifier(SKILL_LISTING_REFRESH_PARAM);
+	const isAttachment = t.binaryExpression(
+		"===",
+		t.memberExpression(t.cloneNode(message), t.identifier("type")),
+		t.stringLiteral("attachment"),
+	);
+	const isSkillListing = t.binaryExpression(
+		"===",
+		t.memberExpression(
+			t.memberExpression(t.cloneNode(message), t.identifier("attachment")),
+			t.identifier("type"),
+		),
+		t.stringLiteral("skill_listing"),
+	);
+	return t.variableDeclaration("const", [
+		t.variableDeclarator(
+			t.identifier(INHERITED_SKILL_LISTINGS),
+			t.callExpression(
+				t.memberExpression(t.identifier(messagesName), t.identifier("filter")),
+				[
+					t.arrowFunctionExpression(
+						[message],
+						t.logicalExpression("&&", isAttachment, isSkillListing),
+					),
+				],
+			),
+		),
+	]);
+}
+
+function buildSkillListingRefreshStatement(
+	messagesName: string,
+): t.ExpressionStatement {
+	const message = t.identifier(SKILL_LISTING_REFRESH_PARAM);
+	const messageType = t.memberExpression(
+		t.cloneNode(message),
+		t.identifier("type"),
+	);
+	const attachmentType = t.memberExpression(
+		t.memberExpression(t.cloneNode(message), t.identifier("attachment")),
+		t.identifier("type"),
+	);
+	const keepCurrent = t.logicalExpression(
+		"||",
+		t.binaryExpression("!==", messageType, t.stringLiteral("attachment")),
+		t.binaryExpression("!==", attachmentType, t.stringLiteral("skill_listing")),
+	);
+
+	return t.expressionStatement(
+		t.assignmentExpression(
+			"=",
+			t.identifier(messagesName),
+			t.callExpression(
+				t.memberExpression(t.identifier(messagesName), t.identifier("filter")),
+				[t.arrowFunctionExpression([message], keepCurrent)],
+			),
+		),
+	);
+}
+
+function isInheritedSkillListingCapture(
+	node: t.Node | null | undefined,
+	messagesName: string,
+): boolean {
+	if (!t.isVariableDeclaration(node)) return false;
+	if (node.declarations.length !== 1) return false;
+	const [declaration] = node.declarations;
+	if (!t.isIdentifier(declaration.id, { name: INHERITED_SKILL_LISTINGS })) {
+		return false;
+	}
+	if (!t.isCallExpression(declaration.init)) return false;
+	const callee = declaration.init.callee;
+	if (!t.isMemberExpression(callee)) return false;
+	if (!t.isIdentifier(callee.object, { name: messagesName })) return false;
+	if (!isMemberPropertyName(callee, "filter")) return false;
+	return (
+		containsStringLiteral(declaration.init, "attachment") &&
+		containsStringLiteral(declaration.init, "skill_listing")
+	);
+}
+
+function isSkillListingRefreshStatement(
+	node: t.Node | null | undefined,
+	messagesName: string,
+): boolean {
+	if (!t.isExpressionStatement(node)) return false;
+	const expression = node.expression;
+	if (!t.isAssignmentExpression(expression, { operator: "=" })) return false;
+	if (!t.isIdentifier(expression.left, { name: messagesName })) return false;
+	if (!t.isCallExpression(expression.right)) return false;
+	const callee = expression.right.callee;
+	if (!t.isMemberExpression(callee)) return false;
+	if (!t.isIdentifier(callee.object, { name: messagesName })) return false;
+	if (!isMemberPropertyName(callee, "filter")) return false;
+	if (!containsStringLiteral(expression.right, "attachment")) return false;
+	return containsStringLiteral(expression.right, "skill_listing");
+}
+
+function patchSkillListingRefresh(
+	candidate: SkillListingRefreshCandidate,
+): boolean {
+	const parent = candidate.path.parentPath;
+	if (!parent?.isBlockStatement()) return false;
+	const statementIndex = parent.node.body.indexOf(candidate.path.node);
+	if (statementIndex === -1) return false;
+	const captureStatement = parent.node.body[statementIndex - 2];
+	const refreshStatement = parent.node.body[statementIndex - 1];
+	if (
+		isInheritedSkillListingCapture(captureStatement, candidate.messagesName) &&
+		isSkillListingRefreshStatement(refreshStatement, candidate.messagesName) &&
+		hasInheritedSkillListingFallback(candidate.catchHandler)
+	) {
+		return true;
+	}
+	if (!replaceSkillListingCatchFallback(candidate.catchHandler)) return false;
+	parent.node.body.splice(
+		statementIndex,
+		0,
+		buildInheritedSkillListingCapture(candidate.messagesName),
+		buildSkillListingRefreshStatement(candidate.messagesName),
+	);
+	return true;
 }
 
 function statementsContain(
@@ -619,10 +876,12 @@ function createSkillListingUiPasses(): PatchAstPass[] {
 	const attachmentCandidates: NodePath<t.ObjectExpression>[] = [];
 	const renderCandidates: NodePath<t.SwitchCase>[] = [];
 	const dynamicRenderCandidates: NodePath<t.SwitchCase>[] = [];
+	const refreshCandidates: SkillListingRefreshCandidate[] = [];
 	let helperExists = false;
 	let patchedAttachment = false;
 	let patchedRenderer = false;
 	let patchedDynamicRenderer = false;
+	let patchedRefresh = false;
 
 	return [
 		{
@@ -641,6 +900,10 @@ function createSkillListingUiPasses(): PatchAstPass[] {
 					if (isSkillListingAttachment(path)) {
 						attachmentCandidates.push(path);
 					}
+				},
+				VariableDeclaration(path) {
+					const candidate = getSkillListingRefreshCandidate(path);
+					if (candidate) refreshCandidates.push(candidate);
 				},
 				SwitchCase(path) {
 					if (isDynamicSkillRenderCase(path)) {
@@ -690,6 +953,10 @@ function createSkillListingUiPasses(): PatchAstPass[] {
 							patchedDynamicRenderer = patchDynamicSkillRenderer(
 								dynamicRenderCandidates[0],
 							);
+						}
+
+						if (refreshCandidates.length === 1) {
+							patchedRefresh = patchSkillListingRefresh(refreshCandidates[0]);
 						}
 					},
 				},
@@ -741,6 +1008,20 @@ function createSkillListingUiPasses(): PatchAstPass[] {
 								"Skill listing UI: failed to patch dynamic_skill render case",
 							);
 						}
+
+						if (refreshCandidates.length > 1) {
+							console.warn(
+								`Skill listing UI: ambiguous inherited skill-listing refresh sites (${refreshCandidates.length} found)`,
+							);
+						} else if (refreshCandidates.length === 0) {
+							console.warn(
+								"Skill listing UI: could not find inherited skill-listing refresh site",
+							);
+						} else if (!patchedRefresh) {
+							console.warn(
+								"Skill listing UI: failed to refresh inherited skill listings",
+							);
+						}
 					},
 				},
 			},
@@ -763,6 +1044,8 @@ export const skillListingUi: Patch = {
 		let attachmentPatched = false;
 		let rendererPatched = false;
 		let dynamicRendererPatched = false;
+		let refreshCandidates = 0;
+		let inheritedListingRefreshPatched = false;
 
 		traverse(verifyAst, {
 			FunctionDeclaration(path) {
@@ -782,6 +1065,28 @@ export const skillListingUi: Patch = {
 				if (!t.isMemberExpression(skillNamesProp.value.callee)) return;
 				if (!isMemberPropertyName(skillNamesProp.value.callee, "map")) return;
 				attachmentPatched = true;
+			},
+			VariableDeclaration(path) {
+				const candidate = getSkillListingRefreshCandidate(path);
+				if (!candidate) return;
+				refreshCandidates += 1;
+				const parent = path.parentPath;
+				if (!parent?.isBlockStatement()) return;
+				const statementIndex = parent.node.body.indexOf(path.node);
+				if (statementIndex === -1) return;
+				if (
+					isInheritedSkillListingCapture(
+						parent.node.body[statementIndex - 2],
+						candidate.messagesName,
+					) &&
+					isSkillListingRefreshStatement(
+						parent.node.body[statementIndex - 1],
+						candidate.messagesName,
+					) &&
+					hasInheritedSkillListingFallback(candidate.catchHandler)
+				) {
+					inheritedListingRefreshPatched = true;
+				}
 			},
 			SwitchCase(path) {
 				if (isSkillListingRenderCase(path)) {
@@ -826,6 +1131,9 @@ export const skillListingUi: Patch = {
 		}
 		if (!dynamicRendererPatched) {
 			return "dynamic_skill renderer is missing the loaded-skill summary";
+		}
+		if (refreshCandidates !== 1 || !inheritedListingRefreshPatched) {
+			return `Inherited skill listings are not refreshed before agent forks (sites: ${refreshCandidates})`;
 		}
 		return true;
 	},

@@ -13,6 +13,7 @@ export interface PromptSurfaceNeedle {
 export interface PromptSurfaceRule {
 	file: string;
 	presence?: "required" | "optional";
+	allowDynamicPrompt?: boolean;
 	allowSyntheticPlaceholders?: boolean;
 	allowLiteralTemplatePlaceholders?: boolean;
 	required?: PromptSurfaceNeedle[];
@@ -279,6 +280,46 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				id: "run-skill-stderr-suppression",
 				needle: "2>/dev/null",
 				reason: "run skill still suppresses discovery errors",
+			},
+		],
+	},
+	{
+		file: "skills/claude-api.md",
+		presence: "optional",
+		allowDynamicPrompt: true,
+		required: [
+			{
+				id: "claude-api-application-scope",
+				needle:
+					"application that directly calls the Claude API or uses an Anthropic SDK",
+				reason:
+					"Claude API skill description is missing its application and SDK scope",
+			},
+			{
+				id: "claude-api-client-exclusion",
+				needle: "DO NOT TRIGGER merely because a task mentions Claude Code",
+				reason:
+					"Claude API skill description does not exclude client-only work",
+			},
+			{
+				id: "claude-api-transcript-exclusion",
+				needle: "local session JSONL/transcripts",
+				reason:
+					"Claude API skill description does not exclude local transcript analysis",
+			},
+		],
+		forbidden: [
+			{
+				id: "claude-api-name-only-trigger",
+				needle: "the prompt names Claude/Anthropic in any form",
+				reason:
+					"Claude API skill still activates from a product-name mention alone",
+			},
+			{
+				id: "claude-api-provider-grep-trigger",
+				needle: "run this grep FIRST",
+				reason:
+					"Claude API skill still requires a broad provider grep before reading",
 			},
 		],
 	},

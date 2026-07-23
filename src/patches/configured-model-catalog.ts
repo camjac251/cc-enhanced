@@ -25,13 +25,22 @@ interface CapabilityLookupCandidate {
 interface PickerCandidate {
 	path: NodePath<t.FunctionDeclaration>;
 	declarationIndex: number;
+	finalizeIndex: number;
 	optionsName: string;
+}
+
+interface ResumeRestoreCandidate {
+	path: NodePath<t.FunctionDeclaration>;
+	body: t.BlockStatement;
+	declarationIndex: number;
+	modelName: string;
 }
 
 interface PatchAnalysis {
 	helper: t.FunctionDeclaration;
 	lookup: CapabilityLookupCandidate;
 	picker: PickerCandidate;
+	resumeRestore: ResumeRestoreCandidate;
 	environmentArrays: t.ArrayExpression[];
 }
 
@@ -195,13 +204,73 @@ function getPickerShape(
 				t.isIdentifier(declaration.id) && t.isCallExpression(declaration.init),
 		);
 		if (!options || !t.isIdentifier(options.id)) return null;
+		const optionsName = options.id.name;
+		const finalizeIndices = path.node.body.body.flatMap(
+			(candidate, candidateIndex) =>
+				candidateIndex > index &&
+				t.isVariableDeclaration(candidate) &&
+				candidate.declarations.some((declaration) =>
+					t.isNullLiteral(declaration.init),
+				) &&
+				candidate.declarations.filter((declaration) =>
+					t.isCallExpression(declaration.init),
+				).length >= 2
+					? [candidateIndex]
+					: [],
+		);
+		if (finalizeIndices.length !== 1) return null;
 		return {
 			path,
 			declarationIndex: index,
-			optionsName: options.id.name,
+			finalizeIndex: finalizeIndices[0],
+			optionsName,
 		};
 	}
 	return null;
+}
+
+function getResumeRestoreShape(
+	path: NodePath<t.FunctionDeclaration>,
+): ResumeRestoreCandidate | null {
+	if (!path.node.id || path.node.params.length < 2) return null;
+	const candidates: ResumeRestoreCandidate[] = [];
+	t.traverseFast(path.node.body, (node) => {
+		if (!t.isBlockStatement(node)) return;
+		const modelDeclarations: t.Identifier[] = [];
+		let declarationIndex = -1;
+		for (const [index, statement] of node.body.entries()) {
+			if (!t.isVariableDeclaration(statement)) continue;
+			for (const declaration of statement.declarations) {
+				if (
+					t.isIdentifier(declaration.id) &&
+					declaration.init &&
+					nodeHasMemberProperty(declaration.init, "message") &&
+					nodeHasMemberProperty(declaration.init, "model")
+				) {
+					modelDeclarations.push(declaration.id);
+				}
+				if (
+					declaration.init &&
+					["unknown_family", "not_allowed", "retired"].every((reason) =>
+						nodeContains(
+							declaration.init,
+							(child) => getStaticString(child) === reason,
+						),
+					)
+				) {
+					declarationIndex = index;
+				}
+			}
+		}
+		if (declarationIndex < 0 || modelDeclarations.length !== 1) return;
+		candidates.push({
+			path,
+			body: node,
+			declarationIndex,
+			modelName: modelDeclarations[0].name,
+		});
+	});
+	return candidates.length === 1 ? candidates[0] : null;
 }
 
 function isCallTo(node: t.Node, functionName: string): boolean {
@@ -233,16 +302,30 @@ function hasCatalogPickerBlock(
 	candidate: PickerCandidate,
 	helperName: string,
 ): boolean {
-	const statement =
-		candidate.path.node.body.body[candidate.declarationIndex + 1];
+	const statement = candidate.path.node.body.body[candidate.finalizeIndex - 1];
 	if (!t.isBlockStatement(statement)) return false;
 	return (
 		nodeContains(statement, (child) => isCallTo(child, helperName)) &&
-		nodeHasMemberProperty(statement, "some") &&
+		nodeHasMemberProperty(statement, "findIndex") &&
 		nodeHasMemberProperty(statement, "push") &&
 		["value", "label", "description"].every((key) =>
 			nodeHasObjectKey(statement, key),
 		)
+	);
+}
+
+function hasCatalogResumeBlock(
+	candidate: ResumeRestoreCandidate,
+	helperName: string,
+): boolean {
+	const statement = candidate.body.body[candidate.declarationIndex - 1];
+	if (!t.isBlockStatement(statement)) return false;
+	return (
+		nodeContains(statement, (child) => isCallTo(child, helperName)) &&
+		nodeHasMemberProperty(statement, "some") &&
+		nodeHasMemberProperty(statement, "id") &&
+		nodeContains(statement, (child) => getStaticString(child) === "ok") &&
+		["kind", "model"].every((key) => nodeHasObjectKey(statement, key))
 	);
 }
 
@@ -371,15 +454,26 @@ function buildPickerBlock(
 ): t.BlockStatement {
 	const model = candidate.path.scope.generateUidIdentifier("configuredModel");
 	const option = candidate.path.scope.generateUidIdentifier("configuredOption");
+	const existingIndex = candidate.path.scope.generateUidIdentifier(
+		"configuredOptionIndex",
+	);
 	const source = parse(`
 {
   for (const ${model.name} of ${helperName}()) {
-    if (${candidate.optionsName}.some((${option.name}) => typeof ${option.name}.value === "string" && ${option.name}.value.trim().toLowerCase() === ${model.name}.id.toLowerCase())) continue;
-    ${candidate.optionsName}.push({
-      value: ${model.name}.id,
-      label: ${model.name}.display_name,
-      description: ${model.name}.description,
-    });
+    const ${existingIndex.name} = ${candidate.optionsName}.findIndex((${option.name}) => typeof ${option.name}.value === "string" && ${option.name}.value.trim().toLowerCase() === ${model.name}.id.toLowerCase());
+    if (${existingIndex.name} >= 0) {
+      ${candidate.optionsName}[${existingIndex.name}] = {
+        ...${candidate.optionsName}[${existingIndex.name}],
+        label: ${model.name}.display_name,
+        description: ${model.name}.description,
+      };
+    } else {
+      ${candidate.optionsName}.push({
+        value: ${model.name}.id,
+        label: ${model.name}.display_name,
+        description: ${model.name}.description,
+      });
+    }
   }
 }
 `);
@@ -390,10 +484,39 @@ function buildPickerBlock(
 	return block;
 }
 
+function buildResumeRestoreBlock(
+	candidate: ResumeRestoreCandidate,
+	helperName: string,
+): t.BlockStatement {
+	const entry = candidate.path.scope.generateUidIdentifier(
+		"configuredSessionModelEntry",
+	);
+	const matches = candidate.path.scope.generateUidIdentifier(
+		"configuredSessionModel",
+	);
+	const source = parse(`
+function configuredSessionRestore() {
+{
+  const ${matches.name} = ${helperName}().some((${entry.name}) => ${entry.name}.id.toLowerCase() === String(${candidate.modelName}).trim().toLowerCase());
+  if (${matches.name}) return { kind: "ok", model: ${candidate.modelName} };
+}
+}
+`);
+	const wrapper = source.program.body[0];
+	const block = t.isFunctionDeclaration(wrapper) ? wrapper.body.body[0] : null;
+	if (!t.isBlockStatement(block)) {
+		throw new Error(
+			"configured-model-catalog: failed to build session restore lookup",
+		);
+	}
+	return block;
+}
+
 function resolveAnalysis(
 	helpers: t.FunctionDeclaration[],
 	lookups: CapabilityLookupCandidate[],
 	pickers: PickerCandidate[],
+	resumeRestores: ResumeRestoreCandidate[],
 	environmentArrays: t.ArrayExpression[],
 ): PatchAnalysis | string {
 	if (helpers.length !== 1) {
@@ -405,10 +528,14 @@ function resolveAnalysis(
 	if (pickers.length !== 1) {
 		return `Model picker builder is ambiguous or missing (${pickers.length} sites found)`;
 	}
+	if (resumeRestores.length !== 1) {
+		return `Session model restore is ambiguous or missing (${resumeRestores.length} sites found)`;
+	}
 	return {
 		helper: helpers[0],
 		lookup: lookups[0],
 		picker: pickers[0],
+		resumeRestore: resumeRestores[0],
 		environmentArrays,
 	};
 }
@@ -418,6 +545,7 @@ function createConfiguredModelCatalogPasses(): PatchAstPass[] {
 	const helpers: t.FunctionDeclaration[] = [];
 	const lookups: CapabilityLookupCandidate[] = [];
 	const pickers: PickerCandidate[] = [];
+	const resumeRestores: ResumeRestoreCandidate[] = [];
 	const environmentArrays: t.ArrayExpression[] = [];
 	let patched = false;
 
@@ -434,6 +562,8 @@ function createConfiguredModelCatalogPasses(): PatchAstPass[] {
 					if (lookup) lookups.push(lookup);
 					const picker = getPickerShape(path);
 					if (picker) pickers.push(picker);
+					const resumeRestore = getResumeRestoreShape(path);
+					if (resumeRestore) resumeRestores.push(resumeRestore);
 				},
 				ArrayExpression(path) {
 					if (isSubagentModelEnvArray(path.node)) {
@@ -451,7 +581,8 @@ function createConfiguredModelCatalogPasses(): PatchAstPass[] {
 							if (
 								!programPath ||
 								lookups.length !== 1 ||
-								pickers.length !== 1
+								pickers.length !== 1 ||
+								resumeRestores.length !== 1
 							) {
 								return;
 							}
@@ -469,6 +600,7 @@ function createConfiguredModelCatalogPasses(): PatchAstPass[] {
 							const helperName = helper.id.name;
 							const lookup = lookups[0];
 							const picker = pickers[0];
+							const resumeRestore = resumeRestores[0];
 							if (!hasCatalogLookupBlock(lookup, helperName)) {
 								lookup.path.node.body.body.splice(
 									0,
@@ -478,10 +610,19 @@ function createConfiguredModelCatalogPasses(): PatchAstPass[] {
 							}
 							if (!hasCatalogPickerBlock(picker, helperName)) {
 								picker.path.node.body.body.splice(
-									picker.declarationIndex + 1,
+									picker.finalizeIndex,
 									0,
 									buildPickerBlock(picker, helperName),
 								);
+								picker.finalizeIndex += 1;
+							}
+							if (!hasCatalogResumeBlock(resumeRestore, helperName)) {
+								resumeRestore.body.body.splice(
+									resumeRestore.declarationIndex,
+									0,
+									buildResumeRestoreBlock(resumeRestore, helperName),
+								);
+								resumeRestore.declarationIndex += 1;
 							}
 							const environmentPatched =
 								environmentArrays.length > 0 &&
@@ -491,11 +632,12 @@ function createConfiguredModelCatalogPasses(): PatchAstPass[] {
 							patched =
 								environmentPatched &&
 								hasCatalogLookupBlock(lookup, helperName) &&
-								hasCatalogPickerBlock(picker, helperName);
+								hasCatalogPickerBlock(picker, helperName) &&
+								hasCatalogResumeBlock(resumeRestore, helperName);
 						} finally {
 							if (!patched) {
 								console.warn(
-									`Configured model catalog: Could not patch unique catalog surfaces (helpers: ${helpers.length}, lookups: ${lookups.length}, pickers: ${pickers.length}, environment arrays: ${environmentArrays.length})`,
+									`Configured model catalog: Could not patch unique catalog surfaces (helpers: ${helpers.length}, lookups: ${lookups.length}, pickers: ${pickers.length}, resume restores: ${resumeRestores.length}, environment arrays: ${environmentArrays.length})`,
 								);
 							}
 						}
@@ -517,6 +659,7 @@ export const configuredModelCatalog: Patch = {
 		const helpers: t.FunctionDeclaration[] = [];
 		const lookups: CapabilityLookupCandidate[] = [];
 		const pickers: PickerCandidate[] = [];
+		const resumeRestores: ResumeRestoreCandidate[] = [];
 		const environmentArrays = collectSubagentModelEnvArrays(verifyAst);
 		traverse(verifyAst, {
 			FunctionDeclaration(path) {
@@ -525,12 +668,15 @@ export const configuredModelCatalog: Patch = {
 				if (lookup) lookups.push(lookup);
 				const picker = getPickerShape(path);
 				if (picker) pickers.push(picker);
+				const resumeRestore = getResumeRestoreShape(path);
+				if (resumeRestore) resumeRestores.push(resumeRestore);
 			},
 		});
 		const analysis = resolveAnalysis(
 			helpers,
 			lookups,
 			pickers,
+			resumeRestores,
 			environmentArrays,
 		);
 		if (typeof analysis === "string") return analysis;
@@ -540,6 +686,11 @@ export const configuredModelCatalog: Patch = {
 		}
 		if (!hasCatalogPickerBlock(analysis.picker, analysis.helper.id.name)) {
 			return "Model picker does not expose configured catalog entries";
+		}
+		if (
+			!hasCatalogResumeBlock(analysis.resumeRestore, analysis.helper.id.name)
+		) {
+			return "Session model restore does not consult the configured catalog";
 		}
 		if (environmentArrays.length === 0) {
 			return "Configured catalog environment forwarding not found";
