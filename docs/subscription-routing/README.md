@@ -53,11 +53,13 @@ a 32,000-token output allowance. This package does not enable the separate
 | `README.md` | Installation, operation, update, rollback, and removal guide |
 | `versions.env` | Public source, artifact, toolchain, route, model, and context pins |
 | `runtime-artifact-sha256.sh` | Normalized routing-runtime digest |
-| `check-routed-idle.sh` | Refuses a service restart while routed clients are active |
+| `check-routed-idle.sh` | Scans process arguments without treating paths as regular expressions and refuses a service restart while routed clients are active |
+| `test-service-control.sh` | Isolated ordering and failure tests for the restart guard and controller |
 | `verify-static.sh` | Read-only file, source, digest, template, prompt, and patch verification |
 | `verify-live.sh` | Explicit service and authentication verification; optional inference smoke tests |
 | `templates/claudex` | Routed session launcher |
 | `templates/clodex` | Isolated provider-administration wrapper |
+| `templates/clodex-service` | Guarded service restart and readiness controller |
 | `templates/claudex-clodex.service` | Hardened on-demand systemd user service |
 | `templates/claudex-credential-helper` | WSL-to-Windows secure-store bridge |
 | `templates/claudex-credential-helper.ps1` | Windows PasswordVault implementation |
@@ -84,11 +86,13 @@ overwrite or restore one another's build.
 
 The promoted client must report all of these tags:
 
+- `claude-api-scope`
 - `configured-model-catalog`
 - `billing-label`
 - `model-aliases`
 - `model-context-metadata`
 - `model-picker-session-only`
+- `skill-listing-ui`
 - `subagent-model-tag`
 - `sys-prompt-file`
 - `workflow-safety`
@@ -97,6 +101,15 @@ The promoted client must report all of these tags:
 resuming workflow-owned workers, persists workflow ownership before launch,
 fails closed when ownership metadata cannot be read, and supplies a targeted
 correction when structured output fields are embedded in one string.
+
+`claude-api-scope` is required. It keeps the built-in API reference skill
+available for applications that call the Anthropic API or SDK while preventing
+client, transcript, workflow, routing, and proxy work from activating it merely
+because those tasks mention Claude.
+
+`skill-listing-ui` is required. Agent and workflow forks discard inherited
+skill-listing attachments before adding the current listing, so a resumed
+session cannot keep obsolete skill descriptions after a client update.
 
 ## Prerequisites
 
@@ -107,7 +120,9 @@ Install:
 - a systemd user session;
 - common POSIX utilities;
 - GNU `tar`, `sha256sum`, `readlink`, `sed`, `grep`, `cmp`, `cut`, and `stat`;
-- `pgrep` from procps for the idle-session gate;
+- `jq` for lifecycle-log inspection;
+- `flock` from util-linux and a readable Linux `/proc` for safe
+  launch-versus-restart coordination;
 - Windows PowerShell and `wslpath` only when using the supplied WSL
   PasswordVault helper.
 
@@ -168,11 +183,11 @@ git clone \
   --branch "$CLODEX_BRANCH" \
   --single-branch \
   "$CLODEX_REPOSITORY" \
-  clodex
-git -C clodex checkout --detach "$CLODEX_REVISION"
-test "$(git -C clodex rev-parse HEAD)" = "$CLODEX_REVISION"
+  clodex-source
+git -C clodex-source checkout --detach "$CLODEX_REVISION"
+test "$(git -C clodex-source rev-parse HEAD)" = "$CLODEX_REVISION"
 
-cd clodex
+cd clodex-source
 mise install "node@$CLODEX_NODE_VERSION"
 node_root=$(mise where "node@$CLODEX_NODE_VERSION")
 corepack_bin="$node_root/bin/corepack"
@@ -327,6 +342,9 @@ sed \
   -e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
   templates/clodex >"$rendered_dir/clodex"
 sed \
+  -e "s|@NODE_BIN@|$node_bin|g" \
+  templates/clodex-service >"$rendered_dir/clodex-service"
+sed \
   -e "s|@CLAUDE_BIN@|$claude_bin|g" \
   -e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
   -e "s|@CLODEX_PROVIDER_ID@|$CLODEX_PROVIDER_ID|g" \
@@ -339,11 +357,17 @@ sed \
   -e "s|@CLODEX_MODEL_MAX_OUTPUT_TOKENS@|$CLODEX_MODEL_MAX_OUTPUT_TOKENS|g" \
   templates/claudex >"$rendered_dir/claudex"
 
-install -d -m 700 "$HOME/.config/systemd/user" "$HOME/.local/bin"
+install -d -m 700 \
+  "$HOME/.config/systemd/user" \
+  "$HOME/.local/bin" \
+  "$HOME/.local/libexec"
 install -m 600 "$rendered_dir/claudex-clodex.service" \
   "$HOME/.config/systemd/user/claudex-clodex.service"
 install -m 700 "$rendered_dir/claudex" "$HOME/.local/bin/claudex"
 install -m 700 "$rendered_dir/clodex" "$HOME/.local/bin/clodex"
+install -m 700 "$rendered_dir/clodex-service" "$HOME/.local/bin/clodex-service"
+install -m 700 check-routed-idle.sh \
+  "$HOME/.local/libexec/claudex-check-routed-idle"
 
 systemctl --user daemon-reload
 )
@@ -467,6 +491,21 @@ Opt-in direct, passthrough, and translated inference smoke tests:
 The smoke flag consumes subscription usage. It is not part of static
 installation validation.
 
+When validating an unreleased local development snapshot whose source and
+artifact intentionally differ from `versions.env`, skip only the
+reproducibility layer:
+
+```sh
+./verify-live.sh --development
+./verify-live.sh --development --smoke
+```
+
+Development verification still checks service readiness, the selected runtime,
+the pinned Node.js executable, and external OAuth. With `--smoke`, it also
+checks direct, passthrough, and translated inference. It does not prove that the
+deployment can be reproduced from the shareable pins and must not be used as a
+release or handoff gate.
+
 Manual behavior gates after an update:
 
 1. Start `claudex fable`; confirm the parent remains Fable.
@@ -497,6 +536,7 @@ claudex opus           # Opus parent through native passthrough
 claudex sol            # Sol parent through ChatGPT Pro OAuth
 clodex providers list  # isolated provider administration
 clodex models          # isolated favorites and aliases
+clodex-service restart # guarded service restart after routed clients are idle
 ```
 
 Inside a native parent, request a Sol specialist by selecting the normal agent
@@ -519,14 +559,18 @@ Deploying a new immutable runtime and switching `runtime/current` does not
 restart an existing service. Before any restart:
 
 ```sh
-./check-routed-idle.sh
-systemctl --user restart claudex-clodex.service
+clodex-service restart
 ./verify-live.sh
 ```
 
-If the idle check fails, wait for routed parents, agents, and workflows to
-finish. Do not restart around them. Restarting the service closes active
-streams.
+`claudex` holds a shared routed-session lock for the client lifetime.
+`clodex-service restart` acquires the matching exclusive lock before it runs
+the installed process scan and invokes systemd, so a client cannot start in the
+gap between the idle check and restart. The controller refuses the restart
+while routed parents, agents, or workflows are active, waits for strict wrapper
+readiness, verifies the loaded process against `runtime/current`, and prints
+the loaded PID and immutable runtime. Do not bypass it with a direct
+`systemctl restart`: restarting the service closes active streams.
 
 For a client update:
 
@@ -567,7 +611,7 @@ ln -s "$previous_target" "$switch_directory/current"
 mv -Tf "$switch_directory/current" "$runtime_parent/current"
 rmdir "$switch_directory"
 
-systemctl --user restart claudex-clodex.service
+clodex-service restart
 )
 ```
 
@@ -614,6 +658,39 @@ Match lifecycle records by `claudeSessionId` and `requestId`. If the terminal
 record says `response_client_disconnected` with
 `disconnectSource: "downstream_client"`, the client or worker closed the stream;
 it is not evidence that the upstream provider timed out.
+
+### The client reports `Unable to connect to API (ECONNRESET)`
+
+Match the terminal timestamp to the lifecycle log:
+
+```sh
+jq -c 'select(
+  .event == "response_failed"
+  or .event == "translation_failed"
+  or ((.event // "") | startswith("proxy_"))
+)' "$HOME/.local/share/claudex-clodex/logs/inference-requests.jsonl"
+```
+
+Interpret the bounded diagnostic fields together:
+
+- `response_failed` with `failureSource: "adapter_request_error"` and
+  `errorCode: "ECONNRESET"` or `"ECONNREFUSED"` means the local HTTP proxy
+  could not reach its translation adapter.
+- `adapter_request_close`, `adapter_response_error`,
+  `adapter_response_aborted`, or `adapter_response_close` names the local relay
+  boundary that ended before completion.
+- `translation_failed` with
+  `errorCode: "websocket_transport_error"` means the translated provider
+  WebSocket transport failed.
+- `proxy_stopping` or `proxy_stopped` at the same time identifies an intentional
+  service shutdown or restart.
+- `response_client_disconnected` with
+  `disconnectSource: "downstream_client"` identifies client or worker
+  cancellation.
+
+Do not infer a provider failure from the terminal banner alone. If no matching
+lifecycle record exists, preserve the timestamp and request context; the
+available log cannot attribute that older failure to a specific boundary.
 
 ### A workflow worker edits successfully but produces no accepted result
 

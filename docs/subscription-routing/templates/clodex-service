@@ -1,0 +1,78 @@
+#!/bin/sh
+
+set -eu
+
+fail() {
+	printf 'clodex-service: %s\n' "$1" >&2
+	exit 1
+}
+
+if [ "$#" -ne 1 ] || [ "$1" != 'restart' ]; then
+	printf '%s\n' 'usage: clodex-service restart' >&2
+	exit 2
+fi
+
+unit='claudex-clodex.service'
+clodex_home="$HOME/.local/share/claudex-clodex"
+runtime_link="$clodex_home/runtime/current"
+process_wrapper="$runtime_link/dist/claude-wrapper.js"
+idle_guard="$HOME/.local/libexec/claudex-check-routed-idle"
+session_lock="$clodex_home/runtime/routed-sessions.lock"
+node_bin='@NODE_BIN@'
+
+for command_name in flock sleep stat systemctl; do
+	command -v "$command_name" >/dev/null 2>&1 ||
+		fail "$command_name is unavailable"
+done
+[ -x "$idle_guard" ] || fail "idle guard is missing: $idle_guard"
+[ -x "$node_bin" ] || fail "pinned Node.js executable is missing: $node_bin"
+[ -d "$runtime_link" ] || fail "selected runtime is missing: $runtime_link"
+[ -r "$process_wrapper" ] || fail "process wrapper is missing: $process_wrapper"
+
+exec 9>"$session_lock"
+flock -n -x 9 ||
+	fail "routed client processes are still active; do not restart the service"
+"$idle_guard"
+
+if ! systemctl --user restart "$unit"; then
+	systemctl --user status "$unit" --no-pager >&2 || true
+	fail "routing service restart failed"
+fi
+
+ready=0
+attempt=0
+while [ "$attempt" -lt 50 ]; do
+	if systemctl --user is-active --quiet "$unit" &&
+		CLODEX_HOME="$clodex_home" "$node_bin" "$process_wrapper" --check; then
+		ready=1
+		break
+	fi
+	if systemctl --user is-failed --quiet "$unit"; then
+		break
+	fi
+	attempt=$((attempt + 1))
+	sleep 0.2
+done
+
+if [ "$ready" -ne 1 ]; then
+	systemctl --user status "$unit" --no-pager >&2 || true
+	fail "routing service did not become ready within 10 seconds"
+fi
+
+main_pid=$(systemctl --user show --property MainPID --value "$unit")
+case "$main_pid" in
+'' | 0 | *[!0-9]*) fail "service has no valid main process" ;;
+esac
+[ -e "/proc/$main_pid/cwd" ] ||
+	fail "service working directory is unavailable"
+
+runtime_root=$(CDPATH='' cd -- "$runtime_link" && pwd -P) ||
+	fail "selected runtime cannot be resolved"
+service_cwd_identity=$(stat -Lc '%d:%i' "/proc/$main_pid/cwd") ||
+	fail "service working directory cannot be inspected"
+runtime_identity=$(stat -Lc '%d:%i' "$runtime_root") ||
+	fail "selected runtime cannot be inspected"
+[ "$service_cwd_identity" = "$runtime_identity" ] ||
+	fail "running service has not loaded the selected runtime"
+
+printf 'routing service ready: pid=%s runtime=%s\n' "$main_pid" "$runtime_root"

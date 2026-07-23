@@ -12,18 +12,28 @@ setup_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$setup_dir/versions.env"
 
 run_smoke=0
-case "${1:-}" in
-'') ;;
---smoke)
-	run_smoke=1
-	;;
-*)
-	printf '%s\n' 'usage: verify-live.sh [--smoke]' >&2
-	exit 2
-	;;
-esac
+run_static=1
+for argument in "$@"; do
+	case "$argument" in
+	--smoke)
+		run_smoke=1
+		;;
+	--development)
+		run_static=0
+		;;
+	*)
+		printf '%s\n' 'usage: verify-live.sh [--smoke] [--development]' >&2
+		exit 2
+		;;
+	esac
+done
 
-"$setup_dir/verify-static.sh"
+if [ "$run_static" -eq 1 ]; then
+	"$setup_dir/verify-static.sh"
+else
+	printf '%s\n' \
+		'development verification: reproducibility pins were not checked' >&2
+fi
 
 for command_name in grep mise stat systemctl tr; do
 	command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is unavailable"

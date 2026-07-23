@@ -5,6 +5,7 @@ set -eu
 clodex_home="$HOME/.local/share/claudex-clodex"
 credential_helper='@CLODEX_CREDENTIAL_HELPER@'
 process_wrapper="$clodex_home/runtime/current/dist/claude-wrapper.js"
+session_lock="$clodex_home/runtime/routed-sessions.lock"
 claude_path='@CLAUDE_BIN@'
 default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
 system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
@@ -55,6 +56,10 @@ if [ ! -r "$system_prompt_file" ]; then
 	printf 'claudex: system prompt file is not readable: %s\n' "$system_prompt_file" >&2
 	exit 1
 fi
+if ! command -v flock >/dev/null 2>&1; then
+	printf '%s\n' 'claudex: flock is required for safe routed sessions' >&2
+	exit 1
+fi
 
 unset \
 	ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_API_BASE_URL \
@@ -86,6 +91,9 @@ export CLAUDE_CODE_MODEL_ALIASES='{"@CLODEX_MODEL_ALIAS@":"clodex:@CLODEX_PROVID
 export CLAUDE_CODE_CONFIGURED_MODEL_CATALOG='[{"id":"clodex:@CLODEX_PROVIDER_ID@:@CLODEX_MODEL_ID@","displayName":"@CLODEX_MODEL_DISPLAY_NAME@","description":"@CLODEX_MODEL_DESCRIPTION@","maxInputTokens":@CLODEX_MODEL_MAX_INPUT_TOKENS@,"maxOutputTokens":@CLODEX_MODEL_MAX_OUTPUT_TOKENS@}]'
 export CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY=1
 export ENABLE_TOOL_SEARCH=true
+
+exec 9>"$session_lock"
+flock -s 9
 
 systemctl --user start claudex-clodex.service
 

@@ -15,15 +15,18 @@ artifact_helper="$setup_dir/runtime-artifact-sha256.sh"
 # shellcheck source=runtime-artifact-sha256.sh
 . "$artifact_helper"
 
-for command_name in cmp cut grep mise mktemp readlink sed sha256sum stat tar; do
+for command_name in cmp cut flock grep mise mktemp readlink sed sha256sum stat tar tr; do
 	command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is unavailable"
 done
+"$setup_dir/test-service-control.sh"
 
 claude_bin=${CLAUDE_BIN:-"$HOME/.local/bin/claude"}
 claudex_bin=${CLAUDEX_BIN:-"$HOME/.local/bin/claudex"}
 clodex_bin=${CLODEX_BIN:-"$HOME/.local/bin/clodex"}
+clodex_service_bin="$HOME/.local/bin/clodex-service"
 default_credential_helper="$HOME/.local/libexec/claudex-credential-helper"
 credential_helper=${CLODEX_CREDENTIAL_HELPER_PATH:-$default_credential_helper}
+idle_guard="$HOME/.local/libexec/claudex-check-routed-idle"
 case "$credential_helper" in
 /*) ;;
 *) fail "CLODEX_CREDENTIAL_HELPER_PATH must be absolute" ;;
@@ -46,7 +49,14 @@ system_prompt="$HOME/.config/claudex-clodex/system-prompt.md"
 service_unit="$HOME/.config/systemd/user/claudex-clodex.service"
 config_file="$HOME/.local/share/claudex-clodex/config.json"
 
-for executable in "$claude_bin" "$claudex_bin" "$clodex_bin" "$runtime" "$credential_helper"; do
+for executable in \
+	"$claude_bin" \
+	"$claudex_bin" \
+	"$clodex_bin" \
+	"$clodex_service_bin" \
+	"$runtime" \
+	"$credential_helper" \
+	"$idle_guard"; do
 	[ -x "$executable" ] || fail "required executable is missing: $executable"
 done
 [ -r "$system_prompt" ] || fail "system prompt is unreadable: $system_prompt"
@@ -140,6 +150,12 @@ sed \
 	"$setup_dir/templates/clodex" | cmp -s - "$clodex_bin" ||
 	fail "installed administration wrapper does not match the reviewed template"
 sed \
+	-e "s|@NODE_BIN@|$node_bin|g" \
+	"$setup_dir/templates/clodex-service" | cmp -s - "$clodex_service_bin" ||
+	fail "installed service controller does not match the reviewed template"
+cmp -s "$setup_dir/check-routed-idle.sh" "$idle_guard" ||
+	fail "installed routed-client guard does not match the reviewed source"
+sed \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
 	-e "s|@CLODEX_PROVIDER_ID@|$CLODEX_PROVIDER_ID|g" \
@@ -154,7 +170,11 @@ sed \
 	fail "installed routed launcher does not match the reviewed template"
 
 if grep -E '@(CLODEX_[A-Z_]+|CLAUDE_BIN|HOME|NODE_BIN)@' \
-	"$claudex_bin" "$clodex_bin" "$service_unit" "$system_prompt" >/dev/null; then
+	"$claudex_bin" \
+	"$clodex_bin" \
+	"$clodex_service_bin" \
+	"$service_unit" \
+	"$system_prompt" >/dev/null; then
 	fail "an installed rendered file contains unresolved placeholders"
 fi
 
@@ -192,10 +212,12 @@ case "$claude_version" in
 esac
 for patch_tag in \
 	billing-label \
+	claude-api-scope \
 	configured-model-catalog \
 	model-aliases \
 	model-context-metadata \
 	model-picker-session-only \
+	skill-listing-ui \
 	subagent-model-tag \
 	sys-prompt-file \
 	workflow-safety; do
