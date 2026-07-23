@@ -33,15 +33,16 @@ claude_bin=${CLAUDE_BIN:-"$HOME/.local/bin/claude"}
 claudex_bin=${CLAUDEX_BIN:-"$HOME/.local/bin/claudex"}
 clodex_bin=${CLODEX_BIN:-"$HOME/.local/bin/clodex"}
 node_bin="$(mise where "node@$CLODEX_NODE_VERSION")/bin/node"
-runtime="$HOME/.local/share/claudex-clodex/runtime/current/dist/cli.js"
-process_wrapper="$HOME/.local/share/claudex-clodex/runtime/current/dist/claude-wrapper.js"
+clodex_home="$HOME/.local/share/claudex-clodex"
+runtime="$clodex_home/runtime/current/dist/cli.js"
+process_wrapper="$clodex_home/runtime/current/dist/claude-wrapper.js"
 
 systemctl --user start claudex-clodex.service
 
 ready=0
 attempt=0
 while [ "$attempt" -lt 50 ]; do
-	if "$node_bin" "$process_wrapper" --check; then
+	if CLODEX_HOME="$clodex_home" "$node_bin" "$process_wrapper" --check; then
 		ready=1
 		break
 	fi
