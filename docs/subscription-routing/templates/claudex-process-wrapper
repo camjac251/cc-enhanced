@@ -1,0 +1,48 @@
+#!/bin/sh
+
+set -eu
+
+clodex_wrapper="$HOME/.local/share/claudex-clodex/runtime/current/dist/claude-wrapper.js"
+default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
+system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
+
+if [ "$#" -eq 0 ]; then
+	printf '%s\n' 'claudex-process-wrapper: missing Claude Code executable' >&2
+	exit 2
+fi
+if [ ! -x "$clodex_wrapper" ]; then
+	printf 'claudex-process-wrapper: Clodex wrapper is missing: %s\n' \
+		"$clodex_wrapper" >&2
+	exit 1
+fi
+if [ ! -r "$system_prompt_file" ]; then
+	printf 'claudex-process-wrapper: system prompt file is not readable: %s\n' \
+		"$system_prompt_file" >&2
+	exit 1
+fi
+
+claude_path=$1
+shift
+has_parent_prompt=0
+has_subagent_prompt=0
+for arg; do
+	case "$arg" in
+	--append-system-prompt | --append-system-prompt=* | \
+		--append-system-prompt-file | --append-system-prompt-file=*)
+		has_parent_prompt=1
+		;;
+	--append-subagent-system-prompt | --append-subagent-system-prompt=*)
+		has_subagent_prompt=1
+		;;
+	esac
+done
+
+if [ "$has_parent_prompt" -eq 0 ]; then
+	set -- --append-system-prompt-file "$system_prompt_file" "$@"
+fi
+if [ "$has_subagent_prompt" -eq 0 ]; then
+	subagent_prompt=$(sed -n '1,$p' "$system_prompt_file")
+	set -- --append-subagent-system-prompt "$subagent_prompt" "$@"
+fi
+
+exec "$clodex_wrapper" "$claude_path" "$@"

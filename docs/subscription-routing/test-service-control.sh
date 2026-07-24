@@ -61,6 +61,10 @@ cat >"$process_wrapper" <<'SH'
 if [ "${1:-}" = '--check' ]; then
 	exit 0
 fi
+[ "$CLAUDE_CODE_PROCESS_WRAPPER" = "$TEST_LAUNCHER_WRAPPER" ] || {
+	printf '%s\n' 'portable process wrapper was not propagated' >&2
+	exit 8
+}
 exec 7>"$TEST_SESSION_LOCK"
 if flock -n -x 7; then
 	printf '%s\n' 'routed session lock was not inherited' >&2
@@ -118,14 +122,18 @@ control_log="$test_root/control.log"
 credential_helper="$test_root/credential-helper"
 claude_bin="$test_root/claude"
 system_prompt="$test_home/.config/claudex-clodex/system-prompt.md"
+launcher_process_wrapper="$test_home/.local/libexec/claudex-process-wrapper"
 mkdir -p "$(dirname "$system_prompt")"
 : >"$credential_helper"
 : >"$claude_bin"
 : >"$system_prompt"
-chmod 700 "$credential_helper" "$claude_bin"
+mkdir -p "$(dirname "$launcher_process_wrapper")"
+cp "$setup_dir/templates/claudex-process-wrapper" "$launcher_process_wrapper"
+chmod 700 "$credential_helper" "$claude_bin" "$launcher_process_wrapper"
 launcher="$test_root/claudex"
 sed \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
+	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
 	-e 's|@CLODEX_PROVIDER_ID@|provider|g' \
 	-e 's|@CLODEX_MODEL_ID@|model|g' \
@@ -139,9 +147,27 @@ sed \
 chmod 700 "$launcher"
 PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
 	CONTROL_LOG="$control_log" TEST_SESSION_LOCK="$session_lock" \
+	TEST_LAUNCHER_WRAPPER="$launcher_process_wrapper" \
 	"$launcher" >"$test_root/launcher.out"
 grep -Fx 'routed session lock is held' "$test_root/launcher.out" >/dev/null ||
 	fail "the routed launcher did not retain its shared lock for the client lifetime"
+
+: >"$control_log"
+if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
+	CONTROL_LOG="$control_log" TEST_SESSION_LOCK="$session_lock" \
+	TEST_LAUNCHER_WRAPPER="$launcher_process_wrapper" \
+	"$launcher" --append-system-prompt 'unreviewed override' \
+	>"$test_root/prompt-override.out" 2>"$test_root/prompt-override.err"; then
+	fail "the routed launcher accepted a competing append prompt"
+else
+	prompt_override_exit=$?
+fi
+[ "$prompt_override_exit" -eq 2 ] ||
+	fail "the competing append prompt did not exit 2"
+grep -F 'CLAUDEX_SYSTEM_PROMPT_FILE' "$test_root/prompt-override.err" >/dev/null ||
+	fail "the competing append prompt error did not name the supported override"
+[ ! -s "$control_log" ] ||
+	fail "the rejected append prompt reached service startup"
 
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \

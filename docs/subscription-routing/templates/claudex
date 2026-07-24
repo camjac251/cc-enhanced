@@ -5,6 +5,7 @@ set -eu
 clodex_home="$HOME/.local/share/claudex-clodex"
 credential_helper='@CLODEX_CREDENTIAL_HELPER@'
 process_wrapper="$clodex_home/runtime/current/dist/claude-wrapper.js"
+launcher_process_wrapper='@CLAUDEX_PROCESS_WRAPPER@'
 session_lock="$clodex_home/runtime/routed-sessions.lock"
 claude_path='@CLAUDE_BIN@'
 default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
@@ -35,6 +36,13 @@ for arg; do
 	--model | --model=*)
 		has_model=1
 		;;
+	--append-system-prompt | --append-system-prompt=* | \
+		--append-system-prompt-file | --append-system-prompt-file=* | \
+		--append-subagent-system-prompt | --append-subagent-system-prompt=*)
+		printf '%s\n' \
+			'claudex: routed prompt flags are managed by the launcher; use CLAUDEX_SYSTEM_PROMPT_FILE to replace the reviewed prompt file' >&2
+		exit 2
+		;;
 	esac
 done
 
@@ -46,7 +54,11 @@ if [ -n "$requested_model" ]; then
 	set -- --model "$requested_model" "$@"
 fi
 
-for required_file in "$credential_helper" "$process_wrapper" "$claude_path"; do
+for required_file in \
+	"$credential_helper" \
+	"$process_wrapper" \
+	"$launcher_process_wrapper" \
+	"$claude_path"; do
 	if [ ! -x "$required_file" ]; then
 		printf 'claudex: required executable is missing: %s\n' "$required_file" >&2
 		exit 1
@@ -84,7 +96,8 @@ export CLODEX_HOME="$clodex_home"
 export CLODEX_CREDENTIAL_HELPER="$credential_helper"
 export CLODEX_CLAUDE_PATH="$claude_path"
 export CLODEX_REQUIRE_SERVER=1
-export CLAUDE_CODE_PROCESS_WRAPPER="$process_wrapper"
+export CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt_file"
+export CLAUDE_CODE_PROCESS_WRAPPER="$launcher_process_wrapper"
 export CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE="$system_prompt_file"
 export CLAUDE_CODE_BILLING_LABEL='@CLODEX_BILLING_LABEL@'
 export CLAUDE_CODE_MODEL_ALIASES='{"@CLODEX_MODEL_ALIAS@":"clodex:@CLODEX_PROVIDER_ID@:@CLODEX_MODEL_ID@"}'
@@ -117,4 +130,4 @@ if [ "$ready" -ne 1 ]; then
 	exit 1
 fi
 
-exec "$process_wrapper" "$claude_path" "$@"
+exec "$launcher_process_wrapper" "$claude_path" "$@"

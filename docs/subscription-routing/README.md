@@ -5,12 +5,12 @@ keys in the client configuration:
 
 ```text
 claude
-  -> promoted cc-enhanced binary
+  -> selected Claude Code binary
   -> Anthropic directly
   -> Claude Max subscription
 
 claudex
-  -> the same promoted cc-enhanced binary and the same ~/.claude configuration
+  -> the same selected binary and the same ~/.claude configuration
   -> local selective routing service
      |- native models -> Anthropic passthrough -> Claude Max subscription
      `- sol           -> protocol translation -> ChatGPT Pro OAuth
@@ -20,6 +20,18 @@ The direct and routed launchers intentionally coexist. `claude` remains the
 baseline. `claudex` adds routing only for that process tree, including fresh
 agents and workflow workers. It does not replace the normal login, settings,
 status line, plugins, skills, agents, session history, or project configuration.
+
+Two client profiles are supported:
+
+- **Enhanced client:** the pinned cc-enhanced build owns all client changes and
+  exposes the complete model catalog, picker, context, prompt, agent, and
+  workflow behavior.
+- **Stock client:** an official Claude Code installation uses Clodex's own
+  client patch for first-class routed aliases in `/model`, Agent, and Workflow
+  calls. The routing wrapper and system-prompt propagation are otherwise the
+  same. A completely untouched stock binary can route a top-level canonical
+  model ID, but it does not provide the full `model: "sol"` experience and is
+  not the documented stock profile.
 
 The package targets WSL or Linux x86_64 with a systemd user session. The routing
 runtime is portable to other platforms, but the supplied service and
@@ -45,6 +57,10 @@ matching artifact digest.
 The current translated-model pin is a 258,400-token effective input window with
 a 32,000-token output allowance. This package does not enable the separate
 372K-context experiment or claim a one-million-token translated-model window.
+The routing catalog retains the provider's raw 272,000-token route window, so
+`clodex models` may display `272K context`. The launcher deliberately advertises
+the reviewed 258,400-token effective input limit to the client; these values
+describe different layers and are not configuration drift.
 
 ## File map
 
@@ -55,10 +71,12 @@ a 32,000-token output allowance. This package does not enable the separate
 | `runtime-artifact-sha256.sh` | Normalized routing-runtime digest |
 | `check-routed-idle.sh` | Scans process arguments without treating paths as regular expressions and refuses a service restart while routed clients are active |
 | `test-service-control.sh` | Isolated ordering and failure tests for the restart guard and controller |
+| `test-client-compatibility.sh` | Isolated checks for enhanced and stock client ownership plus parent and subagent prompt propagation |
 | `verify-static.sh` | Read-only file, source, digest, template, prompt, and patch verification |
 | `verify-live.sh` | Explicit service and authentication verification; optional inference smoke tests |
 | `templates/claudex` | Routed session launcher |
 | `templates/clodex` | Isolated provider-administration wrapper |
+| `templates/claudex-process-wrapper` | Portable process wrapper that applies the reviewed prompt to initial and child Claude Code processes before routing them |
 | `templates/clodex-service` | Guarded service restart and readiness controller |
 | `templates/claudex-clodex.service` | Hardened on-demand systemd user service |
 | `templates/claudex-credential-helper` | WSL-to-Windows secure-store bridge |
@@ -71,18 +89,25 @@ host-specific network settings to this directory.
 
 ## Ownership boundaries
 
-The client patcher owns the native binary, patch signature, model catalog,
-aliases, context metadata, model-picker behavior, agent model tags, prompt
-policy, and workflow lifecycle guards.
+In the enhanced profile, the cc-enhanced patcher owns the native binary, patch
+signature, model catalog, aliases, context metadata, model-picker behavior,
+agent model tags, prompt policy, and workflow lifecycle guards. The
+administration wrapper detects that signature and rejects `clodex patch`.
+
+In the stock profile, Clodex is the only client patch owner. Its patch builds
+the routed model map from the saved favorites and aliases, adds those values to
+the client model surfaces, and records a per-version patch manifest under the
+isolated Clodex home. Run it again after every stock Claude Code update or
+routed-model configuration change.
 
 The routing runtime owns selective transport, provider authentication, protocol
 translation, model discovery, credential refresh, and lifecycle logging.
 
-Never run `clodex patch` in this setup. The supplied administration wrapper
-rejects that command. Two patch managers targeting the same native binary can
-overwrite or restore one another's build.
+Never let both patch managers target the same native binary. The supplied
+administration wrapper enforces that boundary for the enhanced profile while
+allowing `clodex patch` for a stock client.
 
-## Required client capabilities
+## Enhanced-client capabilities
 
 The promoted client must report all of these tags:
 
@@ -94,6 +119,7 @@ The promoted client must report all of these tags:
 - `model-picker-session-only`
 - `skill-listing-ui`
 - `subagent-model-tag`
+- `subagent-system-prompt`
 - `sys-prompt-file`
 - `workflow-safety`
 
@@ -110,6 +136,17 @@ because those tasks mention Claude.
 `skill-listing-ui` is required. Agent and workflow forks discard inherited
 skill-listing attachments before adding the current listing, so a resumed
 session cannot keep obsolete skill descriptions after a client update.
+
+`subagent-system-prompt` is required in the enhanced profile. It propagates the
+resolved append prompt into fresh Agent and Workflow children, including
+launches that did not explicitly supply the hidden native subagent prompt
+option.
+
+The stock profile does not depend on that cc-enhanced tag. The portable process
+wrapper supplies Claude Code's native `--append-system-prompt-file` and
+`--append-subagent-system-prompt` options explicitly on each process launch.
+Clodex's stock-client patch supplies the separate model-schema, picker, alias,
+and context behavior.
 
 ## Prerequisites
 
@@ -129,7 +166,9 @@ Install:
 The client source pins its own Bun toolchain. The routing source uses the exact
 Node.js and package-manager versions in `versions.env`.
 
-## 1. Install the pinned client
+## 1. Select a client profile
+
+### Enhanced client
 
 Start from the parent directory where you want the source checkout:
 
@@ -167,6 +206,20 @@ promote the candidate.
 The binary digest above is for Linux x86_64 only. On another platform, verify
 the immutable source revision, native version, patch signature, and platform
 build independently before adding a platform-specific digest.
+
+### Stock client
+
+Keep the official `claude` command installed and confirm it works directly:
+
+```sh
+claude --version
+claude
+```
+
+Do not install cc-enhanced over that binary. Complete the routing runtime,
+credential, wrapper, prompt, and model-selection sections below, then run
+`clodex patch` as described in section 6. The stock profile does not use the
+cc-enhanced revision, digest, or patch-tag checks.
 
 ## 2. Build the pinned routing runtime
 
@@ -229,6 +282,7 @@ printf '%s\n' "$CLODEX_ARTIFACT_SHA256" \
   >"$runtime_root/CLODEX_ARTIFACT_SHA256"
 install -m 600 ../versions.env "$runtime_root/SETUP_VERSIONS.env"
 
+./check-routed-idle.sh
 previous_target=''
 if [ -L "$runtime_parent/current" ]; then
   previous_target=$(readlink "$runtime_parent/current")
@@ -245,6 +299,14 @@ rmdir "$switch_directory"
 This switches only the immutable `current` symlink. It does not restart the
 service. Existing routed sessions continue using the process and executable
 they already opened.
+
+On an initial installation, no routed launcher can use the selector yet. During
+an update, pause new `claudex` launches before running the selector portion of
+the block, and keep them paused until `clodex-service restart` returns. The idle
+guard confirms existing sessions have exited, while the operational pause
+prevents a new launcher from opening the new wrapper before the old service has
+restarted. Do not switch `runtime/current` while routed launches can race the
+operation.
 
 The normalized runtime digest excludes provenance files, path-bound generated
 launchers, and time/order metadata that are not supported runtime entrypoints.
@@ -305,6 +367,7 @@ mise install "node@$CLODEX_NODE_VERSION"
 node_bin="$(mise where "node@$CLODEX_NODE_VERSION")/bin/node"
 claude_bin=$(command -v claude)
 credential_helper=${CLODEX_CREDENTIAL_HELPER_PATH:-"$HOME/.local/libexec/claudex-credential-helper"}
+launcher_process_wrapper="$HOME/.local/libexec/claudex-process-wrapper"
 
 case "$credential_helper" in
   /*) ;;
@@ -339,6 +402,7 @@ sed \
   templates/claudex-clodex.service >"$rendered_dir/claudex-clodex.service"
 sed \
   -e "s|@NODE_BIN@|$node_bin|g" \
+  -e "s|@CLAUDE_BIN@|$claude_bin|g" \
   -e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
   templates/clodex >"$rendered_dir/clodex"
 sed \
@@ -346,6 +410,7 @@ sed \
   templates/clodex-service >"$rendered_dir/clodex-service"
 sed \
   -e "s|@CLAUDE_BIN@|$claude_bin|g" \
+  -e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
   -e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
   -e "s|@CLODEX_PROVIDER_ID@|$CLODEX_PROVIDER_ID|g" \
   -e "s|@CLODEX_MODEL_ID@|$CLODEX_MODEL_ID|g" \
@@ -366,6 +431,8 @@ install -m 600 "$rendered_dir/claudex-clodex.service" \
 install -m 700 "$rendered_dir/claudex" "$HOME/.local/bin/claudex"
 install -m 700 "$rendered_dir/clodex" "$HOME/.local/bin/clodex"
 install -m 700 "$rendered_dir/clodex-service" "$HOME/.local/bin/clodex-service"
+install -m 700 templates/claudex-process-wrapper \
+  "$launcher_process_wrapper"
 install -m 700 check-routed-idle.sh \
   "$HOME/.local/libexec/claudex-check-routed-idle"
 
@@ -423,12 +490,19 @@ mv -f "$temporary_prompt" "$prompt_directory/system-prompt.md"
 Rerun this block whenever the managed system prompt or routing template
 changes. The static verifier reconstructs the expected file byte-for-byte.
 
-The routed policy does not force all children to `sol`. It teaches the parent
-that explicit requests such as “use Sol agents” mean per-call
-`model: "sol"`, preserves specialist agent types, and keeps each worker within
-its own context budget. Required workflow results become hard gates with one
-recovery attempt; downstream phases do not continue after a second missing
-result.
+The routed prompt is an append-only policy layer, not a replacement for Claude
+Code's built-in system prompt. It must be readable by the launcher, contain no
+credentials or account identifiers, and remain valid in both parent and child
+contexts. The portable process wrapper adds the file to the initial process and
+passes the same text through Claude Code's native subagent prompt option. If a
+child launches another child, the wrapper preserves that chain without adding
+the same role twice.
+
+The policy does not force all children to `sol`. It teaches the parent that
+explicit requests such as “use Sol agents” mean per-call `model: "sol"`,
+preserves specialist agent types, and keeps each worker within its own context
+budget. Required workflow results become hard gates with one recovery attempt;
+downstream phases do not continue after a second missing result.
 
 ## 6. Start, authenticate, and select the model
 
@@ -446,6 +520,21 @@ In the model manager:
 1. Favorite `gpt-5.6-sol` from provider `openai-oauth`.
 2. Save the lowercase alias `sol`.
 
+For the enhanced profile, stop here. The administration wrapper rejects
+`clodex patch` because cc-enhanced already owns the binary.
+
+For the stock profile, apply Clodex's model patch after saving the favorite and
+alias:
+
+```sh
+clodex patch
+```
+
+Run that command again after every stock Claude Code update or after changing
+the routed favorites or aliases. Clodex restores its pristine per-version
+backup before rebuilding a stale patch, so it does not stack patches on top of
+one another.
+
 The OAuth credential is stored through the selected secure helper. Native model
 requests continue to use the existing Claude Max login because the selective
 proxy passes those requests through without replacing the client's
@@ -457,14 +546,32 @@ processes.
 
 ## 7. Verify
 
-Static verification does not start a service, access a credential, or send an
-inference request:
+For the enhanced profile, static verification does not start a service, access
+a credential, or send an inference request:
 
 ```sh
 ./verify-static.sh
 ```
 
-Optional source-checkout verification:
+This is the strict pinned enhanced-profile handoff gate. It checks the promoted
+binary digest and required cc-enhanced tags.
+
+For the stock profile, run the portable package tests, then make the
+idempotent patch command the client gate:
+
+```sh
+./test-service-control.sh
+./test-client-compatibility.sh
+clodex patch
+```
+
+`clodex patch` exits without rewriting a current binary. If the stock client or
+model configuration changed, it restores the pristine per-version backup and
+rebuilds the patch. The service, runtime, template, credential-helper, and live
+checks are otherwise shared. Do not run the enhanced-only static verifier
+against a stock binary.
+
+Optional enhanced-profile source-checkout verification:
 
 ```sh
 CC_ENHANCED_SOURCE_DIR=/path/to/cc-enhanced \
@@ -523,7 +630,7 @@ Manual behavior gates after an update:
 
 Response lifecycle records carry only validated UUID-shaped session
 identifiers. A `response_client_disconnected` record includes
-`disconnectSource: "downstream_client"` so downstream cancellation is not
+`terminationSource: "downstream_client"` so downstream cancellation is not
 mistaken for an upstream failure.
 
 ## Usage
@@ -539,24 +646,33 @@ clodex models          # isolated favorites and aliases
 clodex-service restart # guarded service restart after routed clients are idle
 ```
 
+The administration wrapper sets `CLODEX_HOME` to
+`~/.local/share/claudex-clodex`. Generic runtime help may still print default
+paths under `~/.clodex`; for this isolated setup, use the corresponding path
+under the wrapper-managed home instead.
+
 Inside a native parent, request a Sol specialist by selecting the normal agent
 type and setting `model: "sol"`. In a Workflow, set `model: "sol"` on each
 selected `agent(...)` call. Do not encode the provider model ID in prompts or
 workflow source.
 
-The model picker entry and aliases exist only under `claudex`; their absence
-under `claude` is intentional.
+The model picker entry and aliases are useful only under `claudex`, where the
+route is active. A stock client gains those first-class model surfaces from
+`clodex patch`; the enhanced client gains them from cc-enhanced. The portable
+process wrapper gives both profiles the same parent and subagent routing
+policy.
 
-An unpatched upstream client is not a supported substitute for this package.
-The routing service can proxy requests independently, but readable configured
-models, per-model context metadata, session-only picker behavior, aliases,
-agent model tags, prompt-file overrides, and workflow lifecycle enforcement
-depend on the listed client patches.
+A completely unpatched stock binary remains a limited compatibility path. It
+can send a top-level canonical routed model ID through the local service, but
+its built-in Agent and Workflow model schemas do not accept `sol`, `/model`
+does not expose the alias, and routed context metadata is absent. Use one of the
+two documented profiles for the full behavior.
 
 ## Safe updates and restarts
 
 Deploying a new immutable runtime and switching `runtime/current` does not
-restart an existing service. Before any restart:
+restart an existing service. Keep new routed launches paused after the selector
+switch, then run:
 
 ```sh
 clodex-service restart
@@ -574,13 +690,15 @@ the loaded PID and immutable runtime. Do not bypass it with a direct
 
 For a client update:
 
-1. Pull one new native version.
-2. Review one release diff at a time.
-3. Update patch anchors only for the latest upstream form.
-4. Run the full real-bundle verifier.
-5. Promote.
-6. Record the new source revision, native version, and platform digest.
-7. Refresh this package and run both verification layers.
+1. Enhanced profile: pull one new native version, review one release diff at a
+   time, update patch anchors only for the latest upstream form, run the full
+   real-bundle verifier, promote, and record the new source revision, native
+   version, and platform digest.
+2. Stock profile: update Claude Code normally, then rerun `clodex patch` so its
+   per-version backup and manifest match the new binary.
+3. Rerender the wrappers if the resolved `claude` path changed.
+4. Refresh this package and run the applicable static and live verification
+   layers.
 
 For a routing update:
 
@@ -588,12 +706,19 @@ For a routing update:
 2. Run type checking, all tests, and the production build.
 3. Deploy a candidate and calculate its normalized digest.
 4. Update the source revision and artifact digest together.
-5. Publish a new immutable runtime.
-6. Wait for routed sessions to become idle before restarting the service.
+5. Pause new routed launches and wait for existing routed sessions to become
+   idle.
+6. Publish the new immutable runtime and switch `runtime/current`.
+7. Keep launches paused until `clodex-service restart` and live verification
+   both finish.
 
 ## Rollback
 
 Rollback uses the retained runtime named in `runtime/PREVIOUS`:
+
+Pause new `claudex` launches for the entire rollback block. The idle guard
+rejects an already-active routed client; the launch pause also closes the
+separate selector-switch window.
 
 ```sh
 (
@@ -656,7 +781,7 @@ Do not work around it by setting provider API-key variables.
 
 Match lifecycle records by `claudeSessionId` and `requestId`. If the terminal
 record says `response_client_disconnected` with
-`disconnectSource: "downstream_client"`, the client or worker closed the stream;
+`terminationSource: "downstream_client"`, the client or worker closed the stream;
 it is not evidence that the upstream provider timed out.
 
 ### The client reports `Unable to connect to API (ECONNRESET)`
@@ -685,7 +810,7 @@ Interpret the bounded diagnostic fields together:
 - `proxy_stopping` or `proxy_stopped` at the same time identifies an intentional
   service shutdown or restart.
 - `response_client_disconnected` with
-  `disconnectSource: "downstream_client"` identifies client or worker
+  `terminationSource: "downstream_client"` identifies client or worker
   cancellation.
 
 Do not infer a provider failure from the terminal banner alone. If no matching
@@ -722,7 +847,10 @@ systemctl --user stop claudex-clodex.service
 rm -f \
   "$HOME/.config/systemd/user/claudex-clodex.service" \
   "$HOME/.local/bin/claudex" \
-  "$HOME/.local/bin/clodex"
+  "$HOME/.local/bin/clodex" \
+  "$HOME/.local/bin/clodex-service" \
+  "$HOME/.local/libexec/claudex-check-routed-idle" \
+  "$HOME/.local/libexec/claudex-process-wrapper"
 rm -rf \
   "$HOME/.config/claudex-clodex" \
   "$HOME/.local/share/claudex-clodex"

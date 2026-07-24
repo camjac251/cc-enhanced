@@ -19,6 +19,7 @@ for command_name in cmp cut flock grep mise mktemp readlink sed sha256sum stat t
 	command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is unavailable"
 done
 "$setup_dir/test-service-control.sh"
+"$setup_dir/test-client-compatibility.sh"
 
 claude_bin=${CLAUDE_BIN:-"$HOME/.local/bin/claude"}
 claudex_bin=${CLAUDEX_BIN:-"$HOME/.local/bin/claudex"}
@@ -27,6 +28,7 @@ clodex_service_bin="$HOME/.local/bin/clodex-service"
 default_credential_helper="$HOME/.local/libexec/claudex-credential-helper"
 credential_helper=${CLODEX_CREDENTIAL_HELPER_PATH:-$default_credential_helper}
 idle_guard="$HOME/.local/libexec/claudex-check-routed-idle"
+launcher_process_wrapper="$HOME/.local/libexec/claudex-process-wrapper"
 case "$credential_helper" in
 /*) ;;
 *) fail "CLODEX_CREDENTIAL_HELPER_PATH must be absolute" ;;
@@ -56,7 +58,8 @@ for executable in \
 	"$clodex_service_bin" \
 	"$runtime" \
 	"$credential_helper" \
-	"$idle_guard"; do
+	"$idle_guard" \
+	"$launcher_process_wrapper"; do
 	[ -x "$executable" ] || fail "required executable is missing: $executable"
 done
 [ -r "$system_prompt" ] || fail "system prompt is unreadable: $system_prompt"
@@ -146,6 +149,7 @@ sed \
 	fail "installed service unit does not match the reviewed template"
 sed \
 	-e "s|@NODE_BIN@|$node_bin|g" \
+	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
 	"$setup_dir/templates/clodex" | cmp -s - "$clodex_bin" ||
 	fail "installed administration wrapper does not match the reviewed template"
@@ -155,8 +159,11 @@ sed \
 	fail "installed service controller does not match the reviewed template"
 cmp -s "$setup_dir/check-routed-idle.sh" "$idle_guard" ||
 	fail "installed routed-client guard does not match the reviewed source"
+cmp -s "$setup_dir/templates/claudex-process-wrapper" "$launcher_process_wrapper" ||
+	fail "installed portable process wrapper does not match the reviewed template"
 sed \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
+	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
 	-e "s|@CLODEX_PROVIDER_ID@|$CLODEX_PROVIDER_ID|g" \
 	-e "s|@CLODEX_MODEL_ID@|$CLODEX_MODEL_ID|g" \
@@ -173,6 +180,7 @@ if grep -E '@(CLODEX_[A-Z_]+|CLAUDE_BIN|HOME|NODE_BIN)@' \
 	"$claudex_bin" \
 	"$clodex_bin" \
 	"$clodex_service_bin" \
+	"$launcher_process_wrapper" \
 	"$service_unit" \
 	"$system_prompt" >/dev/null; then
 	fail "an installed rendered file contains unresolved placeholders"
@@ -219,6 +227,7 @@ for patch_tag in \
 	model-picker-session-only \
 	skill-listing-ui \
 	subagent-model-tag \
+	subagent-system-prompt \
 	sys-prompt-file \
 	workflow-safety; do
 	case "$claude_version" in
