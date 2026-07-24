@@ -114,6 +114,20 @@ ${AGENT_SCHEMA_FIXTURE}
 ${AGENT_LIFECYCLE_FIXTURE}
 `;
 
+// A resume-time wrapper re-exposes the selected agent through
+// `cond ? { ...selectedAgent, effort } : selectedAgent` before the model
+// resolver reads it, so the fork flag sits one binding level behind the model
+// call. The matcher must see through this alias to keep the fork resume on the
+// parent model. The added `effort` field is incidental: the matcher anchors on
+// the spread-of-the-alias identity, not on the property name.
+const SUBAGENT_FIXTURE_EFFORT_WRAPPED = SUBAGENT_FIXTURE.replace(
+	"const selectedAgent = configuredAgent ?? (isFork ? forkAgent : defaultAgent);",
+	"const selectedAgent = configuredAgent ?? (isFork ? forkAgent : defaultAgent);\n  const effortAgent = resumeOptions?.effort !== undefined ? { ...selectedAgent, effort: resumeOptions.effort } : selectedAgent;",
+).replace(
+	"getAgentModel(selectedAgent, parentModel)",
+	"getAgentModel(effortAgent, parentModel)",
+);
+
 test("verify rejects unpatched code", () => {
 	const ast = parse(SUBAGENT_FIXTURE);
 	const code = print(ast);
@@ -196,6 +210,33 @@ test("verify rejects partial fork inheritance", async () => {
 	);
 	assert.equal(typeof forkResult, "string");
 	assert.equal(String(forkResult).includes("Fork launch"), true);
+});
+
+test("subagent-model-tag resolves fork resume through an effort-wrapper alias", async () => {
+	assert.notEqual(
+		SUBAGENT_FIXTURE_EFFORT_WRAPPED,
+		SUBAGENT_FIXTURE,
+		"the effort-wrapper fixture must actually differ from the base fixture",
+	);
+	const output = await patchSource(SUBAGENT_FIXTURE_EFFORT_WRAPPED);
+
+	assert.equal(
+		output.split("isFork ? parentModel : resolveAgentModel").length - 1,
+		2,
+		"launch and wrapper-fed resume forks must both bypass the global subagent model override",
+	);
+	assert.equal(
+		output.includes(
+			"isFork ? parentModel : resolveAgentModel(getAgentModel(effortAgent, parentModel)",
+		),
+		true,
+		"the resume fork bypass must wrap the resolver that reads the effort-wrapped agent",
+	);
+	assert.equal(
+		subagentModelTag.verify(output, parse(output)),
+		true,
+		"verify must accept a fork resume resolved through the effort-wrapper alias",
+	);
 });
 
 test("subagent-model-tag accepts the current child model lifecycle", async () => {

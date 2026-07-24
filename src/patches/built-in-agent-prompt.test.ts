@@ -440,8 +440,13 @@ const AGENT_TOOL_LOOKUP_FIXTURE =
 const AGENT_TOOL_FORK_SELECTION_FIXTURE =
 	'return `${flag ? `When using the ${toolName} tool, specify a subagent_type to select an agent: \\`"fork"\\` forks yourself (the fork inherits your full conversation context and always runs on your model \\u2014 a \\`model\\` override is ignored); any other type \\u2014 or omitting it \\u2014 starts a fresh agent (general-purpose by default).` : `When using the ${toolName} tool, specify a subagent_type parameter to select which agent type to use. If omitted, the general-purpose agent is used.`}`;';
 
+// Mirrors the 2.1.219 wording: an availability clause carrying a release-volatile
+// tool interpolation sits between "spawn a subagent" and "and keep only the
+// findings here." The placeholder token stands in for the minified name so the
+// rewrite is proven token-independent; a matcher that does not tolerate the clause
+// no-ops and fails the assertions below.
 const CLAUDE_NOISY_FIXTURE =
-	"For noisy investigation (grep sweeps, log trawls, broad search), spawn a subagent and keep only the findings here.";
+	"For noisy investigation (grep sweeps, log trawls, broad search), spawn a subagent when you have the ${toolName} tool, and keep only the findings here.";
 
 const WORKFLOW_GREP_EXAMPLE_FIXTURE =
 	"const flaky = await agent('grep CI logs for retry markers', {schema: FLAKY_SCHEMA}); { title: 'Scan', detail: 'grep test logs for retries' }";
@@ -527,6 +532,8 @@ test("built-in-agent-prompt injects modern routing into both workflow-subagent v
 test("built-in-agent-prompt modernizes the claude background-job investigation line", () => {
 	const output =
 		builtInAgentPrompt.string?.(CLAUDE_NOISY_FIXTURE) ?? CLAUDE_NOISY_FIXTURE;
+	// A no-op leaves the legacy phrasing and never adds the routing needle, so both
+	// assertions fail if the matcher does not tolerate the inserted clause.
 	assert.equal(output.includes("grep sweeps, log trawls, broad search"), false);
 	assert.equal(
 		output.includes(
@@ -534,6 +541,44 @@ test("built-in-agent-prompt modernizes the claude background-job investigation l
 		),
 		true,
 	);
+	// The availability clause and its release-volatile tool token are preserved
+	// verbatim rather than dropped or hardcoded.
+	assert.equal(
+		output.includes(
+			"spawn a subagent when you have the ${toolName} tool, and keep only the findings here.",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"For noisy investigation (broad code search or log trawls)",
+		),
+		true,
+	);
+});
+
+test("built-in-agent-prompt verify flags an unpatched claude investigation line", () => {
+	// The raw fixture still carries the legacy shape. Appended to otherwise-patched
+	// surfaces, verify must catch the surviving line instead of passing it as a
+	// no-op through the neither-present branch.
+	const broken = `${patchedSubagentSurfaces()}\n${CLAUDE_NOISY_FIXTURE}`;
+	const result = builtInAgentPrompt.verify(broken);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("claude background-job investigation"),
+		true,
+	);
+});
+
+test("built-in-agent-prompt verify flags a reworded Explore whenToUse surface", () => {
+	// The exact source is reworded away and the replacement never landed, but the
+	// durable anchor survives. The hardened neither-present branch must fail loudly
+	// rather than silently pass the reworded surface.
+	const rewordedButUnpatched =
+		"A blazing read-only search agent for locating code across the tree.";
+	const result = builtInAgentPrompt.verify(rewordedButUnpatched);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("Explore agent whenToUse"), true);
 });
 
 test("built-in-agent-prompt softens the Workflow grep example to search", () => {

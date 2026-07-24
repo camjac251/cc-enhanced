@@ -271,11 +271,26 @@ const WORKER_AGENT_COMMIT_SUMMARY_SOURCE =
 const WORKER_AGENT_COMMIT_SUMMARY_REPLACEMENT =
 	'Good summary: "Added Redis cache implementation. Tests pass, typecheck clean. Changed files: src/cache.ts and src/cache.test.ts."';
 
-const CLAUDE_NOISY_INVESTIGATION_SOURCE =
-	"For noisy investigation (grep sweeps, log trawls, broad search), spawn a subagent and keep only the findings here.";
+// The claude background-job "noisy investigation" line wraps a release-volatile
+// tool-name interpolation in an availability clause (" when you have the ${...}
+// tool,") between "spawn a subagent" and "and keep only the findings here." Match
+// that clause with a tolerant optional group and re-emit the captured token so the
+// minified name is never hardcoded; the clause stays optional so a release that
+// drops it still rewrites.
+const CLAUDE_NOISY_INVESTIGATION_RE =
+	/For noisy investigation \(grep sweeps, log trawls, broad search\), spawn a subagent( when you have the \$\{[^}]+\} tool,)? and keep only the findings here\./g;
 
-const CLAUDE_NOISY_INVESTIGATION_REPLACEMENT =
-	"For noisy investigation (broad code search or log trawls), spawn a subagent and keep only the findings here. The subagent should route search by intent (Serena, ChunkHound, Probe, ast-grep MCP or sg) and use rg only for logs and other non-code text.";
+// "For noisy investigation" survives rewording of the surrounding clause, so it is
+// a durable presence anchor: verify() uses it to tell "surface absent" apart from
+// "surface present but the rewrite missed it."
+const CLAUDE_NOISY_INVESTIGATION_ANCHOR = "For noisy investigation";
+
+const CLAUDE_NOISY_INVESTIGATION_PATCHED_SIGNAL =
+	"route search by intent (Serena, ChunkHound, Probe, ast-grep MCP or sg)";
+
+function claudeNoisyInvestigationReplacement(toolClause: string): string {
+	return `For noisy investigation (broad code search or log trawls), spawn a subagent${toolClause} and keep only the findings here. The subagent should route search by intent (Serena, ChunkHound, Probe, ast-grep MCP or sg) and use rg only for logs and other non-code text.`;
+}
 
 const AGENT_TOOL_SYMBOL_LOOKUP_SOURCE = "`grep` via the Bash tool";
 
@@ -532,9 +547,10 @@ export const builtInAgentPrompt: Patch = {
 			AGENT_TOOL_FORK_SELECTION_RE,
 			(_match, toolExpr: string) => agentToolForkSelectionReplacement(toolExpr),
 		);
-		result = result.replaceAll(
-			escapeNonAscii(CLAUDE_NOISY_INVESTIGATION_SOURCE),
-			CLAUDE_NOISY_INVESTIGATION_REPLACEMENT,
+		result = result.replace(
+			CLAUDE_NOISY_INVESTIGATION_RE,
+			(_match, toolClause: string | undefined) =>
+				claudeNoisyInvestigationReplacement(toolClause ?? ""),
 		);
 		result = result.replaceAll(
 			escapeNonAscii(WORKER_AGENT_AUTO_COMMIT_SOURCE),
@@ -559,10 +575,20 @@ export const builtInAgentPrompt: Patch = {
 			source: string,
 			replacement: string,
 			label: string,
+			presenceAnchor?: string,
 		): true | string => {
 			const hasSource = code.includes(escapeNonAscii(source));
 			const hasReplacement = code.includes(replacement);
-			if (!hasSource && !hasReplacement) return true;
+			if (!hasSource && !hasReplacement) {
+				// A durable anchor still present while neither the exact source nor
+				// the replacement is means the surface was reworded upstream and the
+				// rewrite silently missed it. Fail instead of passing the surface
+				// through the neither-present branch.
+				if (presenceAnchor && code.includes(presenceAnchor)) {
+					return `Reworded ${label} surface present but rewrite never landed`;
+				}
+				return true;
+			}
 			if (!hasReplacement) {
 				return `Missing rewritten ${label} signal: ${replacement}`;
 			}
@@ -607,6 +633,7 @@ export const builtInAgentPrompt: Patch = {
 			EXPLORE_WHEN_TO_USE_SOURCE,
 			EXPLORE_WHEN_TO_USE_REPLACEMENT,
 			"Explore agent whenToUse",
+			"read-only search agent for locating code",
 		);
 		if (exploreWhenToUseResult !== true) return exploreWhenToUseResult;
 
@@ -774,12 +801,18 @@ export const builtInAgentPrompt: Patch = {
 			return "Missing rewritten Agent tool fork-selection wording";
 		}
 
-		const claudeNoisyResult = verifyExactReplacement(
-			CLAUDE_NOISY_INVESTIGATION_SOURCE,
-			CLAUDE_NOISY_INVESTIGATION_REPLACEMENT,
-			"claude background-job investigation routing",
-		);
-		if (claudeNoisyResult !== true) return claudeNoisyResult;
+		// The claude-noisy line interpolates a release-volatile tool token, so
+		// verify structurally with the same optional-clause regex used to rewrite
+		// it. The durable "For noisy investigation" anchor separates surface absence
+		// from a reworded surface the rewrite silently skipped.
+		if (code.includes(CLAUDE_NOISY_INVESTIGATION_ANCHOR)) {
+			if (new RegExp(CLAUDE_NOISY_INVESTIGATION_RE.source).test(code)) {
+				return "Unpatched claude background-job investigation routing remains";
+			}
+			if (!code.includes(CLAUDE_NOISY_INVESTIGATION_PATCHED_SIGNAL)) {
+				return "Reworded claude background-job investigation surface present but routing rewrite never landed";
+			}
+		}
 		const workerCommitResult = verifyExactReplacement(
 			WORKER_AGENT_AUTO_COMMIT_SOURCE,
 			WORKER_AGENT_AUTO_COMMIT_REPLACEMENT,

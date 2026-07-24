@@ -363,13 +363,48 @@ function classifyForkLaunchResolution(
 	return { path, resolverCall: initializer.alternate, state, ...shape };
 }
 
+/**
+ * Follow a single alias-wrapper indirection on the selected-agent binding.
+ * A resume-time wrapper can re-expose the selected agent unchanged apart from
+ * extra fields spread over it: `wrapped = cond ? { ...selected, extra } :
+ * selected`. The fork flag lives on `selected`'s own binding, so when the init
+ * matches that alias shape (the alternate is an identifier that the consequent
+ * object also spreads), return that identifier's initializer. Otherwise return
+ * the init unchanged. Anchors on the alias identity, never on the names of the
+ * extra fields the wrapper adds.
+ */
+function unwrapSelectedAgentAlias(
+	init: t.Expression | null | undefined,
+	path: NodePath<t.VariableDeclarator>,
+): t.Expression | null | undefined {
+	if (
+		!t.isConditionalExpression(init) ||
+		!t.isIdentifier(init.alternate) ||
+		!t.isObjectExpression(init.consequent)
+	) {
+		return init;
+	}
+	const aliasName = init.alternate.name;
+	const spreadsAlias = init.consequent.properties.some(
+		(property) =>
+			t.isSpreadElement(property) &&
+			t.isIdentifier(property.argument, { name: aliasName }),
+	);
+	if (!spreadsAlias) return init;
+	const aliasBinding = path.scope.getBinding(aliasName);
+	if (!aliasBinding || !t.isVariableDeclarator(aliasBinding.path.node)) {
+		return init;
+	}
+	return aliasBinding.path.node.init;
+}
+
 function getSelectedAgentForkName(
 	path: NodePath<t.VariableDeclarator>,
 	selectedAgentName: string,
 ): string | null {
 	const binding = path.scope.getBinding(selectedAgentName);
 	if (!binding || !t.isVariableDeclarator(binding.path.node)) return null;
-	const initializer = binding.path.node.init;
+	const initializer = unwrapSelectedAgentAlias(binding.path.node.init, path);
 	if (
 		!t.isLogicalExpression(initializer, { operator: "??" }) ||
 		!t.isConditionalExpression(initializer.right) ||

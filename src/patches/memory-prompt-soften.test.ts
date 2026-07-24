@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { memoryPromptSoften } from "./memory-prompt-soften.js";
 
 const PATH_SCOPED_MEMORY_PROMPT_FIXTURE = `
-const message = \`Only read-only shell commands and \${isPosix ? "rm" : "Remove-Item"} with all paths inside \${root} are permitted in this context (\${isPosix ? "ls, find, grep, cat, stat, wc, head, tail, and similar" : "Get-ChildItem, Get-Content, Select-Object -First/-Last, and similar"})\`;
+const message = \`Only read-only shell commands and \${isPosix ? "rm" : "Remove-Item"} of .md files under \${root} (not protected subdirectories like .git or agents) are permitted in this context (\${isPosix ? "ls, find, grep, cat, stat, wc, head, tail, and similar" : "Get-ChildItem, Get-Content, Select-Object -First/-Last, and similar"})\`;
 `;
 
 const DREAM_MEMORY_PROMPT_FIXTURE = `
@@ -32,7 +32,10 @@ test("memory-prompt-soften rewrites path-scoped legacy read-only shell list", ()
 
 	assert.equal(output.includes("ls, find, grep, cat"), false);
 	assert.equal(output.includes("cat/head/tail/grep"), false);
-	assert.equal(output.includes("with all paths inside ${root}"), true);
+	assert.equal(
+		output.includes("of .md files are permitted in this context."),
+		true,
+	);
 	assert.equal(output.includes("bat ranges"), true);
 	assert.equal(memoryPromptSoften.verify(output), true);
 });
@@ -161,11 +164,17 @@ test("memory-prompt-soften string() is idempotent", () => {
 	assert.equal(memoryPromptSoften.verify(twice), true);
 });
 
-test("memory-prompt-soften preserves path-scoped dynamic command and path fragments", () => {
+test("memory-prompt-soften preserves the dynamic command grant while softening the read-only list", () => {
 	const output =
 		memoryPromptSoften.string?.(PATH_SCOPED_MEMORY_PROMPT_FIXTURE) ??
 		PATH_SCOPED_MEMORY_PROMPT_FIXTURE;
 	assert.equal(output.includes('${isPosix ? "rm" : "Remove-Item"}'), true);
-	assert.equal(output.includes("with all paths inside ${root}"), true);
-	assert.equal(output.includes("are permitted in this context."), true);
+	assert.equal(
+		output.includes("of .md files are permitted in this context."),
+		true,
+	);
+	assert.equal(
+		output.includes("Prefer modern read-only inspection commands"),
+		true,
+	);
 });

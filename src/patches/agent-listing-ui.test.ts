@@ -62,6 +62,44 @@ function renderAttachment(q, $) {
 }
 `;
 
+// Upstream additionally memoizes the INPUT normalization: a bare `let`, an
+// input-memo that routes addedTypes through a normalization wrapper into an
+// alias, the `isInitial` guard hoisted past statement 0, and the count read off
+// the alias (`let count = alias.length`) rather than a direct
+// `<attachment>.addedTypes.length` chain.
+const NORMALIZED_INPUT_AGENT_LISTING_FIXTURE = `
+function renderAttachment(q, $) {
+  switch (q.type) {
+    case "agent_listing_delta": {
+      let P;
+      if ($[122] !== q.addedTypes)
+        (P = jx(q.addedTypes)), ($[122] = q.addedTypes), ($[123] = P);
+      else P = $[123];
+      let G = P;
+      if (q.isInitial || G.length === 0) {
+        return null;
+      }
+      let A = G.length;
+      let Y;
+      if ($[124] !== A)
+        (Y = yK.jsx(y, { bold: !0, children: A })), ($[124] = A), ($[125] = Y);
+      else Y = $[125];
+      let O;
+      if ($[126] !== A) (O = R8(A, "type")), ($[126] = A), ($[127] = O);
+      else O = $[127];
+      let w;
+      if ($[128] !== Y || $[129] !== O)
+        (w = yK.jsxs(nP, { children: [Y, " agent ", O, " available"] })),
+          ($[128] = Y),
+          ($[129] = O),
+          ($[130] = w);
+      else w = $[130];
+      return w;
+    }
+  }
+}
+`;
+
 test("verify rejects unpatched code", () => {
 	const ast = parse(AGENT_LISTING_FIXTURE);
 	const code = print(ast);
@@ -105,6 +143,77 @@ test("agent-listing-ui patches the memoized render shape", async () => {
 		true,
 	);
 	assert.equal(output.includes("if (true)"), true);
+	assert.equal(agentListingUi.verify(output, ast), true);
+});
+
+test("agent-listing-ui patches the normalized-input memoized alias shape", async () => {
+	const ast = parse(NORMALIZED_INPUT_AGENT_LISTING_FIXTURE);
+	await runAgentListingUiViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		output.includes(
+			"function _claudePatchFormatAgentListingSummary(attachment)",
+		),
+		true,
+	);
+	// The attachment identifier is resolved off the hoisted isInitial guard even
+	// though statement 0 is the bare normalized-input declaration, and the count
+	// resolves back through the alias to addedTypes.
+	assert.equal(
+		output.includes("_claudePatchFormatAgentListingSummary(q)"),
+		true,
+	);
+	// The render-output memo guard is forced to always recompute.
+	assert.equal(output.includes("if (true)"), true);
+	assert.equal(agentListingUi.verify(output, ast), true);
+});
+
+test("agent-listing-ui excludes the jx-normalized transcript text case", async () => {
+	// The render case uses the normalized-input alias shape; the twin is the
+	// text case, which also normalizes addedTypes through the same wrapper and
+	// references isInitial (in a ternary, not an if-test) but returns a plain
+	// non-element value. The alias resolution must not pull it in.
+	const NORMALIZED_TWO_CASE_FIXTURE = `
+${NORMALIZED_INPUT_AGENT_LISTING_FIXTURE}
+function renderTranscript(e) {
+  switch (e.type) {
+    case "agent_listing_delta": {
+      let r = jx(e.addedLines),
+        n = jx(e.addedTypes),
+        o = jx(e.removedTypes),
+        i = [];
+      if (r.length > 0 && n.length > 0) {
+        let s = e.isInitial
+          ? "Available agent types for the Agent tool:"
+          : "New agent types are now available for the Agent tool:";
+        i.push(s);
+      }
+      if (o.length > 0)
+        i.push("The following agent types are no longer available:");
+      return pm([zr({ content: i.join(" "), isMeta: !0 })]);
+    }
+  }
+}
+`;
+	const ast = parse(NORMALIZED_TWO_CASE_FIXTURE);
+	await runAgentListingUiViaPasses(ast);
+	const output = print(ast);
+
+	const helperCount =
+		output.split("function _claudePatchFormatAgentListingSummary(attachment)")
+			.length - 1;
+	assert.equal(helperCount, 1, "helper should be injected exactly once");
+	assert.equal(
+		output.includes("_claudePatchFormatAgentListingSummary(q)"),
+		true,
+		"render case should receive the summary call",
+	);
+	assert.equal(
+		output.includes("_claudePatchFormatAgentListingSummary(e)"),
+		false,
+		"jx-normalized text case must not be patched",
+	);
 	assert.equal(agentListingUi.verify(output, ast), true);
 });
 

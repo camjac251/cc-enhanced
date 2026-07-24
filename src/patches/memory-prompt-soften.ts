@@ -1,7 +1,7 @@
 import type { Patch } from "../types.js";
 
 const LEGACY_PATH_SCOPED_MEMORY_READONLY_RE =
-	/Only read-only shell commands and (\$\{[^}]+\}) with all paths inside (\$\{[^}]+\}) are permitted in this context \(\$\{[^?]+ \? "ls, find, grep, cat, stat, wc, head, tail, and similar" : "Get-ChildItem, Get-Content, Select-Object -First\/-Last, and similar"\}\)/g;
+	/Only read-only shell commands and (\$\{[^}]+\}) .*? are permitted in this context \(\$\{[^?]+ \? "ls, find, grep, cat, stat, wc, head, tail, and similar" : "Get-ChildItem, Get-Content, Select-Object -First\/-Last, and similar"\}\)/g;
 
 const LEGACY_DREAM_TRANSCRIPTS_RE =
 	/Session transcripts: (\\`\$\{[^}]+\}\\`) \(large JSONL files \\u2014 grep narrowly, don't read whole files\)/g;
@@ -19,7 +19,7 @@ const LEGACY_DREAM_TRANSCRIPT_SEARCH_COMMAND_RE =
 	/\\`grep -rn "<narrow term>" (\$\{[^}]+\})\/ --include="\*\.jsonl" \| tail -50\\`/g;
 
 const MODERN_PATH_SCOPED_MEMORY_READONLY =
-	"Only read-only shell commands and $1 with all paths inside $2 are permitted in this context. Prefer modern read-only inspection commands such as fd, eza, sg, rg for non-code text, bat ranges, git status/log/diff, stat, and wc when needed. Do not use legacy Unix viewing or truncation utilities as generic inspection tools.";
+	"Only read-only shell commands and $1 of .md files are permitted in this context. Prefer modern read-only inspection commands such as fd, eza, sg, rg for non-code text, bat ranges, git status/log/diff, stat, and wc when needed. Do not use legacy Unix viewing or truncation utilities as generic inspection tools.";
 const MODERN_DREAM_TRANSCRIPTS =
 	"Session transcripts: $1 (large JSONL files. Use \\`rg -m 50\\` narrowly; don't read whole files)";
 const MODERN_DREAM_TEAM_LIST_TEMPLATE =

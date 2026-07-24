@@ -217,22 +217,125 @@ function getMemberObjectNameForProperty(
 function getAgentListingAttachmentName(
 	path: NodePath<t.SwitchCase>,
 ): string | null {
-	const [firstStmt] = getAgentListingRenderStatements(path);
-	if (!firstStmt || !t.isIfStatement(firstStmt)) return null;
-	return getMemberObjectNameForProperty(firstStmt.test, "isInitial");
+	// The `isInitial` early-return guard is not necessarily the first statement:
+	// input-normalization memo statements can precede it. Scan every statement
+	// for the first `if` whose test reaches `<attachment>.isInitial` and read the
+	// attachment identifier off it.
+	for (const statement of getAgentListingRenderStatements(path)) {
+		if (!t.isIfStatement(statement)) continue;
+		const attachmentName = getMemberObjectNameForProperty(
+			statement.test,
+			"isInitial",
+		);
+		if (attachmentName) return attachmentName;
+	}
+	return null;
 }
 
+/**
+ * Collect the value expressions bound to `name` within a subtree: variable
+ * declarator initializers (`let name = <value>`) and plain `name = <value>`
+ * assignments. Lets alias chains resolve by structure, without depending on the
+ * release-volatile minified identifier names. Traversal mirrors `nodeContains`.
+ */
+function collectAssignedValues(
+	node: t.Node | null | undefined,
+	name: string,
+	out: t.Node[],
+): void {
+	if (!node) return;
+	if (
+		t.isVariableDeclarator(node) &&
+		t.isIdentifier(node.id, { name }) &&
+		node.init
+	) {
+		out.push(node.init);
+	}
+	if (
+		t.isAssignmentExpression(node) &&
+		node.operator === "=" &&
+		t.isIdentifier(node.left, { name })
+	) {
+		out.push(node.right);
+	}
+	const keys = t.VISITOR_KEYS[node.type] ?? [];
+	for (const key of keys) {
+		const value = (node as unknown as Record<string, unknown>)[key];
+		if (Array.isArray(value)) {
+			for (const child of value) {
+				if (child && typeof child === "object" && "type" in child) {
+					collectAssignedValues(child as t.Node, name, out);
+				}
+			}
+		} else if (value && typeof value === "object" && "type" in value) {
+			collectAssignedValues(value as t.Node, name, out);
+		}
+	}
+}
+
+/**
+ * Whether an expression ultimately references `<attachment>.addedTypes`,
+ * covering the input-normalization shapes the memoized render case uses:
+ *  - the direct `<attachment>.addedTypes` member,
+ *  - a single-argument normalization wrapper (`normalize(<...addedTypes>)`),
+ *  - an identifier aliasing either of the above through `let a = b` / `a = <v>`
+ *    bindings elsewhere in the same case body.
+ * Structural only, so the volatile normalization/alias names never appear here.
+ * `seen` guards against cyclic alias assignments.
+ */
+function expressionResolvesToAddedTypes(
+	node: t.Node | null | undefined,
+	attachmentName: string,
+	statements: t.Statement[],
+	seen: Set<string> = new Set(),
+): boolean {
+	if (!node) return false;
+	if (
+		t.isMemberExpression(node) &&
+		t.isIdentifier(node.object, { name: attachmentName }) &&
+		isMemberPropertyName(node, "addedTypes")
+	) {
+		return true;
+	}
+	if (t.isCallExpression(node) && node.arguments.length === 1) {
+		return expressionResolvesToAddedTypes(
+			node.arguments[0],
+			attachmentName,
+			statements,
+			seen,
+		);
+	}
+	if (t.isIdentifier(node)) {
+		if (seen.has(node.name)) return false;
+		seen.add(node.name);
+		const values: t.Node[] = [];
+		for (const statement of statements) {
+			collectAssignedValues(statement, node.name, values);
+		}
+		return values.some((value) =>
+			expressionResolvesToAddedTypes(value, attachmentName, statements, seen),
+		);
+	}
+	return false;
+}
+
+/**
+ * Whether `node` reads `.length` off the case's added-types collection. The
+ * receiver may be the direct `<attachment>.addedTypes` member or, when
+ * `statements` are supplied, an identifier that alias-resolves to it through the
+ * normalized-input memo.
+ */
 function isAddedTypesLengthAccess(
 	node: t.Node | null | undefined,
 	attachmentName: string,
+	statements: t.Statement[] = [],
 ): node is t.MemberExpression {
 	if (!node || !t.isMemberExpression(node)) return false;
 	if (!isMemberPropertyName(node, "length")) return false;
-	const addedTypesAccess = node.object;
-	return (
-		t.isMemberExpression(addedTypesAccess) &&
-		t.isIdentifier(addedTypesAccess.object, { name: attachmentName }) &&
-		isMemberPropertyName(addedTypesAccess, "addedTypes")
+	return expressionResolvesToAddedTypes(
+		node.object,
+		attachmentName,
+		statements,
 	);
 }
 
@@ -245,7 +348,7 @@ function getAgentListingCountName(
 		for (const declarator of statement.declarations) {
 			if (
 				t.isIdentifier(declarator.id) &&
-				isAddedTypesLengthAccess(declarator.init, attachmentName)
+				isAddedTypesLengthAccess(declarator.init, attachmentName, statements)
 			) {
 				return declarator.id.name;
 			}
