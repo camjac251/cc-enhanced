@@ -76,11 +76,11 @@ test("file-link-targets helper turns WSL paths into Windows-readable file URLs b
 
 	assert.equal(
 		resolveFileLinkHrefForEnv(
-			"/home/cam/project/with space.ts",
-			"file:///home/cam/project/with%20space.ts",
+			"/home/user/project/with space.ts",
+			"file:///home/user/project/with%20space.ts",
 			{ WSL_DISTRO_NAME: "Ubuntu" },
 		),
-		"file://wsl.localhost/Ubuntu/home/cam/project/with%20space.ts",
+		"file://wsl.localhost/Ubuntu/home/user/project/with%20space.ts",
 	);
 });
 
@@ -93,26 +93,26 @@ test("file-link-targets helper supports VS Code and remote WSL URL modes", async
 
 	assert.equal(
 		resolveFileLinkHrefForEnv(
-			"/home/cam/project/app.ts",
-			"file:///home/cam/project/app.ts",
+			"/home/user/project/app.ts",
+			"file:///home/user/project/app.ts",
 			{
 				CLAUDE_CODE_FILE_LINK_MODE: "vscode",
 				WSL_DISTRO_NAME: "Ubuntu",
 			},
 		),
-		"vscode://file//wsl.localhost/Ubuntu/home/cam/project/app.ts",
+		"vscode://file//wsl.localhost/Ubuntu/home/user/project/app.ts",
 	);
 
 	assert.equal(
 		resolveFileLinkHrefForEnv(
-			"/home/cam/project/app.ts",
-			"file:///home/cam/project/app.ts",
+			"/home/user/project/app.ts",
+			"file:///home/user/project/app.ts",
 			{
 				CLAUDE_CODE_FILE_LINK_MODE: "vscode-remote",
 				WSL_DISTRO_NAME: "Ubuntu",
 			},
 		),
-		"vscode://vscode-remote/wsl+Ubuntu/home/cam/project/app.ts",
+		"vscode://vscode-remote/wsl+Ubuntu/home/user/project/app.ts",
 	);
 });
 
@@ -124,25 +124,25 @@ test("file-link-targets helper can be disabled and handles /mnt drive paths", as
 	assert.match(output, /return "vscode:\/\/file\/" \+ drivePath;/);
 	assert.equal(
 		resolveFileLinkHrefForEnv(
-			"/home/cam/project/app.ts",
-			"file:///home/cam/project/app.ts",
+			"/home/user/project/app.ts",
+			"file:///home/user/project/app.ts",
 			{
 				CLAUDE_CODE_FILE_LINK_MODE: "off",
 				WSL_DISTRO_NAME: "Ubuntu",
 			},
 		),
-		"file:///home/cam/project/app.ts",
+		"file:///home/user/project/app.ts",
 	);
 
 	assert.equal(
 		resolveFileLinkHrefForEnv(
-			"/mnt/c/Users/Cam/My Project/app.ts",
-			"file:///mnt/c/Users/Cam/My%20Project/app.ts",
+			"/mnt/c/Users/User/My Project/app.ts",
+			"file:///mnt/c/Users/User/My%20Project/app.ts",
 			{
 				CLAUDE_CODE_FILE_LINK_MODE: "vscode",
 				WSL_DISTRO_NAME: "Ubuntu",
 			},
 		),
-		"vscode://file/c:/Users/Cam/My%20Project/app.ts",
+		"vscode://file/c:/Users/User/My%20Project/app.ts",
 	);
 });
