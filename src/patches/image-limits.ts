@@ -9,6 +9,7 @@ const TARGET_METADATA_MODEL_KEYS = new Set([
 	"claude-sonnet-5",
 	"claude-opus-4-7",
 	"claude-opus-4-8",
+	"claude-opus-5",
 ]);
 const TARGET_PIXELS = 2576;
 const MANY_IMAGE_COUNT_LIMIT = 20;
