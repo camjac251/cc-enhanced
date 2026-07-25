@@ -49,7 +49,7 @@ chmod 700 "$process_wrapper"
 
 tee "$claude_bin" >/dev/null <<'SH'
 #!/bin/sh
-printf '%s\n' '2.1.216 (Claude Code; patched: configured-model-catalog)'
+printf '%s\n' '0.0.0 (Claude Code; patched: configured-model-catalog)'
 SH
 chmod 700 "$claude_bin"
 
@@ -109,12 +109,98 @@ grep -F 'already owns the client binary' "$test_root/patched.err" >/dev/null ||
 
 tee "$claude_bin" >/dev/null <<'SH'
 #!/bin/sh
-printf '%s\n' '2.1.216 (Claude Code)'
+printf '%s\n' '0.0.0 (Claude Code)'
 SH
 chmod 700 "$claude_bin"
 : >"$admin_log"
 HOME="$test_home" ADMIN_LOG="$admin_log" "$admin_wrapper" patch
 grep -Fx "$runtime_cli patch" "$admin_log" >/dev/null ||
 	fail "the stock-client patch command did not reach Clodex"
+
+verifier_test_dir="$test_root/verifier"
+mkdir -p "$verifier_test_dir"
+cp "$setup_dir/verify-live.sh" "$verifier_test_dir/verify-live.sh"
+cp "$setup_dir/verify-static.sh" "$verifier_test_dir/verify-static-real.sh"
+cp "$setup_dir/versions.env" "$verifier_test_dir/versions.env"
+static_call_log="$verifier_test_dir/static-call.log"
+tee "$verifier_test_dir/verify-static.sh" >/dev/null <<'SH'
+#!/bin/sh
+printf '%s' "$#" >"$VERIFY_STATIC_LOG"
+for arg; do
+	printf ':%s' "$arg" >>"$VERIFY_STATIC_LOG"
+done
+printf '\n' >>"$VERIFY_STATIC_LOG"
+exit 73
+SH
+chmod 700 \
+	"$verifier_test_dir/verify-live.sh" \
+	"$verifier_test_dir/verify-static.sh" \
+	"$verifier_test_dir/verify-static-real.sh"
+
+assert_live_static_forwarding() {
+	expected_call=$1
+	shift
+	rm -f "$static_call_log"
+	if VERIFY_STATIC_LOG="$static_call_log" \
+		"$verifier_test_dir/verify-live.sh" "$@" \
+		>"$verifier_test_dir/live.out" 2>"$verifier_test_dir/live.err"; then
+		fail "the live verifier continued past the static sentinel"
+	else
+		live_exit=$?
+	fi
+	[ "$live_exit" -eq 73 ] ||
+		fail "the live verifier did not preserve the static verifier exit"
+	[ "$(sed -n '1p' "$static_call_log")" = "$expected_call" ] ||
+		fail "the live verifier forwarded the wrong static profile"
+}
+
+assert_live_static_forwarding 0
+assert_live_static_forwarding '1:--stock' --stock
+assert_live_static_forwarding '1:--stock' --smoke --stock
+assert_live_static_forwarding '1:--stock' --stock --smoke
+
+assert_live_usage() {
+	rm -f "$static_call_log"
+	if VERIFY_STATIC_LOG="$static_call_log" \
+		"$verifier_test_dir/verify-live.sh" "$@" \
+		>"$verifier_test_dir/live.out" 2>"$verifier_test_dir/live.err"; then
+		fail "the live verifier accepted an invalid mode combination"
+	else
+		live_exit=$?
+	fi
+	[ "$live_exit" -eq 2 ] ||
+		fail "invalid live verifier arguments did not exit 2"
+	[ ! -e "$static_call_log" ] ||
+		fail "invalid live verifier arguments reached static verification"
+	grep -Fx \
+		'usage: verify-live.sh [--smoke] [--development | --stock]' \
+		"$verifier_test_dir/live.err" >/dev/null ||
+		fail "the live verifier did not print its profile usage"
+}
+
+assert_live_usage --unknown
+assert_live_usage --stock --development
+assert_live_usage --development --stock
+
+assert_static_usage() {
+	if "$verifier_test_dir/verify-static-real.sh" "$@" \
+		>"$verifier_test_dir/static.out" \
+		2>"$verifier_test_dir/static.err"; then
+		fail "the static verifier accepted invalid arguments"
+	else
+		static_exit=$?
+	fi
+	[ "$static_exit" -eq 2 ] ||
+		fail "invalid static verifier arguments did not exit 2"
+	grep -Fx 'usage: verify-static.sh [--stock]' \
+		"$verifier_test_dir/static.err" >/dev/null ||
+		fail "the static verifier did not print its profile usage"
+}
+
+assert_static_usage --unknown
+assert_static_usage --development
+assert_static_usage --stock --smoke
+assert_static_usage --stock --stock
+assert_static_usage extra-positional
 
 printf '%s\n' 'client-compatibility tests passed'

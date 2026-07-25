@@ -7,6 +7,23 @@ fail() {
 	exit 1
 }
 
+profile=enhanced
+case "$#" in
+0) ;;
+1)
+	if [ "$1" = '--stock' ]; then
+		profile=stock
+	else
+		printf '%s\n' 'usage: verify-static.sh [--stock]' >&2
+		exit 2
+	fi
+	;;
+*)
+	printf '%s\n' 'usage: verify-static.sh [--stock]' >&2
+	exit 2
+	;;
+esac
+
 setup_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=versions.env
 . "$setup_dir/versions.env"
@@ -81,7 +98,7 @@ pnpm_version=$(
 [ "$pnpm_version" = "$CLODEX_PNPM_VERSION" ] ||
 	fail "installed package manager does not match versions.env"
 
-if [ -n "${CC_ENHANCED_SOURCE_DIR:-}" ]; then
+if [ "$profile" = enhanced ] && [ -n "${CC_ENHANCED_SOURCE_DIR:-}" ]; then
 	command -v git >/dev/null 2>&1 || fail "git is unavailable"
 	if [ "$(git -C "$CC_ENHANCED_SOURCE_DIR" rev-parse HEAD)" != "$CC_ENHANCED_REVISION" ]; then
 		git -C "$CC_ENHANCED_SOURCE_DIR" merge-base --is-ancestor \
@@ -94,23 +111,28 @@ if [ -n "${CC_ENHANCED_SOURCE_DIR:-}" ]; then
 			fail "client runtime source differs from the pinned revision"
 	fi
 fi
+if [ "$profile" = stock ] && [ -n "${CC_ENHANCED_SOURCE_DIR:-}" ]; then
+	fail "CC_ENHANCED_SOURCE_DIR is not valid with --stock"
+fi
 if [ -n "${CLODEX_SOURCE_DIR:-}" ]; then
 	command -v git >/dev/null 2>&1 || fail "git is unavailable"
 	[ "$(git -C "$CLODEX_SOURCE_DIR" rev-parse HEAD)" = "$CLODEX_REVISION" ] ||
 		fail "routing source checkout does not match versions.env"
 fi
 
-case "$(uname -s):$(uname -m)" in
-Linux:x86_64)
-	client_digest=$(sha256sum "$claude_bin" | cut -d ' ' -f1)
-	[ "$client_digest" = "$CC_ENHANCED_LINUX_X64_SHA256" ] ||
-		fail "promoted client binary does not match its Linux x86_64 digest"
-	;;
-*)
-	printf '%s\n' \
-		'warning: no promoted client binary digest is pinned for this platform' >&2
-	;;
-esac
+if [ "$profile" = enhanced ]; then
+	case "$(uname -s):$(uname -m)" in
+	Linux:x86_64)
+		client_digest=$(sha256sum "$claude_bin" | cut -d ' ' -f1)
+		[ "$client_digest" = "$CC_ENHANCED_LINUX_X64_SHA256" ] ||
+			fail "promoted client binary does not match its Linux x86_64 digest"
+		;;
+	*)
+		printf '%s\n' \
+			'warning: no promoted client binary digest is pinned for this platform' >&2
+		;;
+	esac
+fi
 
 revision_file="$runtime_root/CLODEX_REVISION"
 [ -r "$revision_file" ] || fail "deployed revision metadata is missing: $revision_file"
@@ -218,23 +240,31 @@ case "$claude_version" in
 "$CC_ENHANCED_NATIVE_VERSION "*) ;;
 *) fail "promoted client version does not match versions.env" ;;
 esac
-for patch_tag in \
-	billing-label \
-	claude-api-scope \
-	configured-model-catalog \
-	model-aliases \
-	model-context-metadata \
-	model-picker-session-only \
-	skill-listing-ui \
-	subagent-model-tag \
-	subagent-system-prompt \
-	sys-prompt-file \
-	workflow-safety; do
+if [ "$profile" = enhanced ]; then
+	for patch_tag in \
+		billing-label \
+		claude-api-scope \
+		configured-model-catalog \
+		model-aliases \
+		model-context-metadata \
+		model-picker-session-only \
+		skill-listing-ui \
+		subagent-model-tag \
+		subagent-system-prompt \
+		sys-prompt-file \
+		workflow-safety; do
+		case "$claude_version" in
+		*"$patch_tag"*) ;;
+		*) fail "required client patch is missing: $patch_tag" ;;
+		esac
+	done
+else
 	case "$claude_version" in
-	*"$patch_tag"*) ;;
-	*) fail "required client patch is missing: $patch_tag" ;;
+	*'(Claude Code; patched:'*)
+		fail "stock verification cannot target a cc-enhanced client"
+		;;
 	esac
-done
+fi
 
 "$node_bin" "$runtime" --version >/dev/null
 
@@ -257,4 +287,8 @@ if (!hasFavorite || !hasAlias) {
 }
 NODE
 
-printf '%s\n' 'static setup verification passed'
+if [ "$profile" = enhanced ]; then
+	printf '%s\n' 'static setup verification passed'
+else
+	printf '%s\n' 'stock static setup verification passed'
+fi

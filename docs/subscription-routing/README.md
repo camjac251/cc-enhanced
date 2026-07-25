@@ -39,7 +39,8 @@ PasswordVault bridge are platform-specific.
 
 ## What is pinned
 
-[`versions.env`](./versions.env) is the only source of reviewed version data:
+[`versions.env`](./versions.env) is the source of reviewed deployment pins for
+this subscription-routing setup:
 
 - immutable client source revision;
 - upstream native client version;
@@ -53,6 +54,19 @@ The branch names are update channels. The full revisions and digests are the
 installation anchors. Do not replace a pinned revision with the current branch
 tip without reviewing the complete old-to-new diff and regenerating the
 matching artifact digest.
+
+This directory at the pinned cc-enhanced revision is the source of truth for
+the complete setup package. Use it in place. Detached copies and archives are
+point-in-time snapshots; mixing their templates or verification scripts with
+current pins can produce an installation that no reviewed revision represents.
+Removing a detached source copy does not alter the installed launchers,
+service, or immutable runtime selector. Run future rendering, update, rollback,
+and verification commands from this canonical package.
+
+The tested-version badge in the root README remains the canonical cc-enhanced
+upstream target. For an enhanced-profile handoff,
+`CC_ENHANCED_NATIVE_VERSION` must match that badge; update both in the same
+reviewed client-pin change.
 
 The current translated-model pin is a 258,400-token effective input window with
 a 32,000-token output allowance. This package does not enable the separate
@@ -71,9 +85,9 @@ describe different layers and are not configuration drift.
 | `runtime-artifact-sha256.sh` | Normalized routing-runtime digest |
 | `check-routed-idle.sh` | Scans process arguments without treating paths as regular expressions and refuses a service restart while routed clients are active |
 | `test-service-control.sh` | Isolated ordering and failure tests for the restart guard and controller |
-| `test-client-compatibility.sh` | Isolated checks for enhanced and stock client ownership plus parent and subagent prompt propagation |
-| `verify-static.sh` | Read-only file, source, digest, template, prompt, and patch verification |
-| `verify-live.sh` | Explicit service and authentication verification; optional inference smoke tests |
+| `test-client-compatibility.sh` | Isolated checks for enhanced and stock client ownership, verifier profile routing, and parent and subagent prompt propagation |
+| `verify-static.sh` | Read-only common setup verification with enhanced-default digest and patch checks plus an explicit stock profile |
+| `verify-live.sh` | Profile-aware service and authentication verification with optional inference smoke tests |
 | `templates/claudex` | Routed session launcher |
 | `templates/clodex` | Isolated provider-administration wrapper |
 | `templates/claudex-process-wrapper` | Portable process wrapper that applies the reviewed prompt to initial and child Claude Code processes before routing them |
@@ -223,24 +237,36 @@ cc-enhanced revision, digest, or patch-tag checks.
 
 ## 2. Build the pinned routing runtime
 
-From this setup directory:
+From this canonical setup directory:
 
 ```sh
 (
 set -eu
 
-. ./versions.env
-. ./runtime-artifact-sha256.sh
+setup_dir=$(pwd -P)
+. "$setup_dir/versions.env"
+. "$setup_dir/runtime-artifact-sha256.sh"
+
+build_root=$(mktemp -d "${TMPDIR:-/tmp}/clodex-build.XXXXXX")
+source_dir="$build_root/clodex-source"
+candidate_runtime=''
+cleanup() {
+  rm -rf "$build_root"
+  if [ -n "$candidate_runtime" ]; then
+    rm -rf "$candidate_runtime"
+  fi
+}
+trap cleanup 0 HUP INT TERM
 
 git clone \
   --branch "$CLODEX_BRANCH" \
   --single-branch \
   "$CLODEX_REPOSITORY" \
-  clodex-source
-git -C clodex-source checkout --detach "$CLODEX_REVISION"
-test "$(git -C clodex-source rev-parse HEAD)" = "$CLODEX_REVISION"
+  "$source_dir"
+git -C "$source_dir" checkout --detach "$CLODEX_REVISION"
+test "$(git -C "$source_dir" rev-parse HEAD)" = "$CLODEX_REVISION"
 
-cd clodex-source
+cd "$source_dir"
 mise install "node@$CLODEX_NODE_VERSION"
 node_root=$(mise where "node@$CLODEX_NODE_VERSION")
 corepack_bin="$node_root/bin/corepack"
@@ -256,7 +282,6 @@ test "$("$corepack_bin" "pnpm@$CLODEX_PNPM_VERSION" --version)" = \
 runtime_parent="$HOME/.local/share/claudex-clodex/runtime"
 install -d -m 700 "$runtime_parent"
 candidate_runtime=$(mktemp -d "$runtime_parent/.candidate.XXXXXX")
-trap 'rm -rf "$candidate_runtime"' 0 HUP INT TERM
 
 "$corepack_bin" "pnpm@$CLODEX_PNPM_VERSION" \
   --filter . deploy --prod --legacy "$candidate_runtime"
@@ -280,9 +305,10 @@ test "$(runtime_artifact_sha256 "$runtime_root")" = \
 printf '%s\n' "$CLODEX_REVISION" >"$runtime_root/CLODEX_REVISION"
 printf '%s\n' "$CLODEX_ARTIFACT_SHA256" \
   >"$runtime_root/CLODEX_ARTIFACT_SHA256"
-install -m 600 ../versions.env "$runtime_root/SETUP_VERSIONS.env"
+install -m 600 "$setup_dir/versions.env" \
+  "$runtime_root/SETUP_VERSIONS.env"
 
-./check-routed-idle.sh
+"$setup_dir/check-routed-idle.sh"
 previous_target=''
 if [ -L "$runtime_parent/current" ]; then
   previous_target=$(readlink "$runtime_parent/current")
@@ -556,20 +582,20 @@ a credential, or send an inference request:
 This is the strict pinned enhanced-profile handoff gate. It checks the promoted
 binary digest and required cc-enhanced tags.
 
-For the stock profile, run the portable package tests, then make the
-idempotent patch command the client gate:
+For the stock profile, make the idempotent patch command the client gate, then
+run the read-only common setup verifier:
 
 ```sh
-./test-service-control.sh
-./test-client-compatibility.sh
 clodex patch
+./verify-static.sh --stock
 ```
 
 `clodex patch` exits without rewriting a current binary. If the stock client or
 model configuration changed, it restores the pristine per-version backup and
-rebuilds the patch. The service, runtime, template, credential-helper, and live
-checks are otherwise shared. Do not run the enhanced-only static verifier
-against a stock binary.
+rebuilds the patch. The stock static mode then runs the portable package tests
+and checks the shared runtime, templates, prompt, helper, model configuration,
+native version, and client-ownership boundary. It does not invoke or replace
+the preceding Clodex patch-freshness gate.
 
 Optional enhanced-profile source-checkout verification:
 
@@ -586,13 +612,15 @@ runtime source, patch, dependency, toolchain, or baseline difference fails.
 Live service and authentication verification:
 
 ```sh
-./verify-live.sh
+./verify-live.sh          # enhanced profile
+./verify-live.sh --stock  # stock profile
 ```
 
 Opt-in direct, passthrough, and translated inference smoke tests:
 
 ```sh
-./verify-live.sh --smoke
+./verify-live.sh --smoke          # enhanced profile
+./verify-live.sh --stock --smoke  # stock profile
 ```
 
 The smoke flag consumes subscription usage. It is not part of static
@@ -611,7 +639,7 @@ Development verification still checks service readiness, the selected runtime,
 the pinned Node.js executable, and external OAuth. With `--smoke`, it also
 checks direct, passthrough, and translated inference. It does not prove that the
 deployment can be reproduced from the shareable pins and must not be used as a
-release or handoff gate.
+release or handoff gate. `--development` and `--stock` are mutually exclusive.
 
 Manual behavior gates after an update:
 
@@ -697,8 +725,8 @@ For a client update:
 2. Stock profile: update Claude Code normally, then rerun `clodex patch` so its
    per-version backup and manifest match the new binary.
 3. Rerender the wrappers if the resolved `claude` path changed.
-4. Refresh this package and run the applicable static and live verification
-   layers.
+4. Refresh this directory from the reviewed cc-enhanced revision, then run the
+   applicable static and live verification layers.
 
 For a routing update:
 

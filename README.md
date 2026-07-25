@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.4_canary-fbf0df.svg" alt="Bun 1.4 canary">
   <img src="https://img.shields.io/badge/Patches-45-orange.svg" alt="45 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.219-8A2BE2.svg" alt="Tested against Claude Code 2.1.219">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.220-8A2BE2.svg" alt="Tested against Claude Code 2.1.220">
 </p>
 
 ---
@@ -28,6 +28,11 @@ direct while adding an isolated mixed-model launcher backed by Claude Max and
 ChatGPT Pro subscriptions. It includes immutable source and artifact pins,
 secure external credential storage, static and live verification, safe restart
 gates, per-model context metadata, and workflow delegation policy.
+
+The guide and its adjacent setup files are the canonical maintained package.
+Use them from the checked-out cc-enhanced revision rather than keeping a
+separate copy; the pins, templates, tests, and verification scripts are
+versioned and reviewed together.
 
 ## How It Works
 
@@ -417,7 +422,7 @@ When a prompt patch changes live guidance, update both the patch verifier and th
 
 ## Compatibility
 
-Current target: **Claude Code 2.1.219**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
+Current target: **Claude Code 2.1.220**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
 
 `native:update` accepts `latest`, `next`, `stable`, or an explicit `X.Y.Z`. The `latest` resolver cross-checks the native release bucket with the npm `latest` and `next` dist-tags so release promotion can follow npm when a new version appears there before the bucket alias moves.
 

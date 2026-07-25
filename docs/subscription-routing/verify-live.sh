@@ -12,28 +12,51 @@ setup_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$setup_dir/versions.env"
 
 run_smoke=0
-run_static=1
+verification_mode=enhanced
+mode_selected=0
 for argument in "$@"; do
 	case "$argument" in
 	--smoke)
 		run_smoke=1
 		;;
 	--development)
-		run_static=0
+		if [ "$mode_selected" -eq 1 ]; then
+			printf '%s\n' \
+				'usage: verify-live.sh [--smoke] [--development | --stock]' >&2
+			exit 2
+		fi
+		verification_mode=development
+		mode_selected=1
+		;;
+	--stock)
+		if [ "$mode_selected" -eq 1 ]; then
+			printf '%s\n' \
+				'usage: verify-live.sh [--smoke] [--development | --stock]' >&2
+			exit 2
+		fi
+		verification_mode=stock
+		mode_selected=1
 		;;
 	*)
-		printf '%s\n' 'usage: verify-live.sh [--smoke] [--development]' >&2
+		printf '%s\n' \
+			'usage: verify-live.sh [--smoke] [--development | --stock]' >&2
 		exit 2
 		;;
 	esac
 done
 
-if [ "$run_static" -eq 1 ]; then
+case "$verification_mode" in
+enhanced)
 	"$setup_dir/verify-static.sh"
-else
+	;;
+stock)
+	"$setup_dir/verify-static.sh" --stock
+	;;
+development)
 	printf '%s\n' \
 		'development verification: reproducibility pins were not checked' >&2
-fi
+	;;
+esac
 
 for command_name in grep mise stat systemctl tr; do
 	command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is unavailable"
