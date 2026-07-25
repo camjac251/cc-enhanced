@@ -13,54 +13,26 @@ trap 'rm -rf "$test_root"' 0 HUP INT TERM
 
 fake_bin="$test_root/fake-bin"
 test_home="$test_root/home"
-proc_root="$test_root/proc"
-mkdir -p "$fake_bin" "$test_home" "$proc_root/self" "$proc_root/101"
-printf 'test-shell\000' >"$proc_root/self/cmdline"
+clodex_home="$test_home/.local/share/claudex-clodex"
+session_lock="$clodex_home/routed-sessions.lock"
+process_wrapper="$test_root/clodex-claude"
+clodex_bin="$test_root/clodex-cli.js"
+launcher_process_wrapper="$test_root/claudex-process-wrapper"
+credential_helper="$test_root/credential-helper"
+claude_bin="$test_root/claude"
+system_prompt="$test_home/.config/claudex-clodex/system-prompt.md"
+mkdir -p "$fake_bin" "$clodex_home" "$(dirname "$system_prompt")"
 
-if PATH="/usr/bin:/bin" HOME="$test_home" \
-	CLAUDEX_PROC_ROOT="$test_root/missing-proc" \
-	"$setup_dir/check-routed-idle.sh" \
-	>"$test_root/missing-proc.out" 2>"$test_root/missing-proc.err"; then
-	fail "the idle guard accepted an unreadable process table"
-fi
-grep -F 'cannot inspect routed client state' "$test_root/missing-proc.err" >/dev/null ||
-	fail "the unreadable-process-table error was not specific"
-
-expected_wrapper="$test_home/.local/share/claudex-clodex/runtime/current/dist/claude-wrapper.js"
-printf 'node\000%s\000' "$expected_wrapper" >"$proc_root/101/cmdline"
-
-if PATH="/usr/bin:/bin" HOME="$test_home" \
-	CLAUDEX_PROC_ROOT="$proc_root" \
-	"$setup_dir/check-routed-idle.sh" \
-	>"$test_root/active.out" 2>"$test_root/active.err"; then
-	fail "the idle guard accepted an active routed client"
-fi
-grep -F 'routed client processes are still active' "$test_root/active.err" >/dev/null ||
-	fail "the active-client error was not specific"
-
-rm "$proc_root/101/cmdline"
-PATH="/usr/bin:/bin" HOME="$test_home" \
-	CLAUDEX_PROC_ROOT="$proc_root" \
-	"$setup_dir/check-routed-idle.sh" >"$test_root/idle.out"
-grep -Fx 'no routed client process is active' "$test_root/idle.out" >/dev/null ||
-	fail "the idle guard did not report a clean state"
-
-controller_template="$setup_dir/templates/clodex-service"
-[ -r "$controller_template" ] || fail "the service controller template is missing"
-
-runtime_parent="$test_home/.local/share/claudex-clodex/runtime"
-runtime_id='test-runtime'
-runtime_root="$runtime_parent/$runtime_id"
-process_wrapper="$runtime_root/dist/claude-wrapper.js"
-session_lock="$runtime_parent/routed-sessions.lock"
-installed_guard="$test_home/.local/libexec/claudex-check-routed-idle"
-mkdir -p "$runtime_root/dist" "$test_home/.local/libexec"
-ln -s "$runtime_id" "$runtime_parent/current"
-cat >"$process_wrapper" <<'SH'
+tee "$process_wrapper" >/dev/null <<'SH'
 #!/bin/sh
-if [ "${1:-}" = '--check' ]; then
-	exit 0
-fi
+exit 88
+SH
+tee "$clodex_bin" >/dev/null <<'SH'
+#!/bin/sh
+exit 0
+SH
+tee "$launcher_process_wrapper" >/dev/null <<'SH'
+#!/bin/sh
 [ "$CLAUDE_CODE_PROCESS_WRAPPER" = "$TEST_LAUNCHER_WRAPPER" ] || {
 	printf '%s\n' 'portable process wrapper was not propagated' >&2
 	exit 8
@@ -72,16 +44,38 @@ if flock -n -x 7; then
 fi
 printf '%s\n' 'routed session lock is held'
 SH
-chmod 700 "$process_wrapper"
-cp "$setup_dir/check-routed-idle.sh" "$installed_guard"
-chmod 700 "$installed_guard"
-
-cat >"$fake_bin/node" <<'SH'
+tee "$credential_helper" >/dev/null <<'SH'
 #!/bin/sh
-printf 'node %s\n' "$*" >>"$CONTROL_LOG"
+exit 0
+SH
+tee "$claude_bin" >/dev/null <<'SH'
+#!/bin/sh
+exit 0
+SH
+: >"$system_prompt"
+chmod 700 \
+	"$process_wrapper" \
+	"$clodex_bin" \
+	"$launcher_process_wrapper" \
+	"$credential_helper" \
+	"$claude_bin"
+
+tee "$fake_bin/node" >/dev/null <<'SH'
+#!/bin/sh
+target=$1
+shift
+printf 'node %s' "$target" >>"$CONTROL_LOG"
+if [ "$#" -gt 0 ]; then
+	printf ' %s' "$*" >>"$CONTROL_LOG"
+fi
+printf '\n' >>"$CONTROL_LOG"
+if [ "$target" = "$TEST_CLODEX_BIN" ] && [ "${1:-}" = '--version' ]; then
+	printf '%s\n' "${CLODEX_VERSION:-2.1.2}"
+	exit 0
+fi
 exit "${READY_EXIT:-0}"
 SH
-cat >"$fake_bin/systemctl" <<'SH'
+tee "$fake_bin/systemctl" >/dev/null <<'SH'
 #!/bin/sh
 if [ "${1:-}" = '--user' ]; then
 	shift
@@ -107,56 +101,47 @@ status)
 *) exit 1 ;;
 esac
 SH
-cat >"$fake_bin/sleep" <<'SH'
+tee "$fake_bin/sleep" >/dev/null <<'SH'
 #!/bin/sh
 printf 'sleep %s\n' "$*" >>"$CONTROL_LOG"
 SH
 chmod 700 "$fake_bin/node" "$fake_bin/systemctl" "$fake_bin/sleep"
 
+controller_template="$setup_dir/templates/clodex-service"
+[ -r "$controller_template" ] || fail "the service controller template is missing"
 controller="$test_root/clodex-service"
-sed "s|@NODE_BIN@|$fake_bin/node|g" "$controller_template" >"$controller"
+sed \
+	-e "s|@NODE_BIN@|$fake_bin/node|g" \
+	-e "s|@CLODEX_BIN@|$clodex_bin|g" \
+	-e "s|@CLODEX_CLAUDE_BIN@|$process_wrapper|g" \
+	"$controller_template" >"$controller"
 chmod 700 "$controller"
+
+launcher="$test_root/claudex"
+sed \
+	-e "s|@NODE_BIN@|$fake_bin/node|g" \
+	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
+	-e "s|@CLODEX_CLAUDE_BIN@|$process_wrapper|g" \
+	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
+	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
+	"$setup_dir/templates/claudex" >"$launcher"
+chmod 700 "$launcher"
 
 control_log="$test_root/control.log"
 : >"$control_log"
-credential_helper="$test_root/credential-helper"
-claude_bin="$test_root/claude"
-system_prompt="$test_home/.config/claudex-clodex/system-prompt.md"
-launcher_process_wrapper="$test_home/.local/libexec/claudex-process-wrapper"
-mkdir -p "$(dirname "$system_prompt")"
-: >"$credential_helper"
-: >"$claude_bin"
-: >"$system_prompt"
-mkdir -p "$(dirname "$launcher_process_wrapper")"
-cp "$setup_dir/templates/claudex-process-wrapper" "$launcher_process_wrapper"
-chmod 700 "$credential_helper" "$claude_bin" "$launcher_process_wrapper"
-launcher="$test_root/claudex"
-sed \
-	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
-	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
-	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
-	-e 's|@CLODEX_PROVIDER_ID@|provider|g' \
-	-e 's|@CLODEX_MODEL_ID@|model|g' \
-	-e 's|@CLODEX_MODEL_ALIAS@|route|g' \
-	-e 's|@CLODEX_MODEL_DISPLAY_NAME@|Routed Model|g' \
-	-e 's|@CLODEX_MODEL_DESCRIPTION@|Test route|g' \
-	-e 's|@CLODEX_BILLING_LABEL@|Subscription route|g' \
-	-e 's|@CLODEX_MODEL_MAX_INPUT_TOKENS@|100000|g' \
-	-e 's|@CLODEX_MODEL_MAX_OUTPUT_TOKENS@|10000|g' \
-	"$setup_dir/templates/claudex" >"$launcher"
-chmod 700 "$launcher"
 PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
 	CONTROL_LOG="$control_log" TEST_SESSION_LOCK="$session_lock" \
 	TEST_LAUNCHER_WRAPPER="$launcher_process_wrapper" \
 	"$launcher" >"$test_root/launcher.out"
 grep -Fx 'routed session lock is held' "$test_root/launcher.out" >/dev/null ||
 	fail "the routed launcher did not retain its shared lock for the client lifetime"
+grep -Fx "node $process_wrapper --check" "$control_log" >/dev/null ||
+	fail "the routed launcher did not use the configured Node.js executable for readiness"
 
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" TEST_SESSION_LOCK="$session_lock" \
-	TEST_LAUNCHER_WRAPPER="$launcher_process_wrapper" \
-	"$launcher" --append-system-prompt 'unreviewed override' \
+	CONTROL_LOG="$control_log" "$launcher" \
+	--append-system-prompt 'unreviewed override' \
 	>"$test_root/prompt-override.out" 2>"$test_root/prompt-override.err"; then
 	fail "the routed launcher accepted a competing append prompt"
 else
@@ -184,24 +169,11 @@ grep -F 'usage: clodex-service restart' "$test_root/usage.err" >/dev/null ||
 [ ! -s "$control_log" ] ||
 	fail "invalid arguments reached the service-control boundary"
 
-printf 'node\000%s\000' "$expected_wrapper" >"$proc_root/101/cmdline"
-: >"$control_log"
-if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" CLAUDEX_PROC_ROOT="$proc_root" \
-	"$controller" restart \
-	>"$test_root/active-controller.out" 2>"$test_root/active-controller.err"; then
-	fail "the service controller restarted with an active routed client"
-fi
-if grep -F 'systemctl restart' "$control_log" >/dev/null; then
-	fail "the active-client guard ran after the restart request"
-fi
-rm "$proc_root/101/cmdline"
-
 exec 8>"$session_lock"
 flock -s 8
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" CLAUDEX_PROC_ROOT="$proc_root" \
+	CONTROL_LOG="$control_log" TEST_CLODEX_BIN="$clodex_bin" \
 	"$controller" restart \
 	>"$test_root/locked-controller.out" 2>"$test_root/locked-controller.err"; then
 	fail "the service controller restarted while a routed-session lock was held"
@@ -215,25 +187,29 @@ fi
 flock -u 8
 exec 8>&-
 
-cd "$runtime_root"
 : >"$control_log"
 PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" CLAUDEX_PROC_ROOT="$proc_root" \
+	CONTROL_LOG="$control_log" TEST_CLODEX_BIN="$clodex_bin" \
 	MAIN_PID=$$ RESTART_EXIT=0 ACTIVE_EXIT=0 READY_EXIT=0 FAILED_EXIT=1 \
 	"$controller" restart >"$test_root/success.out"
-grep -F "routing service ready: pid=$$ runtime=$runtime_root" \
+grep -F "routing service ready: pid=$$ clodex=2.1.2" \
 	"$test_root/success.out" >/dev/null ||
-	fail "the service controller did not report the loaded process and runtime"
+	fail "the service controller did not report the loaded process and Clodex version"
 [ "$(sed -n '1p' "$control_log")" = 'systemctl restart claudex-clodex.service' ] ||
-	fail "the restart did not follow the idle guard"
+	fail "the service controller did not begin with the guarded restart"
 [ "$(sed -n '2p' "$control_log")" = 'systemctl is-active --quiet claudex-clodex.service' ] ||
 	fail "readiness did not verify the active unit"
-[ "$(sed -n '3p' "$control_log")" = "node $expected_wrapper --check" ] ||
-	fail "readiness did not use the pinned runtime wrapper"
+[ "$(sed -n '3p' "$control_log")" = "node $process_wrapper --check" ] ||
+	fail "readiness did not use the globally activated Clodex wrapper"
+[ "$(sed -n '4p' "$control_log")" = \
+	'systemctl show --property MainPID --value claudex-clodex.service' ] ||
+	fail "readiness did not inspect the loaded service process"
+[ "$(sed -n '5p' "$control_log")" = "node $clodex_bin --version" ] ||
+	fail "readiness did not report the globally activated Clodex version"
 
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" CLAUDEX_PROC_ROOT="$proc_root" \
+	CONTROL_LOG="$control_log" TEST_CLODEX_BIN="$clodex_bin" \
 	MAIN_PID=$$ RESTART_EXIT=1 \
 	"$controller" restart \
 	>"$test_root/restart-failure.out" 2>"$test_root/restart-failure.err"; then
@@ -247,7 +223,7 @@ fi
 
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" CLAUDEX_PROC_ROOT="$proc_root" \
+	CONTROL_LOG="$control_log" TEST_CLODEX_BIN="$clodex_bin" \
 	MAIN_PID=0 RESTART_EXIT=0 ACTIVE_EXIT=0 READY_EXIT=0 FAILED_EXIT=1 \
 	"$controller" restart \
 	>"$test_root/invalid-pid.out" 2>"$test_root/invalid-pid.err"; then
@@ -258,7 +234,7 @@ grep -F 'service has no valid main process' "$test_root/invalid-pid.err" >/dev/n
 
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" CLAUDEX_PROC_ROOT="$proc_root" \
+	CONTROL_LOG="$control_log" TEST_CLODEX_BIN="$clodex_bin" \
 	MAIN_PID=$$ RESTART_EXIT=0 ACTIVE_EXIT=1 READY_EXIT=1 FAILED_EXIT=0 \
 	"$controller" restart \
 	>"$test_root/failed-unit.out" 2>"$test_root/failed-unit.err"; then
@@ -272,7 +248,7 @@ fi
 
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" CLAUDEX_PROC_ROOT="$proc_root" \
+	CONTROL_LOG="$control_log" TEST_CLODEX_BIN="$clodex_bin" \
 	MAIN_PID=$$ RESTART_EXIT=0 ACTIVE_EXIT=0 READY_EXIT=1 FAILED_EXIT=1 \
 	"$controller" restart \
 	>"$test_root/readiness-timeout.out" 2>"$test_root/readiness-timeout.err"; then
@@ -280,23 +256,5 @@ if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
 fi
 [ "$(grep -c '^sleep 0.2$' "$control_log")" -eq 50 ] ||
 	fail "readiness polling did not use the bounded attempt budget"
-
-other_runtime_id='other-runtime'
-other_runtime_root="$runtime_parent/$other_runtime_id"
-mkdir -p "$other_runtime_root/dist"
-: >"$other_runtime_root/dist/claude-wrapper.js"
-rm "$runtime_parent/current"
-ln -s "$other_runtime_id" "$runtime_parent/current"
-: >"$control_log"
-if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" CLAUDEX_PROC_ROOT="$proc_root" \
-	MAIN_PID=$$ RESTART_EXIT=0 ACTIVE_EXIT=0 READY_EXIT=0 FAILED_EXIT=1 \
-	"$controller" restart \
-	>"$test_root/runtime-mismatch.out" 2>"$test_root/runtime-mismatch.err"; then
-	fail "the service controller accepted a different loaded runtime"
-fi
-grep -F 'running service has not loaded the selected runtime' \
-	"$test_root/runtime-mismatch.err" >/dev/null ||
-	fail "the loaded-runtime mismatch was not specific"
 
 printf '%s\n' 'service-control tests passed'

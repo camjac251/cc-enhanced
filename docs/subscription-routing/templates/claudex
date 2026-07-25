@@ -4,10 +4,11 @@ set -eu
 
 clodex_home="$HOME/.local/share/claudex-clodex"
 credential_helper='@CLODEX_CREDENTIAL_HELPER@'
-process_wrapper="$clodex_home/runtime/current/dist/claude-wrapper.js"
+process_wrapper='@CLODEX_CLAUDE_BIN@'
 launcher_process_wrapper='@CLAUDEX_PROCESS_WRAPPER@'
-session_lock="$clodex_home/runtime/routed-sessions.lock"
+session_lock="$clodex_home/routed-sessions.lock"
 claude_path='@CLAUDE_BIN@'
+node_bin='@NODE_BIN@'
 default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
 system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
 requested_model=''
@@ -21,8 +22,8 @@ opus)
 	requested_model='opus[1m]'
 	shift
 	;;
-@CLODEX_MODEL_ALIAS@)
-	requested_model='@CLODEX_MODEL_ALIAS@'
+sol)
+	requested_model='sol'
 	shift
 	;;
 esac
@@ -58,7 +59,8 @@ for required_file in \
 	"$credential_helper" \
 	"$process_wrapper" \
 	"$launcher_process_wrapper" \
-	"$claude_path"; do
+	"$claude_path" \
+	"$node_bin"; do
 	if [ ! -x "$required_file" ]; then
 		printf 'claudex: required executable is missing: %s\n' "$required_file" >&2
 		exit 1
@@ -99,9 +101,9 @@ export CLODEX_REQUIRE_SERVER=1
 export CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt_file"
 export CLAUDE_CODE_PROCESS_WRAPPER="$launcher_process_wrapper"
 export CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE="$system_prompt_file"
-export CLAUDE_CODE_BILLING_LABEL='@CLODEX_BILLING_LABEL@'
-export CLAUDE_CODE_MODEL_ALIASES='{"@CLODEX_MODEL_ALIAS@":"clodex:@CLODEX_PROVIDER_ID@:@CLODEX_MODEL_ID@"}'
-export CLAUDE_CODE_CONFIGURED_MODEL_CATALOG='[{"id":"clodex:@CLODEX_PROVIDER_ID@:@CLODEX_MODEL_ID@","displayName":"@CLODEX_MODEL_DISPLAY_NAME@","description":"@CLODEX_MODEL_DESCRIPTION@","maxInputTokens":@CLODEX_MODEL_MAX_INPUT_TOKENS@,"maxOutputTokens":@CLODEX_MODEL_MAX_OUTPUT_TOKENS@}]'
+export CLAUDE_CODE_BILLING_LABEL='Claude Max + ChatGPT Pro'
+export CLAUDE_CODE_MODEL_ALIASES='{"sol":"clodex:openai-oauth:gpt-5.6-sol"}'
+export CLAUDE_CODE_CONFIGURED_MODEL_CATALOG='[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":258400,"maxOutputTokens":32000}]'
 export CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY=1
 export ENABLE_TOOL_SEARCH=true
 
@@ -113,7 +115,7 @@ systemctl --user start claudex-clodex.service
 ready=0
 attempt=0
 while [ "$attempt" -lt 50 ]; do
-	if "$process_wrapper" --check; then
+	if "$node_bin" "$process_wrapper" --check; then
 		ready=1
 		break
 	fi

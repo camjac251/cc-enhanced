@@ -12,14 +12,13 @@ test_root=$(mktemp -d)
 trap 'rm -rf "$test_root"' 0 HUP INT TERM
 
 test_home="$test_root/home"
-runtime_root="$test_home/.local/share/claudex-clodex/runtime/current"
-clodex_wrapper="$runtime_root/dist/claude-wrapper.js"
-runtime_cli="$runtime_root/dist/cli.js"
+clodex_wrapper="$test_root/clodex-claude"
+clodex_cli="$test_root/clodex-cli.js"
 system_prompt="$test_home/.config/claudex-clodex/system-prompt.md"
 credential_helper="$test_root/credential-helper"
 claude_bin="$test_root/claude"
 node_bin="$test_root/node"
-mkdir -p "$(dirname "$clodex_wrapper")" "$(dirname "$system_prompt")"
+mkdir -p "$(dirname "$system_prompt")"
 printf '%s\n%s\n' 'Route translated model requests through Clodex.' \
 	'Keep native model requests on the normal subscription.' >"$system_prompt"
 
@@ -29,7 +28,7 @@ for arg; do
 	printf '%s\n' "$arg"
 done
 SH
-cp "$clodex_wrapper" "$runtime_cli"
+cp "$clodex_wrapper" "$clodex_cli"
 tee "$credential_helper" >/dev/null <<'SH'
 #!/bin/sh
 exit 0
@@ -38,13 +37,16 @@ tee "$node_bin" >/dev/null <<'SH'
 #!/bin/sh
 printf '%s\n' "$*" >>"$ADMIN_LOG"
 SH
-chmod 700 "$clodex_wrapper" "$runtime_cli" "$credential_helper" "$node_bin"
+chmod 700 "$clodex_wrapper" "$clodex_cli" "$credential_helper" "$node_bin"
 
 process_wrapper_template="$setup_dir/templates/claudex-process-wrapper"
 [ -r "$process_wrapper_template" ] ||
 	fail "the portable process-wrapper template is missing"
 process_wrapper="$test_root/claudex-process-wrapper"
-cp "$process_wrapper_template" "$process_wrapper"
+sed \
+	-e "s|@NODE_BIN@|/bin/sh|g" \
+	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
+	"$process_wrapper_template" >"$process_wrapper"
 chmod 700 "$process_wrapper"
 
 tee "$claude_bin" >/dev/null <<'SH'
@@ -71,6 +73,19 @@ grep -Fx 'sol' "$test_root/injected.args" >/dev/null ||
 	fail "the original model argument was not retained"
 
 HOME="$test_home" CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	"$process_wrapper" "$claude_bin" -- \
+	--append-system-prompt --append-subagent-system-prompt \
+	>"$test_root/separator.args"
+[ "$(grep -Fxc -- '--append-system-prompt-file' "$test_root/separator.args")" -eq 1 ] ||
+	fail "a positional prompt flag suppressed the managed parent prompt"
+[ "$(grep -Fxc -- '--append-subagent-system-prompt' "$test_root/separator.args")" -eq 2 ] ||
+	fail "a positional prompt flag suppressed the managed subagent prompt"
+grep -Fx 'Route translated model requests through Clodex.
+Keep native model requests on the normal subscription.' \
+	"$test_root/separator.args" >/dev/null ||
+	fail "the managed subagent prompt was not forwarded after the argument separator"
+
+HOME="$test_home" CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
 	"$process_wrapper" "$claude_bin" \
 	--append-system-prompt 'existing parent prompt' \
 	--append-subagent-system-prompt 'existing child prompt' \
@@ -87,6 +102,7 @@ admin_template="$setup_dir/templates/clodex"
 admin_wrapper="$test_root/clodex"
 sed \
 	-e "s|@NODE_BIN@|$node_bin|g" \
+	-e "s|@CLODEX_BIN@|$clodex_cli|g" \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
 	"$admin_template" >"$admin_wrapper"
@@ -105,7 +121,7 @@ fi
 grep -F 'already owns the client binary' "$test_root/patched.err" >/dev/null ||
 	fail "the enhanced-client patch refusal was not specific"
 [ ! -s "$admin_log" ] ||
-	fail "the rejected patch command reached the routing runtime"
+	fail "the rejected patch command reached Clodex"
 
 tee "$claude_bin" >/dev/null <<'SH'
 #!/bin/sh
@@ -114,14 +130,13 @@ SH
 chmod 700 "$claude_bin"
 : >"$admin_log"
 HOME="$test_home" ADMIN_LOG="$admin_log" "$admin_wrapper" patch
-grep -Fx "$runtime_cli patch" "$admin_log" >/dev/null ||
+grep -Fx "$clodex_cli patch" "$admin_log" >/dev/null ||
 	fail "the stock-client patch command did not reach Clodex"
 
 verifier_test_dir="$test_root/verifier"
 mkdir -p "$verifier_test_dir"
 cp "$setup_dir/verify-live.sh" "$verifier_test_dir/verify-live.sh"
 cp "$setup_dir/verify-static.sh" "$verifier_test_dir/verify-static-real.sh"
-cp "$setup_dir/versions.env" "$verifier_test_dir/versions.env"
 static_call_log="$verifier_test_dir/static-call.log"
 tee "$verifier_test_dir/verify-static.sh" >/dev/null <<'SH'
 #!/bin/sh
@@ -173,14 +188,14 @@ assert_live_usage() {
 	[ ! -e "$static_call_log" ] ||
 		fail "invalid live verifier arguments reached static verification"
 	grep -Fx \
-		'usage: verify-live.sh [--smoke] [--development | --stock]' \
+		'usage: verify-live.sh [--smoke] [--stock]' \
 		"$verifier_test_dir/live.err" >/dev/null ||
 		fail "the live verifier did not print its profile usage"
 }
 
 assert_live_usage --unknown
-assert_live_usage --stock --development
-assert_live_usage --development --stock
+assert_live_usage --development
+assert_live_usage --stock --stock
 
 assert_static_usage() {
 	if "$verifier_test_dir/verify-static-real.sh" "$@" \

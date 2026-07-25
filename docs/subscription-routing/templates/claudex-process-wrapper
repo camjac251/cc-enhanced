@@ -2,7 +2,8 @@
 
 set -eu
 
-clodex_wrapper="$HOME/.local/share/claudex-clodex/runtime/current/dist/claude-wrapper.js"
+clodex_wrapper='@CLODEX_CLAUDE_BIN@'
+node_bin='@NODE_BIN@'
 default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
 system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
 
@@ -13,6 +14,10 @@ fi
 if [ ! -x "$clodex_wrapper" ]; then
 	printf 'claudex-process-wrapper: Clodex wrapper is missing: %s\n' \
 		"$clodex_wrapper" >&2
+	exit 1
+fi
+if [ ! -x "$node_bin" ]; then
+	printf 'claudex-process-wrapper: Node.js is missing: %s\n' "$node_bin" >&2
 	exit 1
 fi
 if [ ! -r "$system_prompt_file" ]; then
@@ -27,6 +32,9 @@ has_parent_prompt=0
 has_subagent_prompt=0
 for arg; do
 	case "$arg" in
+	--)
+		break
+		;;
 	--append-system-prompt | --append-system-prompt=* | \
 		--append-system-prompt-file | --append-system-prompt-file=*)
 		has_parent_prompt=1
@@ -45,4 +53,4 @@ if [ "$has_subagent_prompt" -eq 0 ]; then
 	set -- --append-subagent-system-prompt "$subagent_prompt" "$@"
 fi
 
-exec "$clodex_wrapper" "$claude_path" "$@"
+exec "$node_bin" "$clodex_wrapper" "$claude_path" "$@"

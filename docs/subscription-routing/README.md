@@ -21,7 +21,7 @@ status line, plugins, skills, agents, session history, or project configuration.
 
 Two client profiles are supported:
 
-- **Enhanced client:** the pinned cc-enhanced build owns all client changes and
+- **Enhanced client:** the current cc-enhanced build owns all client changes and
   exposes the complete model catalog, picker, context, prompt, agent, and
   workflow behavior.
 - **Stock client:** an official Claude Code installation uses Clodex's own
@@ -31,60 +31,37 @@ Two client profiles are supported:
   model ID, but it does not provide the full `model: "sol"` experience and is
   not the documented stock profile.
 
-The package targets WSL or Linux x86_64 with a systemd user session. The routing
-runtime is portable to other platforms, but the supplied service and
-PasswordVault bridge are platform-specific.
+The package targets WSL or Linux x86_64 with a systemd user session. Clodex is
+portable to other platforms, but the supplied service and PasswordVault bridge
+are platform-specific.
 
-## What is pinned
+## Updates
 
-[`versions.env`](./versions.env) is the source of reviewed deployment pins for
-this subscription-routing setup:
+Clodex is a globally activated mise npm tool. Install it once with `mise use
+-g`, then update it with `mise upgrade`.
 
-- immutable client source revision;
-- upstream native client version;
-- Linux x86_64 promoted-binary digest;
-- immutable routing source revision;
-- normalized production-runtime digest;
-- runtime toolchain;
-- provider, model, alias, context, and port values.
+This directory is the source of truth for the setup behavior and templates.
+Use it in place so rendering and verification use the same files. Removing the
+source checkout does not alter the installed launchers, service, globally
+activated Clodex tool, or account state.
 
-The branch names are update channels. The full revisions and digests are the
-installation anchors. Do not replace a pinned revision with the current branch
-tip without reviewing the complete old-to-new diff and regenerating the
-matching artifact digest.
-
-This directory at the pinned cc-enhanced revision is the source of truth for
-the complete setup package. Use it in place. Detached copies and archives are
-point-in-time snapshots; mixing their templates or verification scripts with
-current pins can produce an installation that no reviewed revision represents.
-Removing a detached source copy does not alter the installed launchers,
-service, or immutable runtime selector. Run future rendering, update, rollback,
-and verification commands from this canonical package.
-
-The tested-version badge in the root README remains the canonical cc-enhanced
-upstream target. For an enhanced-profile handoff,
-`CC_ENHANCED_NATIVE_VERSION` must match that badge; update both in the same
-reviewed client-pin change.
-
-The current translated-model pin is a 258,400-token effective input window with
-a 32,000-token output allowance. This package does not enable the separate
-372K-context experiment or claim a one-million-token translated-model window.
-The routing catalog retains the provider's raw 272,000-token route window, so
-`clodex models` may display `272K context`. The launcher deliberately advertises
-the reviewed 258,400-token effective input limit to the client; these values
-describe different layers and are not configuration drift.
+The current translated-model configuration uses a 258,400-token effective
+input window with a 32,000-token output allowance. This package does not enable
+the separate 372K-context experiment or claim a one-million-token
+translated-model window. The routing catalog retains the provider's raw
+272,000-token route window, so `clodex models` may display `272K context`. The
+launcher deliberately advertises the reviewed 258,400-token effective input
+limit to the client; these values describe different layers and are not
+configuration drift.
 
 ## File map
 
 | Path | Purpose |
 | --- | --- |
 | `README.md` | Installation, operation, update, rollback, and removal guide |
-| `versions.env` | Public source, artifact, toolchain, route, model, and context pins |
-| `runtime-artifact-sha256.sh` | Normalized routing-runtime digest |
-| `check-routed-idle.sh` | Scans process arguments without treating paths as regular expressions and refuses a service restart while routed clients are active |
 | `test-service-control.sh` | Isolated ordering and failure tests for the restart guard and controller |
 | `test-client-compatibility.sh` | Isolated checks for enhanced and stock client ownership, verifier profile routing, and parent and subagent prompt propagation |
-| `verify-static.sh` | Read-only common setup verification with enhanced-default digest and patch checks plus an explicit stock profile |
+| `verify-static.sh` | Read-only common setup verification with enhanced-default patch checks plus an explicit stock profile |
 | `verify-live.sh` | Profile-aware service and authentication verification with optional inference smoke tests |
 | `templates/claudex` | Routed session launcher |
 | `templates/clodex` | Isolated provider-administration wrapper |
@@ -112,8 +89,8 @@ the client model surfaces, and records a per-version patch manifest under the
 isolated Clodex home. Run it again after every stock Claude Code update or
 routed-model configuration change.
 
-The routing runtime owns selective transport, provider authentication, protocol
-translation, model discovery, credential refresh, and lifecycle logging.
+Clodex owns selective transport, provider authentication, protocol translation,
+model discovery, credential refresh, and lifecycle logging.
 
 Never let both patch managers target the same native binary. The supplied
 administration wrapper enforces that boundary for the enhanced profile while
@@ -168,15 +145,13 @@ Install:
 - [mise](https://mise.jdx.dev/);
 - a systemd user session;
 - common POSIX utilities;
-- GNU `tar`, `sha256sum`, `readlink`, `sed`, `grep`, `cmp`, `cut`, and `stat`;
+- `sed`, `grep`, `cmp`, and `flock`;
 - `jq` for lifecycle-log inspection;
-- `flock` from util-linux and a readable Linux `/proc` for safe
-  launch-versus-restart coordination;
 - Windows PowerShell and `wslpath` only when using the supplied WSL
   PasswordVault helper.
 
-The client source pins its own Bun toolchain. The routing source uses the exact
-Node.js and package-manager versions in `versions.env`.
+The client source manages its Bun toolchain. Node.js and Clodex are ordinary
+globally activated mise tools.
 
 ## 1. Select a client profile
 
@@ -188,25 +163,18 @@ Start from the parent directory where you want the source checkout:
 (
 set -eu
 
-setup_dir=/absolute/path/to/docs/subscription-routing
-. "$setup_dir/versions.env"
-
 git clone \
-  --branch "$CC_ENHANCED_BRANCH" \
+  --branch main \
   --single-branch \
-  "$CC_ENHANCED_REPOSITORY" \
+  https://github.com/camjac251/cc-enhanced.git \
   cc-enhanced
-git -C cc-enhanced checkout --detach "$CC_ENHANCED_REVISION"
-test "$(git -C cc-enhanced rev-parse HEAD)" = "$CC_ENHANCED_REVISION"
 
 cd cc-enhanced
 mise install
-mise run native:update -- "$CC_ENHANCED_NATIVE_VERSION"
+mise run native:update -- latest
 
 claude --version
-promoted_binary=$(readlink -f "$HOME/.local/share/claude/versions/current")
-test "$(sha256sum "$promoted_binary" | cut -d ' ' -f1)" = \
-  "$CC_ENHANCED_LINUX_X64_SHA256"
+mise run status
 )
 ```
 
@@ -214,10 +182,6 @@ The update performs the real-bundle patch verification, promotes by atomic
 symlink replacement, exports the promoted prompts, and checks both curated
 prompt surfaces and prompt drift. A failed patch verification does not write or
 promote the candidate.
-
-The binary digest above is for Linux x86_64 only. On another platform, verify
-the immutable source revision, native version, patch signature, and platform
-build independently before adding a platform-specific digest.
 
 ### Stock client
 
@@ -228,113 +192,27 @@ claude --version
 claude
 ```
 
-Do not install cc-enhanced over that binary. Complete the routing runtime,
-credential, wrapper, prompt, and model-selection sections below, then run
-`clodex patch` as described in section 6. The stock profile does not use the
-cc-enhanced revision, digest, or patch-tag checks.
+Do not install cc-enhanced over that binary. Complete the Clodex, credential,
+wrapper, prompt, and model-selection sections below, then run `clodex patch` as
+described in section 6. The stock profile does not use the cc-enhanced patch-tag
+checks.
 
-## 2. Build the pinned routing runtime
-
-From this canonical setup directory:
+## 2. Install Clodex globally with mise
 
 ```sh
-(
-set -eu
-
-setup_dir=$(pwd -P)
-. "$setup_dir/versions.env"
-. "$setup_dir/runtime-artifact-sha256.sh"
-
-build_root=$(mktemp -d "${TMPDIR:-/tmp}/clodex-build.XXXXXX")
-source_dir="$build_root/clodex-source"
-candidate_runtime=''
-cleanup() {
-  rm -rf "$build_root"
-  if [ -n "$candidate_runtime" ]; then
-    rm -rf "$candidate_runtime"
-  fi
-}
-trap cleanup 0 HUP INT TERM
-
-git clone \
-  --branch "$CLODEX_BRANCH" \
-  --single-branch \
-  "$CLODEX_REPOSITORY" \
-  "$source_dir"
-git -C "$source_dir" checkout --detach "$CLODEX_REVISION"
-test "$(git -C "$source_dir" rev-parse HEAD)" = "$CLODEX_REVISION"
-
-cd "$source_dir"
-mise install "node@$CLODEX_NODE_VERSION"
-node_root=$(mise where "node@$CLODEX_NODE_VERSION")
-corepack_bin="$node_root/bin/corepack"
-test -x "$corepack_bin"
-test "$("$corepack_bin" "pnpm@$CLODEX_PNPM_VERSION" --version)" = \
-  "$CLODEX_PNPM_VERSION"
-
-"$corepack_bin" "pnpm@$CLODEX_PNPM_VERSION" install --frozen-lockfile
-"$corepack_bin" "pnpm@$CLODEX_PNPM_VERSION" typecheck
-"$corepack_bin" "pnpm@$CLODEX_PNPM_VERSION" test
-"$corepack_bin" "pnpm@$CLODEX_PNPM_VERSION" build
-
-runtime_parent="$HOME/.local/share/claudex-clodex/runtime"
-install -d -m 700 "$runtime_parent"
-candidate_runtime=$(mktemp -d "$runtime_parent/.candidate.XXXXXX")
-
-"$corepack_bin" "pnpm@$CLODEX_PNPM_VERSION" \
-  --filter . deploy --prod --legacy "$candidate_runtime"
-candidate_artifact=$(runtime_artifact_sha256 "$candidate_runtime")
-test "$candidate_artifact" = "$CLODEX_ARTIFACT_SHA256"
-
-revision_short=$(printf '%s' "$CLODEX_REVISION" | cut -c1-12)
-artifact_short=$(printf '%s' "$CLODEX_ARTIFACT_SHA256" | cut -c1-12)
-runtime_id="$revision_short-$artifact_short"
-runtime_root="$runtime_parent/$runtime_id"
-
-if [ -d "$runtime_root" ]; then
-  test "$(runtime_artifact_sha256 "$runtime_root")" = \
-    "$CLODEX_ARTIFACT_SHA256"
-else
-  "$corepack_bin" "pnpm@$CLODEX_PNPM_VERSION" \
-    --filter . deploy --prod --legacy "$runtime_root"
-fi
-test "$(runtime_artifact_sha256 "$runtime_root")" = \
-  "$CLODEX_ARTIFACT_SHA256"
-printf '%s\n' "$CLODEX_REVISION" >"$runtime_root/CLODEX_REVISION"
-printf '%s\n' "$CLODEX_ARTIFACT_SHA256" \
-  >"$runtime_root/CLODEX_ARTIFACT_SHA256"
-install -m 600 "$setup_dir/versions.env" \
-  "$runtime_root/SETUP_VERSIONS.env"
-
-"$setup_dir/check-routed-idle.sh"
-previous_target=''
-if [ -L "$runtime_parent/current" ]; then
-  previous_target=$(readlink "$runtime_parent/current")
-fi
-printf '%s\n' "$previous_target" >"$runtime_parent/PREVIOUS"
-
-switch_directory=$(mktemp -d "$runtime_parent/.switch.XXXXXX")
-ln -s "$runtime_id" "$switch_directory/current"
-mv -Tf "$switch_directory/current" "$runtime_parent/current"
-rmdir "$switch_directory"
-)
+mise use -g node@lts
+mise use -g --minimum-release-age 0 npm:@bman654/clodex@latest
+mise tool npm:@bman654/clodex
+mise which clodex
+mise which clodex-claude
 ```
 
-This switches only the immutable `current` symlink. It does not restart the
-service. Existing routed sessions continue using the process and executable
-they already opened.
+`mise use -g` installs Node.js and Clodex in the global mise configuration, so
+`clodex` and `clodex-claude` are available anywhere mise is activated.
+`--minimum-release-age 0` opts this tool out of a global release-age delay; omit
+it if waiting for newly published releases is intentional.
 
-On an initial installation, no routed launcher can use the selector yet. During
-an update, pause new `claudex` launches before running the selector portion of
-the block, and keep them paused until `clodex-service restart` returns. The idle
-guard confirms existing sessions have exited, while the operational pause
-prevents a new launcher from opening the new wrapper before the old service has
-restarted. Do not switch `runtime/current` while routed launches can race the
-operation.
-
-The normalized runtime digest excludes provenance files, path-bound generated
-launchers, and time/order metadata that are not supported runtime entrypoints.
-The service and wrapper execute `dist/cli.js` directly.
+The setup templates record the paths reported by `mise which`.
 
 ## 3. Select and install a credential helper
 
@@ -386,9 +264,9 @@ This example defaults to the supplied WSL helper but accepts the absolute
 (
 set -eu
 
-. ./versions.env
-mise install "node@$CLODEX_NODE_VERSION"
-node_bin="$(mise where "node@$CLODEX_NODE_VERSION")/bin/node"
+node_bin=$(mise which node)
+clodex_bin=$(mise which clodex)
+clodex_wrapper=$(mise which clodex-claude)
 claude_bin=$(command -v claude)
 credential_helper=${CLODEX_CREDENTIAL_HELPER_PATH:-"$HOME/.local/libexec/claudex-credential-helper"}
 launcher_process_wrapper="$HOME/.local/libexec/claudex-process-wrapper"
@@ -398,12 +276,13 @@ case "$credential_helper" in
   *) printf '%s\n' 'credential helper path must be absolute' >&2; exit 1 ;;
 esac
 test -x "$node_bin"
+test -x "$clodex_bin"
+test -x "$clodex_wrapper"
 test -x "$claude_bin"
 test -x "$credential_helper"
-test "$("$node_bin" -p 'process.versions.node')" = "$CLODEX_NODE_VERSION"
 
 if ! systemctl --user is-active --quiet claudex-clodex.service; then
-  "$node_bin" - "$CLODEX_PORT" <<'NODE'
+  "$node_bin" - 3457 <<'NODE'
 const net = require('node:net');
 const port = Number(process.argv[2]);
 const server = net.createServer();
@@ -421,31 +300,33 @@ trap 'rm -rf "$rendered_dir"' 0 HUP INT TERM
 sed \
   -e "s|@HOME@|$HOME|g" \
   -e "s|@NODE_BIN@|$node_bin|g" \
-  -e "s|@CLODEX_PORT@|$CLODEX_PORT|g" \
+  -e "s|@CLODEX_BIN@|$clodex_bin|g" \
   -e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
   templates/claudex-clodex.service >"$rendered_dir/claudex-clodex.service"
 sed \
   -e "s|@NODE_BIN@|$node_bin|g" \
+  -e "s|@CLODEX_BIN@|$clodex_bin|g" \
   -e "s|@CLAUDE_BIN@|$claude_bin|g" \
   -e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
   templates/clodex >"$rendered_dir/clodex"
 sed \
   -e "s|@NODE_BIN@|$node_bin|g" \
+  -e "s|@CLODEX_BIN@|$clodex_bin|g" \
+  -e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
   templates/clodex-service >"$rendered_dir/clodex-service"
 sed \
+  -e "s|@NODE_BIN@|$node_bin|g" \
+  -e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
+  templates/claudex-process-wrapper >"$rendered_dir/claudex-process-wrapper"
+sed \
+  -e "s|@NODE_BIN@|$node_bin|g" \
   -e "s|@CLAUDE_BIN@|$claude_bin|g" \
+  -e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
   -e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
   -e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
-  -e "s|@CLODEX_PROVIDER_ID@|$CLODEX_PROVIDER_ID|g" \
-  -e "s|@CLODEX_MODEL_ID@|$CLODEX_MODEL_ID|g" \
-  -e "s|@CLODEX_MODEL_ALIAS@|$CLODEX_MODEL_ALIAS|g" \
-  -e "s|@CLODEX_MODEL_DISPLAY_NAME@|$CLODEX_MODEL_DISPLAY_NAME|g" \
-  -e "s|@CLODEX_MODEL_DESCRIPTION@|$CLODEX_MODEL_DESCRIPTION|g" \
-  -e "s|@CLODEX_BILLING_LABEL@|$CLODEX_BILLING_LABEL|g" \
-  -e "s|@CLODEX_MODEL_MAX_INPUT_TOKENS@|$CLODEX_MODEL_MAX_INPUT_TOKENS|g" \
-  -e "s|@CLODEX_MODEL_MAX_OUTPUT_TOKENS@|$CLODEX_MODEL_MAX_OUTPUT_TOKENS|g" \
   templates/claudex >"$rendered_dir/claudex"
 
+install -d -m 700 "$HOME/.local/share/claudex-clodex"
 install -d -m 700 \
   "$HOME/.config/systemd/user" \
   "$HOME/.local/bin" \
@@ -455,10 +336,8 @@ install -m 600 "$rendered_dir/claudex-clodex.service" \
 install -m 700 "$rendered_dir/claudex" "$HOME/.local/bin/claudex"
 install -m 700 "$rendered_dir/clodex" "$HOME/.local/bin/clodex"
 install -m 700 "$rendered_dir/clodex-service" "$HOME/.local/bin/clodex-service"
-install -m 700 templates/claudex-process-wrapper \
+install -m 700 "$rendered_dir/claudex-process-wrapper" \
   "$launcher_process_wrapper"
-install -m 700 check-routed-idle.sh \
-  "$HOME/.local/libexec/claudex-check-routed-idle"
 
 systemctl --user daemon-reload
 )
@@ -488,7 +367,6 @@ present, plus the routing-specific policy:
 (
 set -eu
 
-. ./versions.env
 prompt_directory="$HOME/.config/claudex-clodex"
 install -d -m 700 "$prompt_directory"
 temporary_prompt=$(mktemp "$prompt_directory/.system-prompt.XXXXXX")
@@ -500,12 +378,7 @@ else
   : >"$temporary_prompt"
 fi
 printf '\n' >>"$temporary_prompt"
-sed \
-  -e "s|@CLODEX_MODEL_NAME@|$CLODEX_MODEL_NAME|g" \
-  -e "s|@CLODEX_MODEL_DISPLAY_NAME@|$CLODEX_MODEL_DISPLAY_NAME|g" \
-  -e "s|@CLODEX_MODEL_ALIAS@|$CLODEX_MODEL_ALIAS|g" \
-  -e "s|@CLODEX_MODEL_MAX_INPUT_TOKENS_DISPLAY@|$CLODEX_MODEL_MAX_INPUT_TOKENS_DISPLAY|g" \
-  templates/system-prompt-routing.md >>"$temporary_prompt"
+sed -n 'p' templates/system-prompt-routing.md >>"$temporary_prompt"
 chmod 600 "$temporary_prompt"
 mv -f "$temporary_prompt" "$prompt_directory/system-prompt.md"
 )
@@ -514,23 +387,22 @@ mv -f "$temporary_prompt" "$prompt_directory/system-prompt.md"
 Rerun this block whenever the managed system prompt or routing template
 changes. The static verifier reconstructs the expected file byte-for-byte.
 
-The routed prompt is an append-only policy layer, not a replacement for Claude
-Code's built-in system prompt. It must be readable by the launcher, contain no
-credentials or account identifiers, and remain valid in both parent and child
-contexts. The portable process wrapper adds the file to the initial process and
-passes the same text through Claude Code's native subagent prompt option. If a
-child launches another child, the wrapper preserves that chain without adding
-the same role twice.
+The routed prompt is an append-only model-routing layer, not a replacement for
+Claude Code's other managed policy. It must be readable by the launcher,
+contain no credentials or account identifiers, and remain valid in both parent
+and child contexts. The portable process wrapper adds the file to the initial
+process and passes the same text through Claude Code's native subagent prompt
+option. If a child launches another child, the wrapper preserves that chain
+without adding the same role twice.
 
 The policy does not force all children to `sol`. It teaches the parent that
 explicit requests such as “use Sol agents” mean per-call `model: "sol"`,
 preserves specialist agent types, and keeps each worker within its own context
-budget. Required workflow results become hard gates with one recovery attempt;
-downstream phases do not continue after a second missing result.
+budget.
 
 ## 6. Start, authenticate, and select the model
 
-Start the service after the immutable runtime and rendered unit are installed:
+Start the service after the global Clodex tool and rendered unit are installed:
 
 ```sh
 systemctl --user start claudex-clodex.service
@@ -577,8 +449,8 @@ a credential, or send an inference request:
 ./verify-static.sh
 ```
 
-This is the strict pinned enhanced-profile handoff gate. It checks the promoted
-binary digest and required cc-enhanced tags.
+This checks the globally activated Clodex entrypoints and version, rendered
+files, model configuration, and the required cc-enhanced tags.
 
 For the stock profile, make the idempotent patch command the client gate, then
 run the read-only common setup verifier:
@@ -591,21 +463,9 @@ clodex patch
 `clodex patch` exits without rewriting a current binary. If the stock client or
 model configuration changed, it restores the pristine per-version backup and
 rebuilds the patch. The stock static mode then runs the portable package tests
-and checks the shared runtime, templates, prompt, helper, model configuration,
-native version, and client-ownership boundary. It does not invoke or replace
-the preceding Clodex patch-freshness gate.
-
-Optional enhanced-profile source-checkout verification:
-
-```sh
-CC_ENHANCED_SOURCE_DIR=/path/to/cc-enhanced \
-CLODEX_SOURCE_DIR=/path/to/clodex \
-./verify-static.sh
-```
-
-The client source check accepts an exact pinned checkout or a descendant whose
-only tracked differences are this handoff package and the root README link. Any
-runtime source, patch, dependency, toolchain, or baseline difference fails.
+and checks the globally activated tool, templates, prompt, helper, model
+configuration, and client-ownership boundary. It does not invoke or replace the
+preceding Clodex patch-freshness gate.
 
 Live service and authentication verification:
 
@@ -623,21 +483,6 @@ Opt-in direct, passthrough, and translated inference smoke tests:
 
 The smoke flag consumes subscription usage. It is not part of static
 installation validation.
-
-When validating an unreleased local development snapshot whose source and
-artifact intentionally differ from `versions.env`, skip only the
-reproducibility layer:
-
-```sh
-./verify-live.sh --development
-./verify-live.sh --development --smoke
-```
-
-Development verification still checks service readiness, the selected runtime,
-the pinned Node.js executable, and external OAuth. With `--smoke`, it also
-checks direct, passthrough, and translated inference. It does not prove that the
-deployment can be reproduced from the shareable pins and must not be used as a
-release or handoff gate. `--development` and `--stock` are mutually exclusive.
 
 Manual behavior gates after an update:
 
@@ -673,7 +518,7 @@ clodex-service restart # guarded service restart after routed clients are idle
 ```
 
 The administration wrapper sets `CLODEX_HOME` to
-`~/.local/share/claudex-clodex`. Generic runtime help may still print default
+`~/.local/share/claudex-clodex`. Generic Clodex help may still print default
 paths under `~/.clodex`; for this isolated setup, use the corresponding path
 under the wrapper-managed home instead.
 
@@ -696,80 +541,38 @@ two documented profiles for the full behavior.
 
 ## Safe updates and restarts
 
-Deploying a new immutable runtime and switching `runtime/current` does not
-restart an existing service. Keep new routed launches paused after the selector
-switch, then run:
+`mise upgrade` changes the globally activated Clodex tool but does not restart
+the already-running routing service. Let routed sessions finish, pause new
+`claudex` launches for the short update window, then run:
 
 ```sh
+mise upgrade --minimum-release-age 0 npm:@bman654/clodex
+mise tool npm:@bman654/clodex
 clodex-service restart
+./verify-static.sh
 ./verify-live.sh
 ```
 
 `claudex` holds a shared routed-session lock for the client lifetime.
-`clodex-service restart` acquires the matching exclusive lock before it runs
-the installed process scan and invokes systemd, so a client cannot start in the
-gap between the idle check and restart. The controller refuses the restart
-while routed parents, agents, or workflows are active, waits for strict wrapper
-readiness, verifies the loaded process against `runtime/current`, and prints
-the loaded PID and immutable runtime. Do not bypass it with a direct
-`systemctl restart`: restarting the service closes active streams.
+`clodex-service restart` acquires the matching exclusive lock before invoking
+systemd, so a client cannot start in the gap between the guard and restart. The
+controller refuses the restart while routed parents, agents, or workflows are
+active, waits for strict wrapper readiness, and prints the loaded PID and
+Clodex version. Do not bypass it with a direct `systemctl restart`: restarting
+the service closes active streams.
 
 For a client update:
 
 1. Enhanced profile: pull one new native version, review one release diff at a
    time, update patch anchors only for the latest upstream form, run the full
-   real-bundle verifier, promote, and record the new source revision, native
-   version, and platform digest.
+   real-bundle verifier, and promote.
 2. Stock profile: update Claude Code normally, then rerun `clodex patch` so its
    per-version backup and manifest match the new binary.
 3. Rerender the wrappers if the resolved `claude` path changed.
-4. Refresh this directory from the reviewed cc-enhanced revision, then run the
-   applicable static and live verification layers.
+4. Pull this setup directory from `main`, then run the applicable static and
+   live verification layers.
 
-For a routing update:
-
-1. Review the complete pinned-revision diff.
-2. Run type checking, all tests, and the production build.
-3. Deploy a candidate and calculate its normalized digest.
-4. Update the source revision and artifact digest together.
-5. Pause new routed launches and wait for existing routed sessions to become
-   idle.
-6. Publish the new immutable runtime and switch `runtime/current`.
-7. Keep launches paused until `clodex-service restart` and live verification
-   both finish.
-
-## Rollback
-
-Rollback uses the retained runtime named in `runtime/PREVIOUS`:
-
-Pause new `claudex` launches for the entire rollback block. The idle guard
-rejects an already-active routed client; the launch pause also closes the
-separate selector-switch window.
-
-```sh
-(
-set -eu
-
-./check-routed-idle.sh
-runtime_parent="$HOME/.local/share/claudex-clodex/runtime"
-IFS= read -r previous_target <"$runtime_parent/PREVIOUS"
-test -n "$previous_target"
-test -x "$runtime_parent/$previous_target/dist/cli.js"
-
-switch_directory=$(mktemp -d "$runtime_parent/.rollback.XXXXXX")
-trap 'rm -rf "$switch_directory"' 0 HUP INT TERM
-ln -s "$previous_target" "$switch_directory/current"
-mv -Tf "$switch_directory/current" "$runtime_parent/current"
-rmdir "$switch_directory"
-
-clodex-service restart
-)
-```
-
-Restore the matching `SETUP_VERSIONS.env`, rerender the service, wrappers, and
-prompt, then rerun static and live verification.
-
-The client patcher has its own symmetric rollback:
+The client patcher has its own rollback:
 
 ```sh
 mise run native:rollback
@@ -798,8 +601,8 @@ readiness wait and reports unit status on failure.
 
 ### Authentication reports a reused or rejected refresh token
 
-The pinned runtime re-reads external credentials, suppresses a rejected
-environment override until it changes, and performs one safe refresh/retry. If
+Clodex re-reads external credentials, suppresses a rejected environment
+override until it changes, and performs one safe refresh/retry. If
 authentication remains invalid, run the provider authentication command again.
 Do not work around it by setting provider API-key variables.
 
@@ -852,8 +655,8 @@ work, then stop dependent phases if the result remains missing.
 
 ## Billing display
 
-The routed launcher sets the fallback billing label to the pinned
-`CLODEX_BILLING_LABEL` value. The label is display-only. It does not select a
+The routed launcher uses `Claude Max + ChatGPT Pro` as its fallback billing
+label. The label is display-only. It does not select a
 credential, change an authentication route, or change how either provider
 accounts for usage. The client may still display a local estimated dollar
 amount for translated requests. Verify the provider authentication mode with
@@ -861,8 +664,8 @@ amount for translated requests. Verify the provider authentication mode with
 
 ## Removal
 
-Remove the provider first so the runtime can delete its OAuth credential through
-the configured helper:
+Remove the provider first so Clodex can delete its OAuth credential through the
+configured helper:
 
 ```sh
 (
@@ -870,12 +673,12 @@ set -eu
 
 clodex providers remove openai-oauth
 systemctl --user stop claudex-clodex.service
+mise use -g --remove npm:@bman654/clodex
 rm -f \
   "$HOME/.config/systemd/user/claudex-clodex.service" \
   "$HOME/.local/bin/claudex" \
   "$HOME/.local/bin/clodex" \
   "$HOME/.local/bin/clodex-service" \
-  "$HOME/.local/libexec/claudex-check-routed-idle" \
   "$HOME/.local/libexec/claudex-process-wrapper"
 rm -rf \
   "$HOME/.config/claudex-clodex" \
