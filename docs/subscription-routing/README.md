@@ -3,17 +3,15 @@
 This package reproduces a two-subscription setup without placing provider API
 keys in the client configuration:
 
-```text
-claude
-  -> selected Claude Code binary
-  -> Anthropic directly
-  -> Claude Max subscription
+```mermaid
+flowchart LR
+    Claude(["claude"]) --> Direct["Selected client binary<br/>and ~/.claude"]
+    Direct --> Max["Anthropic<br/>Claude Max subscription"]
 
-claudex
-  -> the same selected binary and the same ~/.claude configuration
-  -> local selective routing service
-     |- native models -> Anthropic passthrough -> Claude Max subscription
-     `- sol           -> protocol translation -> ChatGPT Pro OAuth
+    Claudex(["claudex"]) --> Routed["Same binary and configuration<br/>routed process tree"]
+    Routed --> Router{{Local selective router}}
+    Router -->|native models: passthrough| Max
+    Router -->|sol: protocol translation| Pro["OpenAI<br/>ChatGPT Pro OAuth"]
 ```
 
 The direct and routed launchers intentionally coexist. `claude` remains the
