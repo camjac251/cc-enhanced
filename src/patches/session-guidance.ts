@@ -7,10 +7,10 @@ const LEGACY_FIND_GREP_TOOL_RE =
 	/`\\`find\\` or \\`grep\\` via the (\$\{[^}]+\}) tool`/g;
 
 const MODERN_FIND_GREP_TOOL =
-	"`code-search routing (Serena, ChunkHound, Probe, rg, ast-grep MCP or CLI) via the $1 tool`";
+	"`code-search routing (Serena, ChunkHound, Probe, rg, ast-grep CLI) via the $1 tool`";
 
 const MODERN_BROAD_EXPLORATION =
-	"For broad codebase exploration or research that'll take more than $1 queries, spawn $2 with subagent_type=$3. Otherwise choose by intent: Serena for known symbols, ChunkHound for unfamiliar concepts, Probe for known terms, \\`rg\\` for exact lexical text, and ast-grep MCP or CLI for syntax shapes and structural rewrites.";
+	"For broad codebase exploration or research that'll take more than $1 queries, spawn $2 with subagent_type=$3. Otherwise choose by intent: Serena for known symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, \\`rg\\` for exact lexical text, and the ast-grep CLI for syntax shapes and structural rewrites.";
 
 const LEGACY_OTHERWISE_TAIL_RE = /Otherwise use \$\{[^}]+\} directly\./;
 const LEGACY_FIND_GREP_TOOL_SIGNAL_RE =
@@ -31,9 +31,9 @@ export const sessionGuidance: Patch = {
 		// anchoring on the structural sentence body and the helper-text
 		// envelope leaves much less room for accidental matches.
 		const MODERN_BROAD_EXPLORATION_FULL =
-			/For broad codebase exploration or research that'll take more than \$\{[^}]+\} queries, spawn \$\{[^}]+\} with subagent_type=\$\{[^}]+\}\. Otherwise choose by intent: Serena for known symbols, ChunkHound for unfamiliar concepts, Probe for known terms, \\`rg\\` for exact lexical text, and ast-grep MCP or CLI for syntax shapes and structural rewrites\./;
+			/For broad codebase exploration or research that'll take more than \$\{[^}]+\} queries, spawn \$\{[^}]+\} with subagent_type=\$\{[^}]+\}\. Otherwise choose by intent: Serena for known symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, \\`rg\\` for exact lexical text, and the ast-grep CLI for syntax shapes and structural rewrites\./;
 		const MODERN_FIND_GREP_TOOL_FULL =
-			/`code-search routing \(Serena, ChunkHound, Probe, rg, ast-grep MCP or CLI\) via the \$\{[^}]+\} tool`/;
+			/`code-search routing \(Serena, ChunkHound, Probe, rg, ast-grep CLI\) via the \$\{[^}]+\} tool`/;
 
 		// Trigger detection per surface. The legacy broad-exploration sentence
 		// is uniquely identified by its "Otherwise use ${...} directly." tail

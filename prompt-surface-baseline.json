@@ -3,15 +3,15 @@
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
-    "agents/claude.md": "71525c62c9b1af310ebf721685e5fe1ba3cade51803538a8239228777a7a9c59",
-    "agents/explore.md": "b2c1ee1e785ddfda581d3cfca000f62766979dadc722d550b284aac33ccd9e8f",
-    "agents/plan.md": "726a434fbc2dd94a98fe50cd87190422db94d1582ddf107c2218b00eb86305e5",
-    "agents/worker.md": "326d499b0611769ef3dcbeb2097e453d349dd85bab85145e65f8da5f398dd26f",
-    "agents/workflow-subagent.md": "e705c1d53f847a07277904abd2b8e53a75d1493ebcdc740bbef3144407fcc301",
+    "agents/claude.md": "4cb13832a678130f72b5a8ef2b1a0075b66e1088b09177bedc9788e8d990cd46",
+    "agents/explore.md": "af29f886e0d08ebb445034406f740767121b1b817711e4056aed5a6ba047bec0",
+    "agents/plan.md": "2a39581ba96e89f98243449e45b9665088081121c700f79afef8bc5555f2c2fd",
+    "agents/worker.md": "5be33951831303c488ee5b61fdc83d7a93ee6e8f909565274a77a5dc17ae6c4e",
+    "agents/workflow-subagent.md": "517bda9a31174fae3b9680042ab2d8749cefb393934519b82a1a4171bcbd2d2e",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge-2.md": "8d24296a1459ba9472328887c294278e8be614df3168e70b1134b7ae13dd2ff9",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge.md": "ca6cf36e2d06d7db385d9b760fb409f7969299b56c91d185a35605259c40fd6f",
     "system/sections/dream-memory-consolidation.md": "f007e7bc4b8fd704ab557a39038d821f078d6a549e5a5fc0c14fd761ad3031f8",
-    "system/sections/session-specific-guidance.md": "51e044e28b2529f3371b45ecbaad3ccc6bfb3918348452e9381804c2c66f64d9",
+    "system/sections/session-specific-guidance.md": "5eda14154b7ab1e9a62d5639481f8e1c49b13af3a7ed5e4c3a3601e672bdab6a",
     "system/sections/using-your-tools.md": "9f7e7a7321436c63b1a06629cfb11caefa722e8ab81b87ad744c8598b375ea7c",
     "tools/builtin/agent.md": "8f3018e8aed3f8f7b594f55f1e80f0da842f1fb3fba736918589c382c4f53ca3"
   }

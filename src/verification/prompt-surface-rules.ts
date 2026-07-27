@@ -93,7 +93,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			},
 			{
 				id: "repl-code-search-guidance",
-				needle: "structural code search use ast-grep MCP or `ast-grep run`",
+				needle: "structural code search use `ast-grep run`",
 				reason: "REPL surface missing code-search routing guidance",
 			},
 		],
@@ -144,7 +144,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			},
 			{
 				id: "grep-code-routing",
-				needle: "for structural code search use ast-grep MCP or",
+				needle: "`ast-grep run` for structural code search",
 				reason: "Disabled Grep prompt missing code-search routing",
 			},
 		],
@@ -494,7 +494,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "worker-code-search-routing",
 				needle:
-					"route by intent: Serena or LSP for symbols; ChunkHound for unfamiliar concepts and architecture",
+					"route by intent: Serena or LSP for symbols when available; ChunkHound for unfamiliar concepts and architecture when available",
 				reason: "Worker agent missing modern code-search-by-intent routing",
 			},
 			{
@@ -519,7 +519,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "workflow-subagent-code-search-routing",
 				needle:
-					"route by intent: Serena or LSP for symbols; ChunkHound for unfamiliar concepts and architecture",
+					"route by intent: Serena or LSP for symbols when available; ChunkHound for unfamiliar concepts and architecture when available",
 				reason:
 					"workflow-subagent missing modern code-search-by-intent routing",
 			},
@@ -538,7 +538,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "claude-investigation-routing",
 				needle:
-					"route by intent (Serena or LSP for symbols, ChunkHound for unfamiliar concepts, Probe for known terms, rg for exact lexical text, ast-grep MCP or CLI for syntax shapes)",
+					"route by intent (Serena or LSP for symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, rg for exact lexical text, ast-grep CLI for syntax shapes)",
 				reason:
 					"claude background-job agent missing modern investigation routing",
 			},
@@ -611,13 +611,13 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "session-code-search-routing",
 				needle:
-					"code-search routing (Serena, ChunkHound, Probe, rg, ast-grep MCP or CLI)",
+					"code-search routing (Serena, ChunkHound, Probe, rg, ast-grep CLI)",
 				reason: "Session guidance missing modern code-search routing helper",
 			},
 			{
 				id: "session-otherwise-routing",
 				needle:
-					"Otherwise choose by intent: Serena for known symbols, ChunkHound for unfamiliar concepts, Probe for known terms, `rg` for exact lexical text, and ast-grep MCP or CLI for syntax shapes and structural rewrites.",
+					"Otherwise choose by intent: Serena for known symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, `rg` for exact lexical text, and the ast-grep CLI for syntax shapes and structural rewrites.",
 				reason: "Session guidance missing modern exploration fallback",
 			},
 		],

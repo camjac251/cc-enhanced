@@ -286,10 +286,10 @@ const CLAUDE_NOISY_INVESTIGATION_RE =
 const CLAUDE_NOISY_INVESTIGATION_ANCHOR = "For noisy investigation";
 
 const CLAUDE_NOISY_INVESTIGATION_PATCHED_SIGNAL =
-	"route by intent (Serena or LSP for symbols, ChunkHound for unfamiliar concepts, Probe for known terms, rg for exact lexical text, ast-grep MCP or CLI for syntax shapes)";
+	"route by intent (Serena or LSP for symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, rg for exact lexical text, ast-grep CLI for syntax shapes)";
 
 function claudeNoisyInvestigationReplacement(toolClause: string): string {
-	return `For noisy investigation (broad code search or log trawls), spawn a subagent${toolClause} and keep only the findings here. The subagent should route by intent (Serena or LSP for symbols, ChunkHound for unfamiliar concepts, Probe for known terms, rg for exact lexical text, ast-grep MCP or CLI for syntax shapes).`;
+	return `For noisy investigation (broad code search or log trawls), spawn a subagent${toolClause} and keep only the findings here. The subagent should route by intent (Serena or LSP for symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, rg for exact lexical text, ast-grep CLI for syntax shapes).`;
 }
 
 const AGENT_TOOL_SYMBOL_LOOKUP_SOURCE = "`grep` via the Bash tool";

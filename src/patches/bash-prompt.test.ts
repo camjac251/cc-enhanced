@@ -36,7 +36,7 @@ const powershell = "Pipe output through Select-Object -First/-Last or Select-Str
 	assert.equal(output.split(MODERN_OUTPUT_LIMIT_WARNING).length - 1, 2);
 	assert.equal(
 		MODERN_OUTPUT_LIMIT_WARNING.includes(
-			"If Bash saves the full output, inspect the saved file with Read range -200: first, then narrow further.",
+			"when Bash persists oversized output, inspect the saved artifact with a bounded Read range.",
 		),
 		true,
 	);
@@ -174,10 +174,13 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 	assert.equal(output.includes("rg"), true);
 	assert.equal(output.includes("ast-grep"), true);
 	assert.equal(output.includes("Serena"), true);
-	assert.equal(output.includes("raw LSP"), true);
+	assert.equal(
+		output.includes("otherwise use LSP or direct code search"),
+		true,
+	);
 	assert.equal(output.includes("ChunkHound"), true);
 	assert.equal(output.includes("Probe"), true);
-	assert.equal(output.includes("ast-grep MCP"), true);
+	assert.equal(output.includes("ast-grep MCP"), false);
 	assert.equal(
 		output.includes(
 			"file discovery rather than crafting legacy shell search expressions",

@@ -19,31 +19,30 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 	{
 		id: "prompt-policy-serena-first",
 		needle:
-			"Known symbol, definition, references, or symbol-safe edit: use Serena first",
-		reason: "Missing Serena-first symbol policy",
+			"Known symbol, definition, references, or symbol-safe edit: use Serena when available",
+		reason: "Missing availability-aware Serena symbol policy",
 	},
 	{
 		id: "prompt-policy-raw-lsp-fallback",
-		needle:
-			"raw LSP only when Serena is unavailable or a direct coordinate lookup is needed",
-		reason: "Missing raw-LSP fallback policy",
+		needle: "otherwise use LSP or direct code search",
+		reason: "Missing symbol-search fallback policy",
 	},
 	{
 		id: "prompt-policy-chunkhound-conceptual",
-		needle: "Conceptual or architecture question: use ChunkHound.",
-		reason: "Missing ChunkHound conceptual-search routing",
+		needle:
+			"Conceptual or architecture question: use ChunkHound when available.",
+		reason: "Missing availability-aware ChunkHound conceptual-search routing",
 	},
 	{
 		id: "prompt-policy-probe-known",
 		needle:
-			"Known terms, phrases, or boolean/symbol-precise search: use Probe before rg.",
-		reason: "Missing Probe known-symbol/boolean-search routing",
+			"Known terms, phrases, or boolean/symbol-precise search: use Probe when available; otherwise use rg.",
+		reason: "Missing availability-aware Probe search routing",
 	},
 	{
 		id: "prompt-policy-ast-grep-structural",
-		needle:
-			"Syntax shape or structural rewrite: use ast-grep MCP or the ast-grep CLI.",
-		reason: "Missing ast-grep structural-search routing",
+		needle: "Syntax shape or structural rewrite: use the ast-grep CLI.",
+		reason: "Missing ast-grep CLI structural-search routing",
 	},
 	{
 		id: "prompt-policy-ast-grep-rewrite-preview",
@@ -63,28 +62,32 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 	},
 	{
 		id: "prompt-policy-head-tail-cap",
-		needle:
-			"Do not use head, tail, sed, or awk solely to hide unread command output",
-		reason: "Missing head/tail pipeline cap guidance",
+		needle: "Preserve complete command output.",
+		reason: "Missing complete-output invariant",
 	},
 	{
 		id: "prompt-policy-producer-native-caps",
-		needle: "Use a producer-native limit",
-		reason: "Missing producer-native output-cap preference",
+		needle: "Use a producer's native result bound",
+		reason: "Missing producer-native result-bound preference",
 	},
 	{
 		id: "prompt-policy-persisted-output",
-		needle: "If Bash saves the full output",
+		needle: "when Bash persists oversized output",
 		reason: "Missing persisted Bash output guidance",
 	},
 	{
 		id: "prompt-policy-saved-output-range",
-		needle: "Read range -200: first",
-		reason: "Missing saved-output Read range guidance",
+		needle: "inspect the saved artifact with a bounded Read range",
+		reason: "Missing bounded saved-output inspection guidance",
 	},
 ];
 
 export const FORBIDDEN_LEGACY_PROMPT_NEEDLES: readonly PromptPolicyNeedle[] = [
+	{
+		id: "removed-ast-grep-mcp",
+		needle: "ast-grep MCP",
+		reason: "Prompt still advertises the removed ast-grep MCP server",
+	},
 	{
 		id: "legacy-bash-token-warning-posix",
 		needle: "Pipe output through head, tail, or grep",
@@ -210,8 +213,8 @@ export const EXPLORE_PROMPT_POLICY_REQUIRED_NEEDLES: readonly PromptPolicyNeedle
 		{
 			id: "explore-serena-lsp-policy",
 			needle:
-				"Known symbol, definition, references, or symbol-safe edit: use Serena first",
-			reason: "Explore surface missing Serena-first/raw-LSP-fallback policy",
+				"Known symbol, definition, references, or symbol-safe edit: use Serena when available",
+			reason: "Explore surface missing availability-aware symbol policy",
 		},
 	];
 

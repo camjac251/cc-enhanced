@@ -168,8 +168,9 @@ const POLICY_TERMS: readonly PolicyTerm[] = [
 	},
 	{
 		id: "output-limits",
-		label: "producer-native output limits",
-		pattern: /\bproducer-native\b|\bmax-results\b|\bhead\/tail\b/i,
+		label: "producer-native output bounds",
+		pattern:
+			/\bproducer's native\b|\bproducer-native\b|\bnative result bound\b|\bbounded Read range\b/i,
 	},
 	{
 		id: "mcp",

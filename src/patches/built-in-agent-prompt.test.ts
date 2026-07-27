@@ -533,7 +533,7 @@ test("built-in-agent-prompt modernizes the claude background-job investigation l
 	assert.equal(output.includes("grep sweeps, log trawls, broad search"), false);
 	assert.equal(
 		output.includes(
-			"route by intent (Serena or LSP for symbols, ChunkHound for unfamiliar concepts, Probe for known terms, rg for exact lexical text, ast-grep MCP or CLI for syntax shapes)",
+			"route by intent (Serena or LSP for symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, rg for exact lexical text, ast-grep CLI for syntax shapes)",
 		),
 		true,
 	);
