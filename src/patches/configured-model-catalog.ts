@@ -114,9 +114,13 @@ function isCatalogHelper(node: t.FunctionDeclaration): boolean {
 		"description",
 		"maxInputTokens",
 		"maxOutputTokens",
+		"effortLevels",
+		"defaultEffort",
 		"display_name",
 		"max_input_tokens",
 		"max_tokens",
+		"capabilities",
+		"default_effort",
 	];
 	return (
 		nodeContains(node.body, (child) =>
@@ -131,7 +135,7 @@ function isCatalogHelper(node: t.FunctionDeclaration): boolean {
 				getMemberPropertyName(child.callee) === "parse",
 		) &&
 		requiredKeys.every((key) =>
-			key.includes("_")
+			key.includes("_") || key === "capabilities"
 				? nodeHasObjectKey(node.body, key)
 				: nodeHasMemberProperty(node.body, key),
 		) &&
@@ -402,12 +406,31 @@ function ${helperName}() {
     if (maxOutputTokens !== void 0 && (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 4096 || maxOutputTokens > 1000000)) {
       throw new Error("${CATALOG_ENV} entry " + index + " has an invalid maxOutputTokens.");
     }
+    const effortLevels = value.effortLevels;
+    const validEffortLevels = ["low", "medium", "high", "xhigh", "max"];
+    const baseEffortLevels = ["low", "medium", "high"];
+    if (effortLevels !== void 0 && (!Array.isArray(effortLevels) || effortLevels.length === 0 || new Set(effortLevels).size !== effortLevels.length || !effortLevels.every((level) => validEffortLevels.includes(level)) || !baseEffortLevels.every((level) => effortLevels.includes(level)))) {
+      throw new Error("${CATALOG_ENV} entry " + index + " has invalid effortLevels.");
+    }
+    const defaultEffort = value.defaultEffort;
+    if (defaultEffort !== void 0 && (typeof defaultEffort !== "string" || !effortLevels?.includes(defaultEffort))) {
+      throw new Error("${CATALOG_ENV} entry " + index + " has an invalid defaultEffort.");
+    }
+    const capabilities = effortLevels === void 0
+      ? void 0
+      : [
+          "effort",
+          ...(effortLevels.includes("xhigh") ? ["xhigh_effort"] : []),
+          ...(effortLevels.includes("max") ? ["max_effort"] : []),
+        ];
     return {
       id,
       display_name: displayName === void 0 ? id : displayName.trim(),
       description: description === void 0 ? "Configured model" : description.trim(),
       ...(maxInputTokens === void 0 ? {} : { max_input_tokens: maxInputTokens }),
       ...(maxOutputTokens === void 0 ? {} : { max_tokens: maxOutputTokens }),
+      ...(capabilities === void 0 ? {} : { capabilities }),
+      ...(defaultEffort === void 0 ? {} : { default_effort: defaultEffort }),
     };
   });
 }

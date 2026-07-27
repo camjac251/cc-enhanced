@@ -38,6 +38,13 @@ function getModelCapability(model) {
   if (exact) return exact;
   return models.find((entry) => normalized.includes(entry.id.toLowerCase()));
 }
+function supportsCapability(model, capability) {
+  return getModelCapability(model)?.capabilities?.includes(capability) ?? false;
+}
+function supportsEffort(model) { return supportsCapability(model, "effort"); }
+function supportsXhighEffort(model) { return supportsCapability(model, "xhigh_effort"); }
+function supportsMaxEffort(model) { return supportsCapability(model, "max_effort"); }
+function defaultEffort(model) { return getModelCapability(model)?.default_effort ?? "high"; }
 let baseModelOptions = [
   { value: "fable", label: "Fable", description: "Native model" },
 ];
@@ -120,6 +127,10 @@ return {
   setBaseOptions(value) { baseModelOptions = value; },
   setProviderModels(value) { providerModelOptions = value; },
   getModelCapability,
+  supportsEffort,
+  supportsXhighEffort,
+  supportsMaxEffort,
+  defaultEffort,
   buildModelOptions,
   restoreSessionModel,
   childEnvs: [childEnvOne, [...childEnvTwo], childEnvThree],
@@ -140,8 +151,14 @@ return {
 					description: string;
 					max_input_tokens?: number;
 					max_tokens?: number;
+					capabilities?: string[];
+					default_effort?: string;
 			  }
 			| undefined;
+		supportsEffort: (model: string) => boolean;
+		supportsXhighEffort: (model: string) => boolean;
+		supportsMaxEffort: (model: string) => boolean;
+		defaultEffort: (model: string) => string;
 		buildModelOptions: () => Array<{
 			value: string;
 			label: string;
@@ -213,6 +230,51 @@ test("adds configured models to capabilities and the model picker", async () => 
 		);
 	}
 	assert.equal(configuredModelCatalog.verify(output, ast), true);
+});
+
+test("exposes configured effort capabilities through native model resolvers", async () => {
+	const ast = parse(CATALOG_FIXTURE);
+	await runConfiguredCatalogViaPasses(ast);
+	const runtime = evaluatePatched(print(ast));
+	const model = "clodex:openai-oauth:gpt-5.6-sol";
+	runtime.setCatalog([
+		{
+			id: model,
+			effortLevels: ["low", "medium", "high", "xhigh", "max"],
+			defaultEffort: "medium",
+		},
+	]);
+
+	assert.equal(runtime.supportsEffort(model), true);
+	assert.equal(runtime.supportsXhighEffort(model), true);
+	assert.equal(runtime.supportsMaxEffort(model), true);
+	assert.equal(runtime.defaultEffort(model), "medium");
+});
+
+test("requires the native base and exposes extended effort levels independently", async () => {
+	const ast = parse(CATALOG_FIXTURE);
+	await runConfiguredCatalogViaPasses(ast);
+	const runtime = evaluatePatched(print(ast));
+	const model = "provider/model";
+	const cases = [
+		{ levels: ["low", "medium", "high"], xhigh: false, max: false },
+		{ levels: ["low", "medium", "high", "xhigh"], xhigh: true, max: false },
+		{ levels: ["low", "medium", "high", "max"], xhigh: false, max: true },
+	];
+
+	for (const entry of cases) {
+		runtime.setCatalog([
+			{
+				id: model,
+				effortLevels: entry.levels,
+				defaultEffort: "high",
+			},
+		]);
+		assert.equal(runtime.supportsEffort(model), true);
+		assert.equal(runtime.supportsXhighEffort(model), entry.xhigh);
+		assert.equal(runtime.supportsMaxEffort(model), entry.max);
+		assert.equal(runtime.defaultEffort(model), "high");
+	}
 });
 
 test("leaves model behavior unchanged while the catalog is absent", async () => {
@@ -355,6 +417,41 @@ test("rejects malformed, duplicate, reserved, and unsafe catalog entries", async
 	assert.throws(() => runtime.buildModelOptions(), /invalid maxOutputTokens/);
 	runtime.setCatalog([{ id: "provider/model", maxOutputTokens: 4095 }]);
 	assert.throws(() => runtime.buildModelOptions(), /invalid maxOutputTokens/);
+	runtime.setCatalog([{ id: "provider/model", effortLevels: [] }]);
+	assert.throws(() => runtime.buildModelOptions(), /invalid effortLevels/);
+	for (const effortLevels of [
+		["low", "medium"],
+		["low", "high"],
+		["medium", "high"],
+		["low", "medium", "xhigh", "max"],
+	]) {
+		runtime.setCatalog([{ id: "provider/model", effortLevels }]);
+		assert.throws(() => runtime.buildModelOptions(), /invalid effortLevels/);
+	}
+	runtime.setCatalog([
+		{
+			id: "provider/model",
+			effortLevels: ["low", "medium", "high", "none"],
+		},
+	]);
+	assert.throws(() => runtime.buildModelOptions(), /invalid effortLevels/);
+	runtime.setCatalog([
+		{
+			id: "provider/model",
+			effortLevels: ["low", "medium", "high", "high"],
+		},
+	]);
+	assert.throws(() => runtime.buildModelOptions(), /invalid effortLevels/);
+	runtime.setCatalog([
+		{
+			id: "provider/model",
+			effortLevels: ["low", "medium", "high"],
+			defaultEffort: "xhigh",
+		},
+	]);
+	assert.throws(() => runtime.buildModelOptions(), /invalid defaultEffort/);
+	runtime.setCatalog([{ id: "provider/model", defaultEffort: "high" }]);
+	assert.throws(() => runtime.buildModelOptions(), /invalid defaultEffort/);
 	runtime.setCatalog([{ id: "provider/model", maxOutputTokens: 4096 }]);
 	assert.equal(runtime.getModelCapability("provider/model")?.max_tokens, 4096);
 });

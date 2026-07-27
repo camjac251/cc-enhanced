@@ -103,7 +103,7 @@ export CLAUDE_CODE_PROCESS_WRAPPER="$launcher_process_wrapper"
 export CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE="$system_prompt_file"
 export CLAUDE_CODE_BILLING_LABEL='Claude Max + ChatGPT Pro'
 export CLAUDE_CODE_MODEL_ALIASES='{"sol":"clodex:openai-oauth:gpt-5.6-sol"}'
-export CLAUDE_CODE_CONFIGURED_MODEL_CATALOG='[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":258400,"maxOutputTokens":32000}]'
+export CLAUDE_CODE_CONFIGURED_MODEL_CATALOG='[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":258400,"maxOutputTokens":32000,"effortLevels":["low","medium","high","xhigh","max"],"defaultEffort":"medium"}]'
 export CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY=1
 export ENABLE_TOOL_SEARCH=true
 
