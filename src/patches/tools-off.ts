@@ -163,9 +163,9 @@ function rewriteReplPromptReferences(code: string): string {
 		/For filesystem access use \\?`Read\\?`\/\\?`Write\\?`\/\\?`Glob\\?`; for shell use \\?`\$\{[A-Za-z0-9_$]+\}\\?`\./g,
 		"For filesystem access use \\`Read\\`/\\`Write\\`/\\`Edit\\`; for file discovery use " +
 			shellToolCodeSpan +
-			" with \\`fd\\`, and for source code search prefer MCP code-search tools or \\`sg\\` through " +
+			" with \\`fd\\`, and for structural code search use ast-grep MCP or \\`ast-grep run\\` through " +
 			shellToolCodeSpan +
-			" before broad Read loops.",
+			"; use \\`rg\\` for exact lexical text.",
 	);
 
 	return result;
@@ -222,7 +222,7 @@ const ACTIONABLE_PROMPT_REWRITES: Array<{
 		pattern:
 			/ {2}- ALWAYS use \$\{[^}]+\} for search tasks\. NEVER invoke \\`grep\\` or \\`rg\\` as a \$\{[^}]+\} command\. The \$\{[^}]+\} tool has been optimized for correct permissions and access\./g,
 		replacement:
-			"  - Local policy disables this tool. Route code search by intent through symbol, semantic, or structural tools; use rg only for non-code text/logs/config/comments.",
+			"  - Local policy disables this tool. Use symbol or semantic tools for discovery, rg for exact lexical text, and for structural code search use ast-grep MCP or \\`ast-grep run\\`.",
 	},
 	{
 		pattern:

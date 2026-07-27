@@ -42,24 +42,24 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 	{
 		id: "prompt-policy-ast-grep-structural",
 		needle:
-			"Syntax or structural pattern, or code rewrite: use mcp__ast-grep__find_code MCP or sg CLI.",
-		reason: "Missing ast-grep MCP/sg structural-search routing",
+			"Syntax shape or structural rewrite: use ast-grep MCP or the ast-grep CLI.",
+		reason: "Missing ast-grep structural-search routing",
 	},
 	{
-		id: "prompt-policy-sg-rewrite-preview",
-		needle: "For rewrites, preview with sg before applying.",
+		id: "prompt-policy-ast-grep-rewrite-preview",
+		needle: "Preview rewrites before applying.",
 		reason: "Missing ast-grep rewrite preview guidance",
 	},
 	{
 		id: "prompt-policy-code-self-check",
 		needle:
-			"Before using Read, Bash text search, sd, or generic edits on a code file",
-		reason: "Missing code-file tool-choice self-check",
+			"For code, choose by intent: direct Read or Edit for a known file and site",
+		reason: "Missing capability-based code tool router",
 	},
 	{
 		id: "prompt-policy-read-non-code-known-code-range",
-		needle: "Read for non-code files and known code ranges after symbol lookup",
-		reason: "Missing Read/code-file routing distinction",
+		needle: "Read for known files or ranges",
+		reason: "Missing direct Read routing",
 	},
 	{
 		id: "prompt-policy-head-tail-cap",
@@ -204,8 +204,8 @@ export const EXPLORE_PROMPT_POLICY_REQUIRED_NEEDLES: readonly PromptPolicyNeedle
 		{
 			id: "explore-code-tool-self-check",
 			needle:
-				"Before using Read, Bash text search, sd, or generic edits on a code file",
-			reason: "Explore surface missing code-file tool self-check",
+				"For code, choose by intent: direct Read or Edit for a known file and site",
+			reason: "Explore surface missing capability-based code router",
 		},
 		{
 			id: "explore-serena-lsp-policy",

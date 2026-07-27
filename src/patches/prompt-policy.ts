@@ -7,31 +7,31 @@
  */
 
 /** Short list of modern CLI tools for finding/searching/viewing. */
-export const MODERN_FINDING_TOOLS = "`fd`, `rg`, `sg`, `eza`, and `bat`";
+export const MODERN_FINDING_TOOLS = "`fd`, `rg`, `ast-grep`, `eza`, and `bat`";
 
 /** "ONLY for modern read-only operations ..." */
 export const MODERN_READONLY_OPS =
-	"ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)";
+	"ONLY for modern read-only operations (eza, git status, git log, git diff, fd, ast-grep run, ast-grep outline, rg, bat)";
 
 /** Tool preference line shared by Bash, Explore, and Plan prompts. */
 export const MODERN_TOOL_PREFERENCE =
-	"Prefer fd for file discovery, eza for directory listings, Read for non-code files and known code ranges after symbol lookup, bat -r for shell file ranges, sg for structural code search/rewrites, and rg only for non-code text/logs/config/comments";
+	"Use fd for file discovery, eza for directory listings, Read for known files or ranges, bat -r for shell file ranges, rg for exact lexical text, and ast-grep run for structural code patterns and rewrites";
 
 /** Source-code tool-choice self-check shared by prompt surfaces. */
 export const MODERN_CODE_TOOL_SELF_CHECK =
-	"Before using Read, Bash text search, sd, or generic edits on a code file, check whether Serena, raw LSP, ChunkHound, Probe, ast-grep MCP, or sg fits better; if yes, switch tools";
+	"For code, choose by intent: direct Read or Edit for a known file and site; Serena or LSP for symbols; ChunkHound for unfamiliar concepts; Probe for known terms; rg for exact lexical text; ast-grep for syntax shapes and repeated structural rewrites";
 
 /** Read-tool caveat shared by the Read prompt and exported-surface verifier. */
 export const MODERN_READ_CODE_FILE_CAVEAT =
-	"For code files, prefer Serena, raw LSP, ChunkHound, Probe, ast-grep MCP, or sg before reading broad file content.";
+	"For broad or unfamiliar code, locate the relevant region with Serena, LSP, ChunkHound, Probe, rg, or ast-grep before reading large file ranges.";
 
 export const MODERN_CODE_SEARCH_DECISION_TREE_LINES = [
 	"For source code discovery, choose by intent:",
 	"- Known symbol, definition, references, or symbol-safe edit: use Serena first; use raw LSP only when Serena is unavailable or a direct coordinate lookup is needed.",
 	"- Conceptual or architecture question: use ChunkHound.",
 	"- Known terms, phrases, or boolean/symbol-precise search: use Probe before rg.",
-	"- Syntax or structural pattern, or code rewrite: use mcp__ast-grep__find_code MCP or sg CLI. For rewrites, preview with sg before applying.",
-	"- Non-code text, logs, configs, comments, or exact prose: use rg.",
+	"- Exact lexical text, including code strings and comments: use rg.",
+	"- Syntax shape or structural rewrite: use ast-grep MCP or the ast-grep CLI. Preview rewrites before applying.",
 ] as const;
 
 export const MODERN_CODE_SEARCH_DECISION_TREE =
@@ -63,17 +63,16 @@ export const PROHIBITED_BASH_OPS =
  * terminate the literal and a `${` would start a runtime interpolation.
  */
 export const MODERN_SUBAGENT_CODE_ROUTING = [
-	"When the task involves code, route search by intent: Serena for symbols, definitions, and references; ChunkHound for conceptual or architecture questions; Probe search_code for known terms or boolean search (exact: true for symbol-precise); ast-grep MCP or sg for structural patterns and code rewrites (preview before applying).",
-	"Use rg only for non-code text such as logs, config, comments, and prose, never to search code files. Use Read for non-code files, or for code only after symbol/range lookup; use bat -r START:END for shell file ranges. Use fd to find files, eza to list directories, and Write or Edit to change files. For GitHub URLs, file content, and metadata use gh api.",
+	"When the task involves code, route by intent: Serena or LSP for symbols; ChunkHound for unfamiliar concepts and architecture; Probe for known terms or boolean search; rg for exact lexical text, including code strings and comments; ast-grep MCP or CLI for syntax shapes and structural rewrites.",
+	"Use Read or Edit directly for a known file and site. Use bat -r START:END for shell file ranges, fd to find files, eza to list directories, and Write or Edit to change files. For GitHub URLs, file content, and metadata use gh api.",
 	"Cap output at the producer (rg -m N, fd --max-results N, git log -n N) rather than piping through head or tail. Put temporary files in the session scratchpad or $TMPDIR, never /tmp.",
 ].join("\n");
 
 export const STRONG_CLAUDEMD_DISCLAIMER_LINES = [
-	"The instructions above are MANDATORY when they apply to your current task. Follow them exactly as written.",
-	"**ALWAYS** use gh api for GitHub URLs, not web fetching tools.",
-	"**ALWAYS** choose code-search tools by intent: Serena first for known symbols/definitions/references/symbol-safe edits; ChunkHound for conceptual or architecture questions; Probe for known terms/phrases/boolean search; ast-grep MCP/sg for structural patterns and code rewrites; rg only for text/logs/config/comments.",
-	"**NEVER** use cat/echo/printf for file writes - use Write or Edit tools.",
-	"**NEVER** use grep/find/ls/sed for routine search/view/edit flows - use rg for non-code text, fd/eza for discovery/listing, sg for code rewrites, and sd only for non-code shell-native replacement.",
+	"Treat applicable CLAUDE.md instructions as requirements. Resolve conflicts by instruction priority, scope, and the user's current intent.",
+	"Use gh api for GitHub URLs, file content, and metadata.",
+	"Choose code tools by intent: Read or Edit for a known site; Serena or LSP for symbols; ChunkHound for unfamiliar concepts; Probe for known terms; rg for exact lexical text; ast-grep for syntax shapes and structural rewrites.",
+	"Use file tools for writes. Preview repeated structural rewrites and non-code bulk replacements before applying them.",
 ] as const;
 
 export const STRONG_CLAUDEMD_DISCLAIMER =

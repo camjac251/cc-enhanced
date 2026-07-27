@@ -93,7 +93,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			},
 			{
 				id: "repl-code-search-guidance",
-				needle: "prefer MCP code-search tools or `sg`",
+				needle: "structural code search use ast-grep MCP or `ast-grep run`",
 				reason: "REPL surface missing code-search routing guidance",
 			},
 		],
@@ -144,7 +144,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			},
 			{
 				id: "grep-code-routing",
-				needle: "Route code search by intent",
+				needle: "for structural code search use ast-grep MCP or",
 				reason: "Disabled Grep prompt missing code-search routing",
 			},
 		],
@@ -168,8 +168,8 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "edit-regex-bash-guidance",
 				needle:
-					"For structural code search or rewrites, use Bash: `sg -p 'old($A)' -r 'new($A)' src/` to preview",
-				reason: "Edit surface missing structural sg rewrite guidance",
+					"For repeated structural code rewrites, use Bash: `ast-grep run -p 'old($A)' -r 'new($A)' src/` to preview",
+				reason: "Edit surface missing structural ast-grep rewrite guidance",
 			},
 			{
 				id: "edit-sd-non-code-guidance",
@@ -370,14 +370,14 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "explore-modern-bash",
 				needle:
-					"Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+					"Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, ast-grep run, ast-grep outline, rg, bat)",
 				reason: "Explore surface missing modern read-only bash guidance",
 			},
 			...EXPLORE_PROMPT_POLICY_REQUIRED_NEEDLES,
 			{
-				id: "explore-sg-policy",
+				id: "explore-ast-grep-policy",
 				needle: MODERN_TOOL_PREFERENCE,
-				reason: "Explore surface missing sg/fd/bat policy guidance",
+				reason: "Explore surface missing fd/rg/ast-grep/bat policy guidance",
 			},
 		],
 		forbidden: [
@@ -494,7 +494,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "worker-code-search-routing",
 				needle:
-					"route search by intent: Serena for symbols, definitions, and references",
+					"route by intent: Serena or LSP for symbols; ChunkHound for unfamiliar concepts and architecture",
 				reason: "Worker agent missing modern code-search-by-intent routing",
 			},
 			{
@@ -519,14 +519,15 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "workflow-subagent-code-search-routing",
 				needle:
-					"route search by intent: Serena for symbols, definitions, and references",
+					"route by intent: Serena or LSP for symbols; ChunkHound for unfamiliar concepts and architecture",
 				reason:
 					"workflow-subagent missing modern code-search-by-intent routing",
 			},
 			{
 				id: "workflow-subagent-rg-non-code-only",
-				needle: "Use rg only for non-code text",
-				reason: "workflow-subagent missing rg-only-for-non-code-text guidance",
+				needle:
+					"rg for exact lexical text, including code strings and comments",
+				reason: "workflow-subagent missing exact-lexical rg guidance",
 			},
 		],
 	},
@@ -537,7 +538,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "claude-investigation-routing",
 				needle:
-					"route search by intent (Serena, ChunkHound, Probe, ast-grep MCP or sg)",
+					"route by intent (Serena or LSP for symbols, ChunkHound for unfamiliar concepts, Probe for known terms, rg for exact lexical text, ast-grep MCP or CLI for syntax shapes)",
 				reason:
 					"claude background-job agent missing modern investigation routing",
 			},
@@ -610,13 +611,13 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "session-code-search-routing",
 				needle:
-					"code-search routing (Serena, ChunkHound, Probe, ast-grep MCP/sg)",
+					"code-search routing (Serena, ChunkHound, Probe, rg, ast-grep MCP or CLI)",
 				reason: "Session guidance missing modern code-search routing helper",
 			},
 			{
 				id: "session-otherwise-routing",
 				needle:
-					"Otherwise choose by intent: Serena for known symbols, ChunkHound for conceptual search, Probe for known terms, ast-grep MCP/sg for structural patterns and code rewrites, and `rg` only for non-code text directly.",
+					"Otherwise choose by intent: Serena for known symbols, ChunkHound for unfamiliar concepts, Probe for known terms, `rg` for exact lexical text, and ast-grep MCP or CLI for syntax shapes and structural rewrites.",
 				reason: "Session guidance missing modern exploration fallback",
 			},
 		],

@@ -110,8 +110,8 @@ Changes to built-in tools (Read, Edit, Bash, LSP, Task, MCP).
 | Patch | Effect |
 |-------|--------|
 | [`read-bat`](src/patches/read-bat.ts) | Read replaces `offset`/`limit` with a single `range` string (`30:40`, `-30:`, `50:+20`, `100::10`, `30:40:2`), renders text through `bat` with line numbers, adds `show_whitespace: true` to reveal tabs/spaces/newlines, drops blank `pages` and `range` strings before schema validation, surfaces the read range on the tool-use chip including agent-output (`.output`) reads so chunked reads render distinctly, auto-tails `*.output` files to `-500:` when `range` is omitted, previews the first 200 lines of oversized files, caps changed-file reminder snippets at a bounded head-plus-tail summary, and marks content-identical changed-file re-reads as seen so mtime-only churn (for example from git operations) does not re-read watched files on every cycle. |
-| [`edit-extended`](src/patches/edit-extended.ts) | Edit accepts batched changes via `edits[]` and keeps them intact through validation, call dispatch, diff rendering, and transcript cleanup. Plain Edit no longer fails only because a prior Read timestamp is stale; current-file exact-match and ambiguity checks decide whether the content-addressed edit can apply. Write can overwrite existing files without a prior Read while still honoring modified-since-read protection when read state exists. The tool-use chip surfaces `batch(N)` for `edits[]` and `replace_all` when those fields are set. Prompt guidance routes structural code rewrites through `sg` previews, reserves `sd` for non-code text replacement, and covers fuzzy-match recovery plus multi-site refactors. |
-| [`tools-off`](src/patches/tools-off.ts) | Disables `Glob`, `Grep`, `WebSearch`, `WebFetch`, and `NotebookEdit`, and strips their references from prompts, tool tables, agent frontmatter, and workflow `allowed_tools` examples. The model is steered toward `fd`/`bat`/`sg`, with `rg` reserved for non-code text. |
+| [`edit-extended`](src/patches/edit-extended.ts) | Edit accepts batched changes via `edits[]` and keeps them intact through validation, call dispatch, diff rendering, and transcript cleanup. Plain Edit no longer fails only because a prior Read timestamp is stale; current-file exact-match and ambiguity checks decide whether the content-addressed edit can apply. Write can overwrite existing files without a prior Read while still honoring modified-since-read protection when read state exists. The tool-use chip surfaces `batch(N)` for `edits[]` and `replace_all` when those fields are set. Prompt guidance routes repeated structural code rewrites through ast-grep previews, reserves `sd` for non-code text replacement, and covers fuzzy-match recovery plus multi-site refactors. |
+| [`tools-off`](src/patches/tools-off.ts) | Disables `Glob`, `Grep`, `WebSearch`, `WebFetch`, and `NotebookEdit`, and strips their references from prompts, tool tables, agent frontmatter, and workflow `allowed_tools` examples. The model is steered toward `fd`, `bat`, ast-grep for syntax shapes, and `rg` for exact lexical text. |
 | [`shell-quote-fix`](src/patches/shell-quote-fix.ts) | Bash no longer mangles `!` in negation (`!x`, `!==`), shell tests (`[ ! -f ]`), or literal banged strings. Fixes real-world breakage on `-c` invocations. |
 | [`mcp-server-name`](src/patches/mcp-server-name.ts) | MCP server-name validation accepts the plugin-style form (`plugin:<plugin>:<key>`) alongside the legacy alphanumeric form, so settings entries stop silently dropping at schema parse time. |
 | [`taskout-ext`](src/patches/taskout-ext.ts) | TaskOutput response exposes structured `<output_file>` and `<output_filename>` fields, and the prompt instructs the model to tail the file first (`range "-500:"`) and chunk forward rather than re-reading the whole transcript. |
@@ -140,13 +140,13 @@ Prompt text sent to the model.
 
 | Patch | Effect |
 |-------|--------|
-| [`bash-prompt`](src/patches/bash-prompt.ts) | Bash tool guidance points at modern CLI (`fd`, `eza`, `rg`, `sg`, `bat`, `sd`) and routes source-code discovery toward Serena/LSP, ChunkHound, Probe, and ast-grep MCP/sg before Bash text search. It tells the model to use `sg` for structural code rewrites and `sd` only for non-code text. It also enables the code path that hides legacy `find`/`grep` from the tool list. |
+| [`bash-prompt`](src/patches/bash-prompt.ts) | Bash tool guidance points at modern CLI (`fd`, `eza`, `rg`, `ast-grep`, `bat`, `sd`) and routes code work by intent: Serena/LSP for symbols, ChunkHound for unfamiliar concepts, Probe for known terms, `rg` for exact lexical text, and ast-grep for syntax shapes. It reserves `sd` for non-code text and enables the code path that hides legacy `find`/`grep` from the tool list. |
 | [`built-in-agent-prompt`](src/patches/built-in-agent-prompt.ts) | Explore is reframed as a deep codebase research agent (execution-path tracing, `file:line` citations, reuse candidates) with the same source-code tool routing. Plan is reframed as a blueprint-producing architect with concrete sequencing and trade-offs. Worker and workflow-subagent prompts get modern code-search routing, the Agent tool routes known-symbol lookups to Serena/Probe instead of grep via Bash, and broad investigation wording stops suggesting grep sweeps. |
 | [`claude-api-scope`](src/patches/claude-api-scope.ts) | Narrows the bundled Claude API reference skill to application work that directly calls the API or uses an SDK. Merely mentioning Claude Code, `cli.js`, local session transcripts, statuslines, hooks, skills, subagents, workflows, MCP configuration, or model-routing infrastructure no longer instructs workers to load the full multi-language SDK reference. |
 | [`claudemd-strong`](src/patches/claudemd-strong.ts) | CLAUDE.md wrapper text treats project and managed `/etc/claude-code/CLAUDE.md` instructions as mandatory when they apply, instead of advisory context, pins a small always-applied baseline, and keeps CLAUDE.md user context available to slim subagents. |
 | [`memory-prompt-soften`](src/patches/memory-prompt-soften.ts) | Memory/init and dream-memory prompt text stops presenting `ls`, `find`, `grep`, `cat`, `head`, and `tail` as the canonical inspection set. Memory consolidation/pruning examples now use `eza`, `fd`, and `rg -m 50` instead. |
 | [`prompt-dash-style`](src/patches/prompt-dash-style.ts) | Prompt-like strings and template text normalize Unicode en/em dash punctuation to ASCII sentence, label, or numeric-range forms so bundled guidance does not demonstrate dash-heavy prose style. |
-| [`session-guidance`](src/patches/session-guidance.ts) | Session-specific exploration guidance no longer renders fallback `find`/`grep` helper text. Broad exploration falls back through the same intent order as the rest of the prompt stack: Serena, ChunkHound, Probe, ast-grep MCP/sg for structural search and code rewrites, then `rg` only for non-code text. |
+| [`session-guidance`](src/patches/session-guidance.ts) | Session-specific exploration guidance no longer renders fallback `find`/`grep` helper text. Broad exploration uses the same capability router as the rest of the prompt stack: Serena, ChunkHound, Probe, `rg` for exact lexical text, and ast-grep MCP or CLI for syntax shapes and structural rewrites. |
 | [`subagent-system-prompt`](src/patches/subagent-system-prompt.ts) | Shared subagent prompt assembly resolves `appendSubagentSystemPrompt ?? appendSystemPrompt` and appends the result after the base subagent prompt. This keeps `/etc/claude-code/system-prompt.md` policy available to standard non-forked Agent-tool subagents and Workflow `agent()` calls that route through the shared subagent runner. |
 | [`todo-use`](src/patches/todo-use.ts) | Todo guidance is compressed to a short, high-signal set of bullets. |
 
@@ -340,7 +340,7 @@ bun run inspect prompts versions_clean/<version>/cli.js "Command sandbox" --cont
 bun run diff -- versions_clean/<version>/cli.js /tmp/cli-patched.js
 ```
 
-Use `rg` for quick literal string search in `cli.js`; use `bun run inspect search` when you need ranked AST matches, value-kind filters, nearest object context, byte span, breadcrumbs, scope, or JSON output. Do not use `sg` on `cli.js`.
+Use `rg` for quick literal string search in `cli.js`; use `bun run inspect search` when you need ranked AST matches, value-kind filters, nearest object context, byte span, breadcrumbs, scope, or JSON output. Do not use ast-grep on `cli.js`.
 
 ## Bundle Diff and Release Triage
 
@@ -453,8 +453,8 @@ Several prompt patches intentionally route Claude Code away from the stock `find
 | `bat` | Shell-side file range viewing uses `bat -r START:END`; Read handles non-code files and known code ranges after symbol lookup. |
 | `fd` | File discovery replaces `find`. |
 | `eza` | Directory listing replaces routine `ls`. |
-| `rg` | Exact search in non-code text, logs, config, comments, and prompt artifacts. |
-| `sg` / `ast-grep` | Structural code search and AST-aware rewrites. |
+| `rg` | Exact lexical search, including code strings and comments, logs, config, and prompt artifacts. |
+| `ast-grep` | Structural code search and AST-aware rewrites. |
 | `sd` | Literal shell-native replacement for non-code files. |
 | `gh` | GitHub URL and API workflows are expected to use `gh api`. |
 
@@ -476,7 +476,7 @@ The prompt patches use "available" deliberately. The patched CLI should still ru
 | Raw LSP | Fallback for direct coordinate lookups when Serena is unavailable or does not fit. |
 | ChunkHound | Conceptual and architectural codebase search. Use semantic search for "where/how does this work" questions. |
 | Probe | Known-symbol, known-phrase, and boolean code search, especially when ChunkHound is unavailable or too broad. |
-| ast-grep MCP | Multi-rule or structural AST search from MCP. The `sg` CLI remains the local fallback. |
+| ast-grep MCP | Multi-rule or structural AST search from MCP. The `ast-grep` CLI is the local fallback. |
 | Context7, ref | Library and framework documentation lookup when built-in web tools are disabled. |
 | Perplexity, Exa, Firecrawl, Nia | Web research, code examples, scraping, package/repo indexing, and persistent knowledge workflows. |
 

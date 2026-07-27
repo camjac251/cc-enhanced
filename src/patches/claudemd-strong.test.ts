@@ -9,8 +9,7 @@ import {
 
 const WEAK =
 	"IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.";
-const STRONG =
-	"The instructions above are MANDATORY when they apply to your current task. Follow them exactly as written.";
+const STRONG = STRONG_DISCLAIMER_LINES[0];
 const SUBAGENT_OMIT_FIXTURE = `
 function launchSubagent(H, f, r) {
   let HH = H.omitClaudeMd && !f?.userContext,

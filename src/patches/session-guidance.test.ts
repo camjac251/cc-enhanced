@@ -27,13 +27,13 @@ test("session-guidance rewrites helper and Otherwise-clause to modern search rou
 	);
 	assert.equal(
 		output.includes(
-			"code-search routing (Serena, ChunkHound, Probe, ast-grep MCP/sg)",
+			"code-search routing (Serena, ChunkHound, Probe, rg, ast-grep MCP or CLI)",
 		),
 		true,
 	);
 	assert.equal(
 		output.includes(
-			"Otherwise choose by intent: Serena for known symbols, ChunkHound for conceptual search, Probe for known terms, ast-grep MCP/sg for structural patterns and code rewrites, and \\`rg\\` only for non-code text directly.",
+			"Otherwise choose by intent: Serena for known symbols, ChunkHound for unfamiliar concepts, Probe for known terms, \\`rg\\` for exact lexical text, and ast-grep MCP or CLI for syntax shapes and structural rewrites.",
 		),
 		true,
 	);
@@ -74,7 +74,7 @@ test("session-guidance produces exactly one modern surface of each kind", () => 
 			.length - 1;
 	const helperCount =
 		output.split(
-			"code-search routing (Serena, ChunkHound, Probe, ast-grep MCP/sg)",
+			"code-search routing (Serena, ChunkHound, Probe, rg, ast-grep MCP or CLI)",
 		).length - 1;
 	assert.equal(broadCount, 1);
 	assert.equal(helperCount, 1);
@@ -98,7 +98,7 @@ test("session-guidance modern find/grep helper preserves the captured tool place
 	const output = sessionGuidance.string?.(VANILLA_FIXTURE) ?? VANILLA_FIXTURE;
 	assert.equal(
 		output.includes(
-			"code-search routing (Serena, ChunkHound, Probe, ast-grep MCP/sg) or \\`rg\\` for non-code text via the ${Wq} tool",
+			"code-search routing (Serena, ChunkHound, Probe, rg, ast-grep MCP or CLI) via the ${Wq} tool",
 		),
 		true,
 	);
@@ -107,7 +107,7 @@ test("session-guidance modern find/grep helper preserves the captured tool place
 test("session-guidance verify flags legacy find/grep helper when broad sentence already modern", () => {
 	const patched = sessionGuidance.string?.(VANILLA_FIXTURE) ?? VANILLA_FIXTURE;
 	const halfReverted = patched.replace(
-		"code-search routing (Serena, ChunkHound, Probe, ast-grep MCP/sg) or \\`rg\\` for non-code text via the ${Wq} tool",
+		"code-search routing (Serena, ChunkHound, Probe, rg, ast-grep MCP or CLI) via the ${Wq} tool",
 		"\\`find\\` or \\`grep\\` via the ${Wq} tool",
 	);
 	const result = sessionGuidance.verify(halfReverted);
@@ -126,7 +126,7 @@ test("session-guidance fails verify when broad-exploration sentence drifts but h
 	// helper still rewritten
 	assert.equal(
 		output.includes(
-			"code-search routing (Serena, ChunkHound, Probe, ast-grep MCP/sg)",
+			"code-search routing (Serena, ChunkHound, Probe, rg, ast-grep MCP or CLI)",
 		),
 		true,
 	);

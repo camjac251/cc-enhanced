@@ -27,12 +27,6 @@ const DEFAULT_RUNTIME: VerifyCliAnchorsRuntime = {
 
 const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 	{
-		id: "policy-apply-patch",
-		needle:
-			"**NEVER** use cat/echo/printf for file writes - use Write or Edit tools.",
-		reason: "Missing enforced file-write tool policy",
-	},
-	{
 		id: "debug-read-bash",
 		needle: 'allowedTools: ["Read", "Bash"]',
 		reason: "Missing debug command Read+Bash restriction",
@@ -117,12 +111,6 @@ const FORBIDDEN_FIXED_PATCHED: AnchorRule[] = [
 ];
 
 const REQUIRED_REGEX_PATCHED: RegexRule[] = [
-	{
-		id: "policy-gh-api",
-		pattern:
-			/\*\*ALWAYS\*\* use gh api for GitHub URLs, not web fetching tools\./,
-		reason: "Missing enforced gh api policy",
-	},
 	{
 		id: "hook-matcher-agent",
 		pattern: /\*\*Common tool matchers:\*\* [^\n]*\\?`Agent\\?`/,

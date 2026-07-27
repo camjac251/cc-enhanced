@@ -329,7 +329,7 @@ test("edit-extended injects unified preview via normalize+apply pipeline", async
 		output.includes("Edit files using string replace or batch"),
 		true,
 	);
-	assert.equal(output.includes("structural code search or rewrites"), true);
+	assert.equal(output.includes("repeated structural code rewrites"), true);
 	assert.equal(output.includes("sd 'pattern' 'replacement' file.md -p"), true);
 });
 

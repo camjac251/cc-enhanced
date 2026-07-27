@@ -172,12 +172,12 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 	assert.equal(output.includes("fd"), true);
 	assert.equal(output.includes("eza"), true);
 	assert.equal(output.includes("rg"), true);
-	assert.equal(output.includes("sg"), true);
+	assert.equal(output.includes("ast-grep"), true);
 	assert.equal(output.includes("Serena"), true);
 	assert.equal(output.includes("raw LSP"), true);
 	assert.equal(output.includes("ChunkHound"), true);
 	assert.equal(output.includes("Probe"), true);
-	assert.equal(output.includes("mcp__ast-grep__find_code"), true);
+	assert.equal(output.includes("ast-grep MCP"), true);
 	assert.equal(
 		output.includes(
 			"file discovery rather than crafting legacy shell search expressions",
@@ -234,7 +234,7 @@ function nl1() {
 	// The replacement text should appear in the output
 	assert.equal(output.includes("fd"), true);
 	assert.equal(output.includes("rg"), true);
-	assert.equal(output.includes("sg"), true);
+	assert.equal(output.includes("ast-grep"), true);
 	assert.equal(output.includes("eza"), true);
 	assert.equal(output.includes("bat"), true);
 });
@@ -524,8 +524,10 @@ function js6(H, $) {
 	// The find/grep consequent is modernized to the shared finding-tools list.
 	assert.equal(output.includes("`find`, and `grep`"), false);
 	assert.equal(
-		output.includes("`fd`, `rg`, `sg`, `eza`, and `bat`") ||
-			output.includes("\\`fd\\`, \\`rg\\`, \\`sg\\`, \\`eza\\`, and \\`bat\\`"),
+		output.includes("`fd`, `rg`, `ast-grep`, `eza`, and `bat`") ||
+			output.includes(
+				"\\`fd\\`, \\`rg\\`, \\`ast-grep\\`, \\`eza\\`, and \\`bat\\`",
+			),
 		true,
 	);
 	// verify's forced-anchor check depends on the modern list itself counting as

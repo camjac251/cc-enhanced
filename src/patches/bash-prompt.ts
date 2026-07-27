@@ -47,7 +47,7 @@ const SEARCH_GUIDANCE_FRAGMENTS = [
 	"Serena",
 	"raw LSP",
 	"ChunkHound",
-	"`fd`, `rg`, `sg`, `eza`, and `bat`",
+	"`fd`, `rg`, `ast-grep`, `eza`, and `bat`",
 ];
 
 const MODERN_BASH_IMPORTANT_LINE =
@@ -437,7 +437,7 @@ function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 						createSingleExpressionTemplate(
 							templatePath.node.expressions[0],
 							"Edit files: Use ",
-							" or `sg` for structural code rewrites; use `sd` only for non-code text",
+							" or `ast-grep run` for repeated structural code rewrites; use `sd` only for non-code text",
 						),
 					);
 					return;

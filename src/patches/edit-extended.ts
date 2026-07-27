@@ -1621,15 +1621,9 @@ Usage:
 - Use for related changes that should be atomic (renames, refactors)
 - Prefer one batch call over multiple separate Edit calls
 
-For structural code search or rewrites, use Bash: \`sg -p 'old($A)' -r 'new($A)' src/\` to preview, then add \`-U\` after checking the diff
+For repeated structural code rewrites, use Bash: \`ast-grep run -p 'old($A)' -r 'new($A)' src/\` to preview, then add \`-U\` after checking the diff
 For non-code text replacement, use Bash: \`sd 'pattern' 'replacement' file.md -p\` to preview, then rerun without \`-p\`
-For large multi-file refactoring, use Bash with sg rules or jscodeshift
-
-Examples:
-- String replace: \`{ file_path: "/abs/path/file.ts", old_string: "const x = 1;", new_string: "const x = 2;" }\`
-- Bulk rename: \`{ file_path: "/abs/path/file.ts", old_string: "oldName", new_string: "newName", replace_all: true }\`
-- Append content: \`{ file_path: "/abs/path/file.ts", old_string: "", new_string: "// appended content" }\`
-- Batch edits: \`{ file_path: "/abs/path/file.ts", edits: [{ old_string: "foo", new_string: "bar" }, { old_string: "baz", new_string: "qux" }] }\`
+For large multi-file refactoring, use ast-grep rules or a compiler-aware codemod
 
 Error recovery:
 - "old_string matches N locations": add surrounding context or use replace_all:true
@@ -1808,8 +1802,8 @@ function verifyEditPromptAndHook(ctx: EditVerifyContext): string | null {
 			code,
 			"sd 'pattern' 'replacement' file.md -p",
 		) ||
-		!code.includes("structural code search or rewrites") ||
-		!code.includes("sg -p")
+		!code.includes("repeated structural code rewrites") ||
+		!code.includes("ast-grep run -p")
 	) {
 		return "Missing Bash alternative guidance for regex/structural transforms";
 	}

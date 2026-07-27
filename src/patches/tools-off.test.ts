@@ -188,7 +188,7 @@ test("tools-off rewrites REPL disabled-tool examples", () => {
 	assert.equal(output.includes("${q}"), false);
 	assert.equal(
 		output.includes(
-			"prefer MCP code-search tools or \\`sg\\` through \\`${bashTool}\\`",
+			"structural code search use ast-grep MCP or \\`ast-grep run\\` through \\`${bashTool}\\`",
 		),
 		true,
 	);
@@ -224,7 +224,12 @@ test("tools-off neutralizes disabled Grep tool prompt text", async () => {
 	assert.equal(output.includes("ALWAYS use"), false);
 	assert.equal(output.includes("NEVER invoke \\`grep\\`"), false);
 	assert.equal(output.includes("Local policy disables this tool"), true);
-	assert.equal(output.includes("Route code search by intent"), true);
+	assert.equal(
+		output.includes(
+			"for structural code search use ast-grep MCP or \\`ast-grep run\\`",
+		),
+		true,
+	);
 	assert.equal(disableTools.verify(output, ast), true);
 });
 

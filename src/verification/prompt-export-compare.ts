@@ -153,12 +153,12 @@ const POLICY_TERMS: readonly PolicyTerm[] = [
 	},
 	{
 		id: "ast-grep",
-		label: "ast-grep / sg structural search",
-		pattern: /\bast-grep\b|\bsg\b|\bmcp__ast[-_]grep__/i,
+		label: "ast-grep structural search",
+		pattern: /\bast-grep\b|\bmcp__ast[-_]grep__/i,
 	},
 	{
-		id: "rg-non-code",
-		label: "rg reserved for non-code text",
+		id: "rg-lexical",
+		label: "rg exact lexical search",
 		pattern: /\brg\b|\bripgrep\b/i,
 	},
 	{

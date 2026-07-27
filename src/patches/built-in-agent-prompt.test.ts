@@ -5,6 +5,7 @@ import { builtInAgentPrompt } from "./built-in-agent-prompt.js";
 import {
 	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
 	MODERN_CODE_SEARCH_POLICY,
+	MODERN_CODE_TOOL_SELF_CHECK,
 	MODERN_STDOUT_CAP,
 	MODERN_SUBAGENT_CODE_ROUTING,
 	MODERN_TOOL_PREFERENCE,
@@ -170,15 +171,10 @@ test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
 	for (const line of MODERN_CODE_SEARCH_DECISION_TREE_LINES) {
 		assert.equal(output.includes(line), true);
 	}
+	assert.equal(output.includes(MODERN_CODE_TOOL_SELF_CHECK), true);
 	assert.equal(
 		output.includes(
-			"Before using Read, Bash text search, sd, or generic edits on a code file",
-		),
-		true,
-	);
-	assert.equal(
-		output.includes(
-			"modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+			"modern read-only operations (eza, git status, git log, git diff, fd, ast-grep run, ast-grep outline, rg, bat)",
 		),
 		true,
 	);
@@ -227,7 +223,7 @@ test("built-in-agent-prompt rewrites Plan prompt and whenToUse", () => {
 	);
 	assert.equal(
 		output.includes(
-			"modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+			"modern read-only operations (eza, git status, git log, git diff, fd, ast-grep run, ast-grep outline, rg, bat)",
 		),
 		true,
 	);
@@ -289,7 +285,7 @@ test("built-in-agent-prompt rewrites general-purpose strengths and guidelines", 
 	}
 	assert.equal(
 		output.includes(
-			"- Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+			"- Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, ast-grep run, ast-grep outline, rg, bat)",
 		),
 		true,
 	);
@@ -322,7 +318,7 @@ test("built-in-agent-prompt rewrites placeholder-backed read-only bash guidance"
 	assert.equal(output.includes("${value_23}"), false);
 	assert.equal(
 		output.includes(
-			"ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+			"ONLY for modern read-only operations (eza, git status, git log, git diff, fd, ast-grep run, ast-grep outline, rg, bat)",
 		),
 		true,
 	);
@@ -342,7 +338,7 @@ test("built-in-agent-prompt rewrites indented helper-backed plan bash guidance",
 		PLAN_PLACEHOLDER_FIXTURE;
 	assert.equal(
 		output.includes(
-			"   - Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+			"   - Use Bash ONLY for modern read-only operations (eza, git status, git log, git diff, fd, ast-grep run, ast-grep outline, rg, bat)",
 		),
 		true,
 	);
@@ -537,7 +533,7 @@ test("built-in-agent-prompt modernizes the claude background-job investigation l
 	assert.equal(output.includes("grep sweeps, log trawls, broad search"), false);
 	assert.equal(
 		output.includes(
-			"route search by intent (Serena, ChunkHound, Probe, ast-grep MCP or sg)",
+			"route by intent (Serena or LSP for symbols, ChunkHound for unfamiliar concepts, Probe for known terms, rg for exact lexical text, ast-grep MCP or CLI for syntax shapes)",
 		),
 		true,
 	);
@@ -647,7 +643,7 @@ test("built-in-agent-prompt rewrites overlapping explore-guidelines and standalo
 	assert.equal(output.includes("${YO()"), false);
 	assert.equal(
 		output.split(
-			"ONLY for modern read-only operations (eza, git status, git log, git diff, fd, sg, rg, bat)",
+			"ONLY for modern read-only operations (eza, git status, git log, git diff, fd, ast-grep run, ast-grep outline, rg, bat)",
 		).length -
 			1 >=
 			2,

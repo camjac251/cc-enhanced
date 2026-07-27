@@ -286,10 +286,10 @@ const CLAUDE_NOISY_INVESTIGATION_RE =
 const CLAUDE_NOISY_INVESTIGATION_ANCHOR = "For noisy investigation";
 
 const CLAUDE_NOISY_INVESTIGATION_PATCHED_SIGNAL =
-	"route search by intent (Serena, ChunkHound, Probe, ast-grep MCP or sg)";
+	"route by intent (Serena or LSP for symbols, ChunkHound for unfamiliar concepts, Probe for known terms, rg for exact lexical text, ast-grep MCP or CLI for syntax shapes)";
 
 function claudeNoisyInvestigationReplacement(toolClause: string): string {
-	return `For noisy investigation (broad code search or log trawls), spawn a subagent${toolClause} and keep only the findings here. The subagent should route search by intent (Serena, ChunkHound, Probe, ast-grep MCP or sg) and use rg only for logs and other non-code text.`;
+	return `For noisy investigation (broad code search or log trawls), spawn a subagent${toolClause} and keep only the findings here. The subagent should route by intent (Serena or LSP for symbols, ChunkHound for unfamiliar concepts, Probe for known terms, rg for exact lexical text, ast-grep MCP or CLI for syntax shapes).`;
 }
 
 const AGENT_TOOL_SYMBOL_LOOKUP_SOURCE = "`grep` via the Bash tool";
@@ -730,7 +730,7 @@ export const builtInAgentPrompt: Patch = {
 		if (
 			!scopedPrompts.some((scope) => scope.includes(MODERN_TOOL_PREFERENCE))
 		) {
-			return "Missing sg/fd/bat guidance in built-in agent prompts";
+			return "Missing modern fd/rg/ast-grep/bat guidance in built-in agent prompts";
 		}
 		if (!scopedPrompts.some((scope) => scope.includes(MODERN_STDOUT_CAP))) {
 			return "Missing stdout-cap guidance in built-in agent prompts";

@@ -19,7 +19,7 @@ const LEGACY_DREAM_TRANSCRIPT_SEARCH_COMMAND_RE =
 	/\\`grep -rn "<narrow term>" (\$\{[^}]+\})\/ --include="\*\.jsonl" \| tail -50\\`/g;
 
 const MODERN_PATH_SCOPED_MEMORY_READONLY =
-	"Only read-only shell commands and $1 of .md files are permitted in this context. Prefer modern read-only inspection commands such as fd, eza, sg, rg for non-code text, bat ranges, git status/log/diff, stat, and wc when needed. Do not use legacy Unix viewing or truncation utilities as generic inspection tools.";
+	"Only read-only shell commands and $1 of .md files are permitted in this context. Prefer modern read-only inspection commands such as fd, eza, ast-grep for syntax shapes, rg for exact lexical text, bat ranges, git status/log/diff, stat, and wc when needed. Do not use legacy Unix viewing or truncation utilities as generic inspection tools.";
 const MODERN_DREAM_TRANSCRIPTS =
 	"Session transcripts: $1 (large JSONL files. Use \\`rg -m 50\\` narrowly; don't read whole files)";
 const MODERN_DREAM_TEAM_LIST_TEMPLATE =
@@ -38,7 +38,7 @@ const MODERN_DREAM_TRANSCRIPT_SEARCH_COMMAND =
 const LEGACY_MEMORY_READONLY_TEXT =
 	"ls, find, grep, cat, stat, wc, head, tail, and similar";
 const MODERN_MEMORY_READONLY_TEXT =
-	"Prefer modern read-only inspection commands such as fd, eza, sg, rg for non-code text, bat ranges, git status/log/diff, stat, and wc when needed.";
+	"Prefer modern read-only inspection commands such as fd, eza, ast-grep for syntax shapes, rg for exact lexical text, bat ranges, git status/log/diff, stat, and wc when needed.";
 const LEGACY_DREAM_TEXTS = [
 	"grep narrowly, don't read whole files",
 	"`ls team/`",
