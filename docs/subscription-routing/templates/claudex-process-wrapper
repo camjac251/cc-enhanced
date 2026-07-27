@@ -4,6 +4,7 @@ set -eu
 
 clodex_wrapper='@CLODEX_CLAUDE_BIN@'
 node_bin='@NODE_BIN@'
+client_profile='@CLAUDEX_CLIENT_PROFILE@'
 default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
 system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
 
@@ -25,32 +26,43 @@ if [ ! -r "$system_prompt_file" ]; then
 		"$system_prompt_file" >&2
 	exit 1
 fi
+case "$client_profile" in
+enhanced | stock) ;;
+*)
+	printf 'claudex-process-wrapper: unsupported client profile: %s\n' \
+		"$client_profile" >&2
+	exit 2
+	;;
+esac
 
 claude_path=$1
 shift
-has_parent_prompt=0
-has_subagent_prompt=0
-for arg; do
-	case "$arg" in
-	--)
-		break
-		;;
-	--append-system-prompt | --append-system-prompt=* | \
-		--append-system-prompt-file | --append-system-prompt-file=*)
-		has_parent_prompt=1
-		;;
-	--append-subagent-system-prompt | --append-subagent-system-prompt=*)
-		has_subagent_prompt=1
-		;;
-	esac
-done
 
-if [ "$has_parent_prompt" -eq 0 ]; then
-	set -- --append-system-prompt-file "$system_prompt_file" "$@"
-fi
-if [ "$has_subagent_prompt" -eq 0 ]; then
-	subagent_prompt=$(sed -n '1,$p' "$system_prompt_file")
-	set -- --append-subagent-system-prompt "$subagent_prompt" "$@"
+if [ "$client_profile" = stock ]; then
+	has_parent_prompt=0
+	has_subagent_prompt=0
+	for arg; do
+		case "$arg" in
+		--)
+			break
+			;;
+		--append-system-prompt | --append-system-prompt=* | \
+			--append-system-prompt-file | --append-system-prompt-file=*)
+			has_parent_prompt=1
+			;;
+		--append-subagent-system-prompt | --append-subagent-system-prompt=*)
+			has_subagent_prompt=1
+			;;
+		esac
+	done
+
+	if [ "$has_parent_prompt" -eq 0 ]; then
+		set -- --append-system-prompt-file "$system_prompt_file" "$@"
+	fi
+	if [ "$has_subagent_prompt" -eq 0 ]; then
+		subagent_prompt=$(sed -n '1,$p' "$system_prompt_file")
+		set -- --append-subagent-system-prompt "$subagent_prompt" "$@"
+	fi
 fi
 
 exec "$node_bin" "$clodex_wrapper" "$claude_path" "$@"

@@ -66,6 +66,8 @@ Install:
 Start from the parent directory where you want the source checkout:
 
 ```sh
+export CLAUDEX_CLIENT_PROFILE=enhanced
+
 (
 set -eu
 
@@ -92,6 +94,8 @@ symlink replacement, and verifies the promoted client.
 Keep the official `claude` command installed and confirm it works directly:
 
 ```sh
+export CLAUDEX_CLIENT_PROFILE=stock
+
 claude --version
 claude
 ```
@@ -152,10 +156,15 @@ node_bin=$(mise which node)
 clodex_bin=$(mise which clodex)
 clodex_wrapper=$(mise which clodex-claude)
 claude_bin=$(command -v claude)
+client_profile=${CLAUDEX_CLIENT_PROFILE:-enhanced}
 credential_helper=${CLODEX_CREDENTIAL_HELPER_PATH:-"$HOME/.local/libexec/claudex-credential-helper"}
 launcher_process_wrapper="$HOME/.local/libexec/claudex-process-wrapper"
 prompt_composer="$HOME/.local/libexec/claudex-compose-system-prompt"
 
+case "$client_profile" in
+  enhanced|stock) ;;
+  *) printf '%s\n' 'client profile must be enhanced or stock' >&2; exit 1 ;;
+esac
 case "$credential_helper" in
   /*) ;;
   *) printf '%s\n' 'credential helper path must be absolute' >&2; exit 1 ;;
@@ -202,6 +211,7 @@ sed \
 sed \
   -e "s|@NODE_BIN@|$node_bin|g" \
   -e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
+  -e "s|@CLAUDEX_CLIENT_PROFILE@|$client_profile|g" \
   templates/claudex-process-wrapper >"$rendered_dir/claudex-process-wrapper"
 sed \
   -e "s|@NODE_BIN@|$node_bin|g" \
@@ -264,10 +274,11 @@ install -m 600 templates/system-prompt-routing.md \
 
 Rerun this block when the routing template changes. Managed prompt changes are
 picked up automatically on the next `claudex` launch. The composer writes
-atomically, preserves an unchanged file, and fails closed when either source is
-unreadable. Set `CLAUDEX_SYSTEM_PROMPT_FILE` only when intentionally replacing
-the composed prompt for a launch; explicit replacements are not overwritten.
-The static verifier reconstructs the default file byte-for-byte.
+atomically, preserves an unchanged file without requiring write access to its
+directory, and fails closed when either source is unreadable. Set
+`CLAUDEX_SYSTEM_PROMPT_FILE` only when intentionally replacing the composed
+prompt for a launch; explicit replacements are not overwritten. The static
+verifier reconstructs the default file byte-for-byte.
 
 The prompt is append-only and contains no credentials. It teaches parent and
 child contexts that an explicit request for Sol means a per-call

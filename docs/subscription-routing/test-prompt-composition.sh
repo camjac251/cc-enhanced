@@ -9,7 +9,11 @@ fail() {
 
 setup_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 test_root=$(mktemp -d)
-trap 'rm -rf "$test_root"' EXIT HUP INT TERM
+cleanup() {
+	chmod 700 "$test_root/output" 2>/dev/null || :
+	rm -rf "$test_root"
+}
+trap cleanup EXIT HUP INT TERM
 
 managed_prompt="$test_root/managed.md"
 routing_overlay="$test_root/routing.md"
@@ -36,13 +40,15 @@ cmp -s "$expected_prompt" "$output_prompt" ||
 	fail "the composed prompt mode is not 600"
 
 before=$(stat -c '%Y:%i:%s' "$output_prompt")
+chmod 500 "$output_dir"
 CLAUDEX_MANAGED_SYSTEM_PROMPT_FILE="$managed_prompt" \
 	CLAUDEX_ROUTING_POLICY_FILE="$routing_overlay" \
 	CLAUDEX_COMPOSED_SYSTEM_PROMPT_FILE="$output_prompt" \
 	"$composer"
+chmod 700 "$output_dir"
 after=$(stat -c '%Y:%i:%s' "$output_prompt")
 [ "$before" = "$after" ] ||
-	fail "an unchanged prompt was rewritten"
+	fail "an unchanged prompt was rewritten in a read-only directory"
 
 printf '%s\n' 'Updated managed policy.' >>"$managed_prompt"
 CLAUDEX_MANAGED_SYSTEM_PROMPT_FILE="$managed_prompt" \

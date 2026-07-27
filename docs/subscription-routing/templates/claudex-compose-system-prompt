@@ -19,6 +19,24 @@ if [ ! -d "$output_dir" ]; then
 	exit 1
 fi
 
+prompt_is_current() {
+	[ -f "$output_prompt" ] || return 1
+
+	managed_size=$(wc -c <"$managed_prompt")
+	overlay_size=$(wc -c <"$routing_overlay")
+	output_size=$(wc -c <"$output_prompt")
+	[ "$output_size" -eq "$((managed_size + overlay_size + 1))" ] || return 1
+	cmp -s -n "$managed_size" "$managed_prompt" "$output_prompt" || return 1
+
+	separator_byte=$(od -An -tu1 -N1 -j "$managed_size" "$output_prompt")
+	[ "$separator_byte" -eq 10 ] || return 1
+	cmp -s -i "$((managed_size + 1)):0" "$output_prompt" "$routing_overlay"
+}
+
+if prompt_is_current; then
+	exit 0
+fi
+
 temporary_prompt=$(mktemp "$output_dir/.system-prompt.XXXXXX")
 trap 'rm -f "$temporary_prompt"' EXIT HUP INT TERM
 
@@ -26,10 +44,6 @@ dd if="$managed_prompt" of="$temporary_prompt" status=none
 printf '\n' >>"$temporary_prompt"
 dd if="$routing_overlay" of="$temporary_prompt" oflag=append conv=notrunc status=none
 chmod 600 "$temporary_prompt"
-
-if [ -f "$output_prompt" ] && cmp -s "$temporary_prompt" "$output_prompt"; then
-	exit 0
-fi
 
 mv "$temporary_prompt" "$output_prompt"
 trap - EXIT HUP INT TERM

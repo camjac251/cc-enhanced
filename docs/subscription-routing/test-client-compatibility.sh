@@ -42,18 +42,39 @@ chmod 700 "$clodex_wrapper" "$clodex_cli" "$credential_helper" "$node_bin"
 process_wrapper_template="$setup_dir/templates/claudex-process-wrapper"
 [ -r "$process_wrapper_template" ] ||
 	fail "the portable process-wrapper template is missing"
-process_wrapper="$test_root/claudex-process-wrapper"
+process_wrapper="$test_root/claudex-process-wrapper-stock"
 sed \
 	-e "s|@NODE_BIN@|/bin/sh|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
+	-e "s|@CLAUDEX_CLIENT_PROFILE@|stock|g" \
 	"$process_wrapper_template" >"$process_wrapper"
 chmod 700 "$process_wrapper"
+
+enhanced_process_wrapper="$test_root/claudex-process-wrapper-enhanced"
+sed \
+	-e "s|@NODE_BIN@|/bin/sh|g" \
+	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
+	-e "s|@CLAUDEX_CLIENT_PROFILE@|enhanced|g" \
+	"$process_wrapper_template" >"$enhanced_process_wrapper"
+chmod 700 "$enhanced_process_wrapper"
 
 tee "$claude_bin" >/dev/null <<'SH'
 #!/bin/sh
 printf '%s\n' '0.0.0 (Claude Code; patched: configured-model-catalog)'
 SH
 chmod 700 "$claude_bin"
+
+HOME="$test_home" CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	"$enhanced_process_wrapper" "$claude_bin" --model sol \
+	>"$test_root/enhanced.args"
+if grep -E '^--append-(system|subagent-system)-prompt' \
+	"$test_root/enhanced.args" >/dev/null; then
+	fail "the enhanced profile duplicated native prompt propagation"
+fi
+grep -Fx -- '--model' "$test_root/enhanced.args" >/dev/null ||
+	fail "the enhanced profile dropped the original model argument"
+grep -Fx 'sol' "$test_root/enhanced.args" >/dev/null ||
+	fail "the enhanced profile dropped the original model value"
 
 HOME="$test_home" CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
 	"$process_wrapper" "$claude_bin" --model sol >"$test_root/injected.args"

@@ -29,7 +29,7 @@ provider_id=openai-oauth
 model_id=gpt-5.6-sol
 model_alias=sol
 
-for command_name in cmp dd grep mise mktemp rg sed stat; do
+for command_name in cmp dd grep mise mktemp od rg sed stat wc; do
 	command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is unavailable"
 done
 grep -F "install -d -m 700 \"\$HOME/.local/share/claudex-clodex\"" \
@@ -104,6 +104,7 @@ sed \
 sed \
 	-e "s|@NODE_BIN@|$node_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
+	-e "s|@CLAUDEX_CLIENT_PROFILE@|$profile|g" \
 	"$setup_dir/templates/claudex-process-wrapper" |
 	cmp -s - "$launcher_process_wrapper" ||
 	fail "installed portable process wrapper does not match the reviewed template"
