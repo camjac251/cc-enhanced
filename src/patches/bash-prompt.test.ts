@@ -36,7 +36,7 @@ const powershell = "Pipe output through Select-Object -First/-Last or Select-Str
 	assert.equal(output.split(MODERN_OUTPUT_LIMIT_WARNING).length - 1, 2);
 	assert.equal(
 		MODERN_OUTPUT_LIMIT_WARNING.includes(
-			"when Bash persists oversized output, inspect the saved artifact with a bounded Read range.",
+			"if Bash persists oversized output, inspect the saved artifact by range or semantic selection.",
 		),
 		true,
 	);

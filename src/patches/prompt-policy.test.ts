@@ -6,10 +6,10 @@ import {
 	MODERN_SUBAGENT_CODE_ROUTING,
 } from "./prompt-policy.js";
 
-test("stdout policy states the invariant without teaching truncation recipes", () => {
+test("stdout policy defines an inspectable-result contract without teaching truncation recipes", () => {
 	assert.equal(
 		MODERN_STDOUT_CAP,
-		"Preserve complete command output. Use a producer's native result bound only when the task calls for a bounded result. Otherwise run the command normally; when Bash persists oversized output, inspect the saved artifact with a bounded Read range.",
+		"Keep command results available for inspection. When the task asks for a bounded result, use the producer's native limit. Otherwise run normally; if Bash persists oversized output, inspect the saved artifact by range or semantic selection.",
 	);
 	for (const recipe of ["head", "tail", "sed", "awk", "rg -m", "fd --"]) {
 		assert.equal(MODERN_STDOUT_CAP.includes(recipe), false);

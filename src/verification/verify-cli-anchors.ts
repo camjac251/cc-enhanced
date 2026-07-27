@@ -65,7 +65,7 @@ const REQUIRED_FIXED_PATCHED: AnchorRule[] = [
 	},
 	{
 		id: "bash-token-warning",
-		needle: "Preserve complete command output.",
+		needle: "Keep command results available for inspection.",
 		reason: "Missing modern oversized-output warning",
 	},
 	{

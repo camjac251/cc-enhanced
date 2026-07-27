@@ -62,23 +62,23 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 	},
 	{
 		id: "prompt-policy-head-tail-cap",
-		needle: "Preserve complete command output.",
-		reason: "Missing complete-output invariant",
+		needle: "Keep command results available for inspection.",
+		reason: "Missing inspectable-output contract",
 	},
 	{
 		id: "prompt-policy-producer-native-caps",
-		needle: "Use a producer's native result bound",
+		needle: "use the producer's native limit",
 		reason: "Missing producer-native result-bound preference",
 	},
 	{
 		id: "prompt-policy-persisted-output",
-		needle: "when Bash persists oversized output",
+		needle: "if Bash persists oversized output",
 		reason: "Missing persisted Bash output guidance",
 	},
 	{
 		id: "prompt-policy-saved-output-range",
-		needle: "inspect the saved artifact with a bounded Read range",
-		reason: "Missing bounded saved-output inspection guidance",
+		needle: "inspect the saved artifact by range or semantic selection",
+		reason: "Missing targeted saved-output inspection guidance",
 	},
 ];
 

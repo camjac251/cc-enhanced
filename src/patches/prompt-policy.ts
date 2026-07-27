@@ -43,9 +43,9 @@ export const MODERN_CODE_SEARCH_POLICY = MODERN_CODE_SEARCH_DECISION_TREE;
 /** Bash-specific code/text search fallback guidance. */
 export const MODERN_BASH_SEARCH_GUIDANCE = MODERN_CODE_SEARCH_DECISION_TREE;
 
-/** Stdout policy expressed as an invariant, without copyable truncation recipes. */
+/** Stdout tool contract expressed without copyable truncation recipes. */
 export const MODERN_STDOUT_CAP =
-	"Preserve complete command output. Use a producer's native result bound only when the task calls for a bounded result. Otherwise run the command normally; when Bash persists oversized output, inspect the saved artifact with a bounded Read range.";
+	"Keep command results available for inspection. When the task asks for a bounded result, use the producer's native limit. Otherwise run normally; if Bash persists oversized output, inspect the saved artifact by range or semantic selection.";
 
 /** Alias for the stdout-cap text, retained for surfaces that previously imported a distinct constant. */
 export const MODERN_OUTPUT_LIMIT_WARNING = MODERN_STDOUT_CAP;
