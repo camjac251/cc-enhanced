@@ -9,6 +9,7 @@ launcher_process_wrapper='@CLAUDEX_PROCESS_WRAPPER@'
 session_lock="$clodex_home/routed-sessions.lock"
 claude_path='@CLAUDE_BIN@'
 node_bin='@NODE_BIN@'
+prompt_composer='@CLAUDEX_PROMPT_COMPOSER@'
 default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
 system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
 requested_model=''
@@ -60,12 +61,16 @@ for required_file in \
 	"$process_wrapper" \
 	"$launcher_process_wrapper" \
 	"$claude_path" \
-	"$node_bin"; do
+	"$node_bin" \
+	"$prompt_composer"; do
 	if [ ! -x "$required_file" ]; then
 		printf 'claudex: required executable is missing: %s\n' "$required_file" >&2
 		exit 1
 	fi
 done
+if [ "$system_prompt_file" = "$default_system_prompt_file" ]; then
+	"$prompt_composer"
+fi
 if [ ! -r "$system_prompt_file" ]; then
 	printf 'claudex: system prompt file is not readable: %s\n' "$system_prompt_file" >&2
 	exit 1

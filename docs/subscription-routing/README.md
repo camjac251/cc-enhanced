@@ -154,6 +154,7 @@ clodex_wrapper=$(mise which clodex-claude)
 claude_bin=$(command -v claude)
 credential_helper=${CLODEX_CREDENTIAL_HELPER_PATH:-"$HOME/.local/libexec/claudex-credential-helper"}
 launcher_process_wrapper="$HOME/.local/libexec/claudex-process-wrapper"
+prompt_composer="$HOME/.local/libexec/claudex-compose-system-prompt"
 
 case "$credential_helper" in
   /*) ;;
@@ -207,6 +208,7 @@ sed \
   -e "s|@CLAUDE_BIN@|$claude_bin|g" \
   -e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
   -e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
+  -e "s|@CLAUDEX_PROMPT_COMPOSER@|$prompt_composer|g" \
   -e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
   templates/claudex >"$rendered_dir/claudex"
 
@@ -222,6 +224,8 @@ install -m 700 "$rendered_dir/clodex" "$HOME/.local/bin/clodex"
 install -m 700 "$rendered_dir/clodex-service" "$HOME/.local/bin/clodex-service"
 install -m 700 "$rendered_dir/claudex-process-wrapper" \
   "$launcher_process_wrapper"
+install -m 700 templates/claudex-compose-system-prompt \
+  "$prompt_composer"
 
 systemctl --user daemon-reload
 )
@@ -240,10 +244,11 @@ overrides. Optional proxy or private-CA settings belong in:
 The file may contain `HTTPS_PROXY`, `NO_PROXY`, or `NODE_EXTRA_CA_CERTS`. Keep
 it mode 600 and do not put provider API keys in it.
 
-## 5. Render the routed prompt
+## 5. Install and compose the routed prompt
 
-The routed prompt is the managed `/etc/claude-code/system-prompt.md`, when
-present, plus the routing-specific policy:
+The routed prompt is the managed `/etc/claude-code/system-prompt.md` plus the
+routing-specific policy. Install the reviewed overlay, then run the same
+composer that `claudex` invokes before every default launch:
 
 ```sh
 (
@@ -251,23 +256,18 @@ set -eu
 
 prompt_directory="$HOME/.config/claudex-clodex"
 install -d -m 700 "$prompt_directory"
-temporary_prompt=$(mktemp "$prompt_directory/.system-prompt.XXXXXX")
-trap 'rm -f "$temporary_prompt"' 0 HUP INT TERM
-
-if [ -r /etc/claude-code/system-prompt.md ]; then
-  cp /etc/claude-code/system-prompt.md "$temporary_prompt"
-else
-  : >"$temporary_prompt"
-fi
-printf '\n' >>"$temporary_prompt"
-sed -n 'p' templates/system-prompt-routing.md >>"$temporary_prompt"
-chmod 600 "$temporary_prompt"
-mv -f "$temporary_prompt" "$prompt_directory/system-prompt.md"
+install -m 600 templates/system-prompt-routing.md \
+  "$prompt_directory/routed-model-policy.md"
+"$HOME/.local/libexec/claudex-compose-system-prompt"
 )
 ```
 
-Rerun this block whenever the managed system prompt or routing template
-changes. The static verifier reconstructs the expected file byte-for-byte.
+Rerun this block when the routing template changes. Managed prompt changes are
+picked up automatically on the next `claudex` launch. The composer writes
+atomically, preserves an unchanged file, and fails closed when either source is
+unreadable. Set `CLAUDEX_SYSTEM_PROMPT_FILE` only when intentionally replacing
+the composed prompt for a launch; explicit replacements are not overwritten.
+The static verifier reconstructs the default file byte-for-byte.
 
 The prompt is append-only and contains no credentials. It teaches parent and
 child contexts that an explicit request for Sol means a per-call
@@ -384,7 +384,8 @@ For a client update:
 1. Enhanced profile: run `mise run native:update -- latest`.
 2. Stock profile: update Claude Code normally, then run `clodex patch`.
 3. Rerender the launchers if `mise which` or `command -v claude` changed.
-4. Run the applicable static and live verification commands.
+4. Reinstall the routing overlay if its reviewed template changed.
+5. Run the applicable static and live verification commands.
 
 ## Troubleshooting
 
@@ -450,7 +451,8 @@ rm -f \
   "$HOME/.local/bin/claudex" \
   "$HOME/.local/bin/clodex" \
   "$HOME/.local/bin/clodex-service" \
-  "$HOME/.local/libexec/claudex-process-wrapper"
+  "$HOME/.local/libexec/claudex-process-wrapper" \
+  "$HOME/.local/libexec/claudex-compose-system-prompt"
 rm -rf \
   "$HOME/.config/claudex-clodex" \
   "$HOME/.local/share/claudex-clodex"

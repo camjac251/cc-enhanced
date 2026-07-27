@@ -11,13 +11,15 @@ These override anything you might infer from upstream code or general engineerin
 
 - **NEVER add backward-compatibility fallbacks for older upstream versions.** Target only the latest upstream. When a patch breaks on a new release, update it for the new form and drop the old. Do not handle both.
 - **NEVER hardcode minified variable names.** They change every release. Find code by structure (string literals, property names, AST shape).
-- **NEVER use `sg`/ast-grep on `cli.js`.** Minified names make structural patterns useless. Use `rg` for string search and `bun run inspect search` for AST context with breadcrumbs.
+- **NEVER use `ast-grep` on `cli.js`.** Minified names make structural patterns useless. Use `rg` for exact literal search and `bun run inspect search` for AST context with breadcrumbs.
 - **NEVER copy `/etc/claude-code/*` files verbatim into bundle patches.** Those are runtime policy layers. Bundle patches use distilled wording from `src/patches/prompt-policy.ts`.
 - **NEVER reference upstream internals** (minified names, internal module names, source-file names) in comments, docs, logs, memory, or `bundle-diff.config.json`. Describe behavior, not internals.
 - **ALWAYS prefer AST passes over string patches.** String patches are reserved for replacing prompt text where AST adds no value.
 - **ALWAYS co-locate verification.** Each patch has a `verify` function in the same file. Prefer AST-based verification; use `getVerifyAst()` from `src/patches/ast-helpers.ts`.
 - **ALWAYS run `mise run verify:patches`** against the real `cli.js` before claiming a patch works. Fixture tests are necessary but not sufficient (see Pipeline Ordering).
 - **ALWAYS use `mise run native:update`.** `mise run patch` is a deliberate safety guard that aborts.
+- **ALWAYS serialize native bundle operations, prompt exports, baseline refreshes, builds, promotions, and full test runs.** They are memory-heavy and may share mutable cache state.
+- **ALWAYS update a prompt patch, its verification, and its exported-surface contract together.** Refresh the drift baseline only after reviewing a known-good export; promote only after patch verification and prompt-surface verification pass.
 
 ## Architecture
 
@@ -243,7 +245,7 @@ Useful extraction paths:
 
 `bun run inspect search <cli.js> <query...>` parses the bundle once and runs multiple queries. Results are ranked so exact strings and durable object keys beat incidental minified identifier substrings. Flags: `--field string|template|identifier|key`, `--regex`, `--ignore-case`, `--object`, `--json`, `--scope`, `--children`, `--breadcrumb-depth <n>`. Use `bun run inspect prompts <cli.js> [query]` to list prompt-like string/template nodes.
 
-For raw text search, `rg` is fine on `cli.js`. Do not use `sg`/ast-grep.
+For raw text search, `rg` is fine on `cli.js`. Do not use `ast-grep`.
 
 ## Bundle Diff Triage
 
@@ -426,7 +428,7 @@ Two bun runtime gotchas bite test fixtures:
 
 Focus on patcher correctness and drift detection, not brittle minified internals. Anchor on structure and stable literals.
 
-Lefthook (`lefthook.yml`) gates pre-commit on Biome format, Biome lint, and `bun run typecheck`. Commit-msg enforces Conventional Commits. Skip with `LEFTHOOK=0` only if you know what you are doing.
+Lefthook (`lefthook.yml`) gates pre-commit on Biome format, Biome lint, and `bun run typecheck`. Commit-msg enforces Conventional Commits. Do not bypass these hooks unless the user explicitly requests it.
 
 ## Skills and Agents
 

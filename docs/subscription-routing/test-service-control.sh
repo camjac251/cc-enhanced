@@ -18,6 +18,7 @@ session_lock="$clodex_home/routed-sessions.lock"
 process_wrapper="$test_root/clodex-claude"
 clodex_bin="$test_root/clodex-cli.js"
 launcher_process_wrapper="$test_root/claudex-process-wrapper"
+prompt_composer="$test_root/claudex-compose-system-prompt"
 credential_helper="$test_root/credential-helper"
 claude_bin="$test_root/claude"
 system_prompt="$test_home/.config/claudex-clodex/system-prompt.md"
@@ -52,11 +53,16 @@ tee "$claude_bin" >/dev/null <<'SH'
 #!/bin/sh
 exit 0
 SH
+tee "$prompt_composer" >/dev/null <<'SH'
+#!/bin/sh
+printf '%s\n' 'prompt composer invoked' >>"$CONTROL_LOG"
+SH
 : >"$system_prompt"
 chmod 700 \
 	"$process_wrapper" \
 	"$clodex_bin" \
 	"$launcher_process_wrapper" \
+	"$prompt_composer" \
 	"$credential_helper" \
 	"$claude_bin"
 
@@ -123,6 +129,7 @@ sed \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$process_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
+	-e "s|@CLAUDEX_PROMPT_COMPOSER@|$prompt_composer|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
 	"$setup_dir/templates/claudex" >"$launcher"
 chmod 700 "$launcher"
@@ -135,6 +142,8 @@ PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
 	"$launcher" >"$test_root/launcher.out"
 grep -Fx 'routed session lock is held' "$test_root/launcher.out" >/dev/null ||
 	fail "the routed launcher did not retain its shared lock for the client lifetime"
+grep -Fx 'prompt composer invoked' "$control_log" >/dev/null ||
+	fail "the routed launcher did not refresh the default prompt"
 grep -Fx "node $process_wrapper --check" "$control_log" >/dev/null ||
 	fail "the routed launcher did not use the configured Node.js executable for readiness"
 

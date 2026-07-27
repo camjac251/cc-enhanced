@@ -29,7 +29,7 @@ provider_id=openai-oauth
 model_id=gpt-5.6-sol
 model_alias=sol
 
-for command_name in cmp grep mise mktemp sed; do
+for command_name in cmp dd grep mise mktemp rg sed stat; do
 	command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is unavailable"
 done
 grep -F "install -d -m 700 \"\$HOME/.local/share/claudex-clodex\"" \
@@ -37,6 +37,7 @@ grep -F "install -d -m 700 \"\$HOME/.local/share/claudex-clodex\"" \
 	fail "installation guide does not create the Clodex home"
 "$setup_dir/test-service-control.sh"
 "$setup_dir/test-client-compatibility.sh"
+"$setup_dir/test-prompt-composition.sh"
 
 claude_bin=${CLAUDE_BIN:-"$HOME/.local/bin/claude"}
 claudex_bin=${CLAUDEX_BIN:-"$HOME/.local/bin/claudex"}
@@ -45,6 +46,7 @@ clodex_service_bin="$HOME/.local/bin/clodex-service"
 default_credential_helper="$HOME/.local/libexec/claudex-credential-helper"
 credential_helper=${CLODEX_CREDENTIAL_HELPER_PATH:-$default_credential_helper}
 launcher_process_wrapper="$HOME/.local/libexec/claudex-process-wrapper"
+prompt_composer="$HOME/.local/libexec/claudex-compose-system-prompt"
 node_bin=$(mise which node)
 clodex_bin=$(mise which clodex)
 clodex_wrapper=$(mise which clodex-claude)
@@ -54,6 +56,7 @@ case "$credential_helper" in
 esac
 
 system_prompt="$HOME/.config/claudex-clodex/system-prompt.md"
+routing_overlay="$HOME/.config/claudex-clodex/routed-model-policy.md"
 service_unit="$HOME/.config/systemd/user/claudex-clodex.service"
 config_file="$HOME/.local/share/claudex-clodex/config.json"
 
@@ -66,10 +69,12 @@ for executable in \
 	"$clodex_service_bin" \
 	"$credential_helper" \
 	"$node_bin" \
-	"$launcher_process_wrapper"; do
+	"$launcher_process_wrapper" \
+	"$prompt_composer"; do
 	[ -x "$executable" ] || fail "required executable is missing: $executable"
 done
 [ -r "$system_prompt" ] || fail "system prompt is unreadable: $system_prompt"
+[ -r "$routing_overlay" ] || fail "routing policy is unreadable: $routing_overlay"
 [ -r "$service_unit" ] || fail "service unit is unreadable: $service_unit"
 [ -r "$config_file" ] || fail "model configuration is unreadable: $config_file"
 
@@ -107,15 +112,19 @@ sed \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
+	-e "s|@CLAUDEX_PROMPT_COMPOSER@|$prompt_composer|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
 	"$setup_dir/templates/claudex" | cmp -s - "$claudex_bin" ||
 	fail "installed routed launcher does not match the reviewed template"
+cmp -s "$setup_dir/templates/claudex-compose-system-prompt" "$prompt_composer" ||
+	fail "installed prompt composer does not match the reviewed template"
 
-if grep -E '@(CLODEX_[A-Z_]+|CLAUDE_BIN|HOME|NODE_BIN)@' \
+if grep -E '@(CLODEX_[A-Z_]+|CLAUDEX_[A-Z_]+|CLAUDE_BIN|HOME|NODE_BIN)@' \
 	"$claudex_bin" \
 	"$clodex_admin_bin" \
 	"$clodex_service_bin" \
 	"$launcher_process_wrapper" \
+	"$prompt_composer" \
 	"$service_unit" \
 	"$system_prompt" >/dev/null; then
 	fail "an installed rendered file contains unresolved placeholders"
@@ -130,6 +139,8 @@ if [ "$credential_helper" = "$default_credential_helper" ]; then
 	cmp -s "$setup_dir/templates/claudex-credential-helper.ps1" "$credential_helper_ps1" ||
 		fail "installed PasswordVault helper does not match the reviewed template"
 fi
+cmp -s "$setup_dir/templates/system-prompt-routing.md" "$routing_overlay" ||
+	fail "installed routing policy does not match the reviewed template"
 
 expected_prompt=$(mktemp)
 trap 'rm -f "$expected_prompt"' 0 HUP INT TERM
@@ -139,7 +150,8 @@ else
 	: >"$expected_prompt"
 fi
 printf '\n' >>"$expected_prompt"
-sed -n 'p' "$setup_dir/templates/system-prompt-routing.md" >>"$expected_prompt"
+dd if="$setup_dir/templates/system-prompt-routing.md" \
+	of="$expected_prompt" oflag=append conv=notrunc status=none
 cmp -s "$expected_prompt" "$system_prompt" ||
 	fail "installed routed prompt is stale or differs from the reviewed template"
 

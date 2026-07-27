@@ -1,0 +1,35 @@
+#!/bin/sh
+
+set -eu
+
+managed_prompt=${CLAUDEX_MANAGED_SYSTEM_PROMPT_FILE:-/etc/claude-code/system-prompt.md}
+routing_overlay=${CLAUDEX_ROUTING_POLICY_FILE:-"$HOME/.config/claudex-clodex/routed-model-policy.md"}
+output_prompt=${CLAUDEX_COMPOSED_SYSTEM_PROMPT_FILE:-"$HOME/.config/claudex-clodex/system-prompt.md"}
+output_dir=${output_prompt%/*}
+
+for input_file in "$managed_prompt" "$routing_overlay"; do
+	if [ ! -r "$input_file" ]; then
+		printf 'claudex: prompt input is not readable: %s\n' "$input_file" >&2
+		exit 1
+	fi
+done
+
+if [ ! -d "$output_dir" ]; then
+	printf 'claudex: prompt output directory is missing: %s\n' "$output_dir" >&2
+	exit 1
+fi
+
+temporary_prompt=$(mktemp "$output_dir/.system-prompt.XXXXXX")
+trap 'rm -f "$temporary_prompt"' EXIT HUP INT TERM
+
+dd if="$managed_prompt" of="$temporary_prompt" status=none
+printf '\n' >>"$temporary_prompt"
+dd if="$routing_overlay" of="$temporary_prompt" oflag=append conv=notrunc status=none
+chmod 600 "$temporary_prompt"
+
+if [ -f "$output_prompt" ] && cmp -s "$temporary_prompt" "$output_prompt"; then
+	exit 0
+fi
+
+mv "$temporary_prompt" "$output_prompt"
+trap - EXIT HUP INT TERM

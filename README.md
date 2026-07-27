@@ -27,7 +27,8 @@ a two-launcher setup that keeps normal Claude Max sessions
 direct while adding an isolated mixed-model launcher backed by Claude Max and
 ChatGPT Pro subscriptions. It installs upstream Clodex globally through mise
 and includes secure external credential storage, static and live verification,
-safe restart gates, per-model context metadata, and workflow delegation policy.
+safe restart gates, managed-plus-routing prompt composition, per-model context
+metadata, and workflow delegation policy.
 
 The guide and its adjacent setup files are the canonical maintained package.
 Use them from the current cc-enhanced checkout rather than keeping a separate
