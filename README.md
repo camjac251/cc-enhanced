@@ -147,7 +147,7 @@ Prompt text sent to the model.
 | [`claudemd-strong`](src/patches/claudemd-strong.ts) | CLAUDE.md wrapper text treats project and managed `/etc/claude-code/CLAUDE.md` instructions as mandatory when they apply, instead of advisory context, pins a small always-applied baseline, and keeps CLAUDE.md user context available to slim subagents. |
 | [`memory-prompt-soften`](src/patches/memory-prompt-soften.ts) | Memory/init and dream-memory prompt text stops presenting `ls`, `find`, `grep`, `cat`, `head`, and `tail` as the canonical inspection set. Memory consolidation/pruning examples now use `eza`, `fd`, and `rg -m 50` instead. |
 | [`prompt-dash-style`](src/patches/prompt-dash-style.ts) | Prompt-like strings and template text normalize Unicode en/em dash punctuation to ASCII sentence, label, or numeric-range forms so bundled guidance does not demonstrate dash-heavy prose style. |
-| [`session-guidance`](src/patches/session-guidance.ts) | Session-specific exploration guidance no longer renders fallback `find`/`grep` helper text. Broad exploration uses the same capability router as the rest of the prompt stack: Serena, ChunkHound, Probe, `rg` for exact lexical text, and ast-grep MCP or CLI for syntax shapes and structural rewrites. |
+| [`session-guidance`](src/patches/session-guidance.ts) | Session-specific exploration guidance no longer renders fallback `find`/`grep` helper text. Broad exploration uses the same capability router as the rest of the prompt stack: Serena, ChunkHound, Probe, `rg` for exact lexical text, and the ast-grep CLI for syntax shapes and structural rewrites. |
 | [`subagent-system-prompt`](src/patches/subagent-system-prompt.ts) | Shared subagent prompt assembly resolves `appendSubagentSystemPrompt ?? appendSystemPrompt` and appends the result after the base subagent prompt. This keeps `/etc/claude-code/system-prompt.md` policy available to standard non-forked Agent-tool subagents and Workflow `agent()` calls that route through the shared subagent runner. |
 | [`todo-use`](src/patches/todo-use.ts) | Todo guidance is compressed to a short, high-signal set of bullets. |
 
@@ -477,7 +477,7 @@ The prompt patches use "available" deliberately. The patched CLI should still ru
 | Raw LSP | Fallback for direct coordinate lookups when Serena is unavailable or does not fit. |
 | ChunkHound | Conceptual and architectural codebase search. Use semantic search for "where/how does this work" questions. |
 | Probe | Known-symbol, known-phrase, and boolean code search, especially when ChunkHound is unavailable or too broad. |
-| ast-grep MCP | Multi-rule or structural AST search from MCP. The `ast-grep` CLI is the local fallback. |
+| ast-grep CLI | Structural syntax search and AST-aware rewrites. Preview rewrites before applying them. |
 | Context7, ref | Library and framework documentation lookup when built-in web tools are disabled. |
 | Perplexity, Exa, Firecrawl, Nia | Web research, code examples, scraping, package/repo indexing, and persistent knowledge workflows. |
 

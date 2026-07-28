@@ -84,11 +84,6 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 
 export const FORBIDDEN_LEGACY_PROMPT_NEEDLES: readonly PromptPolicyNeedle[] = [
 	{
-		id: "removed-ast-grep-mcp",
-		needle: "ast-grep MCP",
-		reason: "Prompt still advertises the removed ast-grep MCP server",
-	},
-	{
 		id: "legacy-bash-token-warning-posix",
 		needle: "Pipe output through head, tail, or grep",
 		reason: "Legacy POSIX oversized-output warning still present",

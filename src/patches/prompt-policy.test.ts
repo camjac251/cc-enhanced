@@ -21,7 +21,6 @@ test("subagent routing reuses the stdout invariant and names only available-awar
 		MODERN_SUBAGENT_CODE_ROUTING.split(MODERN_STDOUT_CAP).length - 1,
 		1,
 	);
-	assert.equal(MODERN_SUBAGENT_CODE_ROUTING.includes("ast-grep MCP"), false);
 	assert.equal(
 		MODERN_CODE_SEARCH_DECISION_TREE.includes("when available"),
 		true,

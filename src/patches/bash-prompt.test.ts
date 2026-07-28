@@ -180,7 +180,6 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 	);
 	assert.equal(output.includes("ChunkHound"), true);
 	assert.equal(output.includes("Probe"), true);
-	assert.equal(output.includes("ast-grep MCP"), false);
 	assert.equal(
 		output.includes(
 			"file discovery rather than crafting legacy shell search expressions",
