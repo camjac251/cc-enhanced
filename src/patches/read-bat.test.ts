@@ -674,6 +674,16 @@ test("read-bat migrates schema and prompt from offset/limit to range/show_whites
 	);
 	assert.equal(output.includes("Jupyter notebooks (.ipynb)"), true);
 	assert.equal(output.includes("limit: 100, offset: 50"), false);
+	assert.equal(
+		output.includes(
+			"Use the output file path from the original background-task result or completion notification",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes("use TaskOutput to get the `output_file` path"),
+		false,
+	);
 });
 
 test("read-bat patches identifier-backed prompt/description bindings used by the current bundle shape", async () => {

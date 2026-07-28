@@ -300,12 +300,15 @@ const OLD_PROMPT = `- Retrieves output from a running or completed task (backgro
 const NEW_PROMPT = `- Retrieves output from a running or completed task (background shell, agent, or remote session)
 - Takes a task_id parameter identifying the task
 - Returns: status, exit_code, error, output, output_file, output_filename
-- Use block=true (default) to wait for task completion
-- Use block=false for non-blocking check of current status
+- Use block=true only when deliberately waiting for task completion
+- Use block=false for a one-time non-blocking status check
 - Task IDs can be found using the /tasks command
 - Works with all task types: background shells, async agents, and remote sessions
-- For large output, use output_file path with the Read tool to access full content
-- Read the tail first: range "-500:" for recent output, then read in chunks ("1:2000", "2001:4000")
+- Use the output_file path from the original background-task result or completion notification; do not call TaskOutput only to rediscover it
+- TaskOutput returns accumulated output, not an unread-output delta
+- Do not repeatedly call TaskOutput to follow logs; rely on completion notifications or Monitor
+- Do not re-read a tail that TaskOutput already returned
+- Read persisted output with explicit non-overlapping ranges such as "1:2000", then "2001:4000"
 - Use output_filename for display labels; always use output_file as the Read path`;
 
 export const taskOutputExt: Patch = {
@@ -330,8 +333,26 @@ export const taskOutputExt: Patch = {
 		if (responseResult !== true) return responseResult;
 
 		// Prompt checks
-		if (!code.includes("output_file path with the Read tool"))
-			return "Missing output_file Read guidance in prompt";
+		if (
+			!code.includes(
+				"Use the output_file path from the original background-task result or completion notification",
+			)
+		)
+			return "Missing original output_file guidance in prompt";
+		if (
+			!code.includes(
+				"TaskOutput returns accumulated output, not an unread-output delta",
+			)
+		)
+			return "Missing accumulated-output guidance in prompt";
+		if (!code.includes("Do not repeatedly call TaskOutput to follow logs"))
+			return "Missing TaskOutput polling guidance in prompt";
+		if (
+			!code.includes(
+				"Read persisted output with explicit non-overlapping ranges",
+			)
+		)
+			return "Missing non-overlapping range guidance in prompt";
 		if (!code.includes("output_filename for display labels"))
 			return "Missing output_filename guidance in prompt";
 

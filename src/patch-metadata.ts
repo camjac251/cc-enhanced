@@ -78,7 +78,7 @@ const BY_TAG: Record<string, PatchMetadata> = {
 	},
 	"feature-flags": {
 		tag: "feature-flags",
-		label: "Feature flags",
+		label: "Enable Monitor",
 		group: "System",
 	},
 	"billing-label": {

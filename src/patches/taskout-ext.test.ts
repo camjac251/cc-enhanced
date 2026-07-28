@@ -95,8 +95,17 @@ test("taskout-ext patches serializer fields, XML tags, and prompt guidance", asy
 	assert.equal(output.includes("output_filename"), true);
 	assert.equal(output.includes("<output_file>"), true);
 	assert.equal(output.includes("<output_filename>"), true);
-	assert.equal(output.includes("output_file path with the Read tool"), true);
-	assert.equal(output.includes('Read the tail first: range "-500:"'), true);
+	assert.equal(
+		output.includes(
+			"TaskOutput returns accumulated output, not an unread-output delta",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes("Do not repeatedly call TaskOutput to follow logs"),
+		true,
+	);
+	assert.equal(output.includes('Read the tail first: range "-500:"'), false);
 });
 
 test("taskout-ext runtime derives basename fallback and emits tags before task errors", async () => {
@@ -226,7 +235,19 @@ test("taskout-ext rewrites the stock TaskOutput prompt body", async () => {
 		),
 		true,
 	);
-	assert.equal(output.includes('Read the tail first: range "-500:"'), true);
+	assert.equal(
+		output.includes(
+			"Use the output_file path from the original background-task result or completion notification",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"Read persisted output with explicit non-overlapping ranges",
+		),
+		true,
+	);
+	assert.equal(output.includes('Read the tail first: range "-500:"'), false);
 });
 
 test("taskout-ext ignores a task_id+status+output_file object that lacks a bare output key", async () => {

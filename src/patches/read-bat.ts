@@ -74,7 +74,7 @@ Range parameter (for text files only, supported bat-style forms):
 - \`30:40:2\` - lines 30-40 with 2 lines of context
 - If \`range\` is omitted for \`*.output\` files, Read defaults to \`-500:\` (tail) to avoid oversized reads
 - If \`range\` is omitted and the file exceeds the size limit, Read auto-previews the first 200 lines with a truncation notice. Use a range to read further.
-- For large background task output, use TaskOutput to get the \`output_file\` path, then read chunk ranges (e.g. \`1:2000\`, then \`2001:4000\`)
+- Use the output file path from the original background-task result or completion notification for large output, then read explicit non-overlapping ranges (e.g. \`1:2000\`, then \`2001:4000\`). Use TaskOutput only for an explicit wait or one-time status check, not to rediscover the path or poll logs.
 
 Optional parameters:
 - \`pages: "1-5"\` - For PDF files only. Required for large PDFs; max 20 pages per request.
@@ -97,7 +97,7 @@ const DYNAMIC_READ_PROMPT_APPENDIX = `Range parameter (for text files only, supp
 - \`30:40:2\` - lines 30-40 with 2 lines of context
 - If \`range\` is omitted for \`*.output\` files, Read defaults to \`-500:\` (tail) to avoid oversized reads
 - If \`range\` is omitted and the file exceeds the size limit, Read auto-previews the first 200 lines with a truncation notice. Use a range to read further.
-- For large background task output, use TaskOutput to get the \`output_file\` path, then read chunk ranges (e.g. \`1:2000\`, then \`2001:4000\`)
+- Use the output file path from the original background-task result or completion notification for large output, then read explicit non-overlapping ranges (e.g. \`1:2000\`, then \`2001:4000\`). Use TaskOutput only for an explicit wait or one-time status check, not to rediscover the path or poll logs.
 
 Optional parameters:
 - \`show_whitespace: true\` - Reveal invisible characters (tabs→, spaces·, newlines␊). Use to debug indentation issues.
@@ -1552,6 +1552,16 @@ function verifyReadSchemaAndPrompt(ctx: ReadVerifyContext): string | null {
 	}
 	if (!promptSurface.includes(MODERN_READ_CODE_FILE_CAVEAT)) {
 		return "Missing code-file tool-choice caveat in Read prompt";
+	}
+	if (
+		!promptSurface.includes(
+			"Use the output file path from the original background-task result or completion notification",
+		)
+	) {
+		return "Missing background-task output path guidance in Read prompt";
+	}
+	if (promptSurface.includes("use TaskOutput to get the `output_file` path")) {
+		return "Read prompt still routes output path discovery through TaskOutput";
 	}
 	if (!schemaFieldHasMethodCall(schemaObject, "range", "string")) {
 		return "Missing range parameter in schema";
