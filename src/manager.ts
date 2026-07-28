@@ -62,6 +62,40 @@ interface PatchedBuildMetadata {
 	createdAt: string;
 }
 
+export function computeSourceTreeFingerprint(sourceDir: string): string {
+	const sourceFiles: string[] = [];
+	const visit = (directory: string): void => {
+		for (const entry of fsSync.readdirSync(directory, {
+			withFileTypes: true,
+		})) {
+			const entryPath = path.join(directory, entry.name);
+			if (entry.isDirectory()) {
+				visit(entryPath);
+			} else if (
+				entry.isFile() &&
+				entry.name.endsWith(".ts") &&
+				!entry.name.endsWith(".test.ts")
+			) {
+				sourceFiles.push(entryPath);
+			}
+		}
+	};
+	visit(sourceDir);
+
+	const hash = createHash("sha256");
+	for (const filePath of sourceFiles.sort()) {
+		const relativePath = path
+			.relative(sourceDir, filePath)
+			.split(path.sep)
+			.join("/");
+		const content = fsSync.readFileSync(filePath);
+		hash.update(`${relativePath.length}:${relativePath}`);
+		hash.update(`${content.byteLength}:`);
+		hash.update(content);
+	}
+	return hash.digest("hex").slice(0, 12);
+}
+
 export class Manager {
 	constructor(private options: ManagerOptions) {}
 
@@ -101,22 +135,9 @@ export class Manager {
 
 	private computeLocalRevisionFingerprint(): string | null {
 		try {
-			const hash = createHash("sha256");
-			const managerSource = fsSync.readFileSync(
-				fileURLToPath(import.meta.url),
-				"utf-8",
+			return computeSourceTreeFingerprint(
+				path.dirname(fileURLToPath(import.meta.url)),
 			);
-			hash.update(managerSource);
-			for (const patch of [...allPatches].sort((a, b) =>
-				a.tag.localeCompare(b.tag),
-			)) {
-				hash.update(patch.tag);
-				hash.update(patch.string?.toString() ?? "");
-				hash.update(patch.astPasses?.toString() ?? "");
-				hash.update(patch.verify.toString());
-				hash.update(patch.postApply?.toString() ?? "");
-			}
-			return hash.digest("hex").slice(0, 12);
 		} catch {
 			return null;
 		}
