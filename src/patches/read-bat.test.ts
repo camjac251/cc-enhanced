@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { MODERN_READ_CODE_FILE_CAVEAT } from "./prompt-policy.js";
-import { readWithBat } from "./read-bat.js";
+import { collectReadVerificationInventory, readWithBat } from "./read-bat.js";
 
 // Bun snapshots PATH at process startup and ignores later mutations of
 // process.env.PATH for child_process spawn lookups, so PATH-based stubs of
@@ -505,6 +505,34 @@ test("read-bat verifies escaped render option labels", async () => {
 	assert.equal(output.includes("\\u00b7 pages "), true);
 	assert.equal(output.includes("\\u00b7 range: "), true);
 	assert.equal(readWithBat.verify(output), true);
+});
+
+test("read-bat collects its global verification markers in one inventory", async () => {
+	const output = await getPatchedDelegationOutput();
+	const inventory = collectReadVerificationInventory(parse(output), "R");
+
+	assert.deepEqual(inventory, {
+		hasBatCall: true,
+		hasFallbackFnBoundedArgs: true,
+		hasCallCompatRangeBridge: true,
+		hasEnsureTotalLinesHelper: true,
+		hasNormalizedRangeTotalLinesRefresh: true,
+		hasReadFileStateRange: true,
+		hasReadFileStateOffsetCompat: true,
+		hasReadFileStateLimitCompat: true,
+		hasReadStateRebuildRangeGuard: true,
+		hasChangedSnippetCap8000: true,
+		hasAutoRangeTokenBudget50000: true,
+		hasChangedHeadBudgetMultiplier: true,
+		hasSnippetSourceCall: true,
+		hasChangedSnippetReturnBinding: true,
+		hasChangedFileSeenTimestampBump: true,
+		hasNumericRangeRegex: true,
+		hasFromStartRegex: true,
+		hasNegativeTailRegex: true,
+		hasFallbackSingleLineLimit: true,
+		hasFallbackSizeLimitBinding: true,
+	});
 });
 
 test("read-bat keeps partial reads out of rebuilt full-file state", async () => {

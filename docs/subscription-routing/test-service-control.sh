@@ -26,10 +26,23 @@ mkdir -p "$fake_bin" "$clodex_home" "$(dirname "$system_prompt")"
 
 tee "$process_wrapper" >/dev/null <<'SH'
 #!/bin/sh
-exit 88
+printf '%s' "$0" >>"$CONTROL_LOG"
+if [ "$#" -gt 0 ]; then
+	printf ' %s' "$*" >>"$CONTROL_LOG"
+fi
+printf '\n' >>"$CONTROL_LOG"
+exit "${READY_EXIT:-0}"
 SH
 tee "$clodex_bin" >/dev/null <<'SH'
 #!/bin/sh
+printf '%s' "$0" >>"$CONTROL_LOG"
+if [ "$#" -gt 0 ]; then
+	printf ' %s' "$*" >>"$CONTROL_LOG"
+fi
+printf '\n' >>"$CONTROL_LOG"
+if [ "${1:-}" = '--version' ]; then
+	printf '%s\n' "${CLODEX_VERSION:-2.1.2}"
+fi
 exit 0
 SH
 tee "$launcher_process_wrapper" >/dev/null <<'SH'
@@ -66,21 +79,6 @@ chmod 700 \
 	"$credential_helper" \
 	"$claude_bin"
 
-tee "$fake_bin/node" >/dev/null <<'SH'
-#!/bin/sh
-target=$1
-shift
-printf 'node %s' "$target" >>"$CONTROL_LOG"
-if [ "$#" -gt 0 ]; then
-	printf ' %s' "$*" >>"$CONTROL_LOG"
-fi
-printf '\n' >>"$CONTROL_LOG"
-if [ "$target" = "$TEST_CLODEX_BIN" ] && [ "${1:-}" = '--version' ]; then
-	printf '%s\n' "${CLODEX_VERSION:-2.1.2}"
-	exit 0
-fi
-exit "${READY_EXIT:-0}"
-SH
 tee "$fake_bin/systemctl" >/dev/null <<'SH'
 #!/bin/sh
 if [ "${1:-}" = '--user' ]; then
@@ -111,13 +109,12 @@ tee "$fake_bin/sleep" >/dev/null <<'SH'
 #!/bin/sh
 printf 'sleep %s\n' "$*" >>"$CONTROL_LOG"
 SH
-chmod 700 "$fake_bin/node" "$fake_bin/systemctl" "$fake_bin/sleep"
+chmod 700 "$fake_bin/systemctl" "$fake_bin/sleep"
 
 controller_template="$setup_dir/templates/clodex-service"
 [ -r "$controller_template" ] || fail "the service controller template is missing"
 controller="$test_root/clodex-service"
 sed \
-	-e "s|@NODE_BIN@|$fake_bin/node|g" \
 	-e "s|@CLODEX_BIN@|$clodex_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$process_wrapper|g" \
 	"$controller_template" >"$controller"
@@ -125,7 +122,6 @@ chmod 700 "$controller"
 
 launcher="$test_root/claudex"
 sed \
-	-e "s|@NODE_BIN@|$fake_bin/node|g" \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$process_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
@@ -144,8 +140,8 @@ grep -Fx 'routed session lock is held' "$test_root/launcher.out" >/dev/null ||
 	fail "the routed launcher did not retain its shared lock for the client lifetime"
 grep -Fx 'prompt composer invoked' "$control_log" >/dev/null ||
 	fail "the routed launcher did not refresh the default prompt"
-grep -Fx "node $process_wrapper --check" "$control_log" >/dev/null ||
-	fail "the routed launcher did not use the configured Node.js executable for readiness"
+grep -Fx "$process_wrapper --check" "$control_log" >/dev/null ||
+	fail "the routed launcher did not use the configured Clodex shim for readiness"
 
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
@@ -182,7 +178,7 @@ exec 8>"$session_lock"
 flock -s 8
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" TEST_CLODEX_BIN="$clodex_bin" \
+	CONTROL_LOG="$control_log" \
 	"$controller" restart \
 	>"$test_root/locked-controller.out" 2>"$test_root/locked-controller.err"; then
 	fail "the service controller restarted while a routed-session lock was held"
@@ -198,7 +194,7 @@ exec 8>&-
 
 : >"$control_log"
 PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" TEST_CLODEX_BIN="$clodex_bin" \
+	CONTROL_LOG="$control_log" \
 	MAIN_PID=$$ RESTART_EXIT=0 ACTIVE_EXIT=0 READY_EXIT=0 FAILED_EXIT=1 \
 	"$controller" restart >"$test_root/success.out"
 grep -F "routing service ready: pid=$$ clodex=2.1.2" \
@@ -208,17 +204,17 @@ grep -F "routing service ready: pid=$$ clodex=2.1.2" \
 	fail "the service controller did not begin with the guarded restart"
 [ "$(sed -n '2p' "$control_log")" = 'systemctl is-active --quiet claudex-clodex.service' ] ||
 	fail "readiness did not verify the active unit"
-[ "$(sed -n '3p' "$control_log")" = "node $process_wrapper --check" ] ||
+[ "$(sed -n '3p' "$control_log")" = "$process_wrapper --check" ] ||
 	fail "readiness did not use the globally activated Clodex wrapper"
 [ "$(sed -n '4p' "$control_log")" = \
 	'systemctl show --property MainPID --value claudex-clodex.service' ] ||
 	fail "readiness did not inspect the loaded service process"
-[ "$(sed -n '5p' "$control_log")" = "node $clodex_bin --version" ] ||
+[ "$(sed -n '5p' "$control_log")" = "$clodex_bin --version" ] ||
 	fail "readiness did not report the globally activated Clodex version"
 
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" TEST_CLODEX_BIN="$clodex_bin" \
+	CONTROL_LOG="$control_log" \
 	MAIN_PID=$$ RESTART_EXIT=1 \
 	"$controller" restart \
 	>"$test_root/restart-failure.out" 2>"$test_root/restart-failure.err"; then
@@ -226,13 +222,13 @@ if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
 fi
 grep -F 'systemctl status claudex-clodex.service --no-pager' "$control_log" >/dev/null ||
 	fail "a failed restart did not capture service status"
-if grep -F 'node ' "$control_log" >/dev/null; then
+if grep -F "$process_wrapper --check" "$control_log" >/dev/null; then
 	fail "readiness ran after a failed restart"
 fi
 
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" TEST_CLODEX_BIN="$clodex_bin" \
+	CONTROL_LOG="$control_log" \
 	MAIN_PID=0 RESTART_EXIT=0 ACTIVE_EXIT=0 READY_EXIT=0 FAILED_EXIT=1 \
 	"$controller" restart \
 	>"$test_root/invalid-pid.out" 2>"$test_root/invalid-pid.err"; then
@@ -243,7 +239,7 @@ grep -F 'service has no valid main process' "$test_root/invalid-pid.err" >/dev/n
 
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" TEST_CLODEX_BIN="$clodex_bin" \
+	CONTROL_LOG="$control_log" \
 	MAIN_PID=$$ RESTART_EXIT=0 ACTIVE_EXIT=1 READY_EXIT=1 FAILED_EXIT=0 \
 	"$controller" restart \
 	>"$test_root/failed-unit.out" 2>"$test_root/failed-unit.err"; then
@@ -257,7 +253,7 @@ fi
 
 : >"$control_log"
 if PATH="$fake_bin:/usr/bin:/bin" HOME="$test_home" \
-	CONTROL_LOG="$control_log" TEST_CLODEX_BIN="$clodex_bin" \
+	CONTROL_LOG="$control_log" \
 	MAIN_PID=$$ RESTART_EXIT=0 ACTIVE_EXIT=0 READY_EXIT=1 FAILED_EXIT=1 \
 	"$controller" restart \
 	>"$test_root/readiness-timeout.out" 2>"$test_root/readiness-timeout.err"; then

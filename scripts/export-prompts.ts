@@ -19,12 +19,17 @@ import * as parser from "@babel/parser";
 import * as t from "@babel/types";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
-import { type NodePath, traverse } from "../src/babel.js";
+import { clearTraverseCache, type NodePath, traverse } from "../src/babel.js";
+import { withHeavyOperationGuard } from "../src/heavy-operation-guard.js";
 import {
 	extractClaudeJsFromNativeBinary,
 	unwrapBunCjsModule,
 } from "../src/native.js";
 import { normalize } from "../src/normalizer.js";
+import {
+	emitMemoryCheckpoint,
+	forceGarbageCollection,
+} from "../src/profiling.js";
 import { status } from "../src/promote.js";
 import {
 	buildPromptCorpusDebug,
@@ -3075,14 +3080,14 @@ async function main(): Promise<void> {
 		const options = parseOptions();
 		const resolved = await resolveInput(options.inputArg, options.label);
 		cleanupDir = resolved.cleanupDir;
-		const code = fs.readFileSync(resolved.cliPath, "utf-8");
+		let code = fs.readFileSync(resolved.cliPath, "utf-8");
 		const outputDir = options.outputDir
 			? path.resolve(options.outputDir)
 			: path.join(exportRoot, resolved.label);
 		const written = new Set<string>();
 		const context = createRenderContext();
 
-		const ast = parser.parse(code, {
+		let ast: t.File | null = parser.parse(code, {
 			sourceType: "module",
 			plugins: [],
 			tokens: false,
@@ -3134,6 +3139,22 @@ async function main(): Promise<void> {
 			sections,
 			systemReminders,
 		);
+		const aliasEntries = [...context.aliases.entries()]
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([symbol, alias]) => ({ symbol, alias }));
+
+		clearTraverseCache();
+		ast = null;
+		code = "";
+		context.aliases.clear();
+		context.stringBindings.clear();
+		context.expressionBindings.clear();
+		context.functionBindings.clear();
+		context.syntheticByKey.clear();
+		context.activeExpressions.clear();
+		context.activeListExpressions.clear();
+		forceGarbageCollection();
+		emitMemoryCheckpoint("prompt-export.analysis-released");
 
 		fs.rmSync(outputDir, { recursive: true, force: true });
 		fs.mkdirSync(outputDir, { recursive: true });
@@ -3624,9 +3645,6 @@ async function main(): Promise<void> {
 			`${JSON.stringify(promptHashIndex, null, 2)}\n`,
 		);
 
-		const aliasEntries = [...context.aliases.entries()]
-			.sort(([left], [right]) => left.localeCompare(right))
-			.map(([symbol, alias]) => ({ symbol, alias }));
 		writeArtifact(
 			outputDir,
 			written,
@@ -3726,4 +3744,9 @@ async function main(): Promise<void> {
 	}
 }
 
-await main();
+await withHeavyOperationGuard(
+	{
+		operation: "prompt export",
+	},
+	main,
+);

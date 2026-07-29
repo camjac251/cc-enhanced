@@ -1,20 +1,31 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import chalk from "chalk";
 import ora from "ora";
-import { runCombinedAstPasses } from "./ast-pass-engine.js";
+import {
+	type AstPassTelemetry,
+	type AstPassTelemetryLevel,
+	runCombinedAstPasses,
+} from "./ast-pass-engine.js";
 import { clearTraverseCache } from "./babel.js";
 import { parse, print } from "./loader.js";
 import { buildGroupResults, getPatchMetadata } from "./patch-metadata.js";
 import { allPatches, getLimitsChanged, signature } from "./patches/index.js";
-import { emitMemoryCheckpoint, isPatcherProfileEnabled } from "./profiling.js";
+import {
+	emitMemoryCheckpoint,
+	forceGarbageCollection,
+	isPatcherProfileEnabled,
+} from "./profiling.js";
 import type {
+	AstPassName,
 	Patch,
 	PatchAstPass,
 	PatchResult,
+	PatchSemanticWitness,
 	PatchVerification,
 } from "./types.js";
 
@@ -23,6 +34,7 @@ export type SignatureInjectionPolicy = "auto" | "force" | "off";
 interface PatchRunnerRuntime {
 	print: typeof print;
 	clearTraverseCache: typeof clearTraverseCache;
+	forceGarbageCollection: typeof forceGarbageCollection;
 	memoryUsage: () => NodeJS.MemoryUsage;
 	profileSink: (line: string) => void;
 }
@@ -30,13 +42,29 @@ interface PatchRunnerRuntime {
 const DEFAULT_RUNTIME: PatchRunnerRuntime = {
 	print,
 	clearTraverseCache,
+	forceGarbageCollection,
 	memoryUsage: () => process.memoryUsage(),
 	profileSink: (line) => console.error(line),
 };
 
+const LARGE_VERIFIER_SET_MIN_PATCHES = 32;
+
+function sha256Text(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+function normalizeVerificationOutcome(result: true | string): {
+	passed: boolean;
+	reason?: string;
+} {
+	if (result === true) return { passed: true };
+	return { passed: false, reason: result };
+}
+
 export class PatchRunner {
 	private patches: Patch[] = [];
 	private injectSignature: boolean;
+	private telemetryLevel: AstPassTelemetryLevel;
 	private runtime: PatchRunnerRuntime;
 
 	constructor(
@@ -44,6 +72,7 @@ export class PatchRunner {
 		options?: {
 			signaturePolicy?: SignatureInjectionPolicy;
 			injectSignature?: boolean;
+			telemetryLevel?: AstPassTelemetryLevel;
 			runtime?: Partial<PatchRunnerRuntime>;
 		},
 	) {
@@ -67,6 +96,7 @@ export class PatchRunner {
 				: signaturePolicy === "off"
 					? false
 					: hasSignatureSelected;
+		this.telemetryLevel = options?.telemetryLevel ?? "none";
 		this.runtime = { ...DEFAULT_RUNTIME, ...options?.runtime };
 	}
 
@@ -112,6 +142,7 @@ export class PatchRunner {
 		const verifications: PatchVerification[] = [];
 		const errors: { tag: string; error: Error }[] = [];
 		const patchExecutionErrors = new Map<string, string>();
+		const semanticWitnesses = new Map<string, PatchSemanticWitness>();
 		// Phase 1: Run string-based patches
 		for (const patch of this.patches) {
 			if (!patch.string) continue;
@@ -142,6 +173,7 @@ export class PatchRunner {
 			color: "cyan",
 		}).start();
 		const ast = parse(code);
+		code = "";
 		parseSpinner.succeed("AST parsed");
 		const tAfterParse = performance.now();
 		this.profileMemory("patch.ast-parsed");
@@ -172,8 +204,13 @@ export class PatchRunner {
 		}
 
 		const tBeforePasses = performance.now();
+		let astTelemetry: AstPassTelemetry = {
+			handlerCalls: {},
+			structuralHashes: {},
+			overlaps: [],
+		};
 		if (combinedPatchEntries.length > 0) {
-			await runCombinedAstPasses(
+			astTelemetry = await runCombinedAstPasses(
 				ast,
 				combinedPatchEntries,
 				(pass, patchCount) => {
@@ -190,19 +227,28 @@ export class PatchRunner {
 						patchExecutionErrors.set(tag, error.message);
 					}
 				},
+				{ telemetryLevel: this.telemetryLevel },
 			);
 		}
 
 		const tAfterPasses = performance.now();
 		this.profileMemory("patch.passes-complete");
+		combinedPatchEntries.length = 0;
+		this.runtime.clearTraverseCache();
+		this.runtime.forceGarbageCollection();
+		this.profileMemory("patch.pass-state-released");
 
 		// Phase 4: Print AST to code
-		const output = this.runtime.print(ast);
+		let output = this.runtime.print(ast);
 		const tAfterPrint = performance.now();
 		this.profileMemory("patch.first-print");
 
 		// Phase 5: Verify all patches
-		for (const patch of this.patches) {
+		const verifierCacheReleaseBoundary =
+			this.patches.length >= LARGE_VERIFIER_SET_MIN_PATCHES
+				? Math.floor(this.patches.length / 2)
+				: null;
+		for (const [patchIndex, patch] of this.patches.entries()) {
 			try {
 				const executionError = patchExecutionErrors.get(patch.tag);
 				if (executionError) {
@@ -218,10 +264,18 @@ export class PatchRunner {
 					continue;
 				}
 				const verifyStart = performance.now();
-				const result = patch.verify(output, ast);
+				const verificationWithWitness = patch.verifyWithWitness
+					? patch.verifyWithWitness(output, ast)
+					: { result: patch.verify(output, ast) };
 				verifyTimings.set(patch.tag, performance.now() - verifyStart);
 				const meta = getPatchMetadata(patch.tag);
-				if (result === true) {
+				const outcome = normalizeVerificationOutcome(
+					verificationWithWitness.result,
+				);
+				if (verificationWithWitness.witness) {
+					semanticWitnesses.set(patch.tag, verificationWithWitness.witness);
+				}
+				if (outcome.passed) {
 					verifications.push({
 						tag: patch.tag,
 						passed: true,
@@ -230,11 +284,10 @@ export class PatchRunner {
 					});
 					appliedTags.push(patch.tag);
 				} else {
-					// result is a string describing the failure
 					verifications.push({
 						tag: patch.tag,
 						passed: false,
-						reason: result,
+						reason: outcome.reason,
 						group: meta.group,
 						label: meta.label,
 					});
@@ -251,9 +304,20 @@ export class PatchRunner {
 					label: meta.label,
 				});
 				failedTags.push(patch.tag);
+			} finally {
+				this.profileMemory(`patch.verify.${patch.tag}`);
+			}
+			if (patchIndex + 1 === verifierCacheReleaseBoundary) {
+				this.runtime.clearTraverseCache();
+				this.runtime.forceGarbageCollection();
+				this.profileMemory("patch.verifiers-midpoint-released");
 			}
 		}
 		this.profileMemory("patch.verifiers-complete");
+		output = "";
+		this.runtime.clearTraverseCache();
+		this.runtime.forceGarbageCollection();
+		this.profileMemory("patch.verifier-state-released");
 
 		// Phase 6: Inject signature with applied tags (use same AST, don't re-parse)
 		if (
@@ -363,9 +427,11 @@ export class PatchRunner {
 			failedTags.length === 0 &&
 			appliedTags.length > 0
 		) {
-			const sigResult = signature.verify(finalOutput, ast);
+			const sigResult = normalizeVerificationOutcome(
+				signature.verify(finalOutput, ast),
+			);
 			const sigMeta = getPatchMetadata(signature.tag);
-			if (sigResult === true) {
+			if (sigResult.passed) {
 				appliedTags.push("signature");
 				verifications.push({
 					tag: signature.tag,
@@ -378,12 +444,49 @@ export class PatchRunner {
 				verifications.push({
 					tag: "signature",
 					passed: false,
-					reason: sigResult,
+					reason: sigResult.reason,
 					group: sigMeta.group,
 					label: sigMeta.label,
 				});
 			}
 		}
+
+		const evidencePatches = verifications.map((verification) => {
+			const handlerCalls = astTelemetry.handlerCalls[verification.tag] ?? {
+				discover: 0,
+				mutate: 0,
+				finalize: 0,
+			};
+			const structuralHashes = astTelemetry.structuralHashes[verification.tag];
+			const activeStructuralHashes = structuralHashes
+				? Object.fromEntries(
+						(["discover", "mutate", "finalize"] as AstPassName[])
+							.filter((pass) => handlerCalls[pass] > 0)
+							.map((pass) => [pass, structuralHashes[pass]]),
+					)
+				: undefined;
+			const witness = semanticWitnesses.get(verification.tag);
+			const hasStructuralActivity =
+				handlerCalls.discover + handlerCalls.mutate + handlerCalls.finalize > 0;
+			return {
+				tag: verification.tag,
+				passed: verification.passed,
+				coverage: witness
+					? ("semantic" as const)
+					: hasStructuralActivity
+						? ("structural" as const)
+						: ("verification" as const),
+				handlerCalls,
+				...(activeStructuralHashes &&
+				Object.keys(activeStructuralHashes).length > 0
+					? { structuralHashes: activeStructuralHashes }
+					: {}),
+				...(witness ? { witness } : {}),
+				overlaps: astTelemetry.overlaps.filter((overlap) =>
+					overlap.tags.includes(verification.tag),
+				),
+			};
+		});
 
 		if (options.dryRun) {
 			console.log(chalk.yellow("    Dry run - no changes written"));
@@ -421,6 +524,12 @@ export class PatchRunner {
 			failedTags,
 			verifications,
 			groupResults,
+			evidence: {
+				schemaVersion: 1,
+				sourceSha256: sha256Text(originalCode),
+				outputSha256: sha256Text(finalOutput),
+				patches: evidencePatches,
+			},
 			limits: getLimitsChanged(),
 			errors: errors.map(({ tag, error }) => ({
 				tag,

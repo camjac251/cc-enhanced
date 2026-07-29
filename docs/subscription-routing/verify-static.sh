@@ -48,8 +48,10 @@ credential_helper=${CLODEX_CREDENTIAL_HELPER_PATH:-$default_credential_helper}
 launcher_process_wrapper="$HOME/.local/libexec/claudex-process-wrapper"
 prompt_composer="$HOME/.local/libexec/claudex-compose-system-prompt"
 node_bin=$(mise which node)
-clodex_bin=$(mise which clodex)
-clodex_wrapper=$(mise which clodex-claude)
+mise_data_dir=${MISE_DATA_DIR:-"$HOME/.local/share/mise"}
+mise_shims_dir="$mise_data_dir/shims"
+clodex_bin="$mise_shims_dir/clodex"
+clodex_wrapper="$mise_shims_dir/clodex-claude"
 case "$credential_helper" in
 /*) ;;
 *) fail "CLODEX_CREDENTIAL_HELPER_PATH must be absolute" ;;
@@ -78,38 +80,33 @@ done
 [ -r "$service_unit" ] || fail "service unit is unreadable: $service_unit"
 [ -r "$config_file" ] || fail "model configuration is unreadable: $config_file"
 
-clodex_version=$("$node_bin" "$clodex_bin" --version)
+clodex_version=$("$clodex_bin" --version)
 [ -n "$clodex_version" ] || fail "Clodex version is empty"
 
 sed \
 	-e "s|@HOME@|$HOME|g" \
-	-e "s|@NODE_BIN@|$node_bin|g" \
 	-e "s|@CLODEX_BIN@|$clodex_bin|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
 	"$setup_dir/templates/claudex-clodex.service" | cmp -s - "$service_unit" ||
 	fail "installed service unit does not match the reviewed template"
 sed \
-	-e "s|@NODE_BIN@|$node_bin|g" \
 	-e "s|@CLODEX_BIN@|$clodex_bin|g" \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
 	"$setup_dir/templates/clodex" | cmp -s - "$clodex_admin_bin" ||
 	fail "installed administration wrapper does not match the reviewed template"
 sed \
-	-e "s|@NODE_BIN@|$node_bin|g" \
 	-e "s|@CLODEX_BIN@|$clodex_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
 	"$setup_dir/templates/clodex-service" | cmp -s - "$clodex_service_bin" ||
 	fail "installed service controller does not match the reviewed template"
 sed \
-	-e "s|@NODE_BIN@|$node_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
 	-e "s|@CLAUDEX_CLIENT_PROFILE@|$profile|g" \
 	"$setup_dir/templates/claudex-process-wrapper" |
 	cmp -s - "$launcher_process_wrapper" ||
 	fail "installed portable process wrapper does not match the reviewed template"
 sed \
-	-e "s|@NODE_BIN@|$node_bin|g" \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
@@ -120,7 +117,7 @@ sed \
 cmp -s "$setup_dir/templates/claudex-compose-system-prompt" "$prompt_composer" ||
 	fail "installed prompt composer does not match the reviewed template"
 
-if grep -E '@(CLODEX_[A-Z_]+|CLAUDEX_[A-Z_]+|CLAUDE_BIN|HOME|NODE_BIN)@' \
+if grep -E '@(CLODEX_[A-Z_]+|CLAUDEX_[A-Z_]+|CLAUDE_BIN|HOME)@' \
 	"$claudex_bin" \
 	"$clodex_admin_bin" \
 	"$clodex_service_bin" \

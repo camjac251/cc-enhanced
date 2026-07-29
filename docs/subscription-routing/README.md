@@ -9,15 +9,21 @@ flowchart LR
     Direct --> Max["Anthropic<br/>Claude Max subscription"]
 
     Claudex(["claudex"]) --> Routed["Same binary and configuration<br/>routed process tree"]
-    Routed --> Router{{Local selective router}}
+    Routed --> Router{{Clodex}}
     Router -->|native models: passthrough| Max
-    Router -->|sol: protocol translation| Pro["OpenAI<br/>ChatGPT Pro OAuth"]
+    Router -->|GPT-5.6 Sol: protocol translation| Pro["OpenAI<br/>ChatGPT Pro OAuth"]
 ```
 
+`claudex` is the opt-in launcher that enables the isolated Clodex path for its
+Claude Code process tree. Clodex then exposes GPT-5.6 Sol inside Claude Code
+through the configured ChatGPT Pro OAuth route. A normal `claude` launch does
+not enable Clodex and remains on the native Anthropic subscription path.
+
 The direct and routed launchers intentionally coexist. `claude` remains the
-baseline. `claudex` adds routing only for that process tree, including fresh
-agents and workflow workers. It does not replace the normal login, settings,
-status line, plugins, skills, agents, session history, or project configuration.
+baseline. `claudex` enables Clodex only for that process tree, including fresh
+agents and workflow workers; Clodex performs the routing. The launcher does not
+replace the normal login, settings, status line, plugins, skills, agents,
+session history, or project configuration.
 
 Two client profiles are supported:
 
@@ -152,9 +158,14 @@ This example defaults to the supplied WSL helper but accepts the absolute
 (
 set -eu
 
-node_bin=$(mise which node)
-clodex_bin=$(mise which clodex)
-clodex_wrapper=$(mise which clodex-claude)
+mise_data_dir=${MISE_DATA_DIR:-"$HOME/.local/share/mise"}
+mise_shims_dir="$mise_data_dir/shims"
+PATH="$mise_shims_dir:$PATH"
+export PATH
+
+node_bin=$(command -v node)
+clodex_bin=$(command -v clodex)
+clodex_wrapper=$(command -v clodex-claude)
 claude_bin=$(command -v claude)
 client_profile=${CLAUDEX_CLIENT_PROFILE:-enhanced}
 credential_helper=${CLODEX_CREDENTIAL_HELPER_PATH:-"$HOME/.local/libexec/claudex-credential-helper"}
@@ -193,28 +204,23 @@ trap 'rm -rf "$rendered_dir"' 0 HUP INT TERM
 
 sed \
   -e "s|@HOME@|$HOME|g" \
-  -e "s|@NODE_BIN@|$node_bin|g" \
   -e "s|@CLODEX_BIN@|$clodex_bin|g" \
   -e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
   templates/claudex-clodex.service >"$rendered_dir/claudex-clodex.service"
 sed \
-  -e "s|@NODE_BIN@|$node_bin|g" \
   -e "s|@CLODEX_BIN@|$clodex_bin|g" \
   -e "s|@CLAUDE_BIN@|$claude_bin|g" \
   -e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
   templates/clodex >"$rendered_dir/clodex"
 sed \
-  -e "s|@NODE_BIN@|$node_bin|g" \
   -e "s|@CLODEX_BIN@|$clodex_bin|g" \
   -e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
   templates/clodex-service >"$rendered_dir/clodex-service"
 sed \
-  -e "s|@NODE_BIN@|$node_bin|g" \
   -e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
   -e "s|@CLAUDEX_CLIENT_PROFILE@|$client_profile|g" \
   templates/claudex-process-wrapper >"$rendered_dir/claudex-process-wrapper"
 sed \
-  -e "s|@NODE_BIN@|$node_bin|g" \
   -e "s|@CLAUDE_BIN@|$claude_bin|g" \
   -e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
   -e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
@@ -240,6 +246,11 @@ install -m 700 templates/claudex-compose-system-prompt \
 systemctl --user daemon-reload
 )
 ```
+
+Prepending the stable mise shims directory is intentional. The rendered files
+store version-independent shim paths, so installing a newer Clodex release
+changes the shim target without embedding the release number in the service or
+launchers.
 
 The unit stays disabled. `claudex` starts it on demand; `claude` does not use
 it.
@@ -374,32 +385,33 @@ The isolated Clodex home is `~/.local/share/claudex-clodex`.
 
 ## Safe updates and restarts
 
-`mise upgrade` changes the globally activated Clodex tool but does not restart
-the running service or replace code that process already loaded.
+Updating the globally activated Clodex tool changes the target selected by its
+mise shims, but it does not restart the running service or replace code that
+process already loaded.
 `Restart=on-failure` is not an upgrade watcher: systemd acts only after the
 service exits unsuccessfully. A bridge that remains alive while returning
 routed 5xx responses is still considered running.
 
 Clodex loads provider adapters on demand. If mise removes the previous package
 version while its service is still running, a later Sol request can try to load
-an adapter from that removed installation. Treat the tool upgrade, path
-rerender, and service restart as one maintenance operation. Let routed sessions
-finish, then run:
+an adapter from that removed installation. Treat the tool upgrade and service
+restart as one maintenance operation. Let routed sessions finish, then run:
 
 ```sh
-mise upgrade --minimum-release-age 0 npm:@bman654/clodex
+mise use -g --minimum-release-age 0 npm:@bman654/clodex@latest
+mise reshim
 mise tool npm:@bman654/clodex
 mise which clodex
 mise which clodex-claude
 clodex --version
 ```
 
-If either `mise which` path changed, rerun the rendering and installation block
-in section 4 before continuing. Then reload systemd, restart the idle service,
-and verify the installation:
+The version-specific `mise which` paths should change after an update; the
+installed service and launchers continue to point at stable shims. Reload
+systemd only when the unit template changed, then restart the idle service and
+verify the installation:
 
 ```sh
-systemctl --user daemon-reload
 clodex-service restart
 ./verify-static.sh
 ./verify-live.sh
@@ -418,7 +430,8 @@ For a client update:
 
 1. Enhanced profile: run `mise run native:update -- latest`.
 2. Stock profile: update Claude Code normally, then run `clodex patch`.
-3. Rerender the launchers if `mise which` or `command -v claude` changed.
+3. Rerender the launchers if the mise data directory, selected client profile,
+   credential-helper path, or `command -v claude` changed.
 4. Reinstall the routing overlay if its reviewed template changed.
 5. Run the applicable static and live verification commands.
 

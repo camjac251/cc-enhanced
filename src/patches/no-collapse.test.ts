@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
-import { noCollapse } from "./no-collapse.js";
+import { collectNoCollapseVerification, noCollapse } from "./no-collapse.js";
 
 async function runNoCollapseViaPasses(ast: any): Promise<void> {
 	const passes = (await noCollapse.astPasses?.(ast)) ?? [];
@@ -82,6 +82,19 @@ test("no-collapse patches guard while preserving classification isCollapsible", 
 
 	// Verify passes on patched output
 	assert.equal(noCollapse.verify(output, ast), true);
+});
+
+test("no-collapse collects verification markers in one inventory", async () => {
+	const ast = parse(NO_COLLAPSE_FIXTURE);
+	await runNoCollapseViaPasses(ast);
+
+	assert.deepEqual(collectNoCollapseVerification(ast), {
+		foundMemoryWriteResult: true,
+		foundUnpatchedMemoryWriteResult: false,
+		foundOriginalGuard: false,
+		foundPatchedGuard: true,
+		foundClassificationTail: true,
+	});
 });
 
 test("no-collapse verify rejects unpatched fixture", () => {

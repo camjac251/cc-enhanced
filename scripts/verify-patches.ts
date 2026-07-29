@@ -4,6 +4,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { withHeavyOperationGuard } from "../src/heavy-operation-guard.js";
+import { registeredPatches } from "../src/patches/index.js";
+import { extractPatchEvidence } from "../src/verification/patch-evidence.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
@@ -11,8 +14,9 @@ const defaultPromptDriftBaseline = path.join(
 	repoRoot,
 	"prompt-surface-baseline.json",
 );
+const expectedPatchTags = registeredPatches.map((patch) => patch.tag);
 
-interface DryRunSummary {
+export interface DryRunSummary {
 	error?: unknown;
 	result?: {
 		failedTags?: unknown;
@@ -46,6 +50,12 @@ function envValue(name: string): string | undefined {
 	return value ? value : undefined;
 }
 
+export function structuralEvidenceCliArgs(
+	evidencePath: string | undefined,
+): string[] {
+	return evidencePath ? ["--structural-evidence"] : [];
+}
+
 function resolvePath(value: string): string {
 	if (value === "~") return os.homedir();
 	if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
@@ -59,6 +69,18 @@ function fileExists(filePath: string | undefined): filePath is string {
 	} catch {
 		return false;
 	}
+}
+
+export function resolveConfiguredTarget(
+	name: "CLI_TARGET" | "NATIVE_TARGET" | "CC_POST_UPDATE_PROMOTED",
+	value: string | undefined,
+): string | undefined {
+	if (!value) return undefined;
+	const target = resolvePath(value);
+	if (!fileExists(target)) {
+		throw new Error(`${name} target not found: ${target}`);
+	}
+	return target;
 }
 
 function promptDriftBaselinePath(): string {
@@ -101,8 +123,17 @@ function run(
 	}
 }
 
+export function fullPatchEnvironment(
+	env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+	const fullEnv = { ...env };
+	delete fullEnv.CLAUDE_PATCHER_INCLUDE_TAGS;
+	delete fullEnv.CLAUDE_PATCHER_EXCLUDE_TAGS;
+	return fullEnv;
+}
+
 function runBun(args: string[]): void {
-	run("bun", args);
+	run("bun", args, fullPatchEnvironment());
 }
 
 function compareSemverLike(a: string, b: string): number {
@@ -164,7 +195,11 @@ function createVerifyPaths(): VerifyPaths {
 	};
 }
 
-function assertCleanSummary(summaryPath: string, label: string): void {
+export function assertCleanSummary(
+	summaryPath: string,
+	label: string,
+	expectedTags?: readonly string[],
+): void {
 	const parsed = JSON.parse(
 		fs.readFileSync(summaryPath, "utf8"),
 	) as DryRunSummary;
@@ -183,23 +218,76 @@ function assertCleanSummary(summaryPath: string, label: string): void {
 	) {
 		throw new Error(`Invalid summary schema for ${label}: ${summaryPath}`);
 	}
-	if (result.failedTags.length === 0) return;
+	if (result.failedTags.length > 0) {
+		const verificationLines = Array.isArray(result.verifications)
+			? (result.verifications as PatchVerification[])
+					.filter((verification) => verification.passed === false)
+					.map(
+						(verification) =>
+							`  - ${String(verification.tag ?? "unknown")}: ${String(
+								verification.reason ?? "unknown",
+							)}`,
+					)
+			: [];
+		const details =
+			verificationLines.length > 0 ? `\n${verificationLines.join("\n")}` : "";
+		throw new Error(
+			`Dry-run summary contains failed tags for ${label}: ${summaryPath}${details}`,
+		);
+	}
 
-	const verificationLines = Array.isArray(result.verifications)
-		? (result.verifications as PatchVerification[])
-				.filter((verification) => verification.passed === false)
-				.map(
-					(verification) =>
-						`  - ${String(verification.tag ?? "unknown")}: ${String(
-							verification.reason ?? "unknown",
-						)}`,
-				)
-		: [];
-	const details =
-		verificationLines.length > 0 ? `\n${verificationLines.join("\n")}` : "";
-	throw new Error(
-		`Dry-run summary contains failed tags for ${label}: ${summaryPath}${details}`,
+	if (expectedTags) {
+		const actualTags = result.appliedTags.map(String);
+		const expected = [...expectedTags].sort();
+		const actual = [...actualTags].sort();
+		const expectedSet = new Set(expected);
+		const actualSet = new Set(actual);
+		const missing = expected.filter((tag) => !actualSet.has(tag));
+		const unexpected = actual.filter((tag) => !expectedSet.has(tag));
+		const hasDuplicates = actualSet.size !== actual.length;
+		if (missing.length > 0 || unexpected.length > 0 || hasDuplicates) {
+			throw new Error(
+				`Dry-run patch roster mismatch for ${label}: missing=[${missing.join(", ")}], unexpected=[${unexpected.join(", ")}], duplicates=${hasDuplicates}`,
+			);
+		}
+	}
+}
+
+export function writePatchEvidence(
+	summaryPath: string,
+	outputPath: string,
+): void {
+	const summary = JSON.parse(fs.readFileSync(summaryPath, "utf8")) as unknown;
+	const evidence = extractPatchEvidence(summary);
+	fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+	fs.writeFileSync(
+		outputPath,
+		`${JSON.stringify(evidence, null, 2)}\n`,
+		"utf8",
 	);
+}
+
+export function persistEvidenceAndAssertCleanSummary(
+	summaryPath: string,
+	label: string,
+	expectedTags: readonly string[],
+	evidenceOutput?: string,
+): void {
+	if (evidenceOutput) {
+		writePatchEvidence(summaryPath, evidenceOutput);
+	}
+	assertCleanSummary(summaryPath, label, expectedTags);
+}
+
+export function assertVerificationTarget(
+	nativeTarget: string | undefined,
+	allowMissingTarget: boolean,
+): void {
+	if (!nativeTarget && !allowMissingTarget) {
+		throw new Error(
+			"No real native target was found. Set NATIVE_TARGET, ensure the promoted installation is detectable, or use --allow-missing-target for an explicit typecheck/lint-only run.",
+		);
+	}
 }
 
 function detectNativeTarget(): string | undefined {
@@ -237,7 +325,7 @@ function verifyCliTarget(cliTarget: string, paths: VerifyPaths): void {
 		"--summary-path",
 		paths.cliSummary,
 	]);
-	assertCleanSummary(paths.cliSummary, "cli.js");
+	assertCleanSummary(paths.cliSummary, "cli.js", expectedPatchTags);
 }
 
 function runPromptExportAndVerify(
@@ -273,9 +361,13 @@ function runPromptExportAndVerify(
 	]);
 }
 
-function verifyNativeTarget(nativeTarget: string, paths: VerifyPaths): void {
-	const promotedBinary = envValue("CC_POST_UPDATE_PROMOTED");
-	if (promotedBinary && fileExists(promotedBinary)) {
+function verifyNativeTarget(
+	nativeTarget: string,
+	paths: VerifyPaths,
+	promotedBinary?: string,
+	evidenceOutput?: string,
+): void {
+	if (promotedBinary) {
 		// Post-update: the patch step already produced this binary and gated the
 		// promote on zero failed tags, and updateNative re-checked anchors before
 		// promoting. A dry-run patch (correctness) and an --output re-patch (only
@@ -296,8 +388,17 @@ function verifyNativeTarget(nativeTarget: string, paths: VerifyPaths): void {
 		paths.nativePatchedForPrompts,
 		"--summary-path",
 		paths.nativeSummary,
+		...structuralEvidenceCliArgs(evidenceOutput),
 	]);
-	assertCleanSummary(paths.nativeSummary, "native");
+	persistEvidenceAndAssertCleanSummary(
+		paths.nativeSummary,
+		"native",
+		expectedPatchTags,
+		evidenceOutput,
+	);
+	if (evidenceOutput) {
+		console.log(`Patch evidence written to ${evidenceOutput}`);
+	}
 	runPromptExportAndVerify(paths.nativePatchedForPrompts, paths);
 }
 
@@ -335,36 +436,22 @@ function listCleanVersions(): string[] {
 	}
 }
 
-function detectMatrixVersion(): string | undefined {
+export function selectMatrixVersions(): string[] {
 	const selected = envValue("SELECTED_VERSION");
-	if (selected) return selected;
-
-	const currentLink = path.join(
-		os.homedir(),
-		".local/share/claude/versions/current",
-	);
-	try {
-		const currentTarget = fs.realpathSync(currentLink);
-		const match = currentTarget.match(
-			/\/native-cache\/([0-9]+\.[0-9]+\.[0-9]+)/,
-		);
-		if (match) return match[1];
-	} catch {
-		// Fall back to the newest clean version.
+	if (selected) {
+		if (!/^\d+\.\d+\.\d+$/.test(selected)) {
+			throw new Error(
+				`SELECTED_VERSION must be a semantic version such as 2.1.220, got: ${selected}`,
+			);
+		}
+		return [selected];
 	}
-
-	const cleanVersions = listCleanVersions();
-	return cleanVersions[cleanVersions.length - 1];
-}
-
-function selectMatrixVersions(): string[] {
-	const selected = envValue("SELECTED_VERSION");
-	if (selected) return [selected];
 	if (process.env.VERIFY_PATCHES_MATRIX_SCOPE === "all") {
 		return listCleanVersions();
 	}
-	const detected = detectMatrixVersion();
-	return detected ? [detected] : [];
+	throw new Error(
+		"Matrix verification requires SELECTED_VERSION=<X.Y.Z> unless VERIFY_PATCHES_MATRIX_SCOPE=all is set.",
+	);
 }
 
 function runPatchMatrix(): void {
@@ -378,6 +465,9 @@ function runPatchMatrix(): void {
 	const tmpDir = fs.mkdtempSync(
 		path.join(os.tmpdir(), "claude-patcher-matrix."),
 	);
+	const evidenceDir = envValue("PATCH_EVIDENCE_DIR")
+		? resolvePath(envValue("PATCH_EVIDENCE_DIR") as string)
+		: undefined;
 	let failures = 0;
 	try {
 		for (const selectedVersion of selectedVersions) {
@@ -395,10 +485,11 @@ function runPatchMatrix(): void {
 			}
 
 			const summaryPath = path.join(tmpDir, `summary-${selectedVersion}.json`);
+			const evidencePath = evidenceDir
+				? path.join(evidenceDir, `${selectedVersion}.json`)
+				: undefined;
 			console.log(`==> Verifying ${selectedVersion}: ${target}`);
-			const env = { ...process.env };
-			delete env.CLAUDE_PATCHER_INCLUDE_TAGS;
-			delete env.CLAUDE_PATCHER_EXCLUDE_TAGS;
+			const env = fullPatchEnvironment();
 
 			try {
 				run(
@@ -410,10 +501,19 @@ function runPatchMatrix(): void {
 						"--dry-run",
 						"--summary-path",
 						summaryPath,
+						...structuralEvidenceCliArgs(evidencePath),
 					],
 					env,
 				);
-				assertCleanSummary(summaryPath, selectedVersion);
+				persistEvidenceAndAssertCleanSummary(
+					summaryPath,
+					selectedVersion,
+					expectedPatchTags,
+					evidencePath,
+				);
+				if (evidencePath) {
+					console.log(`  Evidence: ${evidencePath}`);
+				}
 				const parsed = JSON.parse(
 					fs.readFileSync(summaryPath, "utf8"),
 				) as DryRunSummary;
@@ -440,16 +540,19 @@ function runPatchMatrix(): void {
 	console.log(`Matrix passed: ${selectedVersions.length} version(s) verified`);
 }
 
-function main(): void {
+async function main(): Promise<void> {
 	if (process.argv.includes("--help") || process.argv.includes("-h")) {
 		console.log(`Usage: bun scripts/verify-patches.ts [--matrix]
 
 Options:
-  --matrix  Dry-run patches against selected clean cli.js versions.
+  --matrix                Dry-run patches against selected clean cli.js versions.
+  --allow-missing-target  Run only typecheck and lint when no native target is available.
 
 Environment:
   CLI_TARGET                   Optional clean cli.js target for default verification.
   NATIVE_TARGET                Optional native binary target for default verification.
+  PATCH_EVIDENCE_OUTPUT        Optional standalone native evidence manifest path.
+  PATCH_EVIDENCE_DIR           Optional per-version evidence directory for --matrix.
   PROMPT_DRIFT_BASELINE        Optional prompt drift baseline override. Defaults to prompt-surface-baseline.json.
   SELECTED_VERSION             Version used by --matrix.
   VERIFY_PATCHES_MATRIX_SCOPE  Set to "all" to verify every versions_clean/<version>/cli.js.
@@ -457,19 +560,53 @@ Environment:
 		return;
 	}
 
-	if (process.argv.includes("--matrix")) {
-		runPatchMatrix();
-		return;
+	const matrix = process.argv.includes("--matrix");
+	await withHeavyOperationGuard(
+		{
+			operation: matrix ? "native patch matrix" : "native patch verification",
+		},
+		() => {
+			if (matrix) {
+				runPatchMatrix();
+				return;
+			}
+			runDefaultVerification();
+		},
+	);
+}
+
+function runDefaultVerification(): void {
+	const allowMissingTarget = process.argv.includes("--allow-missing-target");
+	const cliTarget = resolveConfiguredTarget(
+		"CLI_TARGET",
+		envValue("CLI_TARGET"),
+	);
+	const configuredNativeTarget = resolveConfiguredTarget(
+		"NATIVE_TARGET",
+		envValue("NATIVE_TARGET"),
+	);
+	const promotedBinary = resolveConfiguredTarget(
+		"CC_POST_UPDATE_PROMOTED",
+		envValue("CC_POST_UPDATE_PROMOTED"),
+	);
+	const nativeTarget = configuredNativeTarget ?? detectNativeTarget();
+	const effectiveNativeTarget = promotedBinary ?? nativeTarget;
+	assertVerificationTarget(effectiveNativeTarget, allowMissingTarget);
+	const evidenceOutput = envValue("PATCH_EVIDENCE_OUTPUT")
+		? resolvePath(envValue("PATCH_EVIDENCE_OUTPUT") as string)
+		: undefined;
+	if (promotedBinary && evidenceOutput) {
+		throw new Error(
+			"PATCH_EVIDENCE_OUTPUT requires a standalone native patch run; post-update verification reuses the promoted artifact without producing a patch summary.",
+		);
+	}
+	if (!effectiveNativeTarget && evidenceOutput) {
+		throw new Error(
+			"PATCH_EVIDENCE_OUTPUT requires a real native verification target.",
+		);
 	}
 
 	const paths = createVerifyPaths();
-	const cliTarget = envValue("CLI_TARGET")
-		? resolvePath(envValue("CLI_TARGET") as string)
-		: undefined;
-	const configuredNativeTarget = envValue("NATIVE_TARGET");
-	const nativeTarget = configuredNativeTarget
-		? resolvePath(configuredNativeTarget)
-		: detectNativeTarget();
 
 	try {
 		fs.mkdirSync(paths.tmpDir, { recursive: true });
@@ -488,11 +625,16 @@ Environment:
 			console.log("Skipping cli.js dry-run (set CLI_TARGET to enable)");
 		}
 
-		if (fileExists(nativeTarget)) {
-			verifyNativeTarget(nativeTarget, paths);
+		if (fileExists(effectiveNativeTarget)) {
+			verifyNativeTarget(
+				effectiveNativeTarget,
+				paths,
+				promotedBinary,
+				evidenceOutput,
+			);
 		} else {
 			console.log(
-				"Skipping native dry-run (no NATIVE_TARGET and no promoted binary found)",
+				"Skipping native verification (--allow-missing-target was explicitly set)",
 			);
 		}
 
@@ -506,9 +648,11 @@ Environment:
 	}
 }
 
-try {
-	main();
-} catch (error) {
-	console.error(error instanceof Error ? error.message : error);
-	process.exit(1);
+if (import.meta.main) {
+	try {
+		await main();
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : error);
+		process.exit(1);
+	}
 }

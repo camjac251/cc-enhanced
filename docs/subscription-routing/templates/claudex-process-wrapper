@@ -3,7 +3,6 @@
 set -eu
 
 clodex_wrapper='@CLODEX_CLAUDE_BIN@'
-node_bin='@NODE_BIN@'
 client_profile='@CLAUDEX_CLIENT_PROFILE@'
 default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
 system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
@@ -15,10 +14,6 @@ fi
 if [ ! -x "$clodex_wrapper" ]; then
 	printf 'claudex-process-wrapper: Clodex wrapper is missing: %s\n' \
 		"$clodex_wrapper" >&2
-	exit 1
-fi
-if [ ! -x "$node_bin" ]; then
-	printf 'claudex-process-wrapper: Node.js is missing: %s\n' "$node_bin" >&2
 	exit 1
 fi
 if [ ! -r "$system_prompt_file" ]; then
@@ -65,4 +60,4 @@ if [ "$client_profile" = stock ]; then
 	fi
 fi
 
-exec "$node_bin" "$clodex_wrapper" "$claude_path" "$@"
+exec "$clodex_wrapper" "$claude_path" "$@"

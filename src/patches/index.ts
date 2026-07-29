@@ -104,7 +104,7 @@ function parsePatchTagList(value: string | undefined): Set<string> | null {
 }
 
 // Order matters: string patches run first, then AST, signature last.
-const basePatches: Patch[] = [
+export const registeredPatches: Patch[] = [
 	// String-based patches (fast, run before AST parsing)
 	shellQuoteFix,
 	bashPrompt,
@@ -159,7 +159,7 @@ const basePatches: Patch[] = [
 const includeTags = parsePatchTagList(process.env.CLAUDE_PATCHER_INCLUDE_TAGS);
 const excludeTags = parsePatchTagList(process.env.CLAUDE_PATCHER_EXCLUDE_TAGS);
 
-export const allPatches: Patch[] = basePatches.filter((patch) => {
+export const allPatches: Patch[] = registeredPatches.filter((patch) => {
 	if (includeTags && !includeTags.has(patch.tag)) return false;
 	if (excludeTags?.has(patch.tag)) return false;
 	return true;

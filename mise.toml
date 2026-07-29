@@ -1,6 +1,6 @@
 [tools]
 "github:oven-sh/bun" = "canary"
-lefthook = "latest"
+lefthook = "2.1.9"
 
 [hooks]
 enter = "lefthook install"
@@ -104,6 +104,11 @@ description = "Structural bundle diff between JS files"
 usage = 'arg "[args]..." help="Arguments passed to bun run diff"'
 run = 'eval "set -- ${usage_args-}"; bun run diff "$@"'
 
+[tasks."patch-evidence:compare"]
+description = "Compare sanitized patch evidence from adjacent releases"
+usage = 'arg "[args]..." help="Arguments passed to bun run patch-evidence:compare"'
+run = 'eval "set -- ${usage_args-}"; bun run patch-evidence:compare "$@"'
+
 [tasks."lint:fix"]
 description = "Auto-fix lint and format issues"
 run = "bun run lint:fix"
@@ -153,6 +158,11 @@ description = "Compare vanilla and patched prompt exports"
 usage = 'arg "[args]..." help="Arguments passed to bun run prompts:compare"'
 run = 'eval "set -- ${usage_args-}"; bun run prompts:compare "$@"'
 
+[tasks."prompts:compare:matrix"]
+description = "Compare clean and patched prompt exports across adjacent releases"
+usage = 'arg "[args]..." help="Arguments passed to bun run prompts:compare:matrix"'
+run = 'eval "set -- ${usage_args-}"; bun run prompts:compare:matrix "$@"'
+
 [tasks.clean]
 description = "Remove output directories"
 run = "rm -rf versions_clean"
@@ -178,7 +188,7 @@ description = "Verify patcher health and dry-run patch application for native ta
 run = "bun run verify:patches"
 
 [tasks."verify:patches:matrix"]
-description = "Dry-run patches against selected clean cli.js versions"
+description = "Dry-run patches against the selected latest clean cli.js"
 run = "bun run verify:patches:matrix"
 
 [tasks."prompt-drift:baseline"]

@@ -25,6 +25,47 @@ export interface PatchGroupResult {
 	failedTags: string[];
 }
 
+export type PatchWitnessValue = string | number | boolean;
+
+export interface PatchSemanticWitness {
+	[key: string]: PatchWitnessValue;
+}
+
+export interface PatchVerificationWithWitness {
+	result: true | string;
+	witness?: PatchSemanticWitness;
+}
+
+export interface PatchDriftEvidence {
+	tag: string;
+	passed: boolean;
+	coverage: "verification" | "structural" | "semantic";
+	handlerCalls: Record<AstPassName, number>;
+	structuralHashes?: Partial<
+		Record<
+			AstPassName,
+			{
+				beforeSha256: string;
+				afterSha256: string;
+			}
+		>
+	>;
+	witness?: PatchSemanticWitness;
+	overlaps: Array<{
+		pass: AstPassName;
+		nodeType: string;
+		tags: string[];
+		count: number;
+	}>;
+}
+
+export interface PatchEvidenceManifest {
+	schemaVersion: 1;
+	sourceSha256: string;
+	outputSha256: string;
+	patches: PatchDriftEvidence[];
+}
+
 /**
  * A self-contained patch with optional string/AST transformations and verification.
  */
@@ -46,6 +87,12 @@ export interface Patch {
 	 * Returns true if successful, or a string describing the failure.
 	 */
 	verify: (code: string, ast?: t.File) => true | string;
+
+	/** Verify and return structured, code-free semantic evidence in one pass. */
+	verifyWithWitness?: (
+		code: string,
+		ast?: t.File,
+	) => PatchVerificationWithWitness;
 }
 
 /**
@@ -66,6 +113,9 @@ export interface PatchResult {
 
 	/** Runtime patch execution errors captured before verification */
 	errors?: Array<{ tag: string; reason: string }>;
+
+	/** Deterministic, code-free evidence for release-to-release comparison */
+	evidence?: PatchEvidenceManifest;
 
 	/** Limit changes (old -> new values) */
 	limits?: {

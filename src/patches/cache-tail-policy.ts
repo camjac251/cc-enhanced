@@ -1,6 +1,6 @@
 import * as t from "@babel/types";
 import { type NodePath, template, traverse, type Visitor } from "../babel.js";
-import type { Patch } from "../types.js";
+import type { Patch, PatchVerificationWithWitness } from "../types.js";
 import {
 	getObjectKeyName,
 	getVerifyAst,
@@ -273,22 +273,13 @@ function createCacheTailWindowStatements(
 	return [
 		...decimationStatements,
 		t.variableDeclaration("var", [
-			t.variableDeclarator(
-				t.cloneNode(tailCountId),
-				t.conditionalExpression(
-					t.binaryExpression(">=", t.cloneNode(indexId), t.numericLiteral(0)),
-					t.numericLiteral(1),
-					t.numericLiteral(0),
-				),
-			),
+			t.variableDeclarator(t.cloneNode(tailCountId), t.numericLiteral(0)),
 		]),
 		t.forStatement(
 			t.variableDeclaration("var", [
 				t.variableDeclarator(
 					t.cloneNode(tailIndexId),
-					t.callExpression(t.cloneNode(helperId), [
-						t.binaryExpression("-", t.cloneNode(indexId), t.numericLiteral(1)),
-					]),
+					t.callExpression(t.cloneNode(helperId), [t.cloneNode(indexId)]),
 				),
 			]),
 			t.logicalExpression(
@@ -313,22 +304,42 @@ function createCacheTailWindowStatements(
 			),
 			t.blockStatement([
 				t.ifStatement(
-					t.unaryExpression(
-						"!",
-						t.callExpression(
-							t.memberExpression(t.cloneNode(setId), t.identifier("has")),
-							[t.cloneNode(tailIndexId)],
+					t.logicalExpression(
+						"||",
+						t.unaryExpression("!", t.identifier("cacheUserOnly")),
+						t.binaryExpression(
+							"===",
+							t.memberExpression(
+								t.memberExpression(
+									t.identifier(messagesName),
+									t.cloneNode(tailIndexId),
+									true,
+								),
+								t.identifier("type"),
+							),
+							t.stringLiteral("user"),
 						),
 					),
-					t.expressionStatement(
-						t.callExpression(
-							t.memberExpression(t.cloneNode(setId), t.identifier("add")),
-							[t.cloneNode(tailIndexId)],
+					t.blockStatement([
+						t.ifStatement(
+							t.unaryExpression(
+								"!",
+								t.callExpression(
+									t.memberExpression(t.cloneNode(setId), t.identifier("has")),
+									[t.cloneNode(tailIndexId)],
+								),
+							),
+							t.expressionStatement(
+								t.callExpression(
+									t.memberExpression(t.cloneNode(setId), t.identifier("add")),
+									[t.cloneNode(tailIndexId)],
+								),
+							),
 						),
-					),
-				),
-				t.expressionStatement(
-					t.updateExpression("++", t.cloneNode(tailCountId)),
+						t.expressionStatement(
+							t.updateExpression("++", t.cloneNode(tailCountId)),
+						),
+					]),
 				),
 			]),
 		),
@@ -1979,6 +1990,50 @@ function verifyOneHourTtlEnforced(ast: t.File): true | string {
 // Patch export
 // ---------------------------------------------------------------------------
 
+function verifyCacheTailPolicy(
+	code: string,
+	ast?: t.File,
+): PatchVerificationWithWitness {
+	const verifyAst = getVerifyAst(code, ast);
+	if (!verifyAst) {
+		return {
+			result: "Unable to parse AST for cache-tail-policy verification",
+		};
+	}
+
+	const requestClampAnchor = findRequestClampFunction(verifyAst);
+	const checks: Array<() => true | string> = [
+		() => verifyTailWindowPolicy(verifyAst),
+		() => verifySyspromptGlobalScope(verifyAst),
+		() => verifyCacheControlTtlRespectsCaller(verifyAst),
+		() => verifyAgentCacheTtlAllowlist(verifyAst),
+		() => verifyCacheControlBlockCap(verifyAst, requestClampAnchor),
+		() => verifyOneHourTtlEnforced(verifyAst),
+	];
+	let semanticChecksPassed = 0;
+	for (const check of checks) {
+		const result = check();
+		if (result !== true) {
+			return {
+				result,
+				witness: {
+					semanticChecksPassed,
+					semanticChecksRequired: checks.length,
+				},
+			};
+		}
+		semanticChecksPassed++;
+	}
+
+	return {
+		result: true,
+		witness: {
+			semanticChecksPassed,
+			semanticChecksRequired: checks.length,
+		},
+	};
+}
+
 export const cacheTailPolicy: Patch = {
 	tag: "cache-tail-policy",
 
@@ -2005,29 +2060,6 @@ export const cacheTailPolicy: Patch = {
 		},
 	],
 
-	verify: (code, ast) => {
-		const verifyAst = getVerifyAst(code, ast);
-		if (!verifyAst) {
-			return "Unable to parse AST for cache-tail-policy verification";
-		}
-
-		const requestClampAnchor = findRequestClampFunction(verifyAst);
-
-		const checks: Array<() => true | string> = [
-			() => verifyTailWindowPolicy(verifyAst),
-			() => verifySyspromptGlobalScope(verifyAst),
-			() => verifyCacheControlTtlRespectsCaller(verifyAst),
-			() => verifyAgentCacheTtlAllowlist(verifyAst),
-			() => verifyCacheControlBlockCap(verifyAst, requestClampAnchor),
-			() => verifyOneHourTtlEnforced(verifyAst),
-		];
-		for (const check of checks) {
-			const result = check();
-			if (result !== true) {
-				return result;
-			}
-		}
-
-		return true;
-	},
+	verify: (code, ast) => verifyCacheTailPolicy(code, ast).result,
+	verifyWithWitness: verifyCacheTailPolicy,
 };

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { test } from "node:test";
 import { detectInstalledClaudeTarget } from "./installation-detection.js";
-import { parse, print } from "./loader.js";
+import { formatParseDiagnostic, parse, print } from "./loader.js";
 import { extractClaudeJsFromNativeBinary } from "./native.js";
 
 test("loader falls back from module mode to script mode when needed", () => {
@@ -16,6 +16,35 @@ test("loader can disable script fallback when strict module parsing is required"
 			fallbackToScript: false,
 		}),
 	);
+});
+
+test("loader parse diagnostics are bounded and redact source identifiers", () => {
+	const privateIdentifier = `PRIVATE_IDENTIFIER_${"x".repeat(2_000)}`;
+	const source = `export const ${privateIdentifier} = 1; export { ${privateIdentifier} };`;
+	let thrown: unknown;
+	try {
+		parse(source);
+	} catch (error) {
+		thrown = error;
+	}
+
+	assert.ok(thrown instanceof Error);
+	assert.match(thrown.message, /Failed to parse JavaScript/);
+	assert.equal(thrown.message.length <= 512, true);
+	assert.doesNotMatch(thrown.message, /PRIVATE_IDENTIFIER/);
+	assert.doesNotMatch(thrown.message, /x{32}/);
+});
+
+test("standalone parse diagnostic formatting does not include raw messages", () => {
+	const diagnostic = formatParseDiagnostic(
+		Object.assign(new Error("private source payload"), {
+			reasonCode: "UnexpectedToken",
+			loc: { line: 12, column: 34 },
+		}),
+	);
+
+	assert.equal(diagnostic, "UnexpectedToken at 12:34");
+	assert.doesNotMatch(diagnostic, /private source payload/);
 });
 
 test("loader round-trips parsed output", () => {

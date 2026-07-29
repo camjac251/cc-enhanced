@@ -3,7 +3,25 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { computeSourceTreeFingerprint } from "./manager.js";
+import {
+	computeSourceTreeFingerprint,
+	selectPatchTelemetryLevel,
+} from "./manager.js";
+
+test("patch telemetry is deep only when explicitly requested", () => {
+	assert.equal(selectPatchTelemetryLevel({}), "none");
+	assert.equal(
+		selectPatchTelemetryLevel({ summaryPath: "/tmp/summary.json" }),
+		"none",
+	);
+	assert.equal(
+		selectPatchTelemetryLevel({
+			summaryPath: "/tmp/summary.json",
+			structuralEvidence: true,
+		}),
+		"deep",
+	);
+});
 
 test("source fingerprint changes when a patch helper changes", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "cc-fingerprint-"));

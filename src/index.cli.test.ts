@@ -39,6 +39,32 @@ test("CLI rejects unknown options", async () => {
 	}
 });
 
+test("--structural-evidence requires --summary-path", async () => {
+	try {
+		await execFileAsync(
+			process.execPath,
+			["./src/index.ts", "--structural-evidence"],
+			{
+				cwd: repoRoot,
+				env: { ...process.env, NO_COLOR: "1" },
+				encoding: "utf-8",
+			},
+		);
+		assert.fail("expected structural evidence without a summary path to fail");
+	} catch (error) {
+		const childError = error as ExecFileException & {
+			stderr?: string | Buffer;
+			stdout?: string | Buffer;
+		};
+		const combined = `${String(childError.stdout ?? "")}\n${String(
+			childError.stderr ?? "",
+		)}`;
+		assert.notEqual(childError.code, 0);
+		assert.match(combined, /Implications failed/);
+		assert.match(combined, /structural-evidence -> summary-path/);
+	}
+});
+
 test("prompts:drift-baseline keeps the export directory positional", async () => {
 	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "prompt-drift-cli-"));
 	const exportDir = path.join(tempDir, "export");

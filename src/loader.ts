@@ -76,34 +76,69 @@ function parseWithSourceType(
 	);
 }
 
+function safeDiagnosticToken(value: unknown): string | undefined {
+	return typeof value === "string" &&
+		/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value)
+		? value
+		: undefined;
+}
+
+export function formatParseDiagnostic(error: unknown): string {
+	const record =
+		error !== null && typeof error === "object"
+			? (error as Record<string, unknown>)
+			: {};
+	const reason =
+		safeDiagnosticToken(record.reasonCode) ??
+		safeDiagnosticToken(record.code) ??
+		(error instanceof Error ? safeDiagnosticToken(error.name) : undefined) ??
+		"ParseError";
+	const loc =
+		record.loc !== null && typeof record.loc === "object"
+			? (record.loc as Record<string, unknown>)
+			: undefined;
+	if (
+		loc &&
+		Number.isSafeInteger(loc.line) &&
+		Number(loc.line) >= 1 &&
+		Number.isSafeInteger(loc.column) &&
+		Number(loc.column) >= 0
+	) {
+		return `${reason} at ${Number(loc.line)}:${Number(loc.column)}`;
+	}
+	return reason;
+}
+
+function parseFailure(sourceType: ParseSourceType, error: unknown): Error {
+	return new Error(
+		`Failed to parse JavaScript as ${sourceType}: ${formatParseDiagnostic(error)}.`,
+	);
+}
+
 export function parse(code: string, options: ParseOptions = {}): t.File {
 	const sourceType = options.sourceType ?? "module";
 	const fallbackToScript = options.fallbackToScript ?? sourceType === "module";
 
 	if (sourceType === "script") {
-		return parseWithSourceType(code, "script");
+		try {
+			return parseWithSourceType(code, "script");
+		} catch (error) {
+			throw parseFailure("script", error);
+		}
 	}
 
 	try {
 		return parseWithSourceType(code, "module");
 	} catch (moduleError) {
 		if (!fallbackToScript) {
-			throw moduleError;
+			throw parseFailure("module", moduleError);
 		}
 
 		try {
 			return parseWithSourceType(code, "script");
 		} catch (scriptError) {
-			const moduleMessage =
-				moduleError instanceof Error
-					? moduleError.message
-					: String(moduleError);
-			const scriptMessage =
-				scriptError instanceof Error
-					? scriptError.message
-					: String(scriptError);
 			throw new Error(
-				`Failed to parse JavaScript as module or script. Module error: ${moduleMessage}. Script error: ${scriptMessage}.`,
+				`Failed to parse JavaScript as module or script. Module: ${formatParseDiagnostic(moduleError)}. Script: ${formatParseDiagnostic(scriptError)}.`,
 			);
 		}
 	}

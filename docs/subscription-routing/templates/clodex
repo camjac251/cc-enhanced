@@ -4,7 +4,6 @@ set -eu
 
 clodex_bin='@CLODEX_BIN@'
 credential_helper='@CLODEX_CREDENTIAL_HELPER@'
-node_bin='@NODE_BIN@'
 claude_bin='@CLAUDE_BIN@'
 
 if [ "${1:-}" = 'patch' ]; then
@@ -18,7 +17,7 @@ if [ "${1:-}" = 'patch' ]; then
 	esac
 fi
 
-for required_file in "$clodex_bin" "$credential_helper" "$node_bin" "$claude_bin"; do
+for required_file in "$clodex_bin" "$credential_helper" "$claude_bin"; do
 	if [ ! -x "$required_file" ]; then
 		printf 'clodex: required executable is missing: %s\n' "$required_file" >&2
 		exit 1
@@ -38,4 +37,4 @@ unset \
 export CLODEX_HOME="$HOME/.local/share/claudex-clodex"
 export CLODEX_CREDENTIAL_HELPER="$credential_helper"
 
-exec "$node_bin" "$clodex_bin" "$@"
+exec "$clodex_bin" "$@"

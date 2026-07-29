@@ -172,7 +172,7 @@ For EACH patch: read its source file and extract the post-patch evidence its ver
 - missing: a needle verify() requires is absent.
 - ast-only: verify() asserts only AST shapes with no stable searchable text; not a failure, note it.
 - unknown: cannot determine.
-Record needlesChecked (needle, hits) and evidence with line numbers. Return exactly one probes[] entry per patch, in the order listed.
+Record needlesChecked using repo-owned post-patch literals or behavioral descriptions plus hit counts, and evidence with line numbers. Never return minified identifiers, reconstructed module/source names, or raw bundle snippets. Return exactly one probes[] entry per patch, in the order listed.
 
 Probes run CONCURRENTLY with each other: never run bundle-parsing commands (bun run inspect, mise run diff, native:unpack*, prompts:export); rg -n on ${unpack.unpackedPath} plus bat -r for context are the only bundle access allowed. Do not run the patcher or verify:patches. Do not modify any files.`,
   {

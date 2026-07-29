@@ -54,6 +54,21 @@ test("session-memory patches auto-dream availability gate", async () => {
 	assert.equal(sessionMemory.verify(output), true);
 });
 
+test("session-memory reports semantic gate cardinality", async () => {
+	const ast = parse(SESSION_MEMORY_FIXTURE);
+	await runSessionMemoryViaPasses(ast);
+	const output = print(ast);
+
+	assert.ok(sessionMemory.verifyWithWitness);
+	assert.deepEqual(sessionMemory.verifyWithWitness(output, ast), {
+		result: true,
+		witness: {
+			targetGateCount: 1,
+			patchedGateCount: 1,
+		},
+	});
+});
+
 test("session-memory verify detects a gate that lost its force-on prefix", async () => {
 	const ast = parse(SESSION_MEMORY_FIXTURE);
 	await runSessionMemoryViaPasses(ast);

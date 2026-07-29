@@ -8,8 +8,10 @@ import chalk from "chalk";
 import * as Diff from "diff";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
-import { generator, traverse } from "./babel.js";
+import { clearTraverseCache, generator, traverse } from "./babel.js";
+import { withHeavyOperationGuard } from "./heavy-operation-guard.js";
 import { parse } from "./loader.js";
+import { emitMemoryCheckpoint, forceGarbageCollection } from "./profiling.js";
 
 type SurfaceKind =
 	| "cli-flag"
@@ -355,7 +357,7 @@ const RELEASE_SUMMARY_KEYS: ReleaseSummarySectionKey[] = [
 
 const SOURCE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.dirname(SOURCE_DIR);
-const CACHE_SCHEMA_VERSION = 8;
+const CACHE_SCHEMA_VERSION = 9;
 const DEFAULT_CACHE_DIR = path.join(REPO_ROOT, ".cache", "bundle-diff");
 const DEFAULT_DIFF_CONFIG: DiffConfig = {
 	ignoreTokens: [],
@@ -531,7 +533,13 @@ async function main() {
 						description: "Emit JSON instead of human-readable output",
 					});
 			},
-			(argv) => runBundleDiff(argv),
+			(argv) =>
+				withHeavyOperationGuard(
+					{
+						operation: "bundle diff",
+					},
+					() => runBundleDiff(argv),
+				),
 		)
 		.command(
 			"matrix <bundles..>",
@@ -576,7 +584,13 @@ async function main() {
 						description: "Emit JSON instead of human-readable output",
 					});
 			},
-			(argv) => runMatrixDiff(argv),
+			(argv) =>
+				withHeavyOperationGuard(
+					{
+						operation: "bundle diff matrix",
+					},
+					() => runMatrixDiff(argv),
+				),
 		)
 		.command(
 			["ast <original> <patched>", "diff <original> <patched>"],
@@ -587,19 +601,17 @@ async function main() {
 					.positional("patched", { type: "string", demandOption: true })
 					.option("context", { alias: "c", type: "number", default: 2 });
 			},
-			(argv) => runAstDiff(argv),
+			(argv) =>
+				withHeavyOperationGuard(
+					{
+						operation: "structural bundle diff",
+					},
+					() => runAstDiff(argv),
+				),
 		)
 		.help()
 		.strict()
 		.parse();
-}
-
-function parseFile(filePath: string) {
-	const code = fs.readFileSync(filePath, "utf-8");
-	return {
-		code,
-		ast: parse(code),
-	};
 }
 
 function extractMetadata(file: string, code: string): BundleMetadata {
@@ -958,7 +970,7 @@ function extractBundleFacts(
 
 	let code = fs.readFileSync(file, "utf-8");
 	const metadata = extractMetadata(file, code);
-	const ast = parse(code);
+	let ast: t.File | null = parse(code);
 	code = "";
 	const surfaces = new Map<string, SurfaceEntry>();
 	const inventory = createEmptyInventory();
@@ -1030,100 +1042,108 @@ function extractBundleFacts(
 		return true;
 	};
 
-	traverse(ast, {
-		VariableDeclarator(nodePath: any) {
-			if (!t.isIdentifier(nodePath.node.id)) return;
-			const commandPath = commandAliasForInitializer(
-				nodePath.node.init,
-				commandAliases,
-			);
-			if (commandPath) commandAliases.set(nodePath.node.id.name, commandPath);
-		},
-		AssignmentExpression(nodePath: any) {
-			if (!t.isIdentifier(nodePath.node.left)) return;
-			const commandPath = commandAliasForInitializer(
-				nodePath.node.right,
-				commandAliases,
-			);
-			if (commandPath) commandAliases.set(nodePath.node.left.name, commandPath);
-		},
-		ObjectMethod(nodePath: any) {
-			const key = objectKeyToString(nodePath.node.key);
-			if (key) addSurface(key, "object-method-key", nodePath, "object-key");
-		},
-		ObjectProperty(nodePath: any) {
-			const key = objectKeyToString(nodePath.node.key);
-			if (key) {
-				addSurface(key, "object-property-key", nodePath, "object-key");
-				if (isLikelyRouteKey(key, nodePath))
-					addInventory("routes", key, nodePath);
+	try {
+		traverse(ast, {
+			VariableDeclarator(nodePath: any) {
+				if (!t.isIdentifier(nodePath.node.id)) return;
+				const commandPath = commandAliasForInitializer(
+					nodePath.node.init,
+					commandAliases,
+				);
+				if (commandPath) commandAliases.set(nodePath.node.id.name, commandPath);
+			},
+			AssignmentExpression(nodePath: any) {
+				if (!t.isIdentifier(nodePath.node.left)) return;
+				const commandPath = commandAliasForInitializer(
+					nodePath.node.right,
+					commandAliases,
+				);
+				if (commandPath)
+					commandAliases.set(nodePath.node.left.name, commandPath);
+			},
+			ObjectMethod(nodePath: any) {
+				const key = objectKeyToString(nodePath.node.key);
+				if (key) addSurface(key, "object-method-key", nodePath, "object-key");
+			},
+			ObjectProperty(nodePath: any) {
+				const key = objectKeyToString(nodePath.node.key);
+				if (key) {
+					addSurface(key, "object-property-key", nodePath, "object-key");
+					if (isLikelyRouteKey(key, nodePath))
+						addInventory("routes", key, nodePath);
 
-				const labelValue = labelValueToString(nodePath.node.value);
-				if (labelValue && HIGH_SIGNAL_LABEL_KEYS.has(key)) {
-					addSurface(
-						`${key}=${labelValue}`,
-						"object-label",
-						nodePath,
-						"object-label",
-					);
+					const labelValue = labelValueToString(nodePath.node.value);
+					if (labelValue && HIGH_SIGNAL_LABEL_KEYS.has(key)) {
+						addSurface(
+							`${key}=${labelValue}`,
+							"object-label",
+							nodePath,
+							"object-label",
+						);
+					}
+					if (key === "command" && labelValue) {
+						addInventory("commands", labelValue, nodePath);
+					}
+					if (labelValue && isLikelyRouteValue(labelValue, nodePath, key)) {
+						addInventory("routes", labelValue, nodePath);
+					}
+					if (labelValue)
+						addSqlInventoryFromText(labelValue, nodePath, addInventory);
 				}
-				if (key === "command" && labelValue) {
-					addInventory("commands", labelValue, nodePath);
+			},
+			RegExpLiteral(nodePath: any) {
+				addSurface(
+					`/${nodePath.node.pattern}/${nodePath.node.flags}`,
+					"regex",
+					nodePath,
+					"regex",
+				);
+			},
+			StringLiteral(nodePath: any) {
+				if (isLikelyRouteValue(nodePath.node.value, nodePath)) {
+					addInventory("routes", nodePath.node.value, nodePath);
 				}
-				if (labelValue && isLikelyRouteValue(labelValue, nodePath, key)) {
-					addInventory("routes", labelValue, nodePath);
+				addSqlInventoryFromText(nodePath.node.value, nodePath, addInventory);
+				if (isObjectPropertyKey(nodePath)) return;
+				if (addReminderAndRemainder(nodePath.node.value, nodePath, "string")) {
+					return;
 				}
-				if (labelValue)
-					addSqlInventoryFromText(labelValue, nodePath, addInventory);
-			}
-		},
-		RegExpLiteral(nodePath: any) {
-			addSurface(
-				`/${nodePath.node.pattern}/${nodePath.node.flags}`,
-				"regex",
-				nodePath,
-				"regex",
-			);
-		},
-		StringLiteral(nodePath: any) {
-			if (isLikelyRouteValue(nodePath.node.value, nodePath)) {
-				addInventory("routes", nodePath.node.value, nodePath);
-			}
-			addSqlInventoryFromText(nodePath.node.value, nodePath, addInventory);
-			if (isObjectPropertyKey(nodePath)) return;
-			if (addReminderAndRemainder(nodePath.node.value, nodePath, "string")) {
-				return;
-			}
-			addSurface(nodePath.node.value, "string", nodePath);
-		},
-		TemplateLiteral(nodePath: any) {
-			const shape = templateShape(nodePath.node);
-			if (isLikelyRouteValue(shape, nodePath))
-				addInventory("routes", shape, nodePath);
-			addSqlInventoryFromText(shape, nodePath, addInventory);
-			if (addReminderAndRemainder(shape, nodePath, "template", "template")) {
-				return;
-			}
-			addSurface(shape, "template", nodePath, "template");
-			for (const quasi of nodePath.node.quasis) {
-				const chunk = quasi.value.cooked ?? quasi.value.raw;
-				if (addReminderAndRemainder(chunk, nodePath, "template-chunk")) {
-					continue;
+				addSurface(nodePath.node.value, "string", nodePath);
+			},
+			TemplateLiteral(nodePath: any) {
+				const shape = templateShape(nodePath.node);
+				if (isLikelyRouteValue(shape, nodePath))
+					addInventory("routes", shape, nodePath);
+				addSqlInventoryFromText(shape, nodePath, addInventory);
+				if (addReminderAndRemainder(shape, nodePath, "template", "template")) {
+					return;
 				}
-				addSurface(chunk, "template-chunk", nodePath);
-			}
-		},
-		CallExpression(nodePath: any) {
-			const commandPath = extractDirectCommandPath(
-				nodePath.node,
-				commandAliases,
-			);
-			if (commandPath) addInventory("commands", commandPath, nodePath);
-			for (const write of extractSettingsWrites(nodePath.node)) {
-				addSurface(write, "settings-write", nodePath, "settings-write");
-			}
-		},
-	});
+				addSurface(shape, "template", nodePath, "template");
+				for (const quasi of nodePath.node.quasis) {
+					const chunk = quasi.value.cooked ?? quasi.value.raw;
+					if (addReminderAndRemainder(chunk, nodePath, "template-chunk")) {
+						continue;
+					}
+					addSurface(chunk, "template-chunk", nodePath);
+				}
+			},
+			CallExpression(nodePath: any) {
+				const commandPath = extractDirectCommandPath(
+					nodePath.node,
+					commandAliases,
+				);
+				if (commandPath) addInventory("commands", commandPath, nodePath);
+				for (const write of extractSettingsWrites(nodePath.node)) {
+					addSurface(write, "settings-write", nodePath, "settings-write");
+				}
+			},
+		});
+	} finally {
+		clearTraverseCache();
+		ast = null;
+		forceGarbageCollection();
+		emitMemoryCheckpoint("diff.bundle-analysis-released");
+	}
 
 	const facts = {
 		metadata,
@@ -1334,6 +1354,7 @@ function shouldKeepSurface(
 ): boolean {
 	if (kind !== "object-key" && kind !== "literal") return true;
 	if (kind === "object-key" && HIGH_SIGNAL_LABEL_KEYS.has(value)) return true;
+	if (kind === "object-key" && value.length <= 3) return false;
 	if (value.length < minLength) return false;
 	if (/^[A-Za-z_$][A-Za-z0-9_$]?$/.test(value)) return false;
 	return true;
@@ -3836,34 +3857,41 @@ async function runAstDiff(argv: any) {
 
 	console.log(chalk.blue(`Comparing ${original} -> ${patched}...`));
 
-	const file1 = parseFile(original);
-	const file2 = parseFile(patched);
-
 	const map1 = new Map<string, string>();
 	const map2 = new Map<string, string>();
 
-	const collect = (ast: any, map: Map<string, string>) => {
-		traverse(ast, {
-			enter(nodePath: any) {
-				const node = nodePath.node;
-				if (
-					t.isFunctionDeclaration(node) ||
-					t.isVariableDeclarator(node) ||
-					(t.isObjectProperty(node) && t.isIdentifier(node.key))
-				) {
-					const sig = getNodeSignature(node);
-					const code = generator(node, { minified: true }).code;
-					const breadcrumb = generateBreadcrumbs(nodePath);
-					const fullSig = `${breadcrumb} > ${sig}`;
-					if (!map.has(fullSig)) map.set(fullSig, code);
-				}
-			},
-		});
+	const collect = (filePath: string, map: Map<string, string>) => {
+		let code = fs.readFileSync(filePath, "utf-8");
+		let ast: t.File | null = parse(code);
+		code = "";
+		try {
+			traverse(ast, {
+				enter(nodePath: any) {
+					const node = nodePath.node;
+					if (
+						t.isFunctionDeclaration(node) ||
+						t.isVariableDeclarator(node) ||
+						(t.isObjectProperty(node) && t.isIdentifier(node.key))
+					) {
+						const sig = getNodeSignature(node);
+						const nodeCode = generator(node, { minified: true }).code;
+						const breadcrumb = generateBreadcrumbs(nodePath);
+						const fullSig = `${breadcrumb} > ${sig}`;
+						if (!map.has(fullSig)) map.set(fullSig, nodeCode);
+					}
+				},
+			});
+		} finally {
+			clearTraverseCache();
+			ast = null;
+			forceGarbageCollection();
+			emitMemoryCheckpoint("diff.ast-analysis-released");
+		}
 	};
 
 	console.log(chalk.gray("Scanning structure..."));
-	collect(file1.ast, map1);
-	collect(file2.ast, map2);
+	collect(original, map1);
+	collect(patched, map2);
 
 	let changes = 0;
 

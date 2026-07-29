@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
+import { withHeavyOperationGuard } from "./heavy-operation-guard.js";
 import { detectInstalledClaudeTarget } from "./installation-detection.js";
 import { Manager } from "./manager.js";
 import { allPatches } from "./patches/index.js";
@@ -144,6 +145,10 @@ async function main() {
 						type: "string",
 						description: "Write JSON summary to file",
 					})
+					.option("structural-evidence", {
+						type: "boolean",
+						description: "Include deep structural hashes in a JSON summary",
+					})
 					.option("target", {
 						type: "string",
 						description:
@@ -268,6 +273,7 @@ async function main() {
 						description:
 							"Speed up update-time anchor checks by skipping duplicate per-patch verifier pass",
 					})
+					.implies("structural-evidence", "summary-path")
 			);
 		})
 		.strictOptions()
@@ -578,26 +584,33 @@ async function main() {
 
 	if (opts.nativePull) {
 		try {
-			const manager = new Manager({
-				nativeCacheDir: opts.nativeCacheDir
-					? path.resolve(opts.nativeCacheDir)
-					: undefined,
-			});
-			const result = await manager.pullNativeCleanJs(
-				nativeFetchSpec || "latest",
+			await withHeavyOperationGuard(
 				{
-					platform:
-						typeof opts.nativePlatform === "string"
-							? opts.nativePlatform
+					operation: "native clean bundle pull",
+				},
+				async () => {
+					const manager = new Manager({
+						nativeCacheDir: opts.nativeCacheDir
+							? path.resolve(opts.nativeCacheDir)
 							: undefined,
-					forceDownload: !!opts.nativeForceDownload,
-					outputRoot:
-						typeof opts.nativePullOutputDir === "string"
-							? path.resolve(opts.nativePullOutputDir)
-							: undefined,
+					});
+					const result = await manager.pullNativeCleanJs(
+						nativeFetchSpec || "latest",
+						{
+							platform:
+								typeof opts.nativePlatform === "string"
+									? opts.nativePlatform
+									: undefined,
+							forceDownload: !!opts.nativeForceDownload,
+							outputRoot:
+								typeof opts.nativePullOutputDir === "string"
+									? path.resolve(opts.nativePullOutputDir)
+									: undefined,
+						},
+					);
+					printNativePullResult(result);
 				},
 			);
-			printNativePullResult(result);
 		} catch (e) {
 			console.error(e);
 			process.exit(1);
@@ -607,43 +620,53 @@ async function main() {
 
 	if (opts.update) {
 		try {
-			const manager = new Manager({
-				nativeCacheDir: opts.nativeCacheDir
-					? path.resolve(opts.nativeCacheDir)
-					: undefined,
-				force: opts.force,
-				patch: opts.patch,
-				dryRun: opts.dryRun,
-				showDiff: opts.diff,
-				fastVerify: opts.fastVerify,
-			});
-			const result = await manager.updateNative(nativeFetchSpec || "latest", {
-				platform:
-					typeof opts.nativePlatform === "string"
-						? opts.nativePlatform
-						: undefined,
-				forceDownload: !!opts.nativeForceDownload,
-				promoteOptions: {
-					skipSmokeTest: opts.skipSmokeTest,
+			await withHeavyOperationGuard(
+				{
+					operation: "native update",
 				},
-			});
-			if (opts.summaryPath) {
-				const fs = await import("node:fs/promises");
-				const p = path.resolve(opts.summaryPath);
-				await fs.mkdir(path.dirname(p), { recursive: true });
-				await fs.writeFile(p, stringifySummary(result), "utf-8");
-				console.log(`Summary written to ${p}`);
-			}
-			printUpdateResult(result);
-			if (!result.dryRun) {
-				// spawnSync below blocks this thread through the whole verification
-				// chain, which spawns its own full patch pipeline. No GC runs while
-				// blocked, so force one now to free this run's AST and Babel path
-				// cache before the child's peak; otherwise the parent's resident set
-				// stacks on the child's and the pair can exhaust memory.
-				forceGarbageCollection();
-				runPostUpdateVerification(result.promoteResult?.target);
-			}
+				async () => {
+					const manager = new Manager({
+						nativeCacheDir: opts.nativeCacheDir
+							? path.resolve(opts.nativeCacheDir)
+							: undefined,
+						force: opts.force,
+						patch: opts.patch,
+						dryRun: opts.dryRun,
+						showDiff: opts.diff,
+						fastVerify: opts.fastVerify,
+					});
+					const result = await manager.updateNative(
+						nativeFetchSpec || "latest",
+						{
+							platform:
+								typeof opts.nativePlatform === "string"
+									? opts.nativePlatform
+									: undefined,
+							forceDownload: !!opts.nativeForceDownload,
+							promoteOptions: {
+								skipSmokeTest: opts.skipSmokeTest,
+							},
+						},
+					);
+					if (opts.summaryPath) {
+						const fs = await import("node:fs/promises");
+						const p = path.resolve(opts.summaryPath);
+						await fs.mkdir(path.dirname(p), { recursive: true });
+						await fs.writeFile(p, stringifySummary(result), "utf-8");
+						console.log(`Summary written to ${p}`);
+					}
+					printUpdateResult(result);
+					if (!result.dryRun) {
+						// spawnSync below blocks this thread through the whole verification
+						// chain, which spawns its own full patch pipeline. No GC runs while
+						// blocked, so force one now to free this run's AST and Babel path
+						// cache before the child's peak; otherwise the parent's resident set
+						// stacks on the child's and the pair can exhaust memory.
+						forceGarbageCollection();
+						runPostUpdateVerification(result.promoteResult?.target);
+					}
+				},
+			);
 		} catch (e) {
 			console.error(e);
 			process.exit(1);
@@ -799,6 +822,7 @@ async function main() {
 		showDiff: opts.diff,
 		fastVerify: opts.fastVerify,
 		summaryPath: opts.summaryPath ? path.resolve(opts.summaryPath) : undefined,
+		structuralEvidence: opts.structuralEvidence,
 	});
 
 	try {
@@ -852,9 +876,15 @@ async function main() {
 					"--unpack requires a target (use --target or --detect-target).",
 				);
 			}
-			const result = await manager.unpackNativeTarget(
-				resolvedTargetPath,
-				path.resolve(opts.unpack),
+			const result = await withHeavyOperationGuard(
+				{
+					operation: "native bundle unpack",
+				},
+				() =>
+					manager.unpackNativeTarget(
+						resolvedTargetPath,
+						path.resolve(opts.unpack),
+					),
 			);
 			console.log(
 				chalk.green(
@@ -870,10 +900,16 @@ async function main() {
 					"--repack requires a target (use --target or --detect-target).",
 				);
 			}
-			const result = await manager.repackNativeTarget(
-				resolvedTargetPath,
-				path.resolve(opts.repack),
-				opts.output ? path.resolve(opts.output) : undefined,
+			const result = await withHeavyOperationGuard(
+				{
+					operation: "native bundle repack",
+				},
+				() =>
+					manager.repackNativeTarget(
+						resolvedTargetPath,
+						path.resolve(opts.repack),
+						opts.output ? path.resolve(opts.output) : undefined,
+					),
 			);
 			console.log(
 				chalk.green(
@@ -883,7 +919,12 @@ async function main() {
 			return;
 		}
 
-		const report = await manager.processTarget();
+		const report = await withHeavyOperationGuard(
+			{
+				operation: "bundle patch",
+			},
+			() => manager.processTarget(),
+		);
 
 		if (opts.summaryPath && report) {
 			const fs = await import("node:fs/promises");

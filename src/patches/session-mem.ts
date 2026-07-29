@@ -1,6 +1,6 @@
 import * as t from "@babel/types";
 import { traverse, type Visitor } from "../babel.js";
-import type { Patch } from "../types.js";
+import type { Patch, PatchVerificationWithWitness } from "../types.js";
 import { getMemberPropertyName, getVerifyAst } from "./ast-helpers.js";
 
 /**
@@ -102,6 +102,49 @@ function createSessionMemoryMutator(): Visitor {
 	};
 }
 
+function verifySessionMemory(
+	code: string,
+	ast?: t.File,
+): PatchVerificationWithWitness {
+	const verifyAst = getVerifyAst(code, ast);
+	if (!verifyAst) {
+		return {
+			result: "Unable to parse AST during session-memory verification",
+		};
+	}
+
+	let targetGateCount = 0;
+	let patchedGateCount = 0;
+
+	traverse(verifyAst, {
+		IfStatement(path) {
+			if (!isAutoDreamAvailabilityGate(path.node, path.parentPath?.node)) {
+				return;
+			}
+			targetGateCount++;
+			if (isPatchedAutoDreamGateTest(path.node.test)) {
+				patchedGateCount++;
+			}
+		},
+	});
+
+	const witness = { targetGateCount, patchedGateCount };
+	if (targetGateCount === 0) {
+		return {
+			result: "Missing autoDreamEnabled force-on gate",
+			witness,
+		};
+	}
+	if (patchedGateCount < targetGateCount) {
+		return {
+			result:
+				"Auto-dream availability gate present but not force-on (missing `autoDreamEnabled !== true &&` prefix)",
+			witness,
+		};
+	}
+	return { result: true, witness };
+}
+
 export const sessionMemory: Patch = {
 	tag: "session-mem",
 
@@ -112,41 +155,8 @@ export const sessionMemory: Patch = {
 		},
 	],
 
-	verify: (code, ast) => {
-		const verifyAst = getVerifyAst(code, ast);
-		if (!verifyAst) {
-			return "Unable to parse AST during session-memory verification";
-		}
-
-		// Re-locate the gate the same way the mutator does: an if-statement
-		// with a null/false-return consequent whose immediate next sibling is
-		// an `autoDreamEnabled` member var-decl. Anchoring on the var-decl
-		// sibling (rather than "the test mentions autoDreamEnabled") is what the
-		// mutator keys on, so verifying the same node makes this a "did MY
-		// mutation land" check instead of a looser global-shape check.
-		let targetGateCount = 0;
-		let patchedGateCount = 0;
-
-		traverse(verifyAst, {
-			IfStatement(path) {
-				if (!isAutoDreamAvailabilityGate(path.node, path.parentPath?.node)) {
-					return;
-				}
-				targetGateCount++;
-				if (isPatchedAutoDreamGateTest(path.node.test)) {
-					patchedGateCount++;
-				}
-			},
-		});
-
-		if (targetGateCount === 0) {
-			return "Missing autoDreamEnabled force-on gate";
-		}
-		if (patchedGateCount < targetGateCount) {
-			return "Auto-dream availability gate present but not force-on (missing `autoDreamEnabled !== true &&` prefix)";
-		}
-		return true;
-	},
+	verify: (code, ast) => verifySessionMemory(code, ast).result,
+	verifyWithWitness: verifySessionMemory,
 };
 
 /**

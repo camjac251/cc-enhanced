@@ -1,7 +1,7 @@
 ---
 name: update
 description: >-
-  Run staged cc-enhanced release maintenance: resolve the real npm latest/next target, pull the clean cli.js, inspect bundle drift, repair patch or prompt drift, optionally promote with native:update, update README/baselines, and verify according to the requested mode. Recommend after an upstream Claude Code release or when the user asks what changed, to inspect prompt drift, patch a release, update/upgrade Claude Code, promote, or names a target version. Supports inspect-only/no-heavy-verifier, repair-only, promote-only, and full update flows. Argument is an optional version spec ("latest", "next", "stable", or "X.Y.Z") plus optional pass-through flags. NOT for rollback or workflow docs.
+  Run staged cc-enhanced release maintenance: resolve the real npm latest/next target, pull the clean cli.js, inspect bundle drift, repair patch or prompt drift, optionally promote with native:update, update README/baselines, and verify according to the requested mode. Recommend after an upstream Claude Code release or when the user asks what changed, to inspect prompt drift, patch a release, update/upgrade Claude Code, promote, or names a target version. Supports inspect-only/no-heavy-verifier, repair-only, promote-only, and full update flows. Write-side repair, verification, and promotion always target the newest live version; an older explicit version is comparison-only. Argument is an optional version spec ("latest", "next", "stable", or "X.Y.Z") plus optional pass-through flags. NOT for rollback or workflow docs.
 disable-model-invocation: true
 ---
 
@@ -27,7 +27,7 @@ The process is evidence-first: inspect the live registry and clean bundle before
    npm view @anthropic-ai/claude-code version dist-tags --json
    ```
 
-   Use the explicit newest version if `next` is ahead of `latest`, and say so in the update summary.
+   Use the explicit newest version if `next` is ahead of `latest`, and say so in the update summary. If the user names `stable` or an exact version older than that newest version, restrict the run to read-only comparison and explain that patches are fixed forward only. Never repair, matrix-test, or promote an older target.
 
 2. **Pre-flight the local install and worktree.** Record current and previous versions before changing anything.
 
@@ -39,13 +39,25 @@ The process is evidence-first: inspect the live registry and clean bundle before
    git status --short
    ```
 
+   Create one OS-temp workspace for evidence and prompt artifacts, then reuse
+   it throughout the run:
+
+   ```bash
+   mktemp -d -t cc-update-XXXXXX
+   ```
+
+   Treat the printed directory as `<scratch>` in the remaining commands.
+
 3. **Pull the clean target bundle.** This writes `versions_clean/<target>/cli.js`.
 
    ```bash
    mise run native:pull -- <target>
    ```
 
-   If the previous current version is missing from `versions_clean/`, pull it too before diffing.
+   Identify the immediately preceding clean version below `<target>`. Pull it
+   only when it is needed for the release comparison and is not already
+   cached. The active promoted version is runtime context, not necessarily the
+   correct comparison baseline.
 
 4. **Review upstream drift before source edits.** Prefer matrix diff when the release range has multiple adjacent versions.
 
@@ -53,7 +65,10 @@ The process is evidence-first: inspect the live registry and clean bundle before
    mise run diff -- matrix versions_clean/<old>/cli.js versions_clean/<target>/cli.js --cache
    ```
 
-   Re-run focused diffs for commands, env, prompts, or patches when the matrix output points at those areas.
+   The older bundle is comparison evidence only; do not add its shapes to
+   patch matchers or include it in target verification. Re-run focused diffs
+   for commands, env, prompts, or patches when the main report points at those
+   areas.
 
 5. **Run the requested pre-promotion verification lane.**
 
@@ -91,28 +106,36 @@ The process is evidence-first: inspect the live registry and clean bundle before
 
    Read `<scratch>/summary.json` and inspect the patched temp bundle for the expected helper calls, literal replacements, and guards with `rg` or `bun run inspect search`. State clearly that native verification was skipped by request.
 
+   This scratch summary intentionally omits structural telemetry. Do not add
+   `--structural-evidence` unless the run needs a release-comparison manifest.
+
    For **full update** or when heavy verification is allowed, dry-run patch verification against the clean target:
 
    ```bash
-   SELECTED_VERSION=<target> mise run verify:patches:matrix
+   PATCH_EVIDENCE_DIR=<scratch>/patch-evidence \
+     SELECTED_VERSION=<target> mise run verify:patches:matrix
    ```
 
    If a tag fails, inspect the clean target with `bun run inspect search`, fix the patch/verifier/tests for the new upstream shape only, run focused tests, and rerun the matrix. Do not add old-version fallbacks.
 
-6. **Optionally dispatch anchor-review subagents.** Use this when the drift is broad or the user asks for extra confidence.
+   If a reviewed manifest from the previous release already exists, compare it
+   with the new sanitized manifest:
+
+   ```bash
+   mise run patch-evidence:compare -- <previous-manifest> <current-manifest>
+   ```
+
+6. **Optionally dispatch one anchor-review agent.** Use this when the drift is broad or the user asks for extra confidence.
 
    - Spawn the patch-verifier agent at most once per target release unless the user explicitly asks for another independent pass.
    - Skip the subagent when the clean-bundle dry-run already names a narrow failed-tag list and the parent can inspect the relevant files directly.
    - Pass only paths: `versions_clean/<target>/cli.js` and the assigned patch files.
-   - Require `file:line`, exact query strings, OK / DRIFT / BROKEN status, and a test coverage note.
+   - Require `file:line`, durable query descriptions, OK / DRIFT / BROKEN status, and a test coverage note.
+   - Never return minified identifiers, reconstructed module names, or raw bundle snippets.
    - Keep subagents read-only; the parent edits and verifies.
    - Do not let subagent evidence replace `verify:patches:matrix`.
 
-7. **Preflight prompt surfaces from a scratch patched bundle before promotion.** Write scratch artifacts under OS temp, not inside `versions_clean/`.
-
-   ```bash
-   mktemp -d -t cc-update-XXXXXX
-   ```
+7. **Preflight prompt surfaces from a scratch patched bundle before promotion.** Reuse the OS-temp workspace created during preflight; never write these artifacts inside `versions_clean/`.
 
    ```bash
    bun src/index.ts --target versions_clean/<target>/cli.js --output <scratch>/patched.js --summary-path <scratch>/summary.json
@@ -142,6 +165,15 @@ The process is evidence-first: inspect the live registry and clean bundle before
    bun run prompts:compare <scratch>/clean-export <scratch>/export /etc/claude-code -- --output <scratch>/prompt-compare.md
    ```
 
+   When reviewed clean and patched exports from the immediately previous
+   release already exist, separate release drift from patch impact:
+
+   ```bash
+   mise run prompts:compare:matrix -- \
+     <previous-clean> <previous-patched> <current-clean> <current-patched> \
+     /etc/claude-code
+   ```
+
    Refresh `prompt-surface-baseline.json` only after the new patched export is reviewed as known-good:
 
    ```bash
@@ -150,7 +182,7 @@ The process is evidence-first: inspect the live registry and clean bundle before
 
    Do not call drift corrected until a fresh `verify:prompt-drift` run passes.
 
-9. **Update release docs and checked baselines.** Update the README target badge, README compatibility target, and `prompt-surface-baseline.json` version when the target changes. Check for stale version anchors:
+9. **Update release docs and checked baselines.** Update the README target badge, README current-target statement, and `prompt-surface-baseline.json` version when the target changes. Check for stale version anchors:
 
    ```bash
    rg -n '<old>|<target>' README.md prompt-surface-baseline.json
@@ -202,7 +234,8 @@ If promotion fails after changing the active binary, surface the exact error, sh
 
 ## Gotchas
 
-- Clean bundle first. Do not start from the patched promoted bundle when fixing upstream anchor drift.
+- Clean latest bundle first. Do not start from the patched promoted bundle when fixing upstream anchor drift.
+- The immediately previous bundle and its saved evidence are comparison baselines only, never compatibility targets.
 - `latest` may lag `next`; state which npm tag supplied the chosen target.
 - No-heavy-verifier mode still needs direct evidence: clean-bundle diff, `rg`/`bat`/`inspect` anchors, focused tests for touched patches, a temp patched bundle summary, and patched-bundle inspection.
 - `native:update` passing does not mean prompt drift was corrected. Drift is corrected only by a source fix or reviewed baseline refresh followed by a passing drift verifier.

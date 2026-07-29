@@ -75,6 +75,76 @@ function buildCacheBreakpoints(messages, cachingEnabled, ttl, includeEdits = fal
 }
 `;
 
+async function buildCacheTailRuntime() {
+	const ast = parse(CACHE_TAIL_FIXTURE);
+	await runCacheTailViaPasses(ast, [0]);
+	const output = print(ast);
+	return new Function(`
+function gate() {}
+function multiCacheEnabled() { return true; }
+function buildUser(message, shouldCache) {
+  return {
+    role: "user",
+    content: message.content.map((block) =>
+      shouldCache
+        ? { ...block, cache_control: { type: "ephemeral" } }
+        : block
+    ),
+  };
+}
+function buildAssistant(message, shouldCache) {
+  return {
+    role: "assistant",
+    content: message.content.map((block) =>
+      shouldCache
+        ? { ...block, cache_control: { type: "ephemeral" } }
+        : block
+    ),
+  };
+}
+${output}
+return { buildCacheBreakpoints };
+`)() as {
+		buildCacheBreakpoints: (messages: any[], cachingEnabled: boolean) => any[];
+	};
+}
+
+test("cache-tail-policy marks the last two user messages when an assistant is last", async () => {
+	const runtime = await buildCacheTailRuntime();
+	const result = runtime.buildCacheBreakpoints(
+		[
+			{ type: "user", content: [{ type: "text", text: "u0" }] },
+			{ type: "assistant", content: [{ type: "text", text: "a1" }] },
+			{ type: "user", content: [{ type: "text", text: "u2" }] },
+			{ type: "assistant", content: [{ type: "text", text: "a3" }] },
+		],
+		true,
+	);
+
+	assert.deepEqual(result[0].content[0].cache_control, {
+		type: "ephemeral",
+	});
+	assert.deepEqual(result[2].content[0].cache_control, {
+		type: "ephemeral",
+	});
+});
+
+test("cache-tail-policy leaves assistant tail messages uncached", async () => {
+	const runtime = await buildCacheTailRuntime();
+	const result = runtime.buildCacheBreakpoints(
+		[
+			{ type: "user", content: [{ type: "text", text: "u0" }] },
+			{ type: "assistant", content: [{ type: "text", text: "a1" }] },
+			{ type: "user", content: [{ type: "text", text: "u2" }] },
+			{ type: "assistant", content: [{ type: "text", text: "a3" }] },
+		],
+		true,
+	);
+
+	assert.equal(result[1].content[0].cache_control, undefined);
+	assert.equal(result[3].content[0].cache_control, undefined);
+});
+
 const CACHE_TAIL_SEQUENCE_RETURN_FIXTURE = `
 function buildCacheBreakpoints(messages, cachingEnabled, ttl, skipCacheWrite = false, forkPointId) {
   let findCacheableIndex = (startIndex) => {
@@ -171,15 +241,14 @@ test("cache-tail-policy resolves the tail helper when the primary index is a con
 
 	assert.equal(output.includes("var cacheTailWindow = 2;"), true);
 	assert.equal(output.includes("var cacheUserOnly = true;"), true);
-	// Tail count is seeded from the conditional primary index, and the window loop
-	// steps back through it using the helper resolved from its seed call.
-	assert.equal(
-		output.includes("var cacheTailCount = primaryIndex >= 0 ? 1 : 0;"),
-		true,
-	);
-	assert.equal(output.includes("findCacheableIndex(primaryIndex - 1)"), true);
+	assert.equal(output.includes("var cacheTailCount = 0;"), true);
+	assert.equal(output.includes("findCacheableIndex(primaryIndex)"), true);
 	assert.equal(output.includes("cacheTailCount < cacheTailWindow"), true);
 	assert.equal(output.includes("markerIndexes.add(cacheTailIndex)"), true);
+	assert.equal(
+		output.includes('messages[cacheTailIndex].type === "user"'),
+		true,
+	);
 	// Assistant breakpoint is still gated to user-only.
 	assert.equal(output.includes("cacheUserOnly ? false : shouldCache"), true);
 });
@@ -194,12 +263,14 @@ test("cache-tail-policy applies declarations, window gate, and user-only conditi
 	assert.equal(output.includes("var cacheUserOnly = true;"), true);
 
 	// The Set-based tail window loop was inserted before the marker report.
-	assert.equal(
-		output.includes("var cacheTailCount = tailIndex >= 0 ? 1 : 0;"),
-		true,
-	);
+	assert.equal(output.includes("var cacheTailCount = 0;"), true);
+	assert.equal(output.includes("findCacheableIndex(tailIndex)"), true);
 	assert.equal(output.includes("cacheTailCount < cacheTailWindow"), true);
 	assert.equal(output.includes("markerIndexes.add(cacheTailIndex)"), true);
+	assert.equal(
+		output.includes('messages[cacheTailIndex].type === "user"'),
+		true,
+	);
 
 	// The assistant return got the cacheUserOnly conditional
 	assert.equal(output.includes("cacheUserOnly ? false : shouldCache"), true);
@@ -478,6 +549,21 @@ test("cache-tail-policy patches all required features in full fixture", async ()
 
 	// Full verify should pass
 	assert.equal(cacheTailPolicy.verify(output, parse(output)), true);
+});
+
+test("cache-tail-policy reports semantic verifier coverage", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+
+	assert.ok(cacheTailPolicy.verifyWithWitness);
+	assert.deepEqual(cacheTailPolicy.verifyWithWitness(output, parse(output)), {
+		result: true,
+		witness: {
+			semanticChecksPassed: 6,
+			semanticChecksRequired: 6,
+		},
+	});
 });
 
 test("cache-tail-policy verify rejects scope-forced 1h cache control builder", async () => {

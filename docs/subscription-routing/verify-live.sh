@@ -52,16 +52,15 @@ claude_bin=${CLAUDE_BIN:-"$HOME/.local/bin/claude"}
 claudex_bin=${CLAUDEX_BIN:-"$HOME/.local/bin/claudex"}
 clodex_admin_bin=${CLODEX_BIN:-"$HOME/.local/bin/clodex"}
 clodex_home="$HOME/.local/share/claudex-clodex"
-node_bin=$(mise which node)
-clodex_bin=$(mise which clodex)
-process_wrapper=$(mise which clodex-claude)
+mise_data_dir=${MISE_DATA_DIR:-"$HOME/.local/share/mise"}
+process_wrapper="$mise_data_dir/shims/clodex-claude"
 
 systemctl --user start claudex-clodex.service
 
 ready=0
 attempt=0
 while [ "$attempt" -lt 50 ]; do
-	if CLODEX_HOME="$clodex_home" "$node_bin" "$process_wrapper" --check; then
+	if CLODEX_HOME="$clodex_home" "$process_wrapper" --check; then
 		ready=1
 		break
 	fi
@@ -86,10 +85,10 @@ case "$main_pid" in
 esac
 [ -r "/proc/$main_pid/cmdline" ] || fail "service command line is unavailable"
 service_arguments=$(tr '\000' '\n' <"/proc/$main_pid/cmdline")
-printf '%s\n' "$service_arguments" | grep -Fx "$node_bin" >/dev/null ||
-	fail "running service does not use the configured Node.js executable"
-printf '%s\n' "$service_arguments" | grep -Fx "$clodex_bin" >/dev/null ||
-	fail "running service does not use the globally activated Clodex executable"
+printf '%s\n' "$service_arguments" | grep -Fx 'server' >/dev/null ||
+	fail "running service is not in server mode"
+printf '%s\n' "$service_arguments" | grep -Fx -- '--proxy' >/dev/null ||
+	fail "running service is not in proxy mode"
 printf '%s\n' "$service_arguments" | grep -Fx -- "$clodex_port" >/dev/null ||
 	fail "running service does not use the configured port"
 

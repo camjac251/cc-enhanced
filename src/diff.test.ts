@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -53,6 +53,7 @@ function withBundleFixtures(
 			'const routes = [{ method: "GET", path: "/live" }];',
 			'const storage = { filePath: "/tmp/cache" };',
 			'const deployHelp = { description: "Deploy the fixture service" };',
+			"const opaqueInternals = { qzx: 1, aQx: 2 };",
 			'console.log("deploy <env>");',
 			"sql`CREATE TABLE quota_rules (id TEXT PRIMARY KEY)`;",
 			"sql`CREATE INDEX quota_rules_updated_at ON quota_rules (updated_at)`;",
@@ -193,6 +194,20 @@ test("bundle diff reports high-signal additions without version noise", {
 				value.includes("Whenever you inspect a record"),
 			),
 		);
+	});
+});
+
+test("bundle diff omits probable minified object keys", {
+	timeout: 15000,
+}, () => {
+	withBundleFixtures((oldBundle, newBundle) => {
+		const report = runBundleDiffJson(oldBundle, newBundle);
+		const addedObjectKeys = report.added
+			.filter((change: { kind: string }) => change.kind === "object-key")
+			.map((change: { value: string }) => change.value);
+
+		assert.ok(!addedObjectKeys.includes("qzx"));
+		assert.ok(!addedObjectKeys.includes("aQx"));
 	});
 });
 
@@ -459,5 +474,55 @@ test("matrix mode summarizes adjacent bundle changes", {
 		assert.match(output, /^# Bundle Diff Matrix/);
 		assert.match(output, /Latest-Only Additions/);
 		assert.match(output, /archive \[target\]/);
+	});
+});
+
+test("bundle diff releases each parsed AST before analyzing the next bundle", {
+	timeout: 15000,
+}, () => {
+	withBundleFixtures((oldBundle, newBundle) => {
+		const result = spawnSync(
+			"bun",
+			[
+				"src/diff.ts",
+				oldBundle,
+				newBundle,
+				"--json",
+				"--no-cache",
+				"--limit",
+				"1",
+			],
+			{
+				cwd: repoRoot,
+				encoding: "utf8",
+				env: { ...process.env, CLAUDE_PATCHER_PROFILE: "1" },
+			},
+		);
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(
+			result.stderr.match(/checkpoint=diff\.bundle-analysis-released/g)?.length,
+			2,
+		);
+	});
+});
+
+test("structural diff releases the first AST before parsing the second", {
+	timeout: 15000,
+}, () => {
+	withBundleFixtures((oldBundle, newBundle) => {
+		const result = spawnSync(
+			"bun",
+			["src/diff.ts", "ast", oldBundle, newBundle],
+			{
+				cwd: repoRoot,
+				encoding: "utf8",
+				env: { ...process.env, CLAUDE_PATCHER_PROFILE: "1" },
+			},
+		);
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(
+			result.stderr.match(/checkpoint=diff\.ast-analysis-released/g)?.length,
+			2,
+		);
 	});
 });

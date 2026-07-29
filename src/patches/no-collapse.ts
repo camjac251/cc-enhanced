@@ -35,6 +35,122 @@ import {
 
 let memoryWritesPatched = 0;
 
+export interface NoCollapseVerificationInventory {
+	foundMemoryWriteResult: boolean;
+	foundUnpatchedMemoryWriteResult: boolean;
+	foundOriginalGuard: boolean;
+	foundPatchedGuard: boolean;
+	foundClassificationTail: boolean;
+}
+
+export function collectNoCollapseVerification(
+	ast: t.File,
+): NoCollapseVerificationInventory {
+	let foundMemoryWriteResult = false;
+	let foundUnpatchedMemoryWriteResult = false;
+	let foundOriginalGuard = false;
+	let foundPatchedGuard = false;
+	let foundClassificationTail = false;
+
+	traverse(ast, {
+		ReturnStatement(path) {
+			const arg = path.node.argument;
+			if (!t.isObjectExpression(arg)) return;
+
+			let collapsibleProp: t.ObjectProperty | null = null;
+			let memoryWriteProp: t.ObjectProperty | null = null;
+
+			for (const prop of arg.properties) {
+				if (!t.isObjectProperty(prop)) continue;
+				if (hasObjectKeyName(prop, "isCollapsible")) collapsibleProp = prop;
+				else if (hasObjectKeyName(prop, "isMemoryWrite"))
+					memoryWriteProp = prop;
+			}
+
+			if (!collapsibleProp || !memoryWriteProp) return;
+			foundMemoryWriteResult = true;
+
+			if (
+				isTrueLike(collapsibleProp.value) &&
+				isTrueLike(memoryWriteProp.value)
+			) {
+				foundUnpatchedMemoryWriteResult = true;
+			}
+		},
+
+		IfStatement(path) {
+			const test = path.node.test;
+			if (!t.isLogicalExpression(test, { operator: "||" })) return;
+			if (!t.isMemberExpression(test.left)) return;
+			if (!t.isMemberExpression(test.right)) return;
+			if (!t.isNodesEquivalent(test.left.object, test.right.object)) return;
+
+			const consequent = path.node.consequent;
+			const retStmt = t.isReturnStatement(consequent)
+				? consequent
+				: t.isBlockStatement(consequent)
+					? (consequent.body.find((stmt) => t.isReturnStatement(stmt)) as
+							| t.ReturnStatement
+							| undefined)
+					: undefined;
+			if (
+				!retStmt?.argument ||
+				!t.isObjectExpression(retStmt.argument) ||
+				!retStmt.argument.properties.some((prop) =>
+					hasObjectKeyName(prop, "isSearch"),
+				) ||
+				!retStmt.argument.properties.some((prop) =>
+					hasObjectKeyName(prop, "isRead"),
+				)
+			) {
+				return;
+			}
+
+			if (
+				isMemberPropertyName(test.left, "isCollapsible") &&
+				isMemberPropertyName(test.right, "isREPL")
+			) {
+				foundOriginalGuard = true;
+			}
+			if (
+				isMemberPropertyName(test.left, "isREPL") &&
+				isMemberPropertyName(test.right, "isMemoryWrite")
+			) {
+				foundPatchedGuard = true;
+			}
+		},
+
+		ObjectProperty(path) {
+			if (getObjectKeyName(path.node.key) !== "isCollapsible") return;
+			if (!path.parentPath?.isObjectExpression()) return;
+			const value = path.node.value;
+			if (isFalseLike(value) || isTrueLike(value) || t.isBooleanLiteral(value))
+				return;
+
+			const properties = path.parentPath.node.properties;
+			if (
+				properties.some((prop) => hasObjectKeyName(prop, "isSearch")) &&
+				properties.some((prop) => hasObjectKeyName(prop, "isRead")) &&
+				properties.some((prop) => hasObjectKeyName(prop, "isREPL")) &&
+				properties.some((prop) => hasObjectKeyName(prop, "isMemoryWrite")) &&
+				properties.some((prop) => hasObjectKeyName(prop, "isBash"))
+			) {
+				foundClassificationTail = true;
+			}
+		},
+
+		noScope: true,
+	});
+
+	return {
+		foundMemoryWriteResult,
+		foundUnpatchedMemoryWriteResult,
+		foundOriginalGuard,
+		foundPatchedGuard,
+		foundClassificationTail,
+	};
+}
+
 export const noCollapse: Patch = {
 	tag: "no-collapse",
 
@@ -55,168 +171,28 @@ export const noCollapse: Patch = {
 	verify: (_code, ast) => {
 		if (!ast) return "Missing AST for no-collapse verification";
 
-		// --- Memory write UI checks ---
-		const memResult = verifyMemoryWriteUi(ast);
-		if (memResult !== true) return memResult;
-
-		let foundPatchedGuard = false;
-		let foundOriginalGuard = false;
-		let isCollapsibleInFactory = false;
-
-		traverse(ast, {
-			// Check 1: the guard was patched from (isCollapsible||isREPL) to (isREPL||isMemoryWrite)
-			IfStatement(path) {
-				const test = path.node.test;
-				if (!t.isLogicalExpression(test, { operator: "||" })) return;
-				if (!t.isMemberExpression(test.left)) return;
-				if (!t.isMemberExpression(test.right)) return;
-
-				// Both operands must read from the SAME identifier object. A
-				// malformed mutation like (foo.isREPL || bar.isMemoryWrite)
-				// would otherwise satisfy the structural check.
-				if (!t.isNodesEquivalent(test.left.object, test.right.object)) return;
-
-				// Verify this is the right function by checking the return object has isSearch/isRead
-				const consequent = path.node.consequent;
-				const retStmt = t.isReturnStatement(consequent)
-					? consequent
-					: t.isBlockStatement(consequent)
-						? (consequent.body.find((s) => t.isReturnStatement(s)) as
-								| t.ReturnStatement
-								| undefined)
-						: undefined;
-				if (
-					!retStmt ||
-					!t.isReturnStatement(retStmt) ||
-					!retStmt.argument ||
-					!t.isObjectExpression(retStmt.argument)
-				) {
-					return;
-				}
-				const hasIsSearch = retStmt.argument.properties.some((p) =>
-					hasObjectKeyName(p, "isSearch"),
-				);
-				const hasIsRead = retStmt.argument.properties.some((p) =>
-					hasObjectKeyName(p, "isRead"),
-				);
-				if (!hasIsSearch || !hasIsRead) return;
-
-				if (
-					isMemberPropertyName(test.left, "isCollapsible") &&
-					isMemberPropertyName(test.right, "isREPL")
-				) {
-					foundOriginalGuard = true;
-				}
-				if (
-					isMemberPropertyName(test.left, "isREPL") &&
-					isMemberPropertyName(test.right, "isMemoryWrite")
-				) {
-					foundPatchedGuard = true;
-				}
-			},
-
-			// Check 2: the search/read classification tail still computes
-			// isCollapsible from a non-literal value. That tail is the only
-			// branch carrying an isBash sibling alongside the classification
-			// flags, which pins the check to the object the cache-tail
-			// eviction scanner reads; other branches with non-literal
-			// isCollapsible values do not satisfy it.
-			ObjectProperty(path) {
-				if (getObjectKeyName(path.node.key) !== "isCollapsible") return;
-				const val = path.node.value;
-				if (!path.parentPath?.isObjectExpression()) return;
-				const container = path.parentPath.node;
-				if (isFalseLike(val) || isTrueLike(val) || t.isBooleanLiteral(val))
-					return;
-				const hasIsSearchProp = container.properties.some((p) =>
-					hasObjectKeyName(p, "isSearch"),
-				);
-				const hasIsReadProp = container.properties.some((p) =>
-					hasObjectKeyName(p, "isRead"),
-				);
-				const hasIsReplProp = container.properties.some((p) =>
-					hasObjectKeyName(p, "isREPL"),
-				);
-				const hasIsMemoryWriteProp = container.properties.some((p) =>
-					hasObjectKeyName(p, "isMemoryWrite"),
-				);
-				const hasIsBashProp = container.properties.some((p) =>
-					hasObjectKeyName(p, "isBash"),
-				);
-				if (
-					hasIsSearchProp &&
-					hasIsReadProp &&
-					hasIsReplProp &&
-					hasIsMemoryWriteProp &&
-					hasIsBashProp
-				) {
-					isCollapsibleInFactory = true;
-				}
-			},
-		});
-
-		if (foundOriginalGuard) {
+		const inventory = collectNoCollapseVerification(ast);
+		if (!inventory.foundMemoryWriteResult) {
+			return "Memory write result object (isCollapsible + isMemoryWrite) not found";
+		}
+		if (inventory.foundUnpatchedMemoryWriteResult) {
+			return "Unpatched memory write result object still marks isCollapsible/isMemoryWrite as true";
+		}
+		if (memoryWritesPatched === 0) {
+			return "Memory write collapsibility was not repointed this run";
+		}
+		if (inventory.foundOriginalGuard) {
 			return "Original collapse-metadata guard (isCollapsible || isREPL) still present";
 		}
-		if (!foundPatchedGuard) {
+		if (!inventory.foundPatchedGuard) {
 			return "Patched collapse-metadata guard (isREPL || isMemoryWrite) not found";
 		}
-		if (!isCollapsibleInFactory) {
+		if (!inventory.foundClassificationTail) {
 			return "Result-object factory isCollapsible tail (isBash-bearing branch) not found. Cache tail eviction broken";
 		}
 		return true;
 	},
 };
-
-// ---------------------------------------------------------------------------
-// Memory write UI
-// ---------------------------------------------------------------------------
-
-function verifyMemoryWriteUi(ast: t.File): true | string {
-	let foundResultObject = false;
-	let foundUnpatchedResultObject = false;
-
-	traverse(ast, {
-		ReturnStatement(path) {
-			const arg = path.node.argument;
-			if (!t.isObjectExpression(arg)) return;
-
-			let collapsibleProp: t.ObjectProperty | null = null;
-			let memoryWriteProp: t.ObjectProperty | null = null;
-
-			for (const prop of arg.properties) {
-				if (!t.isObjectProperty(prop)) continue;
-				if (hasObjectKeyName(prop, "isCollapsible")) collapsibleProp = prop;
-				else if (hasObjectKeyName(prop, "isMemoryWrite"))
-					memoryWriteProp = prop;
-			}
-
-			if (!collapsibleProp || !memoryWriteProp) return;
-			foundResultObject = true;
-
-			if (
-				isTrueLike(collapsibleProp.value) &&
-				isTrueLike(memoryWriteProp.value)
-			) {
-				foundUnpatchedResultObject = true;
-			}
-		},
-	});
-
-	if (!foundResultObject) {
-		return "Memory write result object (isCollapsible + isMemoryWrite) not found";
-	}
-	if (foundUnpatchedResultObject) {
-		return "Unpatched memory write result object still marks isCollapsible/isMemoryWrite as true";
-	}
-	// The both-false proof must come from this run's mutation. A naturally
-	// both-false object elsewhere in the bundle cannot stand in for it.
-	if (memoryWritesPatched === 0) {
-		return "Memory write collapsibility was not repointed this run";
-	}
-
-	return true;
-}
 
 function createMemoryWriteUiMutator(): Visitor {
 	let patched = false;

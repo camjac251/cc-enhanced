@@ -8,7 +8,6 @@ process_wrapper='@CLODEX_CLAUDE_BIN@'
 launcher_process_wrapper='@CLAUDEX_PROCESS_WRAPPER@'
 session_lock="$clodex_home/routed-sessions.lock"
 claude_path='@CLAUDE_BIN@'
-node_bin='@NODE_BIN@'
 prompt_composer='@CLAUDEX_PROMPT_COMPOSER@'
 default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
 system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
@@ -61,7 +60,6 @@ for required_file in \
 	"$process_wrapper" \
 	"$launcher_process_wrapper" \
 	"$claude_path" \
-	"$node_bin" \
 	"$prompt_composer"; do
 	if [ ! -x "$required_file" ]; then
 		printf 'claudex: required executable is missing: %s\n' "$required_file" >&2
@@ -120,7 +118,7 @@ systemctl --user start claudex-clodex.service
 ready=0
 attempt=0
 while [ "$attempt" -lt 50 ]; do
-	if "$node_bin" "$process_wrapper" --check; then
+	if "$process_wrapper" --check; then
 		ready=1
 		break
 	fi

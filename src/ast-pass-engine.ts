@@ -1,10 +1,85 @@
+import { createHash, type Hash } from "node:crypto";
 import type * as t from "@babel/types";
+import { VISITOR_KEYS } from "@babel/types";
 import { type NodePath, traverse, type Visitor } from "./babel.js";
 import type { AstPassName, PatchAstPass } from "./types.js";
 
 export interface PatchPassEntry {
 	tag: string;
 	pass: PatchAstPass;
+}
+
+export type AstPassTelemetryLevel = "none" | "deep";
+
+export interface AstPassTelemetry {
+	handlerCalls: Record<string, Record<AstPassName, number>>;
+	structuralHashes: Record<
+		string,
+		Record<
+			AstPassName,
+			{
+				beforeSha256: string;
+				afterSha256: string;
+			}
+		>
+	>;
+	overlaps: Array<{
+		pass: AstPassName;
+		nodeType: string;
+		tags: string[];
+		count: number;
+	}>;
+}
+
+const SHAPE_ARRAY_SAMPLE_SIZE = 16;
+const SHAPE_DEPTH = 2;
+
+function isNode(value: unknown): value is t.Node {
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		typeof (value as { type?: unknown }).type === "string"
+	);
+}
+
+function boundedArrayShape(values: unknown[], depth: number): string {
+	const describe = (index: number) =>
+		boundedNodeDescription(values[index], depth);
+	if (values.length <= SHAPE_ARRAY_SAMPLE_SIZE) {
+		return `${values.length}:${values.map((_value, index) => describe(index)).join(",")}`;
+	}
+	const half = SHAPE_ARRAY_SAMPLE_SIZE / 2;
+	const first = Array.from({ length: half }, (_value, index) =>
+		describe(index),
+	);
+	const last = Array.from({ length: half }, (_value, index) =>
+		describe(values.length - half + index),
+	);
+	return `${values.length}:${first.join(",")},...,${last.join(",")}`;
+}
+
+function boundedNodeDescription(value: unknown, depth: number): string {
+	if (!isNode(value)) return "-";
+	if (depth <= 0) return value.type;
+	const node = value;
+	const nodeRecord = node as unknown as Record<string, unknown>;
+	const visitorKeys = VISITOR_KEYS[node.type] ?? [];
+	const childShapes = visitorKeys.map((key) => {
+		const child = nodeRecord[key];
+		return Array.isArray(child)
+			? `${key}=[${boundedArrayShape(child, depth - 1)}]`
+			: `${key}=${boundedNodeDescription(child, depth - 1)}`;
+	});
+	return [node.type, ...childShapes].join("|");
+}
+
+export function boundedNodeShape(node: t.Node): string {
+	return boundedNodeDescription(node, SHAPE_DEPTH);
+}
+
+function updateShapeHash(hash: Hash, node: t.Node | null): void {
+	hash.update(node ? boundedNodeShape(node) : "<missing>");
+	hash.update("\n");
 }
 
 function asCallable(value: unknown): ((path: NodePath<t.Node>) => void) | null {
@@ -151,56 +226,93 @@ function mergePassVisitors(entries: PatchPassEntry[]): Visitor {
 
 function materializePassVisitor(
 	merged: Visitor,
+	passName: AstPassName,
 	onPatchError: (tag: string, error: Error) => void,
 	globallyFailedTags: Set<string>,
+	collectActivity: boolean,
+	collectShapes: boolean,
+	onHandlerCall: (tag: string, pass: AstPassName) => void,
+	onHandlerShape: (
+		tag: string,
+		pass: AstPassName,
+		phase: "before" | "after",
+		node: t.Node | null,
+	) => void,
+	onOverlap: (
+		pass: AstPassName,
+		nodeType: string,
+		tags: readonly string[],
+	) => void,
 ): Visitor {
 	const disabledTags = new Set<string>();
 	const warnedStopTags = new Set<string>();
-	const safeRun = (handlers: Handler[]) => (path: NodePath<t.Node>) => {
-		const initialNode = path.node;
-		for (const handler of handlers) {
-			if (
-				disabledTags.has(handler.tag) ||
-				globallyFailedTags.has(handler.tag)
-			) {
-				continue;
-			}
-			// If a prior merged handler replaced this node (via path.replaceWith
-			// or similar), skip handlers that were registered for the original
-			// node. They would otherwise inspect the replacement, which may be
-			// a different kind, and crash on missing fields. Babel re-traverses
-			// the replacement separately so kind-appropriate handlers still
-			// fire on the new node.
-			if (path.node !== initialNode) {
-				continue;
-			}
-			const pathWithStop = path as NodePath<t.Node> & { stop: () => void };
-			const hadOwnStop = Object.hasOwn(pathWithStop, "stop");
-			const originalStop = pathWithStop.stop;
-			pathWithStop.stop = () => {
-				if (!warnedStopTags.has(handler.tag)) {
-					warnedStopTags.add(handler.tag);
-					console.warn(
-						`ast-pass-engine: ${handler.tag} called path.stop() during combined traversal; treating as path.skip()`,
-					);
+	const safeRun = (handlers: Handler[]) => {
+		return (path: NodePath<t.Node>) => {
+			const initialNode = path.node;
+			let firstExecutedTag: string | undefined;
+			let overlappingTags: Set<string> | undefined;
+			for (const handler of handlers) {
+				if (
+					disabledTags.has(handler.tag) ||
+					globallyFailedTags.has(handler.tag)
+				) {
+					continue;
 				}
-				path.skip();
-			};
-			try {
-				handler.fn(path);
-			} catch (error) {
-				const err = error instanceof Error ? error : new Error(String(error));
-				disabledTags.add(handler.tag);
-				globallyFailedTags.add(handler.tag);
-				onPatchError(handler.tag, err);
-			} finally {
-				if (hadOwnStop) {
-					pathWithStop.stop = originalStop;
-				} else {
-					Reflect.deleteProperty(pathWithStop, "stop");
+				// If a prior merged handler replaced this node (via path.replaceWith
+				// or similar), skip handlers that were registered for the original
+				// node. They would otherwise inspect the replacement, which may be
+				// a different kind, and crash on missing fields. Babel re-traverses
+				// the replacement separately so kind-appropriate handlers still
+				// fire on the new node.
+				if (path.node !== initialNode) {
+					continue;
+				}
+				if (collectActivity) {
+					onHandlerCall(handler.tag, passName);
+					if (collectShapes) {
+						onHandlerShape(handler.tag, passName, "before", path.node);
+					}
+					if (firstExecutedTag === undefined) {
+						firstExecutedTag = handler.tag;
+					} else if (handler.tag !== firstExecutedTag) {
+						overlappingTags ??= new Set([firstExecutedTag]);
+						overlappingTags.add(handler.tag);
+					}
+				}
+				const pathWithStop = path as NodePath<t.Node> & { stop: () => void };
+				const hadOwnStop = Object.hasOwn(pathWithStop, "stop");
+				const originalStop = pathWithStop.stop;
+				pathWithStop.stop = () => {
+					if (!warnedStopTags.has(handler.tag)) {
+						warnedStopTags.add(handler.tag);
+						console.warn(
+							`ast-pass-engine: ${handler.tag} called path.stop() during combined traversal; treating as path.skip()`,
+						);
+					}
+					path.skip();
+				};
+				try {
+					handler.fn(path);
+				} catch (error) {
+					const err = error instanceof Error ? error : new Error(String(error));
+					disabledTags.add(handler.tag);
+					globallyFailedTags.add(handler.tag);
+					onPatchError(handler.tag, err);
+				} finally {
+					if (collectShapes) {
+						onHandlerShape(handler.tag, passName, "after", path.node);
+					}
+					if (hadOwnStop) {
+						pathWithStop.stop = originalStop;
+					} else {
+						Reflect.deleteProperty(pathWithStop, "stop");
+					}
 				}
 			}
-		}
+			if (collectActivity && overlappingTags && overlappingTags.size > 1) {
+				onOverlap(passName, initialNode.type, [...overlappingTags].sort());
+			}
+		};
 	};
 
 	const resolved: Visitor = {};
@@ -235,9 +347,42 @@ export async function runCombinedAstPasses(
 	onPassStart: (pass: AstPassName, patchCount: number) => void,
 	onPassEnd: (pass: AstPassName, patchCount: number) => void,
 	onPatchError: (tag: string, error: Error) => void,
-): Promise<void> {
+	options: { telemetryLevel?: AstPassTelemetryLevel } = {},
+): Promise<AstPassTelemetry> {
+	const telemetryLevel = options.telemetryLevel ?? "deep";
+	const collectActivity = telemetryLevel === "deep";
+	const collectShapes = telemetryLevel === "deep";
 	const passOrder: AstPassName[] = ["discover", "mutate", "finalize"];
 	const globallyFailedTags = new Set<string>();
+	const handlerCalls: AstPassTelemetry["handlerCalls"] = {};
+	if (collectActivity) {
+		for (const { tag } of entries) {
+			handlerCalls[tag] ??= { discover: 0, mutate: 0, finalize: 0 };
+		}
+	}
+	const shapeHashers: Record<
+		string,
+		Record<AstPassName, { before: Hash; after: Hash }>
+	> = {};
+	if (collectShapes) {
+		for (const { tag } of entries) {
+			shapeHashers[tag] ??= {
+				discover: {
+					before: createHash("sha256"),
+					after: createHash("sha256"),
+				},
+				mutate: {
+					before: createHash("sha256"),
+					after: createHash("sha256"),
+				},
+				finalize: {
+					before: createHash("sha256"),
+					after: createHash("sha256"),
+				},
+			};
+		}
+	}
+	const overlapCounts = new Map<string, AstPassTelemetry["overlaps"][number]>();
 	for (const passName of passOrder) {
 		const passEntries = entries.filter((entry) => entry.pass.pass === passName);
 		if (passEntries.length === 0) continue;
@@ -245,10 +390,61 @@ export async function runCombinedAstPasses(
 		const merged = mergePassVisitors(passEntries);
 		const safeVisitor = materializePassVisitor(
 			merged,
+			passName,
 			onPatchError,
 			globallyFailedTags,
+			collectActivity,
+			collectShapes,
+			(tag, pass) => {
+				handlerCalls[tag] ??= { discover: 0, mutate: 0, finalize: 0 };
+				handlerCalls[tag][pass] += 1;
+			},
+			(tag, pass, phase, node) => {
+				updateShapeHash(shapeHashers[tag][pass][phase], node);
+			},
+			(pass, nodeType, tags) => {
+				const key = `${pass}\0${nodeType}\0${tags.join("\0")}`;
+				const existing = overlapCounts.get(key);
+				if (existing) {
+					existing.count += 1;
+				} else {
+					overlapCounts.set(key, {
+						pass,
+						nodeType,
+						tags: [...tags],
+						count: 1,
+					});
+				}
+			},
 		);
 		traverse(ast, safeVisitor);
 		onPassEnd(passName, passEntries.length);
 	}
+	const structuralHashes: AstPassTelemetry["structuralHashes"] = {};
+	for (const [tag, passHashers] of Object.entries(shapeHashers)) {
+		structuralHashes[tag] = {
+			discover: {
+				beforeSha256: passHashers.discover.before.digest("hex"),
+				afterSha256: passHashers.discover.after.digest("hex"),
+			},
+			mutate: {
+				beforeSha256: passHashers.mutate.before.digest("hex"),
+				afterSha256: passHashers.mutate.after.digest("hex"),
+			},
+			finalize: {
+				beforeSha256: passHashers.finalize.before.digest("hex"),
+				afterSha256: passHashers.finalize.after.digest("hex"),
+			},
+		};
+	}
+	return {
+		handlerCalls,
+		structuralHashes,
+		overlaps: [...overlapCounts.values()].sort(
+			(left, right) =>
+				passOrder.indexOf(left.pass) - passOrder.indexOf(right.pass) ||
+				left.nodeType.localeCompare(right.nodeType) ||
+				left.tags.join("\0").localeCompare(right.tags.join("\0")),
+		),
+	};
 }

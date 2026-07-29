@@ -77,6 +77,16 @@ test("encodePlaceholderExpressions dedupes identical expressions and suffixes co
 	assert.equal(encoded.identifierMap["2"], "EXPR_123BAD");
 });
 
+test("encodePlaceholderExpressions hashes raw expressions before display-token collisions", () => {
+	const dotted = encodePlaceholderExpressions(["alpha.beta"]);
+	const dashed = encodePlaceholderExpressions(["alpha-beta"]);
+
+	assert.equal(dotted.identifierMap["0"], dashed.identifierMap["0"]);
+	assert.match(dotted.expressionHashMap["0"] ?? "", /^[a-f0-9]{64}$/);
+	assert.match(dashed.expressionHashMap["0"] ?? "", /^[a-f0-9]{64}$/);
+	assert.notEqual(dotted.expressionHashMap["0"], dashed.expressionHashMap["0"]);
+});
+
 test("buildPromptDataset produces stable ids and compatible structure", () => {
 	const baseEntry: PromptCorpusEntry = {
 		kind: "template",

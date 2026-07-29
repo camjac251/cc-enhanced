@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import type { AstPassTelemetryLevel } from "./ast-pass-engine.js";
 import {
 	copyBunCjsEnvelope,
 	extractClaudeJsFromNativeBinary,
@@ -49,7 +50,15 @@ interface ManagerOptions {
 	fastVerify?: boolean;
 	force?: boolean;
 	summaryPath?: string;
+	structuralEvidence?: boolean;
 	nativeCacheDir?: string;
+}
+
+export function selectPatchTelemetryLevel(
+	options: Pick<ManagerOptions, "summaryPath" | "structuralEvidence">,
+): AstPassTelemetryLevel {
+	if (options.structuralEvidence) return "deep";
+	return "none";
 }
 
 interface PatchedBuildMetadata {
@@ -278,11 +287,18 @@ export class Manager {
 	}
 
 	private buildRunner(nativeMode = false): PatchRunner {
+		const telemetryLevel = selectPatchTelemetryLevel(this.options);
 		if (!nativeMode) {
-			return new PatchRunner(undefined, { signaturePolicy: "auto" });
+			return new PatchRunner(undefined, {
+				signaturePolicy: "auto",
+				telemetryLevel,
+			});
 		}
 		const patches = allPatches.filter((p) => p.tag !== "signature");
-		return new PatchRunner(patches, { signaturePolicy: "force" });
+		return new PatchRunner(patches, {
+			signaturePolicy: "force",
+			telemetryLevel,
+		});
 	}
 
 	private async normalizeCliJs(cliPath: string) {
@@ -315,6 +331,7 @@ export class Manager {
 			this.logResult(result);
 			if (result.failedTags.length > 0) {
 				return {
+					result,
 					error: `Patch verification failed: ${result.failedTags.join(", ")}`,
 				};
 			}

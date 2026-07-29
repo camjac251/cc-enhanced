@@ -191,7 +191,7 @@ Terminal interface polish.
 
 ## Configuration
 
-### Patcher (build time)
+### Patcher and maintainer tooling
 
 | Variable | Purpose |
 |----------|---------|
@@ -257,8 +257,11 @@ mise run native:pull -- <version>                 # Fetch upstream + extract cle
 mise run native:unpack-current -- <out>           # Extract patched JS from the currently-promoted binary (auto-detects via PATH)
 mise run native:unpack -- <bin> <out>             # Extract embedded JS from any native binary
 mise run verify:patches                           # Typecheck + lint + native patch + prompt drift
-mise run verify:patches:matrix                    # Dry-run patches against latest clean cli.js
+SELECTED_VERSION=<X.Y.Z> mise run verify:patches:matrix # Dry-run patches against one clean cli.js
 VERIFY_PATCHES_MATRIX_SCOPE=all mise run verify:patches:matrix
+PATCH_EVIDENCE_OUTPUT=/tmp/<version>.json mise run verify:patches
+PATCH_EVIDENCE_DIR=/tmp/patch-evidence SELECTED_VERSION=<X.Y.Z> mise run verify:patches:matrix
+bun run patch-evidence:compare /tmp/<old>.json /tmp/<new>.json
 mise run verify:anchors -- <patched-cli> <clean-cli>
 mise run verify:prompt-surfaces -- <export-dir>
 mise run verify:prompt-drift -- <export-dir> --prompt-drift-baseline <baseline.json>
@@ -266,6 +269,7 @@ mise run prompts:export                           # Export prompt artifacts from
 mise run prompts:export -- <version> --output-dir /tmp/prompts-<version>
 mise run prompts:drift-baseline -- <export-dir> --prompt-drift-version <version>
 bun run prompts:compare <vanilla-export> <patched-export> /etc/claude-code
+bun run prompts:compare:matrix <old-clean> <old-patched> <new-clean> <new-patched> /etc/claude-code
 bun run inspect search versions_clean/<version>/cli.js "Read" --field string --object
 bun run inspect prompts versions_clean/<version>/cli.js "Command sandbox"
 bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js
@@ -273,6 +277,17 @@ bun run diff -- matrix versions_clean/<v1>/cli.js versions_clean/<v2>/cli.js ver
 bun run cli --list                                   # List available patches
 bun run test                                      # Run the test suite (pinned to --parallel=1)
 ```
+
+High-memory entrypoints are mutually exclusive across terminals and nested
+workflow processes. Nested child commands inherit the active lease, and the
+operating system releases it if the owner exits or crashes. There is no fixed
+RAM admission threshold. Normal patch and update runs avoid detailed
+structural telemetry, and `--summary-path` alone stays lean. Add
+`--structural-evidence` for handler counts, overlap evidence, and recursive
+structural hashes. The verification scripts add that flag automatically when
+`PATCH_EVIDENCE_OUTPUT` or `PATCH_EVIDENCE_DIR` requests a persisted release
+manifest. Large verifier sets release Babel traversal state once at their
+midpoint; smaller filtered runs avoid the extra collection.
 
 `mise run patch` is intentionally disabled; it exists only to redirect to `native:update`. `package.json` is the canonical alias table, and `mise.toml` is kept as a thin task index that calls those aliases. Use `mise run <task> -- ...` to pass versions, paths, or flags through to the underlying Bun alias. Non-trivial workflow logic lives in TypeScript, especially [`scripts/verify-patches.ts`](scripts/verify-patches.ts). See `mise.toml` for the task list and `bun run cli --help` for CLI flags.
 
@@ -321,6 +336,25 @@ bun run prompts:compare exported-prompts/<version> exported-prompts/<version>_pa
 bun run prompts:compare exported-prompts/<version> exported-prompts/<version>_patched /etc/claude-code -- --json
 bun run prompts:compare exported-prompts/<version> exported-prompts/<version>_patched /etc/claude-code -- --output /tmp/prompt-comparison.md
 ```
+
+`prompts:compare:matrix` separates four relationships that a single clean-to-patched report cannot: previous clean to current clean, previous patched to current patched, previous clean to previous patched, and current clean to current patched. It also compares interpolation dependencies from each `prompt-corpus.json`. The exporter hashes each raw expression before storing the corpus, so the report detects display-token collisions while exposing only dependency parity and invalid-reference counts. Older exports without expression hashes remain readable but report dependency parity as `unknown`, never `exact`.
+
+```bash
+bun run prompts:compare:matrix \
+  exported-prompts/<old> exported-prompts/<old>_patched \
+  exported-prompts/<new> exported-prompts/<new>_patched \
+  /etc/claude-code
+```
+
+Every patch summary now carries a code-free `result.evidence` manifest. It
+records whole-input/output SHA-256 hashes, exact patch pass/fail state, handler
+counts, shared-node overlap counts, and semantic witnesses where a patch
+defines them. Deep evidence additionally records bounded structural hashes
+that ignore identifier and literal values. Persist a deep manifest with
+`PATCH_EVIDENCE_OUTPUT` for native verification or `PATCH_EVIDENCE_DIR` for
+matrix verification, then compare adjacent releases with
+`patch-evidence:compare`. These manifests are drift evidence, not a replacement
+for `mise run verify:patches`.
 
 The inspector parses a bundle once per invocation and can run multiple search queries:
 
@@ -372,7 +406,13 @@ bun run diff -- matrix \
   --markdown
 ```
 
-The report groups high-signal additions and removals, reconstructs command candidates with nearby descriptions and flags, detects settings-write count changes, separates `<system-reminder>` prompt surfaces, detects prefix/text rewrites such as subsystem renames, highlights capability candidates, and estimates patch relevance from local patch anchors. For clean-vs-patched AST node comparison, call the legacy mode explicitly:
+The report groups high-signal additions and removals, suppresses opaque short
+object-key churn, reconstructs command candidates with nearby descriptions and
+flags, detects settings-write count changes, separates `<system-reminder>`
+prompt surfaces, detects prefix/text rewrites such as subsystem renames,
+highlights capability candidates, and estimates patch relevance from local
+patch anchors. For clean-vs-patched AST node comparison, call the legacy mode
+explicitly:
 
 ```bash
 bun run diff -- ast versions_clean/<version>/cli.js /tmp/cli-patched.js
@@ -429,7 +469,7 @@ When a prompt patch changes live guidance, update both the patch verifier and th
 
 ## Compatibility
 
-Current target: **Claude Code 2.1.220**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. Run `claude --version` on the promoted binary to confirm the active target.
+Current target: **Claude Code 2.1.220**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. The immediately previous clean bundle may be retained for release-diff evidence, but it is not a matcher, fixture, matrix, or promotion target. Run `claude --version` on the promoted binary to confirm the active target.
 
 `native:update` accepts `latest`, `next`, `stable`, or an explicit `X.Y.Z`. The `latest` resolver cross-checks the native release bucket with the npm `latest` and `next` dist-tags so release promotion can follow npm when a new version appears there before the bucket alias moves.
 

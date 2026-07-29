@@ -146,6 +146,19 @@ export async function verifyPromptSurfaceDrift({
 	const failures: PromptSurfaceDriftFailure[] = [];
 	let checksRun = 0;
 
+	if (!watchPaths) {
+		const watchedSet = new Set(watched);
+		for (const relativePath of Object.keys(expected.surfaces).sort()) {
+			if (!watchedSet.has(relativePath)) {
+				failures.push({
+					file: relativePath,
+					id: "baseline-unexpected-surface",
+					reason: "Baseline contains a surface that is no longer watched",
+				});
+			}
+		}
+	}
+
 	for (const relativePath of watched) {
 		checksRun++;
 		const expectedHash = expected.surfaces[relativePath];

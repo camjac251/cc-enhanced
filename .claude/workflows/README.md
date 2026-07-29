@@ -9,6 +9,8 @@ reachability phases lean on the `patch-verifier` subagent for deep cli.js
 inspection rather than relying on `mise run verify:patches` output alone.
 `patch-verifier` has separate patch-anchor and prompt-surface modes, so
 extractor/rules checks do not have to masquerade as patch-source checks.
+It is intentionally stateless: every run derives evidence from the assigned
+latest bundle instead of loading project memory from earlier releases.
 Synthesis phases use the default workflow subagent. `verify:patches` catches
 only what each patch's `verify()` function knows to check; direct `rg` / `bat`
 / `bun run inspect` on the clean bundle catches anchor drift, ambiguity,
@@ -52,11 +54,11 @@ fragility, and verifier weakness.
 
 ## Fan-out and cost
 
-Both workflows group patches into work units before fanning out, so a run is
+`patch-update` and `patch-audit` group patches into work units before fanning out, so a run is
 not one agent per patch:
 
-- Large-source patches and rewrite-cascade participants (per the CLAUDE.md
-  Pipeline Ordering section) each get their own agent for deep, isolated
+- Large patch files and rewrite-cascade participants (per
+  `docs/maintainer-reference.md > Pipeline Ordering`) each get their own agent for deep, isolated
   inspection. Patches that merely share visitor node kinds are batched;
   shared-visitor analysis belongs to `patch-audit`'s pipeline-interaction
   phase, not to per-patch anchor inspection.
@@ -85,10 +87,13 @@ In `patch-audit`, inspection depth scales with mode: `quick` checks anchors
 only, `standard` adds verify() robustness in the same source read, and `full`
 adds per-patch test-hardening. A patch source is never read twice per run.
 
-Both workflows return compact per-patch projections alongside the synthesized
+The two patch workflows return compact per-patch projections alongside the synthesized
 plan/audit; full anchor-hit detail for every patch and surface stays in the
 run's journal (`journal.jsonl` in the run transcript directory). `patch-audit`
 additionally returns the consolidated `testHardening` set in `full` mode.
+Reports and journals must use durable behavioral descriptions and line
+references, never minified identifiers, reconstructed module/source names, or
+raw bundle snippets.
 
 The two big scripts deliberately duplicate their helper blocks
 (`throttledFanout`, `buildWorkUnits`, args parsing, compaction): the workflow
@@ -119,26 +124,29 @@ running elsewhere, and never run two of these workflows at once.
 
 ## Arguments
 
-Both workflows accept an `args` object (or a JSON string, or a plain focus
-string):
+The two patch workflows accept an `args` object (or a JSON string, or a plain
+focus string):
 
 - `mode`:
   - `patch-update`: `quick` (high-risk group subset of patches, first 5 prompt
     surfaces), `delta` (versioning additionally runs
-    `mise run diff -- <current> <target> --focus patches` between the current
-    and target clean bundles, then inspects only flagged plus rewrite-cascade
-    patches, reporting the rest as delta-skipped; falls back to `full` when
-    the current clean bundle is missing), or `full` (default; everything).
+    `mise run diff -- <previous> <target> --focus patches` between the latest
+    clean bundle and its immediate predecessor, then inspects only flagged
+    plus rewrite-cascade patches, reporting the rest as delta-skipped; falls
+    back to `full` when the previous clean bundle is missing), or `full`
+    (everything). `delta` is the default.
   - `patch-audit`: `quick` (anchor inspection only, high-risk group subset),
     `standard` (adds per-patch verify() robustness and the docs-and-counts
-    phase), or `full` (default; adds per-patch test-hardening and the
-    pipeline-interaction analysis).
+    phase), or `full` (adds per-patch test-hardening and the pipeline-interaction
+    analysis). `standard` is the default; `full` is the explicit deep gate.
 - `group`: restrict to one patch group (e.g. `Tooling`, `Prompt`, `System`,
   `UX`, `Agent`). A group/tag filter that matches no patch fast-fails with a
   blocked status naming the filter.
 - `tag`: restrict to specific patch tags (comma-separated string or array).
 - `version` (`patch-update` only): target clean version to validate against;
-  defaults to the highest-numbered `versions_clean/<version>/`.
+  defaults to the highest-numbered `versions_clean/<version>/`. A lower
+  cached version is rejected because patch validation is latest-only; use
+  `release-triage` for historical comparisons.
 - `patchedExportPath` (`patch-update` only): path to a patched prompt export.
   When set, prompt-surface checks also validate required/forbidden needles
   against that export. Without it, only clean-bundle anchor reachability is
@@ -153,7 +161,7 @@ Examples:
 ```js
 Workflow({ name: 'patch-audit', args: { mode: 'quick' } })
 Workflow({ name: 'patch-update', args: { tag: 'edit-extended,read-bat' } })
-Workflow({ name: 'patch-update', args: { version: '2.1.185', patchedExportPath: 'exported-prompts/2.1.185' } })
+Workflow({ name: 'patch-update', args: { version: '<latest>', patchedExportPath: 'exported-prompts/<latest>' } })
 ```
 
 ## Suggested usage

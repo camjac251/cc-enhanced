@@ -148,6 +148,40 @@ test("verifyPromptSurfaceDrift uses the central watch list by default", async ()
 	}
 });
 
+test("verifyPromptSurfaceDrift rejects stale baseline surfaces in default mode", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "prompt-drift-stale-baseline-"),
+	);
+	const exportDir = path.join(tempDir, "export");
+	try {
+		for (const relativePath of PROMPT_SURFACE_DRIFT_PATHS) {
+			await writeSurface(
+				exportDir,
+				relativePath,
+				`# ${relativePath}\nStable prompt surface.`,
+			);
+		}
+
+		const baseline = await createPromptSurfaceDriftBaseline({
+			exportDir,
+			version: "2.1.test",
+		});
+		baseline.surfaces["agents/retired.md"] = "stale-hash";
+
+		const result = await verifyPromptSurfaceDrift({ exportDir, baseline });
+		assert.equal(result.ok, false);
+		assert.ok(
+			result.failures.some(
+				(failure) =>
+					failure.file === "agents/retired.md" &&
+					failure.id === "baseline-unexpected-surface",
+			),
+		);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
 test("default drift paths exclude optional surfaces that review reports still track", () => {
 	assert.ok(PROMPT_SURFACE_REVIEW_PATHS.includes("tools/builtin/read.md"));
 	assert.ok(

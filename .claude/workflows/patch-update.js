@@ -1,9 +1,9 @@
 export const meta = {
   name: 'patch-update',
   description: 'Validate every patch against a target clean bundle through deep cli.js inspection, check watched prompt-surface reachability, and plan fixes',
-  whenToUse: 'Use in cc-enhanced when there is a new upstream release to validate against, or when planning a patch update. Goes beyond mise run verify:patches by inspecting patches and watched prompt-surface anchors against the target clean bundle through direct cli.js reading. Large or rewrite-cascade patches get a dedicated agent; the rest are grouped to keep fan-out and tokens bounded. Prompt-surface checks use patch-verifier prompt-surface mode; pass patchedExportPath to also validate needles. Modes: quick, delta (inspects only diff-flagged plus rewrite-cascade patches), full. Mechanical passes run on sonnet, deep passes on opus; override via args.models. Read-only.',
+  whenToUse: 'Use in cc-enhanced when there is a new upstream release to validate against, or when planning a patch update. Goes beyond mise run verify:patches by inspecting patches and watched prompt-surface anchors against the target clean bundle through direct cli.js reading. Large or rewrite-cascade patches get a dedicated agent; the rest are grouped to keep fan-out and tokens bounded. Prompt-surface checks use patch-verifier prompt-surface mode; pass patchedExportPath to also validate needles. Modes: quick, delta (default; inspects only diff-flagged plus rewrite-cascade patches), full. Mechanical passes run on sonnet, deep passes on opus; override via args.models. Read-only.',
   phases: [
-    { title: 'Versioning', detail: 'identify current and target versions, enumerate patches and watched prompt surfaces, filter by args; in delta mode derive the at-risk set from the release diff' },
+    { title: 'Versioning', detail: 'identify promoted, latest target, and immediately previous comparison versions; enumerate patches and watched prompt surfaces; in delta mode derive the at-risk set from that adjacent release diff' },
     { title: 'PatchInspection', detail: 'patches grouped into work units and inspected in parallel via patch-verifier against the target bundle' },
     { title: 'PromptAnchors', detail: 'watched prompt surfaces checked in batches for upstream reachability against the target bundle; optional needle validation against a patched export' },
     { title: 'FixPlan', detail: 'synthesize a unified plan prioritized by severity' },
@@ -19,6 +19,8 @@ const VERSIONING_SCHEMA = {
     currentVersion: { type: 'string' },
     targetVersion: { type: 'string' },
     targetBundlePath: { type: 'string' },
+    comparisonVersion: { type: 'string' },
+    comparisonBundlePath: { type: 'string' },
     patches: {
       type: 'array',
       items: {
@@ -29,7 +31,7 @@ const VERSIONING_SCHEMA = {
           sourceFile: { type: 'string' },
           group: { type: 'string' },
           sourceLines: { type: 'number', description: 'line count of the patch source file' },
-          interactionRisk: { enum: ['high', 'low'], description: 'high only if the patch participates in a rewrite-cascade named in the CLAUDE.md Pipeline Ordering section (it rewrites shapes other patches anchor on, or its anchors can be neutralized by another patch); low otherwise, including patches that only share visitor node kinds' },
+          interactionRisk: { enum: ['high', 'low'], description: 'high only if the patch participates in a rewrite-cascade named in docs/maintainer-reference.md > Pipeline Ordering (it rewrites shapes other patches anchor on, or its anchors can be neutralized by another patch); low otherwise, including patches that only share visitor node kinds' },
         },
       },
     },
@@ -304,7 +306,7 @@ const argsObj = (() => {
   return {}
 })()
 
-const mode = argsObj.mode === 'quick' || argsObj.mode === 'delta' ? argsObj.mode : 'full'
+const mode = argsObj.mode === 'quick' || argsObj.mode === 'full' ? argsObj.mode : 'delta'
 const groupFilter = typeof argsObj.group === 'string' ? argsObj.group : null
 const tagFilter = typeof argsObj.tag === 'string'
   ? argsObj.tag.split(',').map((s) => s.trim()).filter(Boolean)
@@ -328,18 +330,19 @@ const versioning = await agent(
   `Discover the cc-enhanced patch and prompt-surface inventory plus the target clean bundle for validation.
 
 Steps:
-1. Identify the current promoted version (run \`mise run status\` or read \`claude --version\` output). Set currentVersion.
-2. Identify the target version. ${versionOverride ? `The user specified version: ${versionOverride}. Use that as targetVersion.` : 'Use the highest-numbered subdirectory under versions_clean/ that has a cli.js inside.'} Set targetVersion.
-3. Set targetBundlePath to versions_clean/<targetVersion>/cli.js. If that file does not exist, set outcome to no-target-bundle and include the exact command the user should run (mise run native:pull -- <targetVersion>) in notes. Stop there.
-4. Read src/patches/index.ts to enumerate every patch. For each: tag (e.g. "edit-extended"), sourceFile (e.g. "src/patches/edit-extended.ts"), and group (look up in src/patch-metadata.ts BY_TAG).
-5. For every patch set sourceLines: run a single command like \`wc -l src/patches/*.ts\` (or rg -c '.' per file) and record the line count of each patch source. This drives whether a patch is inspected solo or batched, so populate it for all patches.
-6. For every patch set interactionRisk: read the "Pipeline Ordering" section of CLAUDE.md. Mark interactionRisk=high only for patches involved in a rewrite-cascade interaction (a patch that rewrites guards or tests other patches anchor on, plus the patches it names as affected). Patches that merely appear in the shared-visitor-kinds table are low: sharing a visitor node kind does not by itself affect anchor reachability against a clean bundle.
-7. Read src/verification/prompt-surface-rules.ts to enumerate watched prompt surfaces. For each surface, set path, requiredNeedles, forbiddenNeedles, optional. Also set extractorAnchors: the literal strings the prompt extractor uses to locate this surface in cli.js (look in scripts/export-prompts.ts for the matching extractor). These are the strings whose presence/absence indicates whether the surface still exists upstream.${mode === 'delta' ? `
-8. Delta signal: if versions_clean/<currentVersion>/cli.js exists alongside the target bundle, run exactly ONE extra command, by itself (it parses both bundles and is memory-heavy; run nothing else concurrently and run it only once): mise run diff -- versions_clean/<currentVersion>/cli.js versions_clean/<targetVersion>/cli.js --focus patches --cache. This diff is read-only triage (its --cache only writes a local cache) and is explicitly allowed despite the write-side guard below. From the report, set atRiskTags: every patch tag whose anchors the report flags as removed, rewritten, or at risk. If the current clean bundle is missing or the command fails, leave atRiskTags unset and add a note explaining why; the run then falls back to inspecting every patch.` : ''}
+1. Identify the current promoted version (run \`mise run status\` or read \`claude --version\` output). Set currentVersion; this is runtime context only.
+2. List and semver-sort every versions_clean/<version>/cli.js. ${versionOverride ? `The user specified version ${versionOverride}. If it is lower than the highest cached version, set outcome=blocked: patch validation is latest-only and older versions belong in release-triage. Otherwise use it as targetVersion.` : 'Use the highest cached clean version as targetVersion.'}
+3. Set targetBundlePath to versions_clean/<targetVersion>/cli.js. If that file does not exist, set outcome=no-target-bundle and include the exact command \`mise run native:pull -- <targetVersion>\` in notes, then stop.
+4. Set comparisonVersion and comparisonBundlePath to the highest cached clean version lower than targetVersion. This immediately previous bundle is release-diff evidence only, never a supported patch target.
+5. Read src/patches/index.ts to enumerate every patch from the canonical registeredPatches roster. For each: tag (e.g. "edit-extended"), sourceFile (e.g. "src/patches/edit-extended.ts"), and group (look up in src/patch-metadata.ts BY_TAG).
+6. For every patch set sourceLines: run a single command like \`wc -l src/patches/*.ts\` (or rg -c '.' per file) and record the line count of each patch source. This drives whether a patch is inspected solo or batched, so populate it for all patches.
+7. For every patch set interactionRisk: read "Pipeline Ordering" in docs/maintainer-reference.md. Mark interactionRisk=high only for patches involved in a rewrite-cascade interaction (a patch that rewrites guards or tests other patches anchor on, plus the patches it names as affected). Patches that merely appear in the shared-visitor-kinds table are low: sharing a visitor node kind does not by itself affect anchor reachability against a clean bundle.
+8. Read src/verification/prompt-surface-rules.ts to enumerate watched prompt surfaces. For each surface, set path, requiredNeedles, forbiddenNeedles, optional. Also set extractorAnchors: the literal strings the prompt extractor uses to locate this surface in cli.js (look in scripts/export-prompts.ts for the matching extractor). These are the strings whose presence/absence indicates whether the surface still exists upstream.${mode === 'delta' ? `
+9. Delta signal: if comparisonBundlePath exists, run exactly ONE extra command, by itself (it parses both bundles and is memory-heavy; run nothing else concurrently and run it only once): mise run diff -- <comparisonBundlePath> <targetBundlePath> --focus patches --cache. This diff is read-only triage (its --cache only writes a local cache) and is explicitly allowed despite the write-side guard below. From the report, set atRiskTags to every patch tag whose anchors it flags as removed, rewritten, or at risk. If the immediately previous bundle is missing or the command fails, leave atRiskTags unset and add a note explaining why; the run then falls back to inspecting every patch.` : ''}
 
 If everything resolves, set outcome=ready. If fundamental files are missing, set outcome=blocked with blockedReason.
 
-Memory discipline: bundle-parsing commands hold multi-GB working sets and must never overlap anything else.${mode === 'delta' ? ' The single diff in step 8 is the ONLY bundle-parsing command permitted in this phase; run it alone, once.' : ' None are needed in this phase; do not run bun run inspect, mise run diff, verify:patches, or prompts:export.'}
+Memory discipline: bundle-parsing commands hold multi-GB working sets and must never overlap anything else.${mode === 'delta' ? ' The single diff in step 9 is the ONLY bundle-parsing command permitted in this phase; run it alone, once.' : ' None are needed in this phase; do not run bun run inspect, mise run diff, verify:patches, or prompts:export.'}
 
 Do not modify any files. Do not run mise run native:update, native:fetch, native:pull, native:promote, or any write-side command. Do not commit or push.${focus}`,
   {
@@ -391,7 +394,7 @@ let patchesInScope = mode === 'quick' && !groupFilter && !tagFilter
 // Delta mode narrows inspection to patches the release diff flagged plus the rewrite-cascade
 // set; everything else is reported as delta-skipped, never silently treated as validated.
 let deltaSkippedTags = []
-if (mode === 'delta') {
+if (mode === 'delta' && !groupFilter && !tagFilter) {
   if (Array.isArray(versioning.atRiskTags)) {
     const atRisk = new Set(versioning.atRiskTags)
     deltaSkippedTags = patchesInScope
@@ -402,6 +405,8 @@ if (mode === 'delta') {
   } else {
     log('delta mode: no delta signal from versioning (missing bundle or diff failure); falling back to full inspection')
   }
+} else if (mode === 'delta') {
+  log('delta mode: explicit group/tag scope bypasses release-diff narrowing')
 }
 
 const patchesSkipped = allPatches.length - patchesInScope.length - deltaSkippedTags.length
@@ -423,7 +428,7 @@ const runInspectUnit = (unit, model) => {
     .map((p) => `- \`${p.tag}\` (source: ${p.sourceFile}${p.group ? `, group: ${p.group}` : ''})`)
     .join('\n')
   const deepNote = unit.kind === 'solo'
-    ? 'This patch is large or high-interaction. Inspect it deeply. If it appears in the CLAUDE.md Pipeline Ordering shared-visitor table, explicitly reason about how its mutation could interact with sibling patches registering visitors for the same AST node kind, and whether its anchor could be neutralized by another patch (rewrite-cascade).'
+    ? 'This patch is large or high-interaction. Inspect it deeply. If it appears in docs/maintainer-reference.md > Pipeline Ordering, explicitly reason about how its mutation could interact with sibling patches registering visitors for the same AST node kind, and whether its anchor could be neutralized by another patch (rewrite-cascade).'
     : 'These patches are batched for efficiency. Inspect each one fully and independently, and return exactly one entry per patch in inspections[], in the order listed.'
   return agent(
     `Deep-inspect the following cc-enhanced patch(es) against ${targetBundle}.
@@ -445,6 +450,7 @@ For EACH patch:
 5. Classify as OK, DRIFT, BROKEN, or UNKNOWN.
 6. Set testCoverageNote (existing | missing | needs new fixture) and put file:line evidence or the gap in testCoverageEvidence.
 7. If not OK, propose a rootCauseHypothesis and a suggestedApproach (summary, filesToEdit, risk, confidence). Do not write code.
+8. Return durable literals or behavioral anchor descriptions only. Never return minified identifiers, reconstructed module/source names, or raw bundle snippets.
 
 Return inspections: one object per patch with tag, status, anchorsChecked, structuralContext, concerns, evidence (file:line citations from cli.js), testCoverageNote, testCoverageEvidence, rootCauseHypothesis if not OK, and suggestedApproach if a fix is needed.
 
@@ -531,7 +537,7 @@ Surfaces in this unit:
 ${blocks}
 
 For EACH surface:
-1. Search ${targetBundle} with rg -n for each extractor anchor. This is the cc-enhanced cli.js exception for minified bundle anchor text, not general source-code routing. Record anchorsChecked (anchor text, hits, line numbers).
+1. Search ${targetBundle} with rg -n for each extractor anchor. This is the cc-enhanced cli.js exception for bundle anchor text, not general source-code routing. Record durable literal or behavioral anchor descriptions, hits, and line numbers. Never return minified identifiers, reconstructed module/source names, or raw bundle snippets.
 2. Status:
    - anchor-present: every extractor anchor is found with the expected uniqueness.
    - anchor-drifted: anchors found but counts changed or context shifted in a way that may affect extraction.
@@ -550,7 +556,6 @@ Surface units run CONCURRENTLY: rg and bat are the only bundle access allowed; n
       schema: SURFACE_UNIT_SCHEMA,
       agentType: 'patch-verifier',
       model: models.mechanical,
-      effort: 'low',
     },
   )
 }
@@ -584,6 +589,8 @@ ${JSON.stringify({
   currentVersion: versioning.currentVersion,
   targetVersion: versioning.targetVersion,
   targetBundlePath: versioning.targetBundlePath,
+  comparisonVersion: versioning.comparisonVersion,
+  comparisonBundlePath: versioning.comparisonBundlePath,
 })}
 
 Patch findings (compact projection; full anchor detail is retained out of band):

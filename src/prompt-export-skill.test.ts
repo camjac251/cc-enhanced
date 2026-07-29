@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -43,7 +43,7 @@ function registerBuiltInSkill() {
 			"utf8",
 		);
 
-		execFileSync(
+		const result = spawnSync(
 			process.execPath,
 			[
 				"scripts/export-prompts.ts",
@@ -56,9 +56,11 @@ function registerBuiltInSkill() {
 			{
 				cwd: repoRoot,
 				encoding: "utf8",
-				stdio: "pipe",
+				env: { ...process.env, CLAUDE_PATCHER_PROFILE: "1" },
 			},
 		);
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stderr, /checkpoint=prompt-export\.analysis-released/);
 
 		const skills = JSON.parse(
 			await fs.readFile(path.join(outputDir, "skills.json"), "utf8"),

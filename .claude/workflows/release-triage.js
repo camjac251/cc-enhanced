@@ -1,7 +1,7 @@
 export const meta = {
   name: 'release-triage',
   description: 'Triage an upstream release: sequential focused bundle diffs, feature inventory, patch-risk clustering, prompt-surface impact, and a release report',
-  whenToUse: 'Use in cc-enhanced when new upstream releases land and you want the full drift picture before touching patch code. Requires the clean bundles to already exist under versions_clean/ (fast-fails with the exact native:pull commands otherwise). One agent runs the mise run diff passes strictly sequentially (bundle diffs are memory-heavy and never overlap); three analysts then work from the reports in parallel (feature inventory, patch-risk clusters, watched prompt-surface impact); synthesis returns an upstream-tracking-style report with next steps. Release notes are treated as insufficient by design: the bundle diff is the source of truth. Read-only apart from the local diff cache. Args: {old, new, mid, focus, models}.',
+  whenToUse: 'Use in cc-enhanced when new upstream releases land and you want the full drift picture before touching patch code. Requires the clean bundles to already exist under versions_clean/ (fast-fails with the exact native:pull commands otherwise). By default it compares the newest cached clean bundle with its immediate predecessor; the older bundle is evidence only, never a compatibility target. One agent runs the mise run diff passes strictly sequentially (bundle diffs are memory-heavy and never overlap); three analysts then work from the reports in parallel (feature inventory, patch-risk clusters, watched prompt-surface impact); synthesis returns an upstream-tracking-style report with next steps. Release notes are treated as insufficient by design: the bundle diff is the source of truth. Read-only apart from the local diff cache. Args: {old, new, mid, focus, models}.',
   phases: [
     { title: 'Inventory', detail: 'resolve versions, verify clean bundles exist, enumerate patch tags and watched surfaces' },
     { title: 'Diff', detail: 'matrix/pairwise diff plus focused passes, run strictly sequentially by one agent (memory-heavy, never concurrent)' },
@@ -218,12 +218,11 @@ const inventory = await agent(
   `Resolve the cc-enhanced release-triage inventory.
 
 Steps:
-1. Determine the promoted version (run mise run status or read claude --version output).
-2. List versions_clean/ subdirectories that contain a cli.js.
-3. Resolve versions: newVersion = ${newArg ?? 'the highest-numbered pulled version'}; oldVersion = ${oldArg ?? 'the promoted version, falling back to the second-highest pulled version if the promoted one is not pulled'}; midVersion = ${midArg ?? 'unset (pairwise diff)'}.
-4. Set bundlePaths to versions_clean/<version>/cli.js for each resolved version. If any needed bundle is missing, set outcome=missing-bundle and put the exact command for each missing one in notes (mise run native:pull -- <version>), then stop.
-5. Read src/patches/index.ts to enumerate patches: tag, sourceFile, group (from BY_TAG in src/patch-metadata.ts).
-6. Read src/verification/prompt-surface-rules.ts to enumerate watched surfaces: path, optional, and extractorAnchors (the literal strings scripts/export-prompts.ts uses to locate the surface in cli.js).
+1. List and semver-sort versions_clean/ subdirectories that contain a cli.js.
+2. Resolve versions: newVersion = ${newArg ?? 'the highest-numbered pulled version'}; oldVersion = ${oldArg ?? 'the highest pulled version lower than newVersion (its immediate predecessor)'}; midVersion = ${midArg ?? 'unset (pairwise diff)'}. The active promoted version is irrelevant to this adjacent release comparison.
+3. Set bundlePaths to versions_clean/<version>/cli.js for each resolved version. If any needed bundle is missing, set outcome=missing-bundle and put the exact command for each missing one in notes (mise run native:pull -- <version>), then stop.
+4. Read src/patches/index.ts to enumerate patches from the canonical registeredPatches roster: tag, sourceFile, group (from BY_TAG in src/patch-metadata.ts).
+5. Read src/verification/prompt-surface-rules.ts to enumerate watched surfaces: path, optional, and extractorAnchors (the literal strings scripts/export-prompts.ts uses to locate the surface in cli.js).
 
 If everything resolves, set outcome=ready; if fundamental files are missing, outcome=blocked with blockedReason.
 
@@ -281,7 +280,7 @@ Commands, in order:
 6. mise run diff -- ${oldPath} ${newPath} --focus patches --cache
 7. Only if exported-prompts/${inventory.newVersion}/ exists: mise run diff -- ${oldPath} ${newPath} --focus prompts --prompt-export exported-prompts/${inventory.newVersion} --cache. Otherwise skip it and add a concern noting the prompts focus was skipped (no export).
 
-For each pass produce: focus, a 2-4 sentence summary, and up to 15 verbatim high-signal highlight lines (added/removed/rewritten surfaces an analyst should look at). Set overall added/removed/countChanged from the main diff output.
+For each pass produce: focus, a 2-4 sentence summary, and up to 15 high-signal behavioral highlights with bundle line references. Never copy minified identifiers, reconstructed module/source names, or raw bundle snippets. Set overall added/removed/countChanged from the main diff output.
 
 These diffs are the ONLY bundle-parsing commands in this entire workflow run; do not run bun run inspect, verify:patches, or prompts:export in addition. Do not run native:update, native:fetch, native:pull, or native:promote. Do not modify any files.${focus}`,
   {
@@ -305,7 +304,7 @@ const [features, patchRisk, surfaceImpact] = await parallel([
 Diff passes: ${JSON.stringify(diff.passes ?? [])}
 Overall counts: ${JSON.stringify(diff.overall ?? null)}
 
-Group changes into named themes with verbatim evidence surfaces. List newEnvVars, newCommands, and settingsChanges explicitly. Report vendored-library noise (protobuf descriptors and similar) as a note, never as a feature theme.
+Group changes into named themes with behavioral evidence and line references. List newEnvVars, newCommands, and settingsChanges explicitly. Report vendored-library noise (protobuf descriptors and similar) as a note, never as a feature theme. Never return minified identifiers, reconstructed module/source names, or raw bundle snippets.
 
 Work only from the inputs above; do not run any commands. Do not modify any files.`,
     { label: 'feature inventory', phase: 'Analyze', schema: FEATURES_SCHEMA, model: models.mechanical },
@@ -328,7 +327,7 @@ Analysts run CONCURRENTLY and the diff phase already parsed the bundles: read re
 
 Surfaces: ${JSON.stringify(inventory.surfaces ?? [])}
 
-For each surface: status likely-intact (anchors found with sane counts), at-risk (found but counts or context shifted), removed (required anchors absent; if the surface is marked optional, still report removed and say it is optional), or unknown. Include evidence (line numbers) and a one-line action.
+For each surface: status likely-intact (anchors found with sane counts), at-risk (found but counts or context shifted), removed (required anchors absent; if the surface is marked optional, still report removed and say it is optional), or unknown. Include durable behavioral evidence with line numbers and a one-line action. Never return minified identifiers, reconstructed module/source names, or raw bundle snippets.
 
 Analysts run CONCURRENTLY: rg and bat are the only bundle access allowed; never run bundle-parsing commands (bun run inspect, mise run diff, verify:patches). Do not modify any files.`,
     { label: 'surface impact', phase: 'Analyze', schema: SURFACE_IMPACT_SCHEMA, agentType: 'patch-verifier', model: models.mechanical },
@@ -353,7 +352,7 @@ status rubric:
 
 headline: one sentence for the release. themes: condensed one-liners. patchRisks and clusters carried through ordered by severity. surfaceImpacts: non-intact surfaces only.
 
-nextSteps in priority order. If clusters exist, the shared-helper fix comes first. Always include: run the patch-update workflow (delta mode for routine releases, full before promoting), then mise run verify:patches. End with updating the upstream-tracking memory note for this release.
+nextSteps in priority order. If clusters exist, the shared-helper fix comes first. Always include: run the patch-update workflow (delta mode for routine releases, full before promoting), then mise run verify:patches. Do not request or write a memory update; the report and sanitized evidence artifacts are the release record.
 
 Work only from the inputs above; do not run any commands. Do not modify any files.${focus}`,
   {

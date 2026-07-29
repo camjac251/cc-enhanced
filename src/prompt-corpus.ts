@@ -16,6 +16,7 @@ export interface PromptDatasetPrompt {
 	pieces: string[];
 	identifiers: number[];
 	identifierMap: Record<string, string>;
+	expressionHashMap: Record<string, string>;
 	version: string;
 }
 
@@ -165,9 +166,11 @@ export function dedupeCorpusByRange(
 export function encodePlaceholderExpressions(expressions: string[]): {
 	identifiers: number[];
 	identifierMap: Record<string, string>;
+	expressionHashMap: Record<string, string>;
 } {
 	const expressionToLabel = new Map<string, number>();
 	const identifierMap: Record<string, string> = {};
+	const expressionHashMap: Record<string, string> = {};
 	const tokenUsage = new Map<string, number>();
 	const identifiers: number[] = [];
 
@@ -186,10 +189,12 @@ export function encodePlaceholderExpressions(expressions: string[]): {
 		const seen = tokenUsage.get(baseToken) ?? 0;
 		tokenUsage.set(baseToken, seen + 1);
 		const token = seen === 0 ? baseToken : `${baseToken}_${seen + 1}`;
-		identifierMap[String(nextLabel)] = token;
+		const key = String(nextLabel);
+		identifierMap[key] = token;
+		expressionHashMap[key] = sha256(expression);
 	}
 
-	return { identifiers, identifierMap };
+	return { identifiers, identifierMap, expressionHashMap };
 }
 
 function stablePromptId(entry: PromptCorpusEntry): string {
@@ -208,9 +213,8 @@ export function buildPromptDataset(
 ): PromptDataset {
 	const promptsById = new Map<string, PromptDatasetPrompt>();
 	for (const entry of entries) {
-		const { identifiers, identifierMap } = encodePlaceholderExpressions(
-			entry.placeholderExpressions,
-		);
+		const { identifiers, identifierMap, expressionHashMap } =
+			encodePlaceholderExpressions(entry.placeholderExpressions);
 		const name = derivePromptName(entry.text);
 		const id = stablePromptId(entry);
 		if (promptsById.has(id)) continue;
@@ -221,6 +225,7 @@ export function buildPromptDataset(
 			pieces: entry.pieces,
 			identifiers,
 			identifierMap,
+			expressionHashMap,
 			version,
 		});
 	}
@@ -246,6 +251,7 @@ export function buildPromptHashIndex(
 				pieces: prompt.pieces,
 				identifiers: prompt.identifiers,
 				identifierMap: prompt.identifierMap,
+				expressionHashMap: prompt.expressionHashMap,
 			}),
 		);
 		promptsById.set(prompt.id, { id: prompt.id, textHash, structureHash });
@@ -287,6 +293,7 @@ export function buildPromptCorpusDebug(
 	pieces: string[];
 	identifiers: number[];
 	identifierMap: Record<string, string>;
+	expressionHashMap: Record<string, string>;
 	text: string;
 }> {
 	return dataset.prompts.map((prompt) => {
@@ -300,6 +307,7 @@ export function buildPromptCorpusDebug(
 			pieces: prompt.pieces,
 			identifiers: prompt.identifiers,
 			identifierMap: prompt.identifierMap,
+			expressionHashMap: prompt.expressionHashMap,
 			text: entry?.text ?? "",
 		};
 	});

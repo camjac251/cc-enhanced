@@ -8,7 +8,7 @@ AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript b
 
 ## Hard Rules
 
-These override anything you might infer from upstream code or general engineering instincts.
+These override anything you might infer from bundle behavior or general engineering instincts.
 
 - **NEVER add backward-compatibility fallbacks for older upstream versions.** Target only the latest upstream. When a patch breaks on a new release, update it for the new form and drop the old. Do not handle both.
 - **NEVER hardcode minified variable names.** They change every release. Find code by structure (string literals, property names, AST shape).
@@ -48,7 +48,7 @@ type AstPassName = "discover" | "mutate" | "finalize";
 6. **Signature**: if all other patches verified, `signature.postApply` injects the applied tag list, then `signature.verify` runs.
 7. **Write**: only if `failedTags.length === 0`. Failed verifications skip the write entirely.
 
-**Memory hygiene** (load-bearing): one run holds a large fixed Babel working set over the formatted bundle. To keep that from compounding across the update flow, `run()` drops the parsed AST from `PatchResult` (`src/types.ts`) after printing, `src/patch-runner.ts` calls `clearTraverseCache()` (`src/babel.ts`) at the end of each run to release the Babel traverse cache, and the `--update` path (`src/index.ts`) forces a GC before spawning post-update verification so the verify pipeline starts from a clean heap. Removing any of these reintroduces the update-time OOM.
+**Memory hygiene** (load-bearing): one run holds a large fixed Babel working set over the formatted bundle. To keep that from compounding, `run()` drops the parsed AST from `PatchResult` (`src/types.ts`) after printing, `src/patch-runner.ts` releases combined-pass handlers, clears Babel traversal state, and forces GC both before and after verification, then clears traversal state again on every exit. Verifier sets with at least 32 patches also release traversal state and force one GC at their midpoint; smaller filtered runs avoid that rebuild. High-cardinality syntax checks should share one `noScope` inventory instead of repeatedly traversing the bundle. Bundle diff releases each parsed AST before loading the next bundle, prompt export clears AST-backed binding maps before artifact writes, and the `--update` path (`src/index.ts`) forces a GC before spawning post-update verification. Normal patch, update, and routine summary runs collect no structural telemetry. `--structural-evidence` adds handler counts, overlap evidence, and recursive structural hashes to a requested summary. The verification scripts request deep evidence only when `PATCH_EVIDENCE_OUTPUT` or `PATCH_EVIDENCE_DIR` persists a release manifest. Heavy entrypoints share a fail-fast process-tree lease, but there is no fixed RAM admission threshold. The operating system releases the lease after a crash. Removing the cleanup, explicit evidence mode, or mutual exclusion reintroduces update-time OOM risk.
 
 **Native binary lifecycle** (`src/manager.ts`, `src/native.ts`, `src/native-linux.ts`):
 
@@ -91,7 +91,7 @@ When orienting in this repo, reach for these by purpose:
 |---|---|
 | Patch interface and result types | `src/types.ts` |
 | All patches | `src/patches/<tag>.ts` (each ships `<tag>.test.ts`); current roster via `bun run cli --list` |
-| Patch barrel + `allPatches` | `src/patches/index.ts` |
+| Patch barrel + canonical `registeredPatches` roster | `src/patches/index.ts` |
 | Group and label registry | `src/patch-metadata.ts` (`BY_TAG`) |
 | AST helpers (`getVerifyAst`, key/property lookups) | `src/patches/ast-helpers.ts` |
 | Shared prompt-policy strings | `src/patches/prompt-policy.ts` |
@@ -144,26 +144,32 @@ Use this command map instead of opening task files for orientation:
 - `inspect`, `inspect:prompts`, `inspect:view`: bundle inspection through `src/inspector.ts`.
 - `diff`: release-to-release bundle drift through `src/diff.ts`. Run before changing patch anchors after an upstream release.
 - `verify:patches`, `verify:patches:matrix`: patch health and clean-version matrix checks. The matrix accepts `SELECTED_VERSION=<X.Y.Z>` or `VERIFY_PATCHES_MATRIX_SCOPE=all`.
+- `patch-evidence:compare`: compare sanitized patch evidence manifests from adjacent releases.
 - `verify:anchors`, `verify:prompt-surfaces`, `verify:prompt-drift`, `prompts:drift-baseline`: verifier and baseline entry points.
 - `prompts:export`, `prompts:bundle`: prompt artifact export (bundle mode is `--bundle` on the same exporter, not a separate workflow).
 - `prompts:compare`: vanilla-vs-patched prompt review (review-only; does not replace `verify:prompt-surfaces` or `verify:prompt-drift`).
+- `prompts:compare:matrix`: compare clean release drift, patched release drift, and patch impact across one adjacent release pair.
 - `verify:cache`, `verify:cache:agent`: live cache efficiency benchmark; needs `ANTHROPIC_API_KEY` unless `--dry-run` is set.
-- `test`, `typecheck`, `lint`, `format`, `lint:fix`: repository hygiene. Formatting and linting use Biome (`lint` = `biome check src/`, `format` = `biome format --write src/`); the bundle normalizer (`src/normalizer.ts`) also shells to the bundled Biome to format the extracted `cli.js` before parsing.
+- `test`, `typecheck`, `lint`, `format`, `lint:fix`: repository hygiene. Formatting and linting use Biome over `src/` and `scripts/`; tests run with one file worker through `bun run test`. The bundle normalizer (`src/normalizer.ts`) also shells to the bundled Biome to format the extracted `cli.js` before parsing.
 
-Useful CLI flags on `src/index.ts` not always reflected in the alias table: `--dry-run`, `--force`, `--diff`, `--fast-verify` (skip duplicate per-patch verifier pass during update), `--skip-smoke-test`, `--summary-path <file>` for JSON dry-run summaries.
+Useful CLI flags on `src/index.ts` not always reflected in the alias table: `--dry-run`, `--force`, `--diff`, `--fast-verify` (skip duplicate per-patch verifier pass during update), `--skip-smoke-test`, `--summary-path <file>` for JSON dry-run summaries, and `--structural-evidence` to add deep structural hashes to a requested summary.
 
-Build-time env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS`, `CLAUDE_PATCHER_CACHE_KEEP`, `CLAUDE_PATCHER_REVISION`, `CLAUDE_PATCHER_PROFILE` (set to `1` to emit per-phase and per-tag verify timings plus passive process-memory checkpoints to stderr during each patch run). Runtime env vars consumed by patches are documented in `README.md`.
+Build-time and maintainer-tool env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_PATCHER_EXCLUDE_TAGS`, `CLAUDE_PATCHER_CACHE_KEEP`, `CLAUDE_PATCHER_REVISION`, and `CLAUDE_PATCHER_PROFILE` (set to `1` to emit per-phase and per-tag verify timings plus passive per-phase and per-verifier process-memory checkpoints to stderr during each patch run). Runtime env vars consumed by patches are documented in `README.md`.
 
 ## Adding Patches
 
 1. Create `src/patches/<tag>.ts`. Look at an existing patch for the pattern.
 2. Co-locate `src/patches/<tag>.test.ts` using `node:test` + `node:assert/strict`.
-3. Re-export from `src/patches/index.ts` (both the named export line and the `allPatches` array entry).
+3. Re-export from `src/patches/index.ts` (both the named export line and the canonical `registeredPatches` roster entry).
 4. Add a `BY_TAG` record in `src/patch-metadata.ts` with `tag`, `label`, and `group`.
 5. If the patch affects exported live guidance, update `src/verification/prompt-surface-rules.ts` and (if it touches shared policy) the contract in `src/verification/prompt-policy-contract.ts`.
 6. **When the total patch count changes** (adding or removing a patch), update `README.md` (intro paragraph and the patch-count badge near the top) and confirm the new total against `bun run cli --list` before pushing.
 
 The `/new-patch` slash skill scaffolds steps 1-4. Use it when starting from scratch. Recommend it by name; do not improvise the scaffold by hand.
+
+Implement and verify the patch against the newest clean bundle only. The
+immediately previous bundle is useful for release-diff evidence, but it is not
+a supported matcher, fixture, matrix, or promotion target.
 
 When implementing the visitor:
 
@@ -270,9 +276,14 @@ Best release-drift workflow:
 2. `mise run diff -- matrix versions_clean/<old>/cli.js versions_clean/<mid>/cli.js versions_clean/<new>/cli.js --cache` to see which step introduced new commands, flags, env vars, prompts, or patch-risk anchors.
 3. Re-run focused diffs on the adjacent pair that changed.
 4. `SELECTED_VERSION=<new> mise run verify:patches:matrix` to dry-run patches against the new clean bundle, or `VERIFY_PATCHES_MATRIX_SCOPE=all` to sweep every pulled clean version.
-5. For prompt drift: export clean and patched prompt artifacts for the new
-   release, run `mise run verify:prompt-surfaces -- <patched-export>`, run
-   `bun run prompts:compare`, then fix patch/exporter/rule drift or refresh
+5. Persist deep matrix evidence with `PATCH_EVIDENCE_DIR=<dir>` and compare
+   the adjacent sanitized manifests with `bun run patch-evidence:compare`.
+6. For prompt drift: export clean and patched prompt artifacts for both
+   adjacent releases, run `bun run prompts:compare:matrix` to separate clean
+   release drift from patch impact.
+7. Run `mise run verify:prompt-surfaces -- <patched-export>` and
+   `bun run prompts:compare` for the current release, then fix
+   patch/exporter/rule drift or refresh
    `prompt-surface-baseline.json` only after the new patched export has been
    reviewed as known-good. `mise run verify:patches` always runs
    `verify:prompt-drift` against that baseline.
@@ -288,6 +299,8 @@ Prompt artifacts come from native-extracted or legacy npm-package `cli.js` bundl
 `mise run prompts:export` exports the promoted binary. Pass a clean version or path with `mise run prompts:export -- <version-or-path>`. `--output-dir <dir>` writes scratch exports; the current-binary exporter uses an OS temp dir and must never write into `versions_clean/<label>`. `--max-uncategorized <n>` fails when uncategorized prompt-corpus entries exceed a budget. `mise run prompts:bundle -- <version-or-path>` writes the self-contained navigable bundle through the same exporter with `--bundle`; keep both behaviors in `scripts/export-prompts.ts`.
 
 `bun run prompts:compare <vanilla-export> <patched-export> /etc/claude-code` produces a human triage report. It includes file inventory, manifest deltas, watched-surface status, Unicode dash-style counts, `/etc` exact-line overlap, and policy-term presence. `--output <file>` saves Markdown; `--json` saves machine-readable output. Review-only.
+
+`bun run prompts:compare:matrix <old-clean> <old-patched> <new-clean> <new-patched> /etc/claude-code` runs the four useful comparisons separately: clean release drift, patched release drift, previous patch impact, and current patch impact. It also checks `prompt-corpus.json` interpolation-dependency multisets. The exporter persists hashes of raw dependency expressions, so comparison remains collision-resistant without exposing expression text. Legacy exports without those hashes stay comparable at the file level and report dependency parity as `unknown`.
 
 `verify:prompt-surfaces` is intentionally strict for curated live surfaces. Dynamic markers and unresolved helper placeholders (`${value_...}`, `${conditional(...)`, `${...spread}`) fail verification unless the surface explicitly sets `allowSyntheticPlaceholders`. If a clean upstream export still has unresolved runtime placeholders in broad corpus outputs, track that through `quality.uncategorizedCount` and use `--max-uncategorized` only where a budget is meaningful.
 
@@ -402,6 +415,15 @@ mise run verify:patches
 
 This runs typecheck and lint, then patches the native target once (writing a temporary patched binary plus a `--summary-path` JSON of failed tags) and reuses that patched binary for the prompt-surface and prompt-drift checks. It does not promote, so it stays the authoritative pre-promote signal. The summary names every failed tag with the `verify()` reason string. Clean-`cli.js` anchor checks and the cli.js dry-run are opt-in via `CLI_TARGET`.
 
+The summary also contains a code-free `result.evidence` manifest with
+source/output hashes, exact applied roster evidence, and optional semantic
+witnesses. Routine verification omits structural telemetry. Use
+`PATCH_EVIDENCE_OUTPUT=<file>` to persist a deep manifest with AST handler
+counts, overlap counts, and bounded structural hashes from standalone native
+verification. Matrix mode accepts `PATCH_EVIDENCE_DIR=<dir>` and writes one
+deep sanitized manifest per selected version. Compare adjacent manifests with
+`bun run patch-evidence:compare <previous> <current>`.
+
 For a wider sweep across cached clean versions:
 
 ```bash
@@ -436,18 +458,29 @@ Lefthook (`lefthook.yml`) gates pre-commit on Biome format, Biome lint, and `bun
 Local slash skills (`disable-model-invocation: true`, recommend by name when context matches):
 
 - `/new-patch <tag>`: scaffolds `src/patches/<tag>.ts`, the test file, the export barrel entry, and the `BY_TAG` metadata record. Scaffold-only; the rest of the procedure lives in "Adding Patches" above.
-- `/update [version]`: runs the standard `mise run native:update` lifecycle
-  with pre-flight status, mandatory post-update verification, mandatory prompt
-  drift checking, and optional parallel patch-verifier subagents for anchor
-  review.
+- `/update [version]`: resolves the newest live target and runs the requested
+  inspect, repair, or promote lane. Write-side work is latest-only; an older
+  explicit version is comparison-only. Full updates include post-update patch,
+  prompt-surface, and prompt-drift verification.
 
-Local subagent (`.claude/agents/patch-verifier.md`): adversarial verification of patch anchors against a clean upstream `cli.js`. Read-only (Write and Edit are denied). Returns per-patch OK / DRIFT / BROKEN status with line numbers. Never runs the patcher itself. Useful after an upstream release to confirm anchors before promoting.
+Local subagent (`.claude/agents/patch-verifier.md`): stateless adversarial
+verification of patch anchors against the assigned latest clean `cli.js`.
+Read-only (Write and Edit are denied). Returns per-patch OK / DRIFT / BROKEN
+status with line numbers and sanitized behavioral evidence. Never runs the
+patcher itself.
 
 Local workflows (`.claude/workflows/`, auto-register as read-only slash skills; explicit opt-in, never auto-run):
 
-- `/patch-update`: validates every patch and watched prompt surface against a target clean bundle through deep `cli.js` inspection, then returns a severity-ordered fix plan. Run when a new upstream release appears.
-- `/patch-audit`: deeper health audit. Adds verifier-robustness, pipeline-interaction, docs-and-counts, and per-patch test-hardening on top of `patch-update`'s anchor inspection. Run as a periodic or pre-push gate.
-- `/release-triage`: run first on a new release. Sequential focused bundle diffs between two pulled clean versions, then parallel analysts for feature inventory, patch-risk clustering (shared-shape clusters called out), and watched prompt-surface impact, ending in an upstream-tracking-style report. Requires bundles already in `versions_clean/`.
+- `/patch-update`: defaults to an adjacent-release delta and inspects
+  diff-flagged plus rewrite-cascade patches against the latest clean bundle.
+  Explicit tag/group scopes bypass delta narrowing; `full` inspects the whole
+  roster.
+- `/patch-audit`: defaults to `standard` anchor and verifier-robustness review.
+  `full` explicitly adds pipeline-interaction and per-patch test-hardening.
+- `/release-triage`: run first on a new release. Sequential focused bundle
+  diffs compare the latest pulled clean version with its immediate predecessor,
+  then analysts cover feature inventory, patch-risk clustering, and watched
+  prompt-surface impact. The previous bundle is comparison evidence only.
 - `/patch-smoke`: post-promote smoke check that the PROMOTED binary carries the current patch roster and post-patch invariants (signature tag list vs roster, needle probes in the unpacked live bundle). Catches stale promotes and verify-green-but-missing drift. Run after `mise run native:update`.
 
 `patch-update` and `patch-audit` accept `mode` / `group` / `tag` / `focus` / `models` through `args` and lean on the `patch-verifier` subagent for inspection; `release-triage` and `patch-smoke` document their own args in `.claude/workflows/README.md`. The dynamic-workflow scripting contract lives in the Workflow tool description inside `cli.js` (extract with `mise run prompts:export`); authoring best practices live in the global `workflow-authoring` skill.

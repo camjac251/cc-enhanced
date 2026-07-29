@@ -1,7 +1,7 @@
 export const meta = {
   name: 'patch-audit',
   description: 'Deep health audit of cc-enhanced patches through cli.js inspection plus verifier robustness, pipeline interaction, and docs cross-check',
-  whenToUse: 'Use in cc-enhanced for periodic patch health checks or before a push. Goes beyond mise run verify:patches by inspecting every patch in scope against the current clean bundle, auditing each verify() function for false-positive and missed-bug risk in the same pass (standard and full modes), identifying cross-patch interactions in the AST pipeline, and verifying patch counts across docs. Large or rewrite-cascade patches get a dedicated agent; the rest are grouped to keep fan-out and tokens bounded. Accepts mode/group/tag filters and model-tier overrides via args. Mechanical passes run on sonnet, robustness passes on opus. Read-only.',
+  whenToUse: 'Use in cc-enhanced for periodic patch health checks or before a push. Goes beyond mise run verify:patches by inspecting every patch in scope against the latest cached clean bundle, auditing each verify() function for false-positive and missed-bug risk in the same pass (standard and full modes), identifying cross-patch interactions in the AST pipeline, and verifying patch counts across docs. Large or rewrite-cascade patches get a dedicated agent; the rest are grouped to keep fan-out and tokens bounded. Standard is the default; full is the explicit deep gate. Accepts mode/group/tag filters and model-tier overrides via args. Mechanical passes run on sonnet, robustness passes on opus. Read-only.',
   phases: [
     { title: 'PatchInspection', detail: 'patches grouped into work units (large or rewrite-cascade patches solo, the rest batched) and inspected in parallel via patch-verifier; depth scales with mode: anchors always, verify() robustness at standard and full, test-hardening at full' },
     { title: 'PipelineInteraction', detail: 'cross-patch risks in the AST pipeline (full mode only)' },
@@ -12,10 +12,11 @@ export const meta = {
 
 const INVENTORY_SCHEMA = {
   type: 'object',
-  required: ['outcome', 'currentVersion', 'cleanBundlePath', 'patches'],
+  required: ['outcome', 'currentVersion', 'targetVersion', 'cleanBundlePath', 'patches'],
   properties: {
     outcome: { enum: ['ready', 'blocked'] },
     currentVersion: { type: 'string' },
+    targetVersion: { type: 'string' },
     cleanBundlePath: { type: 'string' },
     patches: {
       type: 'array',
@@ -27,7 +28,7 @@ const INVENTORY_SCHEMA = {
           sourceFile: { type: 'string' },
           group: { type: 'string' },
           sourceLines: { type: 'number', description: 'line count of the patch source file' },
-          interactionRisk: { enum: ['high', 'low'], description: 'high only if the patch participates in a rewrite-cascade named in the CLAUDE.md Pipeline Ordering section (it rewrites shapes other patches anchor on, or its anchors can be neutralized by another patch); low otherwise, including patches that only share visitor node kinds' },
+          interactionRisk: { enum: ['high', 'low'], description: 'high only if the patch participates in a rewrite-cascade named in docs/maintainer-reference.md > Pipeline Ordering (it rewrites shapes other patches anchor on, or its anchors can be neutralized by another patch); low otherwise, including patches that only share visitor node kinds' },
         },
       },
     },
@@ -295,9 +296,9 @@ const argsObj = (() => {
   return {}
 })()
 
-const mode = argsObj.mode === 'quick' || argsObj.mode === 'standard'
+const mode = argsObj.mode === 'quick' || argsObj.mode === 'standard' || argsObj.mode === 'full'
   ? argsObj.mode
-  : 'full'
+  : 'standard'
 const groupFilter = typeof argsObj.group === 'string' ? argsObj.group : null
 const tagFilter = typeof argsObj.tag === 'string'
   ? argsObj.tag.split(',').map((s) => s.trim()).filter(Boolean)
@@ -331,14 +332,14 @@ const unitModel = includeRobustness ? models.deep : models.mechanical
 
 phase('PatchInspection')
 const inventory = await agent(
-  `Discover the cc-enhanced patch inventory and identify the current clean bundle.
+  `Discover the cc-enhanced patch inventory and identify the latest cached clean bundle.
 
 Steps:
-1. Determine the currently promoted version (run \`mise run status\` or read \`claude --version\` output). Set currentVersion.
-2. Set cleanBundlePath to versions_clean/<currentVersion>/cli.js. If that file does not exist, fall back to the highest-numbered subdirectory under versions_clean/ that has a cli.js. If none exist, set outcome=blocked with a blockedReason explaining the user should run mise run native:pull first.
-3. Read src/patches/index.ts to enumerate every patch. For each: tag, sourceFile (e.g. src/patches/<tag>.ts), group (look up in src/patch-metadata.ts BY_TAG).
+1. Determine the currently promoted version (run \`mise run status\` or read \`claude --version\` output). Set currentVersion as runtime context.
+2. Semver-sort versions_clean/<version>/cli.js and set targetVersion plus cleanBundlePath to the highest cached clean version. If none exist, set outcome=blocked with a blockedReason explaining the user should run \`mise run native:pull -- <latest>\` first. If currentVersion differs from targetVersion, record that in the result instead of auditing the older promoted bundle.
+3. Read src/patches/index.ts and enumerate every patch from the canonical registeredPatches roster. For each: tag, sourceFile (e.g. src/patches/<tag>.ts), group (look up in src/patch-metadata.ts BY_TAG).
 4. For every patch set sourceLines: run a single command like \`wc -l src/patches/*.ts\` (or rg -c '.' per file) and record the line count of each patch source. This drives whether a patch is inspected solo or batched, so populate it for all patches.
-5. For every patch set interactionRisk: read the "Pipeline Ordering" section of CLAUDE.md. Mark interactionRisk=high only for patches involved in a rewrite-cascade interaction (a patch that rewrites guards or tests other patches anchor on, plus the patches it names as affected). Patches that merely appear in the shared-visitor-kinds table are low: shared-visitor analysis is the PipelineInteraction phase's job and does not need solo per-patch inspection.
+5. For every patch set interactionRisk: read "Pipeline Ordering" in docs/maintainer-reference.md. Mark interactionRisk=high only for patches involved in a rewrite-cascade interaction (a patch that rewrites guards or tests other patches anchor on, plus the patches it names as affected). Patches that merely appear in the shared-visitor-kinds table are low: shared-visitor analysis is the PipelineInteraction phase's job and does not need solo per-patch inspection.
 
 If everything resolves, set outcome=ready. Otherwise set outcome=blocked with blockedReason.
 
@@ -410,7 +411,7 @@ const robustnessSteps = includeRobustness
   : ''
 const hardeningStep = includeHardening
   ? `
-6. testHardening: read src/patches/<tag>.test.ts and identify what the test plus verify() do NOT lock down such that a future upstream change could drift undetected (anchor hit-counts, the specific occurrence index, post-mutation invariants, structural context). For each gap, write a concrete node:test assertion matching the conventions already in that test file (node:test + node:assert/strict, the helpers it already imports, no reliance on minified identifier names) that a future mise run verify:patches would catch the drift with. Populate currentCoverage, gaps, and assertions (each with rationale, the anchor it locks, and paste-ready code). Also compare the fixture's modeled shape against the real bundle shape you observed in step 2: a fixture that mirrors the patch's own assumptions (stale interpolation token, missing routing field, wrong element runtime) cannot catch drift; when found, add a gap naming the real shape the fixture should model.`
+6. testHardening: read src/patches/<tag>.test.ts and identify what the test plus verify() do NOT lock down such that a future upstream change could drift undetected (anchor hit-counts, the specific occurrence index, post-mutation invariants, structural context). For each gap, write a concrete node:test assertion matching the conventions already in that test file (node:test + node:assert/strict, the helpers it already imports, no reliance on minified identifier names) that a future mise run verify:patches would catch the drift with. Use stable synthetic fixture values; never copy real bundle snippets or internal names into proposed test code. Populate currentCoverage, gaps, and assertions (each with rationale, a behavioral description of the anchor it locks, and paste-ready code). Also compare the fixture's modeled shape against the real bundle shape you observed in step 2: a fixture that mirrors the patch's own assumptions (stale interpolation token, missing routing field, wrong element runtime) cannot catch drift; when found, add a gap naming the behavior the fixture should model.`
   : ''
 const returnFields = `tag, status, anchorsChecked, structuralContext, concerns, evidence, robustnessNotes${includeRobustness ? ', whatVerifyChecks, verifyVerdict, falsePositiveRisk, missedBugRisk, suggestedHardening, testCoverageNote, testCoverageEvidence' : ''}${includeHardening ? ', testHardening' : ''}`
 
@@ -419,7 +420,7 @@ const runInspectUnit = (unit) => {
     .map((p) => `- \`${p.tag}\` (source: ${p.sourceFile}${p.group ? `, group: ${p.group}` : ''})`)
     .join('\n')
   const deepNote = unit.kind === 'solo'
-    ? 'This patch is large or high-interaction. Inspect it deeply. If it appears in the CLAUDE.md Pipeline Ordering shared-visitor table, explicitly reason about how its mutation could interact with sibling patches registering visitors for the same AST node kind in the same pass, and whether its anchor could be neutralized by another patch (rewrite-cascade).'
+    ? 'This patch is large or high-interaction. Inspect it deeply. If it appears in docs/maintainer-reference.md > Pipeline Ordering, explicitly reason about how its mutation could interact with sibling patches registering visitors for the same AST node kind in the same pass, and whether its anchor could be neutralized by another patch (rewrite-cascade).'
     : 'These patches are batched for efficiency. Inspect each one fully and independently, and return exactly one entry per patch in inspections[], in the order listed.'
   return agent(
     `Inspect the following cc-enhanced patch(es) against the clean bundle ${cleanBundle}. This is a robustness audit, not a failure diagnosis.
@@ -432,8 +433,9 @@ ${deepNote}
 For EACH patch, in one source read, produce ${depthLabel}:
 
 1. Read the patch source file in full. Extract every anchor: string literals, object property names, AST structural patterns, what verify() asserts, what string() replaces if present.
-2. For each anchor, search ${cleanBundle} with rg -n for hits + line numbers. This rg use is the cc-enhanced cli.js exception for minified bundle anchor text; do not generalize it to ordinary source-code search. For each anchor record: hits (count), ambiguity (none / multiple-matches / context-dependent), fragility (low / medium / high).
+2. For each anchor, search ${cleanBundle} with rg -n for hits + line numbers. This rg use is the cc-enhanced cli.js exception for bundle anchor text; do not generalize it to ordinary source-code search. For each anchor record: hits (count), ambiguity (none / multiple-matches / context-dependent), fragility (low / medium / high).
 3. Classify status: OK / DRIFT / BROKEN / UNKNOWN. Provide structuralContext, concerns, and evidence (file:line citations). Note robustness issues in robustnessNotes.${robustnessSteps}${hardeningStep}
+Output rule: return durable literals or behavioral anchor descriptions only. Never return minified identifiers, reconstructed module/source names, or raw bundle snippets.
 
 Return inspections: one object per patch (${returnFields}). Omit fields belonging to steps that are not in scope this run.
 
@@ -536,9 +538,9 @@ if (runDocsAndCounts) {
     `Verify cc-enhanced patch counts and references across documentation. Find drift.
 
 Steps:
-1. Count actual patches: list files matching src/patches/*.ts excluding *.test.ts, ast-helpers.ts, prompt-policy.ts, and other non-patch helpers. Cross-reference with BY_TAG in src/patch-metadata.ts. Set actualPatchCount.
+1. Count actual patches from the canonical registeredPatches roster in src/patches/index.ts, then cross-check the same tags against BY_TAG in src/patch-metadata.ts. Set actualPatchCount.
 2. Find every patch-count number in README.md (intro paragraph, badge). Local files are the authoritative source.
-3. Optional, network, skip-on-failure: only if it is convenient and gh is authenticated, also read the GitHub repo description with a single \`gh repo view --json description --jq '.description'\` and check it for a patch count. If gh is unavailable, unauthenticated, or errors, skip this silently; do not block, retry, or treat it as a finding. Set outcome=partial-evidence only when a LOCAL source could not be read.
+3. Optional, network, skip-on-failure: only if it is convenient and gh is authenticated, also read the GitHub repo description with a single \`gh api repos/camjac251/cc-enhanced --jq '.description'\` and check it for a patch count. If gh is unavailable, unauthenticated, or errors, skip this silently; do not block, retry, or treat it as a finding. Set outcome=partial-evidence only when a LOCAL source could not be read.
 4. Compare each found count against actualPatchCount. count-mismatch findings for any divergence.
 5. Find stale references:
    - Patches mentioned by tag in README.md, AGENTS.md, CLAUDE.md, or .claude/skills/ that do not exist in src/patches/.
@@ -557,7 +559,6 @@ Local files plus the optional single gh call only: do not run verify:patches, mi
       phase: 'DocsAndCounts',
       schema: DOCS_SCHEMA,
       model: models.mechanical,
-      effort: 'low',
     },
   )
 }

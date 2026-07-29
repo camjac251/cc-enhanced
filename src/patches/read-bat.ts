@@ -1,5 +1,10 @@
 import * as t from "@babel/types";
-import { type NodePath, template, traverse } from "../babel.js";
+import {
+	clearTraverseCache,
+	type NodePath,
+	template,
+	traverse,
+} from "../babel.js";
 import { print } from "../loader.js";
 import type { Patch } from "../types.js";
 import {
@@ -420,9 +425,9 @@ function patchBlankOptionalReadInputs(
 	return true;
 }
 
-function getReadToolPromptText(ast: t.File): string | null {
-	const readToolPath = findReadToolObjectPath(ast);
-	if (!readToolPath) return null;
+function getReadToolPromptText(
+	readToolPath: NodePath<t.ObjectExpression>,
+): string | null {
 	for (const prop of readToolPath.node.properties) {
 		if (t.isObjectMethod(prop) && hasObjectKeyName(prop, "prompt")) {
 			for (const stmt of prop.body.body) {
@@ -441,9 +446,9 @@ function getReadToolPromptText(ast: t.File): string | null {
 	return null;
 }
 
-function getReadToolDescriptionText(ast: t.File): string | null {
-	const readToolPath = findReadToolObjectPath(ast);
-	if (!readToolPath) return null;
+function getReadToolDescriptionText(
+	readToolPath: NodePath<t.ObjectExpression>,
+): string | null {
 	for (const prop of readToolPath.node.properties) {
 		if (t.isObjectMethod(prop) && hasObjectKeyName(prop, "description")) {
 			for (const stmt of prop.body.body) {
@@ -846,31 +851,6 @@ function objectPatternPropertyHasVoidZeroDefault(
 	return false;
 }
 
-function hasFallbackFnBoundedArgs(ast: t.File): boolean {
-	let found = false;
-	traverse(ast, {
-		CallExpression(path) {
-			if (!t.isIdentifier(path.node.callee, { name: "fallbackFn" })) return;
-			const args = path.node.arguments;
-			if (args.length < 5) return;
-			const expected = [
-				"filePath",
-				"fallbackOffset",
-				"fallbackLimit",
-				"fallbackSizeLimit",
-				"fallbackSignal",
-			];
-			const matches = expected.every(
-				(name, idx) => t.isIdentifier(args[idx]) && args[idx].name === name,
-			);
-			if (!matches) return;
-			found = true;
-			path.stop();
-		},
-	});
-	return found;
-}
-
 function isVoidZeroMemberComparison(
 	expr: t.Expression,
 	propertyName: string,
@@ -989,113 +969,6 @@ function containsVoidZeroMemberComparison(
 	return false;
 }
 
-function hasCallCompatRangeBridge(ast: t.File, rangeVarName: string): boolean {
-	let found = false;
-
-	traverse(ast, {
-		ObjectMethod(path) {
-			if (getObjectKeyName(path.node.key) !== "call") return;
-			traverse(
-				path.node.body,
-				{
-					IfStatement(ifPath) {
-						if (!t.isExpression(ifPath.node.test)) return;
-						const hasRangeVoidGuard = containsRangeVoidGuard(
-							ifPath.node.test,
-							rangeVarName,
-						);
-						const hasOffsetGuard = containsVoidZeroMemberComparison(
-							ifPath.node.test,
-							"offset",
-						);
-						const hasLimitGuard = containsVoidZeroMemberComparison(
-							ifPath.node.test,
-							"limit",
-						);
-						if (!hasRangeVoidGuard || (!hasOffsetGuard && !hasLimitGuard)) {
-							return;
-						}
-
-						let hasRangeAssignment = false;
-						traverse(
-							ifPath.node.consequent,
-							{
-								AssignmentExpression(assignPath) {
-									if (assignPath.node.operator !== "=") return;
-									if (
-										!t.isIdentifier(assignPath.node.left, {
-											name: rangeVarName,
-										})
-									) {
-										return;
-									}
-									const rhsCode = expressionCode(
-										assignPath.node.right as t.Expression,
-									);
-									if (rhsCode.includes(' + ":"') || rhsCode.includes('+ ":"')) {
-										hasRangeAssignment = true;
-									}
-								},
-							},
-							ifPath.scope,
-							ifPath,
-						);
-						if (!hasRangeAssignment) return;
-
-						found = true;
-						ifPath.stop();
-					},
-				},
-				path.scope,
-				path,
-			);
-			if (found) path.stop();
-		},
-	});
-
-	return found;
-}
-
-function hasEnsureTotalLinesHelper(ast: t.File): boolean {
-	let found = false;
-	traverse(ast, {
-		VariableDeclarator(path) {
-			if (!t.isIdentifier(path.node.id, { name: "ensureTotalLines" })) return;
-			if (
-				t.isFunctionExpression(path.node.init) ||
-				t.isArrowFunctionExpression(path.node.init)
-			) {
-				found = true;
-				path.stop();
-			}
-		},
-	});
-	return found;
-}
-
-function hasNormalizedRangeTotalLinesRefresh(ast: t.File): boolean {
-	let found = false;
-	traverse(ast, {
-		IfStatement(path) {
-			if (!t.isLogicalExpression(path.node.test, { operator: "&&" })) return;
-			const terms = flattenLogicalAndTerms(path.node.test);
-			const hasNormalizedRange = terms.some((term) =>
-				t.isIdentifier(term, { name: "normalizedRange" }),
-			);
-			const hasFileTotalLinesNull = terms.some(
-				(term) =>
-					t.isBinaryExpression(term, { operator: "==" }) &&
-					t.isIdentifier(term.left, { name: "fileTotalLines" }) &&
-					t.isNullLiteral(term.right),
-			);
-			if (!hasNormalizedRange || !hasFileTotalLinesNull) return;
-			found = true;
-			path.stop();
-		},
-	});
-	return found;
-}
-
 function schemaHasLegacyOffsetOrLimit(
 	schemaObject: t.ObjectExpression,
 ): boolean {
@@ -1105,55 +978,6 @@ function schemaHasLegacyOffsetOrLimit(
 			(getObjectKeyName(prop.key) === "offset" ||
 				getObjectKeyName(prop.key) === "limit"),
 	);
-}
-
-function hasReadFileStateCompatMarkers(ast: t.File): {
-	hasRange: boolean;
-	hasOffsetCompat: boolean;
-	hasLimitCompat: boolean;
-} {
-	let hasRange = false;
-	let hasOffsetCompat = false;
-	let hasLimitCompat = false;
-
-	traverse(ast, {
-		CallExpression(path) {
-			const callee = path.node.callee;
-			if (!t.isMemberExpression(callee)) return;
-			if (!isMemberPropertyName(callee, "set")) return;
-			if (path.node.arguments.length < 2) return;
-			const secondArg = path.node.arguments[1];
-			if (!t.isObjectExpression(secondArg)) return;
-
-			for (const prop of secondArg.properties) {
-				if (!t.isObjectProperty(prop)) continue;
-				const key = getObjectKeyName(prop.key);
-				if (key === "range") {
-					hasRange = true;
-				}
-				if (key === "offset") {
-					if (
-						t.isConditionalExpression(prop.value) &&
-						t.isNumericLiteral(prop.value.consequent, { value: 1 }) &&
-						isVoidZeroExpression(prop.value.alternate)
-					) {
-						hasOffsetCompat = true;
-					}
-				}
-				if (key === "limit") {
-					if (
-						t.isConditionalExpression(prop.value) &&
-						t.isNumericLiteral(prop.value.consequent, { value: 1 }) &&
-						isVoidZeroExpression(prop.value.alternate)
-					) {
-						hasLimitCompat = true;
-					}
-				}
-			}
-		},
-	});
-
-	return { hasRange, hasOffsetCompat, hasLimitCompat };
 }
 
 function nodeContains(
@@ -1333,191 +1157,347 @@ export function hasReadStateRebuildRangeGuard(ast: t.File): boolean {
 	return true;
 }
 
-function hasChangedSnippetCap8000(ast: t.File): boolean {
-	let found = false;
-	traverse(ast, {
-		VariableDeclarator(path) {
-			if (!t.isIdentifier(path.node.id, { name: "maxChangedSnippetChars" })) {
-				return;
-			}
-			if (t.isNumericLiteral(path.node.init, { value: 8000 })) {
-				found = true;
-				path.stop();
-			}
-		},
-	});
-	return found;
+export interface ReadVerificationInventory {
+	hasBatCall: boolean;
+	hasFallbackFnBoundedArgs: boolean;
+	hasCallCompatRangeBridge: boolean;
+	hasEnsureTotalLinesHelper: boolean;
+	hasNormalizedRangeTotalLinesRefresh: boolean;
+	hasReadFileStateRange: boolean;
+	hasReadFileStateOffsetCompat: boolean;
+	hasReadFileStateLimitCompat: boolean;
+	hasReadStateRebuildRangeGuard: boolean;
+	hasChangedSnippetCap8000: boolean;
+	hasAutoRangeTokenBudget50000: boolean;
+	hasChangedHeadBudgetMultiplier: boolean;
+	hasSnippetSourceCall: boolean;
+	hasChangedSnippetReturnBinding: boolean;
+	hasChangedFileSeenTimestampBump: boolean;
+	hasNumericRangeRegex: boolean;
+	hasFromStartRegex: boolean;
+	hasNegativeTailRegex: boolean;
+	hasFallbackSingleLineLimit: boolean;
+	hasFallbackSizeLimitBinding: boolean;
 }
 
-function hasAutoRangeTokenBudget50000(ast: t.File): boolean {
-	let found = false;
-	traverse(ast, {
-		VariableDeclarator(path) {
-			if (!t.isIdentifier(path.node.id, { name: "autoRangeTokenBudget" })) {
-				return;
-			}
-			if (t.isNumericLiteral(path.node.init, { value: 50000 })) {
-				found = true;
-				path.stop();
-			}
-		},
+function isCallCompatRangeBridge(
+	path: NodePath<t.IfStatement>,
+	rangeBindingName: string,
+): boolean {
+	if (!t.isExpression(path.node.test)) return false;
+	const hasRangeVoidGuard = containsRangeVoidGuard(
+		path.node.test,
+		rangeBindingName,
+	);
+	const hasOffsetGuard = containsVoidZeroMemberComparison(
+		path.node.test,
+		"offset",
+	);
+	const hasLimitGuard = containsVoidZeroMemberComparison(
+		path.node.test,
+		"limit",
+	);
+	if (!hasRangeVoidGuard || (!hasOffsetGuard && !hasLimitGuard)) {
+		return false;
+	}
+	return nodeContains(path.node.consequent, (node) => {
+		if (!t.isAssignmentExpression(node, { operator: "=" })) return false;
+		if (!t.isIdentifier(node.left, { name: rangeBindingName })) return false;
+		const rhsCode = expressionCode(node.right as t.Expression);
+		return rhsCode.includes(' + ":"') || rhsCode.includes('+ ":"');
 	});
-	return found;
 }
 
-function hasChangedHeadBudgetMultiplier(ast: t.File): boolean {
-	// The head-budget split is `Math.floor(changedSnippetBudget * 0.65)`. Pin the
-	// 0.65 multiplier so a silent retune of the head/tail balance is caught.
-	let found = false;
-	traverse(ast, {
-		BinaryExpression(path) {
-			if (path.node.operator !== "*") return;
-			if (!t.isIdentifier(path.node.left, { name: "changedSnippetBudget" })) {
-				return;
-			}
-			if (t.isNumericLiteral(path.node.right, { value: 0.65 })) {
-				found = true;
-				path.stop();
-			}
-		},
-	});
-	return found;
-}
+export function collectReadVerificationInventory(
+	ast: t.File,
+	rangeBindingName: string,
+): ReadVerificationInventory {
+	const inventory: ReadVerificationInventory = {
+		hasBatCall: false,
+		hasFallbackFnBoundedArgs: false,
+		hasCallCompatRangeBridge: false,
+		hasEnsureTotalLinesHelper: false,
+		hasNormalizedRangeTotalLinesRefresh: false,
+		hasReadFileStateRange: false,
+		hasReadFileStateOffsetCompat: false,
+		hasReadFileStateLimitCompat: false,
+		hasReadStateRebuildRangeGuard: false,
+		hasChangedSnippetCap8000: false,
+		hasAutoRangeTokenBudget50000: false,
+		hasChangedHeadBudgetMultiplier: false,
+		hasSnippetSourceCall: false,
+		hasChangedSnippetReturnBinding: false,
+		hasChangedFileSeenTimestampBump: false,
+		hasNumericRangeRegex: false,
+		hasFromStartRegex: false,
+		hasNegativeTailRegex: false,
+		hasFallbackSingleLineLimit: false,
+		hasFallbackSizeLimitBinding: false,
+	};
+	let callMethodDepth = 0;
+	let readStateRebuildCandidates = 0;
+	let allReadStateRebuildCandidatesPatched = true;
+	let hasChangedFileMtimeDeclaration = false;
+	let hasChangedFileMtimeAssignment = false;
 
-function hasSnippetSourceCall(ast: t.File): boolean {
-	let found = false;
 	traverse(ast, {
-		VariableDeclarator(path) {
-			if (!t.isIdentifier(path.node.id, { name: "changedSnippetRaw" })) return;
-			if (t.isCallExpression(path.node.init)) {
-				found = true;
-				path.stop();
-			}
+		noScope: true,
+		ObjectMethod: {
+			enter(path) {
+				if (getObjectKeyName(path.node.key) === "call") {
+					callMethodDepth += 1;
+				}
+			},
+			exit(path) {
+				if (getObjectKeyName(path.node.key) === "call") {
+					callMethodDepth -= 1;
+				}
+			},
 		},
-	});
-	return found;
-}
-
-function hasChangedSnippetReturnBinding(ast: t.File): boolean {
-	let found = false;
-	traverse(ast, {
-		ObjectProperty(path) {
-			if (getObjectKeyName(path.node.key) !== "snippet") return;
-			if (t.isIdentifier(path.node.value, { name: "changedSnippet" })) {
-				found = true;
-				path.stop();
-			}
-		},
-	});
-	return found;
-}
-
-function hasChangedFileSeenTimestampBump(ast: t.File): boolean {
-	let hoistedMtimeDecl = false;
-	let bumpAssignsHoistedMtime = false;
-	traverse(ast, {
-		VariableDeclarator(path) {
-			if (!t.isIdentifier(path.node.id, { name: "__ccChangedFileMtime" }))
-				return;
-			if (!t.isAwaitExpression(path.node.init)) return;
-			if (!t.isCallExpression(path.node.init.argument)) return;
-			hoistedMtimeDecl = true;
-		},
-		IfStatement(path) {
-			const { test, consequent } = path.node;
-			if (!t.isCallExpression(test)) return;
-			if (test.arguments.length !== 2) return;
-			const [stateArg, contentArg] = test.arguments;
-			if (!t.isIdentifier(stateArg)) return;
+		CallExpression(path) {
+			const callee = path.node.callee;
+			const isExecFileSync =
+				t.isIdentifier(callee, { name: "execFileSync" }) ||
+				(t.isMemberExpression(callee) &&
+					isMemberPropertyName(callee, "execFileSync"));
 			if (
-				!t.isMemberExpression(contentArg) ||
-				contentArg.computed ||
-				!isMemberPropertyName(contentArg, "content")
+				isExecFileSync &&
+				t.isStringLiteral(path.node.arguments[0], { value: "bat" })
+			) {
+				inventory.hasBatCall = true;
+			}
+
+			if (t.isIdentifier(callee, { name: "fallbackFn" })) {
+				const expected = [
+					"filePath",
+					"fallbackOffset",
+					"fallbackLimit",
+					"fallbackSizeLimit",
+					"fallbackSignal",
+				];
+				if (
+					expected.every(
+						(name, index) =>
+							t.isIdentifier(path.node.arguments[index]) &&
+							path.node.arguments[index].name === name,
+					)
+				) {
+					inventory.hasFallbackFnBoundedArgs = true;
+				}
+			}
+
+			if (
+				!t.isMemberExpression(callee) ||
+				!isMemberPropertyName(callee, "set") ||
+				path.node.arguments.length < 2
 			) {
 				return;
 			}
-			if (!t.isBlockStatement(consequent)) return;
+			const state = path.node.arguments[1];
+			if (!t.isObjectExpression(state)) return;
+			for (const property of state.properties) {
+				if (!t.isObjectProperty(property)) continue;
+				const key = getObjectKeyName(property.key);
+				if (key === "range") {
+					inventory.hasReadFileStateRange = true;
+				}
+				if (
+					key === "offset" &&
+					t.isConditionalExpression(property.value) &&
+					t.isNumericLiteral(property.value.consequent, { value: 1 }) &&
+					isVoidZeroExpression(property.value.alternate)
+				) {
+					inventory.hasReadFileStateOffsetCompat = true;
+				}
+				if (
+					key === "limit" &&
+					t.isConditionalExpression(property.value) &&
+					t.isNumericLiteral(property.value.consequent, { value: 1 }) &&
+					isVoidZeroExpression(property.value.alternate)
+				) {
+					inventory.hasReadFileStateLimitCompat = true;
+				}
+			}
+		},
+		VariableDeclarator(path) {
+			if (
+				t.isIdentifier(path.node.id, { name: "ensureTotalLines" }) &&
+				(t.isFunctionExpression(path.node.init) ||
+					t.isArrowFunctionExpression(path.node.init))
+			) {
+				inventory.hasEnsureTotalLinesHelper = true;
+			}
+			if (
+				t.isIdentifier(path.node.id, {
+					name: "maxChangedSnippetChars",
+				}) &&
+				t.isNumericLiteral(path.node.init, { value: 8000 })
+			) {
+				inventory.hasChangedSnippetCap8000 = true;
+			}
+			if (
+				t.isIdentifier(path.node.id, {
+					name: "autoRangeTokenBudget",
+				}) &&
+				t.isNumericLiteral(path.node.init, { value: 50000 })
+			) {
+				inventory.hasAutoRangeTokenBudget50000 = true;
+			}
+			if (
+				t.isIdentifier(path.node.id, { name: "changedSnippetRaw" }) &&
+				t.isCallExpression(path.node.init)
+			) {
+				inventory.hasSnippetSourceCall = true;
+			}
+			if (
+				t.isIdentifier(path.node.id, { name: "__ccChangedFileMtime" }) &&
+				t.isAwaitExpression(path.node.init) &&
+				t.isCallExpression(path.node.init.argument)
+			) {
+				hasChangedFileMtimeDeclaration = true;
+			}
+			if (t.isIdentifier(path.node.id, { name: "fallbackSizeLimit" })) {
+				inventory.hasFallbackSizeLimitBinding = true;
+			}
+		},
+		IfStatement(path) {
+			if (
+				callMethodDepth > 0 &&
+				isCallCompatRangeBridge(path, rangeBindingName)
+			) {
+				inventory.hasCallCompatRangeBridge = true;
+			}
+			if (t.isLogicalExpression(path.node.test, { operator: "&&" })) {
+				const terms = flattenLogicalAndTerms(path.node.test);
+				const hasNormalizedRange = terms.some((term) =>
+					t.isIdentifier(term, { name: "normalizedRange" }),
+				);
+				const hasFileTotalLinesNull = terms.some(
+					(term) =>
+						t.isBinaryExpression(term, { operator: "==" }) &&
+						t.isIdentifier(term.left, { name: "fileTotalLines" }) &&
+						t.isNullLiteral(term.right),
+				);
+				if (hasNormalizedRange && hasFileTotalLinesNull) {
+					inventory.hasNormalizedRangeTotalLinesRefresh = true;
+				}
+			}
+
+			const rebuildCandidate = classifyReadStateRebuildGuard(path);
+			if (rebuildCandidate) {
+				readStateRebuildCandidates += 1;
+				if (rebuildCandidate.state !== "patched") {
+					allReadStateRebuildCandidatesPatched = false;
+				}
+			}
+
+			const { test, consequent } = path.node;
+			if (!t.isCallExpression(test) || test.arguments.length !== 2) return;
+			const [stateArg, contentArg] = test.arguments;
+			if (
+				!t.isIdentifier(stateArg) ||
+				!t.isMemberExpression(contentArg) ||
+				contentArg.computed ||
+				!isMemberPropertyName(contentArg, "content") ||
+				!t.isBlockStatement(consequent)
+			) {
+				return;
+			}
 			const bumpsToHoistedMtime = consequent.body.some(
-				(st) =>
-					t.isExpressionStatement(st) &&
-					t.isAssignmentExpression(st.expression, { operator: "=" }) &&
-					t.isMemberExpression(st.expression.left) &&
-					isMemberPropertyName(st.expression.left, "timestamp") &&
-					t.isIdentifier(st.expression.right, {
+				(statement) =>
+					t.isExpressionStatement(statement) &&
+					t.isAssignmentExpression(statement.expression, {
+						operator: "=",
+					}) &&
+					t.isMemberExpression(statement.expression.left) &&
+					isMemberPropertyName(statement.expression.left, "timestamp") &&
+					t.isIdentifier(statement.expression.right, {
 						name: "__ccChangedFileMtime",
 					}),
 			);
 			const returnsNull = consequent.body.some(
-				(st) => t.isReturnStatement(st) && t.isNullLiteral(st.argument),
+				(statement) =>
+					t.isReturnStatement(statement) && t.isNullLiteral(statement.argument),
 			);
 			if (bumpsToHoistedMtime && returnsNull) {
-				bumpAssignsHoistedMtime = true;
+				hasChangedFileMtimeAssignment = true;
+			}
+		},
+		BinaryExpression(path) {
+			if (
+				path.node.operator === "*" &&
+				t.isIdentifier(path.node.left, {
+					name: "changedSnippetBudget",
+				}) &&
+				t.isNumericLiteral(path.node.right, { value: 0.65 })
+			) {
+				inventory.hasChangedHeadBudgetMultiplier = true;
+			}
+		},
+		ObjectProperty(path) {
+			if (
+				getObjectKeyName(path.node.key) === "snippet" &&
+				t.isIdentifier(path.node.value, { name: "changedSnippet" })
+			) {
+				inventory.hasChangedSnippetReturnBinding = true;
+			}
+		},
+		RegExpLiteral(path) {
+			if (path.node.flags !== "") return;
+			if (
+				path.node.pattern ===
+				"^(?:[1-9]\\d*)(?::(?:\\+[1-9]\\d*|[1-9]\\d*(?::[1-9]\\d*)?|)|::[1-9]\\d*)?$"
+			) {
+				inventory.hasNumericRangeRegex = true;
+			}
+			if (path.node.pattern === "^:[1-9]\\d*$") {
+				inventory.hasFromStartRegex = true;
+			}
+			if (path.node.pattern === "^-[1-9]\\d*:$") {
+				inventory.hasNegativeTailRegex = true;
+			}
+		},
+		AssignmentExpression(path) {
+			if (
+				path.node.operator === "=" &&
+				t.isIdentifier(path.node.left, { name: "fallbackLimit" }) &&
+				t.isNumericLiteral(path.node.right, { value: 1 })
+			) {
+				inventory.hasFallbackSingleLineLimit = true;
 			}
 		},
 	});
-	return hoistedMtimeDecl && bumpAssignsHoistedMtime;
+
+	inventory.hasReadStateRebuildRangeGuard =
+		readStateRebuildCandidates > 0 && allReadStateRebuildCandidatesPatched;
+	inventory.hasChangedFileSeenTimestampBump =
+		hasChangedFileMtimeDeclaration && hasChangedFileMtimeAssignment;
+	return inventory;
 }
 
-function hasRegexLiteral(ast: t.File, pattern: string, flags = ""): boolean {
-	let found = false;
-	traverse(ast, {
-		RegExpLiteral(path) {
-			if (path.node.pattern !== pattern) return;
-			if (path.node.flags !== flags) return;
-			found = true;
-			path.stop();
-		},
-	});
-	return found;
-}
-
-function hasFallbackSingleLineLimit(ast: t.File): boolean {
-	let found = false;
-	traverse(ast, {
-		AssignmentExpression(path) {
-			if (path.node.operator !== "=") return;
-			if (!t.isIdentifier(path.node.left, { name: "fallbackLimit" })) return;
-			if (!t.isNumericLiteral(path.node.right, { value: 1 })) return;
-			found = true;
-			path.stop();
-		},
-	});
-	return found;
-}
-
-function hasFallbackSizeLimitBinding(ast: t.File): boolean {
-	let found = false;
-	traverse(ast, {
-		VariableDeclarator(path) {
-			if (!t.isIdentifier(path.node.id, { name: "fallbackSizeLimit" })) return;
-			found = true;
-			path.stop();
-		},
-	});
-	return found;
-}
-
-interface ReadVerifyContext {
+interface ReadVerifyContextBase {
 	code: string;
-	ast: t.File;
 	schemaObject: t.ObjectExpression;
 	callParam: t.ObjectPattern;
 	callKeys: Set<string>;
-	rangeBindingName: string;
 	validateKeys: Set<string>;
-	callMethod: t.ObjectMethod | t.ObjectProperty | null;
+	promptText: string | null;
+	descriptionText: string | null;
+	coerceShape: ReadCoerceShape | null;
 }
 
-function verifyReadSchemaAndPrompt(ctx: ReadVerifyContext): string | null {
-	const { ast, schemaObject } = ctx;
-	const promptText = getReadToolPromptText(ast);
+interface ReadVerifyContext extends ReadVerifyContextBase {
+	inventory: ReadVerificationInventory;
+}
+
+function verifyReadSchemaAndPrompt(ctx: ReadVerifyContextBase): string | null {
+	const { schemaObject, promptText, descriptionText } = ctx;
 	const hasPromptHelper =
 		ctx.code.includes(`function ${READ_PROMPT_PATCH_HELPER}`) &&
 		ctx.code.includes(`function ${READ_DESCRIPTION_PATCH_HELPER}`);
 	if (promptText == null && !hasPromptHelper) {
 		return "Unable to resolve Read prompt text after patching";
 	}
-	const descriptionText = getReadToolDescriptionText(ast);
 	if (descriptionText !== null && descriptionText !== READ_DESCRIPTION_TEXT) {
 		return "Read description was not rewritten to the expected text";
 	}
@@ -1594,33 +1574,14 @@ function verifyReadSchemaAndPrompt(ctx: ReadVerifyContext): string | null {
 }
 
 function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
-	const { code, ast } = ctx;
+	const { code, inventory } = ctx;
 	if (!code.includes("execFileSync")) {
 		return "Missing bat integration in text reading";
 	}
-	// Structural: require an actual execFileSync("bat", ...) CallExpression
-	// somewhere in the AST. A substring "execFileSync" appearing only inside
-	// a docstring, comment, or unrelated runtime feature should not satisfy
-	// the verifier. The bat call may live in the Read tool's call() body or
-	// in a helper function it delegates to, so this is a global AST scan.
-	let foundBatCall = false;
-	traverse(ast, {
-		CallExpression(path) {
-			const callee = path.node.callee;
-			const isExecFileSync =
-				t.isIdentifier(callee, { name: "execFileSync" }) ||
-				(t.isMemberExpression(callee) &&
-					isMemberPropertyName(callee, "execFileSync"));
-			if (!isExecFileSync) return;
-			if (path.node.arguments.length < 1) return;
-			const arg0 = path.node.arguments[0];
-			if (t.isStringLiteral(arg0) && arg0.value === "bat") {
-				foundBatCall = true;
-				path.stop();
-			}
-		},
-	});
-	if (!foundBatCall) {
+	// Require an actual execFileSync("bat", ...) CallExpression. A substring
+	// appearing only inside a docstring, comment, or unrelated runtime feature
+	// does not satisfy the shared global verification inventory.
+	if (!inventory.hasBatCall) {
 		return 'No execFileSync("bat", ...) CallExpression found in AST';
 	}
 	if (!code.includes("normalizedRange")) {
@@ -1638,7 +1599,7 @@ function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 	) {
 		return "Missing awaited fallback in bat reader catch path";
 	}
-	if (!hasFallbackFnBoundedArgs(ast)) {
+	if (!inventory.hasFallbackFnBoundedArgs) {
 		return "Fallback call does not preserve bounded read arguments";
 	}
 	if (!code.includes("fallbackLimit === void 0 ? fallbackMaxBytes : void 0")) {
@@ -1672,7 +1633,7 @@ function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 	if (!code.includes("autoRanged")) {
 		return "Missing auto-range for oversized files without explicit range";
 	}
-	if (!hasAutoRangeTokenBudget50000(ast)) {
+	if (!inventory.hasAutoRangeTokenBudget50000) {
 		return "Auto-range token budget is not tuned to 50000";
 	}
 	if (!code.includes("FILE TRUNCATED")) {
@@ -1691,7 +1652,7 @@ function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 }
 
 function verifyReadCallSignature(ctx: ReadVerifyContext): string | null {
-	const { ast, callKeys, callParam, rangeBindingName } = ctx;
+	const { callKeys, callParam, inventory } = ctx;
 	if (!callKeys.has("range")) {
 		return "Call signature not updated to use range";
 	}
@@ -1710,7 +1671,7 @@ function verifyReadCallSignature(ctx: ReadVerifyContext): string | null {
 	if (callKeys.has("limit")) {
 		return "Call signature still destructures limit";
 	}
-	if (!hasCallCompatRangeBridge(ast, rangeBindingName)) {
+	if (!inventory.hasCallCompatRangeBridge) {
 		return "Missing offset/limit -> range compatibility bridge in call()";
 	}
 	if (callKeys.has("diff")) {
@@ -1720,7 +1681,7 @@ function verifyReadCallSignature(ctx: ReadVerifyContext): string | null {
 }
 
 function verifyReadLineAccounting(ctx: ReadVerifyContext): string | null {
-	const { code, ast } = ctx;
+	const { code, inventory } = ctx;
 	if (!code.includes("normalizedOutput")) {
 		return "Missing normalizedOutput line count normalization";
 	}
@@ -1733,13 +1694,13 @@ function verifyReadLineAccounting(ctx: ReadVerifyContext): string | null {
 	if (!code.includes("var fileTotalLines = null")) {
 		return "Missing fileTotalLines tracking for negative ranges";
 	}
-	if (!hasEnsureTotalLinesHelper(ast)) {
+	if (!inventory.hasEnsureTotalLinesHelper) {
 		return "Missing shared total-line counter helper for ranged reads";
 	}
 	if (!code.includes("fs.openSync(filePath")) {
 		return "ensureTotalLines missing fd-based line counting";
 	}
-	if (!hasNormalizedRangeTotalLinesRefresh(ast)) {
+	if (!inventory.hasNormalizedRangeTotalLinesRefresh) {
 		return "Missing full-file line count refresh for positive ranges";
 	}
 	if (!code.includes("lastByte === 10 ? 0 : 1")) {
@@ -1767,9 +1728,7 @@ function hasMiddleDotLabel(code: string, label: string): boolean {
 }
 
 function verifyReadExamplesAndValidate(ctx: ReadVerifyContext): string | null {
-	const { code, validateKeys } = ctx;
-	const readToolPath = findReadToolObjectPath(ctx.ast);
-	const coerceShape = readToolPath ? getReadCoerceShape(readToolPath) : null;
+	const { code, validateKeys, coerceShape } = ctx;
 	if (!coerceShape) {
 		return "Unable to resolve Read.coerceInput normalization shape";
 	}
@@ -1835,21 +1794,20 @@ function verifyReadExamplesAndValidate(ctx: ReadVerifyContext): string | null {
 function verifyReadStateAndSnippetGuards(
 	ctx: ReadVerifyContext,
 ): string | null {
-	const { code, ast } = ctx;
-	const readFileStateMarkers = hasReadFileStateCompatMarkers(ast);
-	if (!readFileStateMarkers.hasRange) {
+	const { code, inventory } = ctx;
+	if (!inventory.hasReadFileStateRange) {
 		return "readFileState.set missing range field";
 	}
-	if (!readFileStateMarkers.hasOffsetCompat) {
+	if (!inventory.hasReadFileStateOffsetCompat) {
 		return "readFileState.set missing offset compatibility marker for ranged reads";
 	}
-	if (!readFileStateMarkers.hasLimitCompat) {
+	if (!inventory.hasReadFileStateLimitCompat) {
 		return "readFileState.set missing limit compatibility marker for ranged reads";
 	}
 	if (!code.includes('endsWith(".output")')) {
 		return "readFileState compatibility markers missing implicit .output tail handling";
 	}
-	if (!hasReadStateRebuildRangeGuard(ast)) {
+	if (!inventory.hasReadStateRebuildRangeGuard) {
 		return "read-state rebuild guard missing range-aware partial-read check";
 	}
 	if (!code.includes("changedSnippetRaw")) {
@@ -1858,10 +1816,10 @@ function verifyReadStateAndSnippetGuards(
 	if (!code.includes("maxChangedSnippetChars")) {
 		return "changed-file watcher missing snippet cap variable";
 	}
-	if (!hasChangedSnippetCap8000(ast)) {
+	if (!inventory.hasChangedSnippetCap8000) {
 		return "changed-file watcher snippet cap is not tuned to 8000 chars";
 	}
-	if (!hasSnippetSourceCall(ast)) {
+	if (!inventory.hasSnippetSourceCall) {
 		return "changedSnippetRaw is not assigned from a CallExpression (expected diff source call)";
 	}
 	if (!code.includes("changedSnippetTruncMarker")) {
@@ -1873,7 +1831,7 @@ function verifyReadStateAndSnippetGuards(
 	if (!code.includes("changedHeadBudget")) {
 		return "changed-file watcher missing head budget computation";
 	}
-	if (!hasChangedHeadBudgetMultiplier(ast)) {
+	if (!inventory.hasChangedHeadBudgetMultiplier) {
 		return "changed-file watcher head budget multiplier drifted from 0.65";
 	}
 	if (!code.includes("changedTailBudget")) {
@@ -1882,10 +1840,10 @@ function verifyReadStateAndSnippetGuards(
 	if (!code.includes("[TRUNCATED - changed-file diff head+tail summary]")) {
 		return "changed-file watcher missing head+tail truncation marker";
 	}
-	if (!hasChangedSnippetReturnBinding(ast)) {
+	if (!inventory.hasChangedSnippetReturnBinding) {
 		return "changed-file watcher return payload missing capped snippet binding";
 	}
-	if (!hasChangedFileSeenTimestampBump(ast)) {
+	if (!inventory.hasChangedFileSeenTimestampBump) {
 		return "changed-file watcher does not mark content-identical re-reads as seen";
 	}
 	if (code.includes("provided offset (")) {
@@ -1897,25 +1855,20 @@ function verifyReadStateAndSnippetGuards(
 function verifyReadRangeRegexAndFallbackMarkers(
 	ctx: ReadVerifyContext,
 ): string | null {
-	const { ast } = ctx;
-	if (
-		!hasRegexLiteral(
-			ast,
-			"^(?:[1-9]\\d*)(?::(?:\\+[1-9]\\d*|[1-9]\\d*(?::[1-9]\\d*)?|)|::[1-9]\\d*)?$",
-		)
-	) {
+	const { inventory } = ctx;
+	if (!inventory.hasNumericRangeRegex) {
 		return "Missing numericRange validation regex";
 	}
-	if (!hasRegexLiteral(ast, "^:[1-9]\\d*$")) {
+	if (!inventory.hasFromStartRegex) {
 		return "Missing fromStart validation regex";
 	}
-	if (!hasRegexLiteral(ast, "^-[1-9]\\d*:$")) {
+	if (!inventory.hasNegativeTailRegex) {
 		return "Missing negative-tail range validation regex";
 	}
-	if (!hasFallbackSingleLineLimit(ast)) {
+	if (!inventory.hasFallbackSingleLineLimit) {
 		return "Missing single-line fallback limit for plain 'N' bat ranges";
 	}
-	if (!hasFallbackSizeLimitBinding(ast)) {
+	if (!inventory.hasFallbackSizeLimitBinding) {
 		return "Missing fallbackSizeLimit guard in fallback path";
 	}
 	return null;
@@ -4293,7 +4246,7 @@ export const readWithBat: Patch = {
 		if (!verifyAst) {
 			return "Unable to parse AST during read-bat verification";
 		}
-		const readToolPath = findReadToolObjectPath(verifyAst);
+		let readToolPath = findReadToolObjectPath(verifyAst);
 		if (!readToolPath) {
 			return "Unable to resolve Read tool object for verification";
 		}
@@ -4317,18 +4270,25 @@ export const readWithBat: Patch = {
 		}
 		const validateKeys = getObjectPatternKeys(validateParam);
 
-		const context: ReadVerifyContext = {
+		const baseContext: ReadVerifyContextBase = {
 			code,
-			ast: verifyAst,
 			schemaObject,
 			callParam,
 			callKeys,
-			rangeBindingName,
 			validateKeys,
-			callMethod: callMethod ?? null,
+			promptText: getReadToolPromptText(readToolPath),
+			descriptionText: getReadToolDescriptionText(readToolPath),
+			coerceShape: getReadCoerceShape(readToolPath),
+		};
+		readToolPath = null;
+		clearTraverseCache();
+		const schemaResult = verifyReadSchemaAndPrompt(baseContext);
+		if (schemaResult) return schemaResult;
+		const context: ReadVerifyContext = {
+			...baseContext,
+			inventory: collectReadVerificationInventory(verifyAst, rangeBindingName),
 		};
 		const validators = [
-			verifyReadSchemaAndPrompt,
 			verifyReadBatCore,
 			verifyReadCallSignature,
 			verifyReadLineAccounting,

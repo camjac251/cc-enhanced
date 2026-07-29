@@ -120,6 +120,24 @@ export function extractVersionFromBinary(
 	}
 }
 
+function smokeTestPatchedBinary(
+	binaryPath: string,
+	operation: "Promote" | "Rollback",
+): string {
+	const info = extractVersionFromBinary(binaryPath);
+	if (!info) {
+		throw new Error(
+			`${operation} target failed version smoke test: ${binaryPath}`,
+		);
+	}
+	if (!info.isPatched) {
+		throw new Error(
+			`${operation} target is not a patched artifact: ${binaryPath}`,
+		);
+	}
+	return `${info.version} (patched)`;
+}
+
 // ── Promote ─────────────────────────────────────────────────────────────────
 
 export function promote(
@@ -145,6 +163,11 @@ export function promote(
 		fs.chmodSync(resolvedTarget, 0o755);
 	}
 
+	let smokeTestVersion: string | undefined;
+	if (!options.skipSmokeTest) {
+		smokeTestVersion = smokeTestPatchedBinary(resolvedTarget, "Promote");
+	}
+
 	// Save old current as previous
 	const oldTarget =
 		resolveSymlinkTarget(vp.currentLink) ?? resolveSymlinkTarget(vp.binLink);
@@ -158,15 +181,6 @@ export function promote(
 	// Wire current -> target, binLink -> current
 	atomicSymlink(resolvedTarget, vp.currentLink);
 	atomicSymlink(vp.currentLink, vp.binLink);
-
-	// Smoke test
-	let smokeTestVersion: string | undefined;
-	if (!options.skipSmokeTest) {
-		const info = extractVersionFromBinary(resolvedTarget);
-		smokeTestVersion = info
-			? `${info.version}${info.isPatched ? " (patched)" : ""}`
-			: undefined;
-	}
 
 	// Clean old builds
 	const cleanedBuilds: string[] = [];
@@ -228,6 +242,16 @@ export function rollback(options: RollbackOptions = {}): RollbackResult {
 		throw new Error(`Rollback target does not exist: ${resolvedTarget}`);
 	}
 
+	const mode = fs.statSync(resolvedTarget).mode;
+	if ((mode & 0o111) === 0) {
+		fs.chmodSync(resolvedTarget, 0o755);
+	}
+
+	let smokeTestVersion: string | undefined;
+	if (!options.skipSmokeTest) {
+		smokeTestVersion = smokeTestPatchedBinary(resolvedTarget, "Rollback");
+	}
+
 	// Swap: old current becomes new previous
 	const oldCurrent = resolveSymlinkTarget(vp.currentLink);
 	let previousTarget: string | undefined;
@@ -243,20 +267,6 @@ export function rollback(options: RollbackOptions = {}): RollbackResult {
 	// Point current at rollback target
 	atomicSymlink(resolvedTarget, vp.currentLink);
 	atomicSymlink(vp.currentLink, vp.binLink);
-
-	// Ensure executable
-	const mode = fs.statSync(resolvedTarget).mode;
-	if ((mode & 0o111) === 0) {
-		fs.chmodSync(resolvedTarget, 0o755);
-	}
-
-	let smokeTestVersion: string | undefined;
-	if (!options.skipSmokeTest) {
-		const info = extractVersionFromBinary(resolvedTarget);
-		smokeTestVersion = info
-			? `${info.version}${info.isPatched ? " (patched)" : ""}`
-			: undefined;
-	}
 
 	return { target: resolvedTarget, previousTarget, smokeTestVersion };
 }

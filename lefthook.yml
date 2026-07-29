@@ -2,7 +2,6 @@
 # https://github.com/evilmartians/lefthook
 #
 # Auto-installed via mise enter hook (see mise.toml [hooks]).
-# Skip all:    LEFTHOOK=0 git commit ...   (or --no-verify)
 # Run manual:  lefthook run pre-commit
 
 min_version: 1.11.0
@@ -14,15 +13,15 @@ pre-commit:
   commands:
     format:
       glob: "{src/**/*.{ts,js,mjs,json},scripts/**/*.{ts,js,mjs},biome.json}"
-      run: bunx biome format --write --no-errors-on-unmatched {staged_files}
+      run: bun run biome format --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
       priority: 1
     lint:
       glob: "{src/**/*.{ts,js,mjs,json},scripts/**/*.{ts,js,mjs},biome.json}"
-      run: bunx biome check --no-errors-on-unmatched {staged_files}
+      run: bun run biome check --no-errors-on-unmatched {staged_files}
       priority: 2
     typecheck:
-      glob: "{src/**/*.ts,tsconfig.json,package.json}"
+      glob: "{src/**/*.ts,scripts/**/*.ts,tsconfig.json,package.json}"
       run: bun run typecheck
       priority: 3
 

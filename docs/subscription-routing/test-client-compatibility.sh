@@ -17,7 +17,6 @@ clodex_cli="$test_root/clodex-cli.js"
 system_prompt="$test_home/.config/claudex-clodex/system-prompt.md"
 credential_helper="$test_root/credential-helper"
 claude_bin="$test_root/claude"
-node_bin="$test_root/node"
 mkdir -p "$(dirname "$system_prompt")"
 printf '%s\n%s\n' 'Route translated model requests through Clodex.' \
 	'Keep native model requests on the normal subscription.' >"$system_prompt"
@@ -28,23 +27,25 @@ for arg; do
 	printf '%s\n' "$arg"
 done
 SH
-cp "$clodex_wrapper" "$clodex_cli"
+tee "$clodex_cli" >/dev/null <<'SH'
+#!/bin/sh
+printf '%s' "$0" >>"$ADMIN_LOG"
+for arg; do
+	printf ' %s' "$arg" >>"$ADMIN_LOG"
+done
+printf '\n' >>"$ADMIN_LOG"
+SH
 tee "$credential_helper" >/dev/null <<'SH'
 #!/bin/sh
 exit 0
 SH
-tee "$node_bin" >/dev/null <<'SH'
-#!/bin/sh
-printf '%s\n' "$*" >>"$ADMIN_LOG"
-SH
-chmod 700 "$clodex_wrapper" "$clodex_cli" "$credential_helper" "$node_bin"
+chmod 700 "$clodex_wrapper" "$clodex_cli" "$credential_helper"
 
 process_wrapper_template="$setup_dir/templates/claudex-process-wrapper"
 [ -r "$process_wrapper_template" ] ||
 	fail "the portable process-wrapper template is missing"
 process_wrapper="$test_root/claudex-process-wrapper-stock"
 sed \
-	-e "s|@NODE_BIN@|/bin/sh|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
 	-e "s|@CLAUDEX_CLIENT_PROFILE@|stock|g" \
 	"$process_wrapper_template" >"$process_wrapper"
@@ -52,7 +53,6 @@ chmod 700 "$process_wrapper"
 
 enhanced_process_wrapper="$test_root/claudex-process-wrapper-enhanced"
 sed \
-	-e "s|@NODE_BIN@|/bin/sh|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
 	-e "s|@CLAUDEX_CLIENT_PROFILE@|enhanced|g" \
 	"$process_wrapper_template" >"$enhanced_process_wrapper"
@@ -122,7 +122,6 @@ fi
 admin_template="$setup_dir/templates/clodex"
 admin_wrapper="$test_root/clodex"
 sed \
-	-e "s|@NODE_BIN@|$node_bin|g" \
 	-e "s|@CLODEX_BIN@|$clodex_cli|g" \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \

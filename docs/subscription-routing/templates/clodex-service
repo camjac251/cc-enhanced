@@ -17,13 +17,11 @@ clodex_home="$HOME/.local/share/claudex-clodex"
 process_wrapper='@CLODEX_CLAUDE_BIN@'
 clodex_bin='@CLODEX_BIN@'
 session_lock="$clodex_home/routed-sessions.lock"
-node_bin='@NODE_BIN@'
 
 for command_name in flock sleep systemctl; do
 	command -v "$command_name" >/dev/null 2>&1 ||
 		fail "$command_name is unavailable"
 done
-[ -x "$node_bin" ] || fail "configured Node.js executable is missing: $node_bin"
 [ -x "$clodex_bin" ] || fail "Clodex is missing: $clodex_bin"
 [ -x "$process_wrapper" ] || fail "process wrapper is missing: $process_wrapper"
 
@@ -40,7 +38,7 @@ ready=0
 attempt=0
 while [ "$attempt" -lt 50 ]; do
 	if systemctl --user is-active --quiet "$unit" &&
-		CLODEX_HOME="$clodex_home" "$node_bin" "$process_wrapper" --check; then
+		CLODEX_HOME="$clodex_home" "$process_wrapper" --check; then
 		ready=1
 		break
 	fi
@@ -61,6 +59,6 @@ case "$main_pid" in
 '' | 0 | *[!0-9]*) fail "service has no valid main process" ;;
 esac
 
-clodex_version=$("$node_bin" "$clodex_bin" --version)
+clodex_version=$("$clodex_bin" --version)
 printf 'routing service ready: pid=%s clodex=%s\n' \
 	"$main_pid" "$clodex_version"

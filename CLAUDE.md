@@ -12,6 +12,9 @@ verification, or reintroduce update-time memory failures.
 
 - Target only the latest upstream version. Never add compatibility fallbacks
   for older upstream forms.
+- Use the immediately previous clean bundle only as a release-diff baseline.
+  Patch matching, tests, matrix selection, and promotion target the latest
+  bundle only.
 - Never hardcode minified variable names. Match stable literals, property
   names, and surrounding AST structure.
 - Never use `ast-grep` on `cli.js`. Use `rg` for exact literals and
@@ -31,7 +34,10 @@ verification, or reintroduce update-time memory failures.
 - Use `mise run native:update`; `mise run patch` intentionally aborts.
 - Serialize native bundle operations, prompt exports, baseline refreshes,
   builds, promotions, and full test runs. They are memory-heavy and may share
-  mutable cache state.
+  mutable cache state. Heavy entrypoints enforce a single process-tree lease
+  across terminals. Normal patch and update runs skip structural telemetry;
+  `--summary-path` alone stays lean, while `--structural-evidence` explicitly
+  adds handler counts, overlap evidence, and recursive structural hashes.
 - Change prompt mutation, patch verification, and exported-surface contracts
   together. Refresh drift baselines only after reviewing a known-good export.
 
@@ -51,9 +57,11 @@ The patch contract is in `src/types.ts`. Execution is:
 6. signature injection and verification;
 7. write only when no tag failed.
 
-Memory cleanup in `src/types.ts`, `src/patch-runner.ts`, `src/babel.ts`, and the
-update path in `src/index.ts` is load-bearing. Removing the dropped AST,
-traverse-cache cleanup, or pre-verification GC reintroduces update-time OOMs.
+Memory cleanup in `src/types.ts`, `src/patch-runner.ts`, `src/babel.ts`,
+`src/diff.ts`, `scripts/export-prompts.ts`, and the update path in
+`src/index.ts` is load-bearing. Removing dropped ASTs, traverse-cache cleanup,
+the large-verifier-set midpoint release, or pre-verification GC reintroduces
+update-time OOMs.
 
 Native repacking must preserve the original byte length and virtual-address
 layout. Promotion is an atomic symlink swap; rollback swaps current and
