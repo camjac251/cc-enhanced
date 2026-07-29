@@ -375,11 +375,31 @@ The isolated Clodex home is `~/.local/share/claudex-clodex`.
 ## Safe updates and restarts
 
 `mise upgrade` changes the globally activated Clodex tool but does not restart
-the running service. Let routed sessions finish, then run:
+the running service or replace code that process already loaded.
+`Restart=on-failure` is not an upgrade watcher: systemd acts only after the
+service exits unsuccessfully. A bridge that remains alive while returning
+routed 5xx responses is still considered running.
+
+Clodex loads provider adapters on demand. If mise removes the previous package
+version while its service is still running, a later Sol request can try to load
+an adapter from that removed installation. Treat the tool upgrade, path
+rerender, and service restart as one maintenance operation. Let routed sessions
+finish, then run:
 
 ```sh
 mise upgrade --minimum-release-age 0 npm:@bman654/clodex
 mise tool npm:@bman654/clodex
+mise which clodex
+mise which clodex-claude
+clodex --version
+```
+
+If either `mise which` path changed, rerun the rendering and installation block
+in section 4 before continuing. Then reload systemd, restart the idle service,
+and verify the installation:
+
+```sh
+systemctl --user daemon-reload
 clodex-service restart
 ./verify-static.sh
 ./verify-live.sh
@@ -388,7 +408,11 @@ clodex-service restart
 `claudex` holds a shared routed-session lock for the client lifetime.
 `clodex-service restart` acquires the matching exclusive lock before invoking
 systemd and refuses to restart while routed sessions are active. Do not bypass
-it with a direct `systemctl restart`.
+it with a direct `systemctl restart` during normal maintenance.
+
+The unit remains disabled by design. A WSL shutdown stops the running user
+service; the next `claudex` launch starts it on demand. When the unit is
+inactive, no stale Clodex process remains loaded.
 
 For a client update:
 
@@ -416,6 +440,41 @@ journalctl --user-unit claudex-clodex.service --since today --no-pager
 
 If authentication remains invalid, rerun `clodex providers auth openai`. Do not
 print credential-helper output or set provider API-key variables.
+
+### Sol agents stay idle or return package-import 502s
+
+A worker with only its initial message and no real assistant turn does not prove
+that the Sol model is unavailable. Check whether translation failed before any
+provider request:
+
+```sh
+mise which clodex
+clodex --version
+systemctl --user show claudex-clodex.service \
+  --property=ActiveState,SubState,MainPID,ExecMainStartTimestamp
+jq -c 'select(.event == "translation_failed" or .event == "upstream_error")' \
+  "$HOME/.local/share/claudex-clodex/logs/inference-requests.jsonl"
+```
+
+If the error says that a provider package cannot be found and names an older
+mise installation directory, the installed tool and loaded service diverged.
+No provider request was made; changing model aliases, OAuth credentials, or
+Claude Code effort settings will not repair it.
+
+If the service is inactive, start a routed client with `claudex`; it will start
+the currently installed service on demand. If the service is active, close all
+routed clients and run `clodex-service restart`.
+
+If an already-broken routed client cannot release the shared lock, a direct
+restart is an emergency recovery:
+
+```sh
+systemctl --user restart claudex-clodex.service
+```
+
+This interrupts every routed client and bypasses the normal safety guard. Use
+it only after accepting that impact, then rerun any workers that retained the
+synthetic error.
 
 ### The client reports `Unable to connect to API (ECONNRESET)`
 
