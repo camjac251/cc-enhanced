@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parse } from "../loader.js";
+import { runCombinedAstPasses } from "../ast-pass-engine.js";
+import { parse, print } from "../loader.js";
 import { builtInAgentPrompt } from "./built-in-agent-prompt.js";
+import { promptDashStyle } from "./prompt-dash-style.js";
 import {
 	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
 	MODERN_CODE_SEARCH_POLICY,
@@ -130,6 +132,36 @@ test("built-in-agent-prompt keeps template-literal replacements parseable", () =
 	const output = builtInAgentPrompt.string?.(fixture) ?? fixture;
 
 	assert.doesNotThrow(() => parse(output));
+});
+
+test("built-in-agent-prompt verifies after prompt dash normalization", async () => {
+	const generalPrompt =
+		builtInAgentPrompt
+			.string?.(GENERAL_FIXTURE)
+			.replace(
+				"Only create documentation files if explicitly requested.",
+				"Only create documentation files if explicitly requested. You must keep this guidance — always.",
+			) ?? GENERAL_FIXTURE;
+	const source = [
+		`function buildExplorePrompt() {${builtInAgentPrompt.string?.(EXPLORE_FIXTURE) ?? EXPLORE_FIXTURE}}`,
+		`function buildPlanPrompt() {${builtInAgentPrompt.string?.(PLAN_FIXTURE) ?? PLAN_FIXTURE}}`,
+		generalPrompt,
+	].join("\n");
+	const ast = parse(source);
+	const passes = (await promptDashStyle.astPasses?.(ast)) ?? [];
+
+	await runCombinedAstPasses(
+		ast,
+		passes.map((pass) => ({ tag: promptDashStyle.tag, pass })),
+		() => {},
+		() => {},
+		(_tag, error) => {
+			throw error;
+		},
+	);
+	const output = print(ast);
+
+	assert.equal(builtInAgentPrompt.verify(output, ast), true);
 });
 
 test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {

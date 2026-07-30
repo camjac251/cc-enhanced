@@ -250,3 +250,61 @@ test("prompt-dash-style normalizes dash in non-first template quasi", async () =
 	assert.equal(output.includes("\\u2014"), false);
 	assert.equal(promptDashStyle.verify(output, ast), true);
 });
+
+test("prompt-dash-style preserves escaped template control characters", async () => {
+	const fixture =
+		"const p = `\\r\\nYou must keep the line ending \\u2014 otherwise the tool output changes.`;";
+	const ast = parse(fixture);
+	await runPromptDashStyleViaPasses(ast);
+
+	let intendedCooked: string | null | undefined;
+	let intendedRaw: string | undefined;
+	traverse(ast, {
+		TemplateElement(path) {
+			intendedCooked = path.node.value.cooked;
+			intendedRaw = path.node.value.raw;
+		},
+	});
+
+	const output = print(ast);
+	let reparsedCooked: string | null | undefined;
+	traverse(parse(output), {
+		TemplateElement(path) {
+			reparsedCooked = path.node.value.cooked;
+		},
+	});
+
+	assert.equal(reparsedCooked, intendedCooked);
+	assert.equal(reparsedCooked?.startsWith("\r\n"), true);
+	assert.equal(intendedRaw?.startsWith("\\r\n"), true);
+	assert.equal(promptDashStyle.verify(output, ast), true);
+});
+
+test("prompt-dash-style leaves tagged-template raw and cooked text unchanged", async () => {
+	const fixture =
+		"const p = String.raw`first line\nYou must keep this \\u2014 otherwise the tool output changes.`;";
+	const ast = parse(fixture);
+	let beforeRaw: string | undefined;
+	let beforeCooked: string | null | undefined;
+	traverse(ast, {
+		TemplateElement(path) {
+			beforeRaw = path.node.value.raw;
+			beforeCooked = path.node.value.cooked;
+		},
+	});
+
+	await runPromptDashStyleViaPasses(ast);
+
+	let afterRaw: string | undefined;
+	let afterCooked: string | null | undefined;
+	traverse(ast, {
+		TemplateElement(path) {
+			afterRaw = path.node.value.raw;
+			afterCooked = path.node.value.cooked;
+		},
+	});
+
+	assert.equal(afterRaw, beforeRaw);
+	assert.equal(afterCooked, beforeCooked);
+	assert.equal(promptDashStyle.verify(print(ast), ast), true);
+});

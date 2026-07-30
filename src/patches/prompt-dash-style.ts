@@ -43,6 +43,17 @@ export function normalizePromptDashText(text: string): string {
 function escapeTemplateRaw(text: string): string {
 	return text
 		.replace(/\\/g, "\\\\")
+		.replace(/\u0000/g, "\\x00")
+		.replace(/\u0008/g, "\\b")
+		.replace(/\t/g, "\\t")
+		.replace(/\v/g, "\\v")
+		.replace(/\f/g, "\\f")
+		.replace(/\r/g, "\\r")
+		.replace(
+			/[\u0001-\u0007\u000e-\u001f\u007f]/g,
+			(character) =>
+				`\\x${character.charCodeAt(0).toString(16).padStart(2, "0")}`,
+		)
 		.replace(/`/g, "\\`")
 		.replace(/\$\{/g, "\\${");
 }
@@ -140,6 +151,7 @@ function findResidualPromptDash(ast: t.File): string | null {
 				path.skip();
 				return;
 			}
+			if (path.parentPath?.isTaggedTemplateExpression()) return;
 			const text = templateText(path.node);
 			if (!isPromptDashCandidate(text, path)) return;
 			residual = text.trim().replace(/\s+/g, " ").slice(0, 140);
@@ -164,6 +176,7 @@ export const promptDashStyle: Patch = {
 					path.node.value = normalizePromptDashText(path.node.value);
 				},
 				TemplateLiteral(path) {
+					if (path.parentPath?.isTaggedTemplateExpression()) return;
 					const text = templateText(path.node);
 					if (!isPromptDashCandidate(text, path)) return;
 
