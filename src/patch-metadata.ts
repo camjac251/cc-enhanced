@@ -88,7 +88,7 @@ const BY_TAG: Record<string, PatchMetadata> = {
 	},
 	"file-link-targets": {
 		tag: "file-link-targets",
-		label: "File link targets",
+		label: "File open routing",
 		group: "UX",
 	},
 	"image-limits": {

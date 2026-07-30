@@ -3,13 +3,13 @@ import { test } from "node:test";
 import { parse } from "../loader.js";
 import { allPatches } from "./index.js";
 
-// Drift sentinel for the CLAUDE.md "Shared visitor kinds" table. It records the
-// top-level visitor node kinds each patch exposes per pass to the combined-pass
-// engine. Program-hook work is folded into a single "Program" marker because a
-// patch that traverses inside Program.exit runs its own private traversal and
-// does not collide through merged per-node dispatch. When this snapshot changes,
-// update the CLAUDE.md shared-visitor rows in the same change: the table is only
-// trustworthy if it mirrors what the engine actually merges.
+// Drift sentinel for the maintainer reference's "Shared visitor kinds" table.
+// It records the top-level visitor node kinds each patch exposes per pass to the
+// combined-pass engine. Program-hook work is folded into a single "Program"
+// marker because a patch that traverses inside Program.exit runs its own private
+// traversal and does not collide through merged per-node dispatch. When this
+// snapshot changes, update the shared-visitor rows in the same change: the table
+// is only trustworthy if it mirrors what the engine actually merges.
 
 async function collectVisitorKinds(): Promise<Record<string, string[]>> {
 	const ast = parse("const x = 1;");
@@ -31,8 +31,8 @@ async function collectVisitorKinds(): Promise<Record<string, string[]>> {
 // Each row is a node-kind family (the Babel `Function` alias fires on every
 // function node, so a `Function` visitor and a `FunctionDeclaration` visitor
 // collide on the same node) mapped to the patches whose mutate-pass visitor
-// object exposes a key in that family. Mirrors the CLAUDE.md shared-visitor
-// table. Patches that only touch these kinds inside Program.exit are absent.
+// object exposes a key in that family. Mirrors the maintainer reference table.
+// Patches that only touch these kinds inside Program.exit are absent.
 const MUTATE_SHARED_KINDS: { row: string; keys: string[]; tags: string[] }[] = [
 	{
 		row: "IfStatement",
@@ -53,7 +53,6 @@ const MUTATE_SHARED_KINDS: { row: string; keys: string[]; tags: string[] }[] = [
 			"bash-prompt",
 			"cache-tail-policy",
 			"effort-stack",
-			"file-link-targets",
 			"no-autoupdate",
 			"agents-off",
 			"skill-paths-invoke",
@@ -87,7 +86,7 @@ test("shared mutate-pass visitor rows match live patch registrations", async () 
 		assert.deepEqual(
 			actual,
 			[...tags].sort(),
-			`Patches registering a mutate-pass ${row} visitor changed. Update MUTATE_SHARED_KINDS here and the CLAUDE.md Shared visitor kinds table together. Live set: ${actual.join(", ")}`,
+			`Patches registering a mutate-pass ${row} visitor changed. Update MUTATE_SHARED_KINDS here and the maintainer reference Shared visitor kinds table together. Live set: ${actual.join(", ")}`,
 		);
 	}
 });

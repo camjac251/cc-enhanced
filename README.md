@@ -173,7 +173,7 @@ Terminal interface polish.
 | Patch | Effect |
 |-------|--------|
 | [`billing-label`](src/patches/billing-label.ts) | `CLAUDE_CODE_BILLING_LABEL` replaces only the generic `API Usage Billing` status label when the client cannot identify its upstream account type, which is useful for subscription-backed local gateways. The value is trimmed, line breaks are normalized, and display text is capped at 64 characters. With the variable unset or blank, stock labeling is unchanged. This is display-only and does not alter authentication, routing, account selection, or billing. |
-| [`file-link-targets`](src/patches/file-link-targets.ts) | File-path hyperlinks keep the stock visible label but point WSL paths at Windows-readable targets, so Ctrl-clicks in Windows Terminal can open files instead of dead `file:///home/...` URLs. Default mode emits `file://wsl.localhost/<distro>/...`; env modes support VS Code (`vscode://file...`), VS Code Remote WSL (`vscode://vscode-remote/wsl+...`), Zed-style custom URLs, custom schemes, and an opt-out back to stock links. |
+| [`file-link-targets`](src/patches/file-link-targets.ts) | File hyperlinks keep their stock labels and `file:///...` targets. On Linux under WSL, the click dispatcher opens the exact decoded path through `wslview`, allowing Windows file associations to choose the right application for text, images, media, PDFs, and directories. Non-WSL runtimes retain stock behavior, with explicit stock, VS Code, `wslview`, and custom-executable overrides. |
 | [`plan-diff-ui`](src/patches/plan-diff-ui.ts) | Plan mode shows the real diff for plan-backed Edit and Write instead of "Updated plan" / "Reading Plan" placeholders, and stops hiding the preview hint or the tool-use row for plan-backed file writes. |
 | [`plan-compact-execute`](src/patches/plan-compact-execute.ts) | Plan approval adds a non-bypass "compact context and execute" path that summarizes the current conversation before submitting the approved implementation prompt. The approval selector expands to the option count when space allows, so the extra choice does not hide normal actions. |
 | [`no-collapse`](src/patches/no-collapse.ts) | Read, Search, and Grep results stay expanded in the transcript. Memory-file writes render with full path and diff instead of a generic collapsed summary. |
@@ -207,9 +207,9 @@ Terminal interface polish.
 |----------|-------------|---------|
 | `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE` | [`sys-prompt-file`](src/patches/sys-prompt-file.ts) | `/etc/claude-code/system-prompt.md` |
 | `CLAUDE_CODE_BILLING_LABEL` | [`billing-label`](src/patches/billing-label.ts) | unset; stock `API Usage Billing` fallback |
-| `CLAUDE_CODE_FILE_LINK_MODE` | [`file-link-targets`](src/patches/file-link-targets.ts) | `wsl-file` |
-| `CLAUDE_CODE_FILE_LINK_SCHEME` | [`file-link-targets`](src/patches/file-link-targets.ts) | unset |
-| `CLAUDE_CODE_FILE_LINK_WSL_DISTRO` | [`file-link-targets`](src/patches/file-link-targets.ts) | `WSL_DISTRO_NAME` or `Ubuntu` |
+| `CLAUDE_CODE_FILE_LINK_MODE` | [`file-link-targets`](src/patches/file-link-targets.ts) | unset; deprecated explicit-disable alias |
+| `CLAUDE_CODE_FILE_OPEN_MODE` | [`file-link-targets`](src/patches/file-link-targets.ts) | `auto` |
+| `CLAUDE_CODE_FILE_OPENER` | [`file-link-targets`](src/patches/file-link-targets.ts) | unset |
 | `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS` | [`limits`](src/patches/limits.ts) | 50000 |
 | `CLAUDE_CODE_CONFIGURED_MODEL_CATALOG` | [`configured-model-catalog`](src/patches/configured-model-catalog.ts) | unset; JSON array of model metadata entries |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | [`model-context-metadata`](src/patches/model-context-metadata.ts) | unset |
@@ -220,7 +220,9 @@ Terminal interface polish.
 
 `CLAUDE_CODE_BILLING_LABEL` changes only the fallback text shown by the client when it cannot infer an account plan through its own authentication state. It does not select a credential or change how a provider charges a request. Scope it to the launcher that needs the clarification rather than placing it in shared Claude settings.
 
-`file-link-targets` keeps stock file labels but rewrites WSL absolute-path hyperlink targets so Ctrl-clicks in Windows Terminal resolve outside WSL. The default `wsl-file` mode emits `file://wsl.localhost/<distro>/...`. Set `CLAUDE_CODE_FILE_LINK_MODE=vscode` for `vscode://file...`, `vscode-remote` for VS Code Remote WSL URLs, `zed` for `zed://file...`, `file` for explicit file URLs, or `off`/`vanilla` to keep stock `file:///home/...` links. `CLAUDE_CODE_FILE_LINK_SCHEME` accepts a custom URI scheme when `CLAUDE_CODE_FILE_LINK_MODE` is not one of the built-ins.
+`file-link-targets` leaves stock `file:///...` hyperlinks intact and changes only their click dispatch. In `auto` mode, Linux runtimes with `WSL_INTEROP`, `WSL_DISTRO_NAME`, or `WSLENV` invoke `wslview` with the decoded path as one direct argument; no shell command is constructed. `wslview` must be available on `PATH`. This hands files and directories to their registered Windows applications. Outside WSL, `auto` preserves the stock file-manager behavior. Set `CLAUDE_CODE_FILE_OPEN_MODE=stock` or `off` to force stock behavior, `wslview` to force `wslview`, or `vscode` to run `code --reuse-window <path>`. In `auto` mode, `CLAUDE_CODE_FILE_OPENER` selects a custom executable before WSL detection; explicit `stock`, `off`, `wslview`, and `vscode` modes take precedence over it. Once an enhanced opener is attempted, its result is final, preventing a failed command from causing a second application or folder launch. Failures use the stock warning channel and report only the opener kind plus a numeric exit code or a generic exception label, never the target path.
+
+For migration from the earlier patch contract, `CLAUDE_CODE_FILE_LINK_MODE=off`, `none`, `default`, or `vanilla` still forces stock behavior when `CLAUDE_CODE_FILE_OPEN_MODE` is unset. The current variable always takes precedence. Earlier URI-mode, scheme, and distribution overrides are intentionally not consumed because this implementation dispatches decoded paths rather than rewriting hyperlink targets.
 
 `autoDreamEnabled` is a Claude Code setting rather than an env var. When it is explicitly `true`, `session-mem` lets auto-dream run even if the server-side availability flag is off.
 

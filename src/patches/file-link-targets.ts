@@ -1,328 +1,879 @@
 import * as t from "@babel/types";
-import { traverse, type Visitor } from "../babel.js";
+import { type NodePath, traverse } from "../babel.js";
 import { parse } from "../loader.js";
-import type { Patch } from "../types.js";
+import type { Patch, PatchAstPass } from "../types.js";
 import {
 	getMemberPropertyName,
 	getObjectKeyName,
 	getVerifyAst,
-	hasObjectKeyName,
-	isElementCall,
 } from "./ast-helpers.js";
 
-const HELPER_NAME = "_ccEnhancedFileHref";
-
-type FileLinkEnv = Record<string, string | undefined>;
-
-export function resolveFileLinkHrefForEnv(
-	filePath: string,
-	fallbackHref: string,
-	env: FileLinkEnv,
-): string {
-	try {
-		const mode = env.CLAUDE_CODE_FILE_LINK_MODE || "wsl-file";
-		if (
-			mode === "default" ||
-			mode === "vanilla" ||
-			mode === "off" ||
-			mode === "none"
-		) {
-			return fallbackHref;
-		}
-		if (typeof filePath !== "string" || filePath.charAt(0) !== "/") {
-			return fallbackHref;
-		}
-
-		const windowsDrive = /^\/mnt\/([A-Za-z])\/(.+)$/.exec(filePath);
-		if (windowsDrive) {
-			const drivePath =
-				`${windowsDrive[1].toLowerCase()}:/` +
-				windowsDrive[2].split("/").map(encodeURIComponent).join("/");
-			if (mode === "wsl-file" || mode === "file") return `file:///${drivePath}`;
-			if (mode === "vscode") return `vscode://file/${drivePath}`;
-			if (mode === "vscode-remote") return `vscode://file/${drivePath}`;
-			if (mode === "zed") return `zed://file/${drivePath}`;
-			const driveScheme = env.CLAUDE_CODE_FILE_LINK_SCHEME || "";
-			if (/^[A-Za-z][A-Za-z0-9+.-]*$/.test(driveScheme)) {
-				return `${driveScheme}://file/${drivePath}`;
-			}
-			return fallbackHref;
-		}
-
-		const distro =
-			env.CLAUDE_CODE_FILE_LINK_WSL_DISTRO || env.WSL_DISTRO_NAME || "";
-		if (!(distro || env.WSL_INTEROP || env.WT_SESSION)) return fallbackHref;
-		const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
-		const encodedDistro = encodeURIComponent(distro || "Ubuntu");
-		const uncPath = `//wsl.localhost/${encodedDistro}${encodedPath}`;
-		if (mode === "wsl-file" || mode === "file") return `file:${uncPath}`;
-		if (mode === "vscode") return `vscode://file${uncPath}`;
-		if (mode === "vscode-remote") {
-			return `vscode://vscode-remote/wsl+${encodedDistro}${encodedPath}`;
-		}
-		if (mode === "zed") return `zed://file${uncPath}`;
-		const scheme = env.CLAUDE_CODE_FILE_LINK_SCHEME || "";
-		if (/^[A-Za-z][A-Za-z0-9+.-]*$/.test(scheme)) {
-			return `${scheme}://file${uncPath}`;
-		}
-	} catch {}
-	return fallbackHref;
-}
+const HELPER_NAME = "_ccEnhancedOpenFileTarget";
+const DBUS_COMMAND = "dbus-send";
+const FILE_MANAGER_METHOD = "org.freedesktop.FileManager1.ShowItems";
 
 const HELPER_SOURCE = `
-function ${HELPER_NAME}(filePath, fallbackHref) {
+async function ${HELPER_NAME}(filePath, stockOpen, runProcess, logWarning) {
+  var env = typeof process !== "undefined" && process.env ? process.env : {};
+  var configuredMode = env.CLAUDE_CODE_FILE_OPEN_MODE;
+  var legacyMode =
+    typeof env.CLAUDE_CODE_FILE_LINK_MODE === "string"
+      ? env.CLAUDE_CODE_FILE_LINK_MODE.trim().toLowerCase()
+      : "";
+  var mode = String(configuredMode || "auto").trim().toLowerCase();
+  if (
+    !configuredMode &&
+    (legacyMode === "off" ||
+      legacyMode === "none" ||
+      legacyMode === "default" ||
+      legacyMode === "vanilla")
+  ) {
+    mode = "stock";
+  }
+  if (mode === "stock" || mode === "off") return await stockOpen(filePath);
+
+  var isWsl =
+    typeof process !== "undefined" &&
+    process.platform === "linux" &&
+    Boolean(env.WSL_INTEROP || env.WSL_DISTRO_NAME || env.WSLENV);
+  var customOpener =
+    typeof env.CLAUDE_CODE_FILE_OPENER === "string"
+      ? env.CLAUDE_CODE_FILE_OPENER.trim()
+      : "";
+  var command = "";
+  var openerKind = "";
+  var args = [filePath];
+
+  if (mode === "vscode") {
+    command = "code";
+    openerKind = "vscode";
+    args = ["--reuse-window", filePath];
+  } else if (mode === "wslview") {
+    command = "wslview";
+    openerKind = "wslview";
+  } else if (mode === "auto" && customOpener) {
+    command = customOpener;
+    openerKind = "custom";
+  } else if (mode === "auto" && isWsl) {
+    command = "wslview";
+    openerKind = "wslview";
+  } else {
+    return await stockOpen(filePath);
+  }
+
   try {
-    var env = typeof process !== "undefined" && process.env ? process.env : {};
-    var mode = env.CLAUDE_CODE_FILE_LINK_MODE || "wsl-file";
-    if (mode === "default" || mode === "vanilla" || mode === "off" || mode === "none") return fallbackHref;
-    if (typeof filePath !== "string" || filePath.charAt(0) !== "/") return fallbackHref;
-
-    var windowsDrive = /^\\/mnt\\/([A-Za-z])\\/(.+)$/.exec(filePath);
-    if (windowsDrive) {
-      var drivePath = windowsDrive[1].toLowerCase() + ":/" + windowsDrive[2].split("/").map(encodeURIComponent).join("/");
-      if (mode === "wsl-file" || mode === "file") return "file:///" + drivePath;
-      if (mode === "vscode") return "vscode://file/" + drivePath;
-      if (mode === "vscode-remote") return "vscode://file/" + drivePath;
-      if (mode === "zed") return "zed://file/" + drivePath;
-      var driveScheme = env.CLAUDE_CODE_FILE_LINK_SCHEME || "";
-      if (/^[A-Za-z][A-Za-z0-9+.-]*$/.test(driveScheme)) return driveScheme + "://file/" + drivePath;
-      return fallbackHref;
-    }
-
-    var distro = env.CLAUDE_CODE_FILE_LINK_WSL_DISTRO || env.WSL_DISTRO_NAME || "";
-    if (!(distro || env.WSL_INTEROP || env.WT_SESSION)) return fallbackHref;
-    var encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
-    var encodedDistro = encodeURIComponent(distro || "Ubuntu");
-    var uncPath = "//wsl.localhost/" + encodedDistro + encodedPath;
-    if (mode === "wsl-file" || mode === "file") return "file:" + uncPath;
-    if (mode === "vscode") return "vscode://file" + uncPath;
-    if (mode === "vscode-remote") return "vscode://vscode-remote/wsl+" + encodedDistro + encodedPath;
-    if (mode === "zed") return "zed://file" + uncPath;
-    var scheme = env.CLAUDE_CODE_FILE_LINK_SCHEME || "";
-    if (/^[A-Za-z][A-Za-z0-9+.-]*$/.test(scheme)) return scheme + "://file" + uncPath;
-  } catch {}
-  return fallbackHref;
+    var result = await runProcess(command, args);
+    if (result && result.code === 0) return true;
+    var exitCode =
+      result && typeof result.code === "number" ? result.code : "unknown";
+    logWarning(
+      "[file-open] " +
+        openerKind +
+        " opener failed (exit " +
+        exitCode +
+        ")",
+      { level: "warn" },
+    );
+    return false;
+  } catch {
+    logWarning(
+      "[file-open] " + openerKind + " opener failed (exception)",
+      { level: "warn" },
+    );
+    return false;
+  }
 }
 `;
 
-function getObjectPatternBinding(
+interface FileManagerBindings {
+	revealName: string;
+	revealBindingNode: t.Node;
+	runnerName: string;
+	runnerBindingNode: t.Node;
+}
+
+interface StockDispatchCall {
+	awaitNode: t.AwaitExpression;
+	callNode: t.CallExpression;
+	filePathExpression: t.CallExpression;
+	stockBindingNode: t.Node | null;
+	stockOpenName: string;
+}
+
+interface HelperDispatchCall {
+	awaitNode: t.AwaitExpression;
+	callNode: t.CallExpression;
+	filePathExpression: t.CallExpression | null;
+	loggerBindingNode: t.Node | null;
+	loggerName: string | null;
+	runnerBindingNode: t.Node | null;
+	stockOpenName: string | null;
+	stockBindingNode: t.Node | null;
+	runnerName: string | null;
+}
+
+interface DispatcherAnalysis {
+	functionNode: t.FunctionDeclaration;
+	helperCalls: HelperDispatchCall[];
+	loggerBindingNode: t.Node;
+	loggerName: string;
+	stockCalls: StockDispatchCall[];
+}
+
+interface AllowlistLoggerCall {
+	callNode: t.CallExpression;
+	loggerName: string;
+}
+
+interface FileLinkPassState {
+	bindingCandidates: FileManagerBindings[];
+	bindings?: FileManagerBindings;
+	dispatcherCandidates: DispatcherAnalysis[];
+	dispatcherCount: number;
+	helperCount: number;
+	patchedCount: number;
+}
+
+function isStringLiteral(node: t.Node | null | undefined, value: string) {
+	return t.isStringLiteral(node, { value });
+}
+
+function getCallableName(path: NodePath<t.Function>): string | null {
+	const node = path.node;
+	if (t.isFunctionDeclaration(node) && node.id?.name) return node.id.name;
+	if (t.isFunctionExpression(node) && node.id?.name) return node.id.name;
+
+	const parent = path.parentPath;
+	if (
+		parent?.isVariableDeclarator() &&
+		t.isIdentifier(parent.node.id) &&
+		parent.node.init === node
+	) {
+		return parent.node.id.name;
+	}
+	if (
+		parent?.isAssignmentExpression() &&
+		t.isIdentifier(parent.node.left) &&
+		parent.node.right === node
+	) {
+		return parent.node.left.name;
+	}
+	return null;
+}
+
+function getObjectPatternBindingName(
 	pattern: t.ObjectPattern,
 	keyName: string,
 ): string | null {
-	for (const prop of pattern.properties) {
-		if (!t.isObjectProperty(prop)) continue;
-		if (getObjectKeyName(prop.key) !== keyName) continue;
-		if (t.isIdentifier(prop.value)) return prop.value.name;
-		if (t.isAssignmentPattern(prop.value) && t.isIdentifier(prop.value.left)) {
-			return prop.value.left.name;
+	const names = pattern.properties.flatMap((property) => {
+		if (
+			!t.isObjectProperty(property) ||
+			getObjectKeyName(property.key) !== keyName ||
+			!t.isIdentifier(property.value)
+		) {
+			return [];
 		}
+		return [property.value.name];
+	});
+	return names.length === 1 ? names[0] : null;
+}
+
+function getZeroComparedIdentifier(
+	node: t.Node | null | undefined,
+): string | null {
+	if (!t.isBinaryExpression(node, { operator: "===" })) return null;
+	if (
+		t.isIdentifier(node.left) &&
+		t.isNumericLiteral(node.right, { value: 0 })
+	) {
+		return node.left.name;
+	}
+	if (
+		t.isNumericLiteral(node.left, { value: 0 }) &&
+		t.isIdentifier(node.right)
+	) {
+		return node.right.name;
 	}
 	return null;
 }
 
-function getFilePathBindingFromFunction(
-	path: any,
-): { filePathBinding: string; destructuredFrom: string } | null {
-	if (!t.isBlockStatement(path.node.body)) return null;
-	const firstParam = path.node.params[0];
-	if (!t.isIdentifier(firstParam)) return null;
-	const paramName = firstParam.name;
-
-	for (const statement of path.node.body.body) {
-		if (!t.isVariableDeclaration(statement)) continue;
-		for (const declaration of statement.declarations) {
-			if (!t.isObjectPattern(declaration.id)) continue;
-			if (!t.isIdentifier(declaration.init, { name: paramName })) continue;
-			if (!getObjectPatternBinding(declaration.id, "children")) continue;
-			const filePathBinding = getObjectPatternBinding(
-				declaration.id,
-				"filePath",
-			);
-			if (filePathBinding) {
-				return { filePathBinding, destructuredFrom: paramName };
-			}
-		}
-	}
-
-	return null;
-}
-
-function functionCallsPathToFileURL(
-	path: any,
-	filePathBinding: string,
+function hasStockRunnerSuccessContract(
+	callPath: NodePath<t.CallExpression>,
 ): boolean {
+	const awaitPath = callPath.parentPath;
+	if (
+		!awaitPath?.isAwaitExpression() ||
+		awaitPath.node.argument !== callPath.node
+	) {
+		return false;
+	}
+	const declarationPath = awaitPath.parentPath;
+	if (
+		!declarationPath?.isVariableDeclarator() ||
+		declarationPath.node.init !== awaitPath.node ||
+		!t.isObjectPattern(declarationPath.node.id)
+	) {
+		return false;
+	}
+	const codeName = getObjectPatternBindingName(declarationPath.node.id, "code");
+	if (!codeName) return false;
+	const codeBinding = declarationPath.scope.getBinding(codeName);
+	if (!codeBinding?.constant || codeBinding.constantViolations.length !== 0) {
+		return false;
+	}
+
+	const declarationStatementPath = declarationPath.parentPath;
+	if (
+		!declarationStatementPath?.isVariableDeclaration() ||
+		declarationStatementPath.node.declarations.length !== 1 ||
+		declarationStatementPath.node.declarations[0] !== declarationPath.node
+	) {
+		return false;
+	}
+	const blockPath = declarationStatementPath.parentPath;
+	if (!blockPath?.isBlockStatement()) return false;
+	const statementPaths = blockPath.get("body");
+	const declarationIndex = statementPaths.findIndex(
+		(statementPath) => statementPath.node === declarationStatementPath.node,
+	);
+	const successReturnPath = statementPaths[declarationIndex + 1];
+	if (declarationIndex < 0 || !successReturnPath?.isReturnStatement()) {
+		return false;
+	}
+	const comparedName = getZeroComparedIdentifier(
+		successReturnPath.node.argument,
+	);
+	return (
+		comparedName !== null &&
+		successReturnPath.scope.getBinding(comparedName) === codeBinding
+	);
+}
+
+function getFileManagerBindings(
+	path: NodePath<t.CallExpression>,
+): FileManagerBindings | null {
+	const { node } = path;
+	if (!t.isIdentifier(node.callee)) return null;
+	if (node.arguments.length !== 2) return null;
+	if (!isStringLiteral(node.arguments[0] as t.Node, DBUS_COMMAND)) return null;
+
+	const args = node.arguments[1];
+	if (!t.isArrayExpression(args)) return null;
+	if (
+		!args.elements.some((element) =>
+			isStringLiteral(element as t.Node, FILE_MANAGER_METHOD),
+		)
+	) {
+		return null;
+	}
+
+	const functionPath = path.getFunctionParent();
+	if (
+		!functionPath?.isFunctionDeclaration() ||
+		!functionPath.parentPath?.isProgram()
+	) {
+		return null;
+	}
+	if (!hasStockRunnerSuccessContract(path)) return null;
+	const revealName = getCallableName(functionPath);
+	if (!revealName) return null;
+	const revealBindingNode = path.scope.getBinding(revealName)?.path.node;
+	const runnerBindingNode = path.scope.getBinding(node.callee.name)?.path.node;
+	if (!revealBindingNode || !runnerBindingNode) return null;
+	return {
+		revealName,
+		revealBindingNode,
+		runnerName: node.callee.name,
+		runnerBindingNode,
+	};
+}
+
+function addFileManagerBinding(
+	bindings: FileManagerBindings[],
+	candidate: FileManagerBindings,
+): void {
+	if (
+		bindings.some(
+			(binding) =>
+				binding.revealBindingNode === candidate.revealBindingNode &&
+				binding.runnerBindingNode === candidate.runnerBindingNode,
+		)
+	) {
+		return;
+	}
+	bindings.push(candidate);
+}
+
+function getComparedIdentifier(
+	node: t.Node | null | undefined,
+	stringValue: string,
+): string | null {
+	if (!t.isBinaryExpression(node, { operator: "===" })) return null;
+	if (t.isIdentifier(node.left) && isStringLiteral(node.right, stringValue)) {
+		return node.left.name;
+	}
+	if (isStringLiteral(node.left, stringValue) && t.isIdentifier(node.right)) {
+		return node.right.name;
+	}
+	return null;
+}
+
+function isFileUrlToPathCall(
+	node: t.Node | null | undefined,
+	inputName: string,
+): node is t.CallExpression {
+	if (!t.isCallExpression(node) || node.arguments.length !== 1) return false;
+	if (!t.isMemberExpression(node.callee)) return false;
+	if (getMemberPropertyName(node.callee) !== "fileURLToPath") return false;
+	return t.isIdentifier(node.arguments[0], { name: inputName });
+}
+
+function isNewUrlExpression(
+	node: t.Node | null | undefined,
+	inputName: string,
+): boolean {
+	return (
+		t.isNewExpression(node) &&
+		t.isIdentifier(node.callee, { name: "URL" }) &&
+		node.arguments.length === 1 &&
+		t.isIdentifier(node.arguments[0], { name: inputName })
+	);
+}
+
+function getProtocolObjectName(node: t.Node | null | undefined): string | null {
+	if (!t.isMemberExpression(node)) return null;
+	if (getMemberPropertyName(node) !== "protocol") return null;
+	return t.isIdentifier(node.object) ? node.object.name : null;
+}
+
+function isFalseReturn(
+	node: t.Node | null | undefined,
+): node is t.ReturnStatement {
+	return (
+		t.isReturnStatement(node) &&
+		(t.isBooleanLiteral(node.argument, { value: false }) ||
+			(t.isUnaryExpression(node.argument, { operator: "!" }) &&
+				t.isNumericLiteral(node.argument.argument, { value: 1 })))
+	);
+}
+
+function isExactEmptyHostGuard(
+	node: t.Node | null | undefined,
+	urlName: string,
+): boolean {
+	if (!t.isIfStatement(node) || node.alternate) return false;
+	if (!t.isBinaryExpression(node.test, { operator: "!==" })) return false;
+	if (
+		!t.isMemberExpression(node.test.left) ||
+		!t.isIdentifier(node.test.left.object, { name: urlName }) ||
+		getMemberPropertyName(node.test.left) !== "host" ||
+		!isStringLiteral(node.test.right, "")
+	) {
+		return false;
+	}
+	return isFalseReturn(node.consequent);
+}
+
+const NON_ALLOWLISTED_WARNING =
+	"[hyperlink] refusing to dispatch clicked link with non-allowlisted scheme";
+
+function containsNonAllowlistedWarning(node: t.Node): boolean {
 	let found = false;
-	path.traverse({
-		Function(innerPath: any) {
-			if (innerPath !== path) innerPath.skip();
-		},
-		CallExpression(callPath: any) {
-			if (found) return;
-			const callee = callPath.node.callee;
-			if (!t.isMemberExpression(callee)) return;
-			if (getMemberPropertyName(callee) !== "pathToFileURL") return;
-			const firstArg = callPath.node.arguments[0];
-			if (t.isIdentifier(firstArg, { name: filePathBinding })) {
-				found = true;
-			}
-		},
-		noScope: true,
+	t.traverseFast(node, (child) => {
+		if (
+			(t.isStringLiteral(child) &&
+				child.value.includes(NON_ALLOWLISTED_WARNING)) ||
+			(t.isTemplateElement(child) &&
+				child.value.raw.includes(NON_ALLOWLISTED_WARNING))
+		) {
+			found = true;
+		}
 	});
 	return found;
 }
 
-function isHrefMember(
+function isNonAllowlistedWarningNode(
 	node: t.Node | null | undefined,
-): node is t.MemberExpression {
-	return t.isMemberExpression(node) && getMemberPropertyName(node) === "href";
+): node is t.StringLiteral | t.TemplateElement {
+	return (
+		(t.isStringLiteral(node) && node.value.includes(NON_ALLOWLISTED_WARNING)) ||
+		(t.isTemplateElement(node) &&
+			node.value.raw.includes(NON_ALLOWLISTED_WARNING))
+	);
 }
 
-function buildHelperCall(
-	filePathBinding: string,
-	fallbackHref: t.Expression,
-): t.CallExpression {
-	return t.callExpression(t.identifier(HELPER_NAME), [
-		t.identifier(filePathBinding),
-		t.cloneNode(fallbackHref),
-	]);
+function isWarnLevelOptions(node: t.Node | null | undefined): boolean {
+	if (!t.isObjectExpression(node) || node.properties.length !== 1) return false;
+	const property = node.properties[0];
+	return (
+		t.isObjectProperty(property) &&
+		getObjectKeyName(property.key) === "level" &&
+		isStringLiteral(property.value as t.Node, "warn")
+	);
 }
 
-function buildHelperStatement(): t.Statement {
+function getAllowlistLoggerCall(
+	node: t.Node | null | undefined,
+	protocolName: string,
+): AllowlistLoggerCall | null {
+	if (!t.isIfStatement(node)) return null;
+	if (!t.isUnaryExpression(node.test, { operator: "!" })) return null;
+	const call = node.test.argument;
+	if (!t.isCallExpression(call) || call.arguments.length !== 1) return null;
+	if (
+		!t.isMemberExpression(call.callee) ||
+		getMemberPropertyName(call.callee) !== "has" ||
+		!t.isIdentifier(call.arguments[0], { name: protocolName })
+	) {
+		return null;
+	}
+
+	const loggerCalls: AllowlistLoggerCall[] = [];
+	t.traverseFast(node.consequent, (child) => {
+		if (
+			!t.isCallExpression(child) ||
+			!t.isIdentifier(child.callee) ||
+			child.arguments.length !== 2 ||
+			!containsNonAllowlistedWarning(child.arguments[0] as t.Node) ||
+			!isWarnLevelOptions(child.arguments[1] as t.Node)
+		) {
+			return;
+		}
+		loggerCalls.push({
+			callNode: child,
+			loggerName: child.callee.name,
+		});
+	});
+	return loggerCalls.length === 1 ? loggerCalls[0] : null;
+}
+
+function analyzeDispatcher(
+	path: NodePath<t.FunctionDeclaration>,
+): DispatcherAnalysis | null {
+	if (!path.parentPath?.isProgram()) return null;
+	if (!t.isBlockStatement(path.node.body)) return null;
+	const firstParam = path.node.params[0];
+	if (!t.isIdentifier(firstParam)) return null;
+	const inputName = firstParam.name;
+
+	const urlNames = new Set<string>();
+	const protocolReads: Array<{ protocolName: string; urlName: string }> = [];
+	const callPaths = new Map<t.CallExpression, NodePath<t.CallExpression>>();
+
+	path.traverse({
+		Function(innerPath) {
+			innerPath.skip();
+		},
+		CallExpression(callPath) {
+			callPaths.set(callPath.node, callPath);
+		},
+		VariableDeclarator(declarationPath) {
+			const { id, init } = declarationPath.node;
+			if (!t.isIdentifier(id)) return;
+			if (isNewUrlExpression(init, inputName)) urlNames.add(id.name);
+			const urlName = getProtocolObjectName(init);
+			if (urlName) {
+				protocolReads.push({ protocolName: id.name, urlName });
+			}
+		},
+		AssignmentExpression(assignmentPath) {
+			const { left, right } = assignmentPath.node;
+			if (!t.isIdentifier(left)) return;
+			if (isNewUrlExpression(right, inputName)) urlNames.add(left.name);
+			const urlName = getProtocolObjectName(right);
+			if (urlName) {
+				protocolReads.push({ protocolName: left.name, urlName });
+			}
+		},
+	});
+
+	if (urlNames.size !== 1) return null;
+	const urlName = urlNames.values().next().value as string;
+	const protocolNames = new Set(
+		protocolReads
+			.filter((read) => read.urlName === urlName)
+			.map((read) => read.protocolName),
+	);
+	if (protocolNames.size !== 1) return null;
+	const protocolName = protocolNames.values().next().value as string;
+
+	const body = path.node.body.body;
+	const fileBranchIndexes = body.flatMap((statement, index) =>
+		t.isIfStatement(statement) &&
+		getComparedIdentifier(statement.test, "file:") === protocolName &&
+		t.isBlockStatement(statement.consequent)
+			? [index]
+			: [],
+	);
+	if (fileBranchIndexes.length !== 1) return null;
+	const fileBranchIndex = fileBranchIndexes[0];
+	const fileBranch = body[fileBranchIndex] as t.IfStatement & {
+		consequent: t.BlockStatement;
+	};
+	const fileBody = fileBranch.consequent.body;
+	const hostGuardIndexes = fileBody.flatMap((statement, index) =>
+		isExactEmptyHostGuard(statement, urlName) ? [index] : [],
+	);
+	if (hostGuardIndexes.length !== 1) return null;
+
+	const dispatchTryIndexes = fileBody.flatMap((statement, index) => {
+		if (index <= hostGuardIndexes[0] || !t.isTryStatement(statement)) return [];
+		if (!statement.handler?.body.body.some(isFalseReturn)) return [];
+		if (statement.block.body.length !== 1) return [];
+		const returnStatement = statement.block.body[0];
+		if (
+			!t.isReturnStatement(returnStatement) ||
+			!t.isAwaitExpression(returnStatement.argument) ||
+			!t.isCallExpression(returnStatement.argument.argument)
+		) {
+			return [];
+		}
+		return [index];
+	});
+	if (dispatchTryIndexes.length !== 1) return null;
+	const loggerCalls = body.slice(fileBranchIndex + 1).flatMap((statement) => {
+		const loggerCall = getAllowlistLoggerCall(statement, protocolName);
+		return loggerCall ? [loggerCall] : [];
+	});
+	if (loggerCalls.length !== 1) return null;
+	const loggerName = loggerCalls[0].loggerName;
+	const loggerCallPath = callPaths.get(loggerCalls[0].callNode);
+	const loggerBindingNode =
+		loggerCallPath?.scope.getBinding(loggerName)?.path.node;
+	if (!loggerBindingNode) return null;
+
+	const helperCalls: HelperDispatchCall[] = [];
+	const stockCalls: StockDispatchCall[] = [];
+	const dispatchTry = fileBody[dispatchTryIndexes[0]] as t.TryStatement;
+	const returnStatement = dispatchTry.block.body[0] as t.ReturnStatement & {
+		argument: t.AwaitExpression;
+	};
+	const awaitNode = returnStatement.argument;
+	const callNode = awaitNode.argument as t.CallExpression;
+	const callPath = callPaths.get(callNode);
+	if (
+		!callPath ||
+		callPath.scope.getBinding(loggerName)?.path.node !== loggerBindingNode
+	) {
+		return null;
+	}
+
+	if (t.isIdentifier(callNode.callee) && callNode.callee.name === HELPER_NAME) {
+		const stockOpenName = t.isIdentifier(callNode.arguments[1])
+			? callNode.arguments[1].name
+			: null;
+		const runnerName = t.isIdentifier(callNode.arguments[2])
+			? callNode.arguments[2].name
+			: null;
+		const helperLoggerName = t.isIdentifier(callNode.arguments[3])
+			? callNode.arguments[3].name
+			: null;
+		helperCalls.push({
+			awaitNode,
+			callNode,
+			filePathExpression: isFileUrlToPathCall(
+				callNode.arguments[0] as t.Node,
+				inputName,
+			)
+				? (callNode.arguments[0] as t.CallExpression)
+				: null,
+			stockOpenName,
+			stockBindingNode: stockOpenName
+				? (callPath.scope.getBinding(stockOpenName)?.path.node ?? null)
+				: null,
+			loggerName: helperLoggerName,
+			loggerBindingNode: helperLoggerName
+				? (callPath.scope.getBinding(helperLoggerName)?.path.node ?? null)
+				: null,
+			runnerName,
+			runnerBindingNode: runnerName
+				? (callPath.scope.getBinding(runnerName)?.path.node ?? null)
+				: null,
+		});
+	} else if (
+		t.isIdentifier(callNode.callee) &&
+		callNode.arguments.length === 1 &&
+		isFileUrlToPathCall(callNode.arguments[0] as t.Node, inputName)
+	) {
+		stockCalls.push({
+			awaitNode,
+			callNode,
+			filePathExpression: callNode.arguments[0] as t.CallExpression,
+			stockOpenName: callNode.callee.name,
+			stockBindingNode:
+				callPath.scope.getBinding(callNode.callee.name)?.path.node ?? null,
+		});
+	}
+
+	return {
+		functionNode: path.node,
+		helperCalls,
+		loggerBindingNode,
+		loggerName,
+		stockCalls,
+	};
+}
+
+function recordDispatcherCandidate(
+	path: NodePath<t.StringLiteral | t.TemplateElement>,
+	seen: Set<t.FunctionDeclaration>,
+	dispatchers: DispatcherAnalysis[],
+): void {
+	if (!isNonAllowlistedWarningNode(path.node)) return;
+	const functionPath = path.getFunctionParent();
+	if (!functionPath?.isFunctionDeclaration()) return;
+	if (seen.has(functionPath.node)) return;
+	seen.add(functionPath.node);
+	const analysis = analyzeDispatcher(functionPath);
+	if (analysis) dispatchers.push(analysis);
+}
+
+function buildHelperStatement(): t.FunctionDeclaration {
 	const ast = parse(HELPER_SOURCE);
 	const statement = ast.program.body[0];
-	if (!t.isFunctionDeclaration(statement)) {
+	if (!t.isFunctionDeclaration(statement) || !statement.async) {
 		throw new Error(
-			"file-link-targets helper source did not parse as a function",
+			"file-link-targets helper source did not parse as an async function",
 		);
 	}
 	return statement;
 }
 
-function patchFilePathComponent(path: any): boolean {
-	const binding = getFilePathBindingFromFunction(path);
-	if (!binding) return false;
-	if (!functionCallsPathToFileURL(path, binding.filePathBinding)) return false;
-
-	let patched = false;
-	path.traverse({
-		Function(innerPath: any) {
-			if (innerPath !== path) innerPath.skip();
-		},
-		CallExpression(callPath: any) {
-			if (!isElementCall(callPath.node)) return;
-			const props = callPath.node.arguments[1];
-			if (!t.isObjectExpression(props)) return;
-			const hasChildrenProp = props.properties.some((prop) =>
-				hasObjectKeyName(prop, "children"),
-			);
-			if (!hasChildrenProp) return;
-
-			const urlProp = props.properties.find(
-				(prop): prop is t.ObjectProperty =>
-					t.isObjectProperty(prop) && getObjectKeyName(prop.key) === "url",
-			);
-			if (!urlProp) return;
-			if (t.isCallExpression(urlProp.value)) {
-				if (t.isIdentifier(urlProp.value.callee, { name: HELPER_NAME })) {
-					patched = true;
-				}
-				return;
-			}
-			if (!isHrefMember(urlProp.value)) return;
-
-			urlProp.value = buildHelperCall(
-				binding.filePathBinding,
-				urlProp.value as t.Expression,
-			);
-			patched = true;
-		},
-	});
-
-	return patched;
+function buildHelperCall(
+	stockCall: StockDispatchCall,
+	bindings: FileManagerBindings,
+	dispatcher: DispatcherAnalysis,
+): t.CallExpression {
+	return t.callExpression(t.identifier(HELPER_NAME), [
+		t.cloneNode(stockCall.filePathExpression),
+		t.identifier(bindings.revealName),
+		t.identifier(bindings.runnerName),
+		t.identifier(dispatcher.loggerName),
+	]);
 }
 
-function hasHelper(ast: t.File): boolean {
-	let found = false;
-	traverse(ast, {
-		FunctionDeclaration(path) {
-			if (path.node.id?.name === HELPER_NAME) {
-				found = true;
-				path.stop();
-			}
-		},
-		noScope: true,
-	});
-	return found;
-}
-
-function createFileLinkTargetsMutator(ast: t.File): Visitor {
-	let patched = false;
-	return {
-		FunctionDeclaration(path) {
-			if (patched) return;
-			if (!patchFilePathComponent(path)) return;
-			patched = true;
-			if (!hasHelper(ast)) {
-				path.insertBefore(buildHelperStatement());
-			}
-		},
-		Program: {
-			exit() {
-				if (!patched) {
-					console.warn(
-						"file-link-targets: Could not find file hyperlink component to patch",
-					);
-				}
-			},
-		},
+function createFileLinkPasses(): PatchAstPass[] {
+	const seenDispatcherNodes = new Set<t.FunctionDeclaration>();
+	const state: FileLinkPassState = {
+		bindingCandidates: [],
+		bindings: undefined,
+		dispatcherCandidates: [],
+		dispatcherCount: 0,
+		helperCount: 0,
+		patchedCount: 0,
 	};
-}
 
-function verifyPatchedFilePathComponent(ast: t.File): true | string {
-	let foundComponent = false;
-	let foundPatchedUrl = false;
-	let foundUnpatchedUrl = false;
-
-	traverse(ast, {
-		Function(path) {
-			const binding = getFilePathBindingFromFunction(path);
-			if (!binding) return;
-			if (!functionCallsPathToFileURL(path, binding.filePathBinding)) return;
-			foundComponent = true;
-
-			path.traverse({
-				Function(innerPath: any) {
-					if (innerPath !== path) innerPath.skip();
+	return [
+		{
+			pass: "discover",
+			visitor: {
+				CallExpression(path) {
+					const candidate = getFileManagerBindings(path);
+					if (!candidate) return;
+					addFileManagerBinding(state.bindingCandidates, candidate);
 				},
-				ObjectProperty(propPath: any) {
-					if (getObjectKeyName(propPath.node.key) !== "url") return;
-					const value = propPath.node.value;
+				FunctionDeclaration(path) {
 					if (
-						t.isCallExpression(value) &&
-						t.isIdentifier(value.callee, { name: HELPER_NAME }) &&
-						value.arguments.length === 2 &&
-						t.isIdentifier(value.arguments[0], {
-							name: binding.filePathBinding,
-						}) &&
-						isHrefMember(value.arguments[1] as t.Node)
+						path.parentPath?.isProgram() &&
+						path.node.id?.name === HELPER_NAME
 					) {
-						foundPatchedUrl = true;
-					} else if (isHrefMember(value)) {
-						foundUnpatchedUrl = true;
+						state.helperCount += 1;
 					}
 				},
-				noScope: true,
-			});
+				StringLiteral(path) {
+					recordDispatcherCandidate(
+						path,
+						seenDispatcherNodes,
+						state.dispatcherCandidates,
+					);
+				},
+				TemplateElement(path) {
+					recordDispatcherCandidate(
+						path,
+						seenDispatcherNodes,
+						state.dispatcherCandidates,
+					);
+				},
+				Program: {
+					exit() {
+						if (state.bindingCandidates.length === 1) {
+							state.bindings = state.bindingCandidates[0];
+						}
+						state.dispatcherCount = state.dispatcherCandidates.length;
+					},
+				},
+			},
 		},
-		noScope: true,
-	});
+		{
+			pass: "mutate",
+			visitor: {
+				Program: {
+					exit(programPath) {
+						if (!state.bindings) return;
+						if (state.dispatcherCandidates.length !== 1) return;
+						const analysis = state.dispatcherCandidates[0];
+						if (
+							analysis.helperCalls.length === 1 &&
+							analysis.stockCalls.length === 0 &&
+							state.helperCount === 1
+						) {
+							const helperCall = analysis.helperCalls[0];
+							if (
+								helperCall.callNode.arguments.length === 4 &&
+								helperCall.stockBindingNode ===
+									state.bindings.revealBindingNode &&
+								helperCall.runnerBindingNode ===
+									state.bindings.runnerBindingNode &&
+								helperCall.loggerBindingNode === analysis.loggerBindingNode
+							) {
+								state.patchedCount = 1;
+							}
+							return;
+						}
+						if (
+							analysis.stockCalls.length !== 1 ||
+							analysis.helperCalls.length !== 0 ||
+							state.helperCount !== 0
+						) {
+							return;
+						}
 
-	if (!foundComponent) return "File hyperlink component not found";
-	if (!foundPatchedUrl) {
-		return "File hyperlink component did not route href through file-link helper";
+						const stockCall = analysis.stockCalls[0];
+						if (
+							stockCall.stockBindingNode !== state.bindings.revealBindingNode ||
+							stockCall.awaitNode.argument !== stockCall.callNode
+						) {
+							return;
+						}
+						const functionIndex = programPath.node.body.indexOf(
+							analysis.functionNode,
+						);
+						if (functionIndex < 0) return;
+
+						stockCall.awaitNode.argument = buildHelperCall(
+							stockCall,
+							state.bindings,
+							analysis,
+						);
+						programPath.node.body.splice(
+							functionIndex,
+							0,
+							buildHelperStatement(),
+						);
+						state.patchedCount = 1;
+					},
+				},
+			},
+		},
+		{
+			pass: "finalize",
+			visitor: {
+				Program: {
+					exit() {
+						if (!state.bindings) {
+							console.warn(
+								"file-link-targets: Could not uniquely resolve stock file dispatch dependencies",
+							);
+						}
+						if (state.dispatcherCount !== 1) {
+							console.warn(
+								`file-link-targets: Expected one stock file dispatcher, found ${state.dispatcherCount}`,
+							);
+						}
+						if (state.patchedCount !== 1) {
+							console.warn(
+								`file-link-targets: Expected one patched file dispatcher, found ${state.patchedCount}`,
+							);
+						}
+					},
+				},
+			},
+		},
+	];
+}
+
+interface VerificationEvidence {
+	bindings: FileManagerBindings[];
+	dispatchers: DispatcherAnalysis[];
+	helpers: t.FunctionDeclaration[];
+}
+
+function collectVerificationEvidence(ast: t.File): VerificationEvidence {
+	const seenDispatcherNodes = new Set<t.FunctionDeclaration>();
+	const evidence: VerificationEvidence = {
+		bindings: [],
+		dispatchers: [],
+		helpers: [],
+	};
+	traverse(ast, {
+		CallExpression(path) {
+			const candidate = getFileManagerBindings(path);
+			if (candidate) addFileManagerBinding(evidence.bindings, candidate);
+		},
+		FunctionDeclaration(path) {
+			if (path.parentPath?.isProgram() && path.node.id?.name === HELPER_NAME) {
+				evidence.helpers.push(path.node);
+			}
+		},
+		StringLiteral(path) {
+			recordDispatcherCandidate(
+				path,
+				seenDispatcherNodes,
+				evidence.dispatchers,
+			);
+		},
+		TemplateElement(path) {
+			recordDispatcherCandidate(
+				path,
+				seenDispatcherNodes,
+				evidence.dispatchers,
+			);
+		},
+	});
+	return evidence;
+}
+
+function verifyHelper(helpers: t.FunctionDeclaration[]): true | string {
+	if (helpers.length !== 1) {
+		return `Expected one file-open helper, found ${helpers.length}`;
 	}
-	if (foundUnpatchedUrl) {
-		return "File hyperlink component still contains an unpatched href URL property";
+	if (!t.isNodesEquivalent(helpers[0], buildHelperStatement())) {
+		return "File-open helper no longer matches the canonical implementation";
+	}
+	return true;
+}
+
+function verifyDispatcher(evidence: VerificationEvidence): true | string {
+	if (evidence.bindings.length !== 1) {
+		return `Expected one stock file dispatch dependency set, found ${evidence.bindings.length}`;
+	}
+	if (evidence.dispatchers.length !== 1) {
+		return `Expected one stock file dispatcher, found ${evidence.dispatchers.length}`;
+	}
+	const bindings = evidence.bindings[0];
+	const dispatcher = evidence.dispatchers[0];
+	if (dispatcher.stockCalls.length !== 0) {
+		return "Stock file dispatcher still bypasses the enhanced opener";
+	}
+	if (dispatcher.helperCalls.length !== 1) {
+		return `Expected one enhanced file dispatch call, found ${dispatcher.helperCalls.length}`;
+	}
+
+	const helperCall = dispatcher.helperCalls[0];
+	if (!helperCall.filePathExpression) {
+		return "Enhanced file dispatch no longer receives the decoded file path";
+	}
+	if (helperCall.callNode.arguments.length !== 4) {
+		return "Enhanced file dispatch argument contract changed";
+	}
+	if (helperCall.stockBindingNode !== bindings.revealBindingNode) {
+		return "Enhanced file dispatch no longer preserves the stock fallback";
+	}
+	if (helperCall.runnerBindingNode !== bindings.runnerBindingNode) {
+		return "Enhanced file dispatch no longer uses the stock process runner";
+	}
+	if (helperCall.loggerBindingNode !== dispatcher.loggerBindingNode) {
+		return "Enhanced file dispatch no longer uses the stock warning channel";
 	}
 	return true;
 }
@@ -330,19 +881,16 @@ function verifyPatchedFilePathComponent(ast: t.File): true | string {
 export const fileLinkTargets: Patch = {
 	tag: "file-link-targets",
 
-	astPasses: (ast) => [
-		{
-			pass: "mutate",
-			visitor: createFileLinkTargetsMutator(ast),
-		},
-	],
+	astPasses: () => createFileLinkPasses(),
 
 	verify: (code, ast) => {
 		const verifyAst = getVerifyAst(code, ast);
 		if (!verifyAst) {
 			return "Unable to parse AST during file-link-targets verification";
 		}
-		if (!hasHelper(verifyAst)) return "Missing file-link href helper";
-		return verifyPatchedFilePathComponent(verifyAst);
+		const evidence = collectVerificationEvidence(verifyAst);
+		const helperResult = verifyHelper(evidence.helpers);
+		if (helperResult !== true) return helperResult;
+		return verifyDispatcher(evidence);
 	},
 };
