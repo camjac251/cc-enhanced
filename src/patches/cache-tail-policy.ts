@@ -1231,7 +1231,13 @@ function createCacheControlCapStatements(
 	});
 }
 
+type RequestClampFunction =
+	| t.FunctionDeclaration
+	| t.FunctionExpression
+	| t.ArrowFunctionExpression;
+
 type RequestClampAnchor = {
+	functionNode: RequestClampFunction;
 	functionName: string;
 	requestCopyName: string;
 	maxTokensName: string;
@@ -1243,6 +1249,56 @@ type RequestClampAnchor = {
 // result the mutator's Program.exit hook already computed during mutate.
 const clampAnchorCache = new WeakMap<t.File, RequestClampAnchor | null>();
 
+function getRequestClampAnchor(node: t.Node): RequestClampAnchor | null {
+	if (
+		!t.isFunctionDeclaration(node) &&
+		!t.isFunctionExpression(node) &&
+		!t.isArrowFunctionExpression(node)
+	) {
+		return null;
+	}
+	if (!t.isBlockStatement(node.body)) return null;
+	if (node.params.length !== 2) return null;
+	const [requestParam, limitParam] = node.params;
+	if (!t.isIdentifier(requestParam) || !t.isIdentifier(limitParam)) return null;
+	const functionName = getFunctionIdentifierName(node);
+	if (!functionName) return null;
+
+	let requestCopyName: string | null = null;
+	let maxTokensName: string | null = null;
+	let returnStmt: t.ReturnStatement | null = null;
+
+	for (const stmt of node.body.body) {
+		if (t.isVariableDeclaration(stmt)) {
+			for (const decl of stmt.declarations) {
+				maxTokensName =
+					maxTokensName ??
+					isMaxTokensClampDeclarator(decl, requestParam.name, limitParam.name);
+				requestCopyName =
+					requestCopyName ?? isRequestCopyDeclarator(decl, requestParam.name);
+			}
+		}
+		if (
+			requestCopyName &&
+			maxTokensName &&
+			isClampReturnStatement(stmt, requestCopyName, maxTokensName)
+		) {
+			returnStmt = stmt;
+			break;
+		}
+	}
+
+	if (!requestCopyName || !maxTokensName || !returnStmt) return null;
+	return {
+		functionNode: node,
+		functionName,
+		requestCopyName,
+		maxTokensName,
+		returnStmt,
+		body: node.body.body,
+	};
+}
+
 function findRequestClampFunction(ast: t.File): RequestClampAnchor | null {
 	const cached = clampAnchorCache.get(ast);
 	if (cached !== undefined) return cached;
@@ -1252,57 +1308,8 @@ function findRequestClampFunction(ast: t.File): RequestClampAnchor | null {
 	traverse(ast, {
 		Function(path) {
 			if (match) return;
-			if (
-				!path.isFunctionDeclaration() &&
-				!path.isFunctionExpression() &&
-				!path.isArrowFunctionExpression()
-			) {
-				return;
-			}
-			if (!t.isBlockStatement(path.node.body)) return;
-			if (path.node.params.length !== 2) return;
-			const [requestParam, limitParam] = path.node.params;
-			if (!t.isIdentifier(requestParam) || !t.isIdentifier(limitParam)) return;
-			const functionName = getFunctionIdentifierName(path.node);
-			if (!functionName) return;
-
-			let requestCopyName: string | null = null;
-			let maxTokensName: string | null = null;
-			let returnStmt: t.ReturnStatement | null = null;
-
-			for (const stmt of path.node.body.body) {
-				if (t.isVariableDeclaration(stmt)) {
-					for (const decl of stmt.declarations) {
-						maxTokensName =
-							maxTokensName ??
-							isMaxTokensClampDeclarator(
-								decl,
-								requestParam.name,
-								limitParam.name,
-							);
-						requestCopyName =
-							requestCopyName ??
-							isRequestCopyDeclarator(decl, requestParam.name);
-					}
-				}
-				if (
-					requestCopyName &&
-					maxTokensName &&
-					isClampReturnStatement(stmt, requestCopyName, maxTokensName)
-				) {
-					returnStmt = stmt;
-					break;
-				}
-			}
-
-			if (!requestCopyName || !maxTokensName || !returnStmt) return;
-			match = {
-				functionName,
-				requestCopyName,
-				maxTokensName,
-				returnStmt,
-				body: path.node.body.body,
-			};
+			match = getRequestClampAnchor(path.node);
+			if (!match) return;
 			path.stop();
 		},
 		noScope: true,
@@ -1392,8 +1399,62 @@ function createCacheControlBlockCapRequestBuilderInjector(): Visitor {
 // Verifiers
 // ---------------------------------------------------------------------------
 
-function verifyTailWindowPolicy(ast: t.File): true | string {
-	let foundMarkerFunction = false;
+function getObjectPatternBindingName(
+	pattern: t.ObjectPattern,
+	keyName: string,
+): string | null {
+	for (const prop of pattern.properties) {
+		if (!t.isObjectProperty(prop)) continue;
+		if (getObjectKeyName(prop.key) !== keyName) continue;
+		if (t.isIdentifier(prop.value)) return prop.value.name;
+		if (t.isAssignmentPattern(prop.value) && t.isIdentifier(prop.value.left)) {
+			return prop.value.left.name;
+		}
+	}
+	return null;
+}
+
+function findRequestBuilderVariableName(body: t.Statement[]): string | null {
+	for (const stmt of body) {
+		if (!t.isVariableDeclaration(stmt)) continue;
+		for (const decl of stmt.declarations) {
+			if (!t.isIdentifier(decl.id)) continue;
+			if (!t.isExpression(decl.init)) continue;
+			const requestName = decl.id.name;
+			const obj = getObjectExpressionFromExpression(decl.init);
+			if (!obj || !isMainRequestObjectExpression(obj)) continue;
+			if (
+				!body.some((bodyStmt) =>
+					isRequestBuilderSequenceReturn(bodyStmt, requestName),
+				)
+			) {
+				continue;
+			}
+			return requestName;
+		}
+	}
+	return null;
+}
+
+type CacheTailVerificationCheckId =
+	| "tail-window"
+	| "sysprompt-scope"
+	| "caller-ttl"
+	| "agent-allowlist"
+	| "block-cap"
+	| "one-hour-ttl";
+
+export type CacheTailVerificationInventory = {
+	checks: Array<{
+		id: CacheTailVerificationCheckId;
+		result: true | string;
+	}>;
+};
+
+export function collectCacheTailVerificationInventory(
+	ast: t.File,
+): CacheTailVerificationInventory {
+	let tailFunctionNode: t.Node | null = null;
 	let hasTailWindowDecl = false;
 	let hasUserOnlyDecl = false;
 	let tailWindowDeclCount = 0;
@@ -1404,136 +1465,34 @@ function verifyTailWindowPolicy(ast: t.File): true | string {
 	let hasUserOnlyConditional = false;
 	let hasDecimationGate = false;
 
-	traverse(ast, {
-		Function(path) {
-			if (foundMarkerFunction) return;
-			if (!t.isBlockStatement(path.node.body)) return;
-			const markerStmt = path.node.body.body.find(
-				(stmt) => !t.isFunctionDeclaration(stmt) && nodeContainsMarker(stmt),
-			);
-			if (!markerStmt) return;
-			const markerSetName = getMarkerCountSetName(markerStmt);
-
-			foundMarkerFunction = true;
-			hasTailWindowGate = markerSetName
-				? hasCacheTailWindowLoop(path.node.body.body, markerSetName)
-				: false;
-
-			path.traverse({
-				VariableDeclarator(varPath) {
-					if (!t.isIdentifier(varPath.node.id)) return;
-					if (varPath.node.id.name === "cacheTailWindow") {
-						tailWindowDeclCount += 1;
-						if (t.isNumericLiteral(varPath.node.init, { value: 2 })) {
-							hasTailWindowDecl = true;
-						}
-					}
-					if (varPath.node.id.name === "cacheUserOnly") {
-						userOnlyDeclCount += 1;
-						if (t.isBooleanLiteral(varPath.node.init, { value: true })) {
-							hasUserOnlyDecl = true;
-						}
-					}
-				},
-				AssignmentExpression(assignPath) {
-					if (
-						t.isIdentifier(assignPath.node.left, {
-							name: "cacheTailWindow",
-						})
-					) {
-						hasTailWindowReassign = true;
-					}
-					if (
-						t.isIdentifier(assignPath.node.left, {
-							name: "cacheUserOnly",
-						})
-					) {
-						hasUserOnlyReassign = true;
-					}
-				},
-				UpdateExpression(updatePath) {
-					if (
-						t.isIdentifier(updatePath.node.argument, {
-							name: "cacheTailWindow",
-						})
-					) {
-						hasTailWindowReassign = true;
-					}
-					if (
-						t.isIdentifier(updatePath.node.argument, {
-							name: "cacheUserOnly",
-						})
-					) {
-						hasUserOnlyReassign = true;
-					}
-				},
-				ConditionalExpression(condPath) {
-					if (
-						t.isIdentifier(condPath.node.test, {
-							name: "cacheUserOnly",
-						}) &&
-						t.isBooleanLiteral(condPath.node.consequent, {
-							value: false,
-						}) &&
-						t.isExpression(condPath.node.alternate)
-					) {
-						hasUserOnlyConditional = true;
-					}
-				},
-				BinaryExpression(binPath) {
-					if (
-						binPath.node.operator === "===" &&
-						t.isBinaryExpression(binPath.node.left, { operator: "%" }) &&
-						t.isIdentifier(binPath.node.left.left, { name: "userMsgCount" }) &&
-						t.isNumericLiteral(binPath.node.left.right, { value: 15 }) &&
-						t.isNumericLiteral(binPath.node.right, { value: 0 })
-					) {
-						hasDecimationGate = true;
-					}
-				},
-				noScope: true,
-			});
-
-			path.stop();
-		},
-		noScope: true,
-	});
-
-	if (!foundMarkerFunction) {
-		return "Could not locate cache breakpoint function anchor";
-	}
-	if (!hasTailWindowDecl) {
-		return "Missing fixed cacheTailWindow declaration";
-	}
-	if (tailWindowDeclCount !== 1) {
-		return `cacheTailWindow declaration is ambiguous (${tailWindowDeclCount} declarations)`;
-	}
-	if (!hasUserOnlyDecl) {
-		return "Missing cacheUserOnly gating declaration";
-	}
-	if (userOnlyDeclCount !== 1) {
-		return `cacheUserOnly declaration is ambiguous (${userOnlyDeclCount} declarations)`;
-	}
-	if (hasTailWindowReassign || hasUserOnlyReassign) {
-		return "cacheTailWindow/cacheUserOnly reassignment detected after declaration";
-	}
-	if (!hasTailWindowGate) {
-		return "Tail cache window was not patched";
-	}
-	if (!hasUserOnlyConditional) {
-		return "Assistant cache tail gating was not patched to user-only";
-	}
-	if (!hasDecimationGate) {
-		return "Decimation cache loop was not patched";
-	}
-	return true;
-}
-
-function verifySyspromptGlobalScope(ast: t.File): true | string {
 	let foundSyspromptMarker = false;
 	let firstNonNullScope: string | null = null;
 	let hasLaterOrgScope = false;
 	let nonNullScopeCount = 0;
+
+	let cacheControlBuilderNode: t.Node | null = null;
+	let cacheControlScopeName: string | null = null;
+	let cacheControlTtlName: string | null = null;
+	let hasCallerTtlGate = false;
+	let hasScopeForcedTtlGate = false;
+
+	let foundAllowlist = false;
+	let hasAgentQuerySource = false;
+	let hasRuntimeGuard = false;
+
+	let requestClampAnchor = clampAnchorCache.get(ast);
+	let requestBuilderFunctionNode: t.Node | null = null;
+	let fixedClampDeclCount = 0;
+	let fixedRequestBuilderDeclCount = 0;
+	let hasDeleteInClamp = false;
+	let hasDeleteInRequestBuilder = false;
+
+	let hasSystemTtlSet = false;
+	let toolsLoopTtlSetCount = 0;
+	let guardedToolsLoopTtlSetCount = 0;
+
+	const isWithinFunction = (path: NodePath, functionNode: t.Node): boolean =>
+		Boolean(path.findParent((parentPath) => parentPath.node === functionNode));
 
 	const readCacheScopePush = (stmt: t.Statement): string | null => {
 		if (!t.isExpressionStatement(stmt)) return null;
@@ -1584,302 +1543,52 @@ function verifySyspromptGlobalScope(ast: t.File): true | string {
 		}
 	};
 
-	traverse(ast, {
-		Function(path) {
-			if (foundSyspromptMarker) return;
-			if (!t.isBlockStatement(path.node.body)) return;
-
-			for (const stmt of path.node.body.body) {
-				if (!t.isIfStatement(stmt)) continue;
-				if (!t.isBlockStatement(stmt.consequent)) continue;
-				if (!blockContainsSyspromptMarker(stmt.consequent.body)) continue;
-
-				foundSyspromptMarker = true;
-				walkScopedPushes(stmt.consequent.body);
-				path.stop();
-				return;
-			}
-		},
-		noScope: true,
-	});
-
-	if (!foundSyspromptMarker) {
-		return "Could not locate sysprompt tool-based cache anchor";
-	}
-	if (firstNonNullScope !== "global") {
-		return 'Sysprompt identity block not patched to cacheScope: "global"';
-	}
-	if (nonNullScopeCount > 1 && !hasLaterOrgScope) {
-		return 'Sysprompt scope rewrite no longer preserves later cacheScope: "org" blocks';
-	}
-	return true;
-}
-
-function getObjectPatternBindingName(
-	pattern: t.ObjectPattern,
-	keyName: string,
-): string | null {
-	for (const prop of pattern.properties) {
-		if (!t.isObjectProperty(prop)) continue;
-		if (getObjectKeyName(prop.key) !== keyName) continue;
-		if (t.isIdentifier(prop.value)) return prop.value.name;
-		if (t.isAssignmentPattern(prop.value) && t.isIdentifier(prop.value.left)) {
-			return prop.value.left.name;
+	const getBlockCapOwner = (
+		path: NodePath,
+	): "clamp" | "request-builder" | null => {
+		const functionPath = path.findParent((parentPath) =>
+			parentPath.isFunction(),
+		);
+		if (!functionPath) return null;
+		if (functionPath.node === requestClampAnchor?.functionNode) return "clamp";
+		if (functionPath.node === requestBuilderFunctionNode) {
+			return "request-builder";
 		}
-	}
-	return null;
-}
+		return null;
+	};
 
-function verifyCacheControlTtlRespectsCaller(ast: t.File): true | string {
-	let foundCacheControlBuilder = false;
-	let hasCallerTtlGate = false;
-	let hasScopeForcedTtlGate = false;
+	const isCheckpointCacheControlDelete = (
+		path: NodePath<t.UnaryExpression>,
+	): boolean => {
+		const cacheControlMember = path.node.argument;
+		if (
+			!t.isMemberExpression(cacheControlMember) ||
+			!isMemberPropertyName(cacheControlMember, "cache_control") ||
+			!t.isMemberExpression(cacheControlMember.object) ||
+			!isMemberPropertyName(cacheControlMember.object, "block") ||
+			!t.isIdentifier(cacheControlMember.object.object)
+		) {
+			return false;
+		}
 
-	traverse(ast, {
-		Function(path) {
-			if (foundCacheControlBuilder) return;
-			if (!t.isBlockStatement(path.node.body)) return;
-
-			const firstParam = path.node.params[0];
-			let pattern: t.ObjectPattern | null = null;
-			if (t.isObjectPattern(firstParam)) {
-				pattern = firstParam;
-			} else if (
-				t.isAssignmentPattern(firstParam) &&
-				t.isObjectPattern(firstParam.left)
-			) {
-				pattern = firstParam.left;
-			}
-			if (!pattern) return;
-
-			const scopeLocalName = getObjectPatternBindingName(pattern, "scope");
-			const ttlLocalName = getObjectPatternBindingName(pattern, "ttl");
-			if (!scopeLocalName || !ttlLocalName) return;
-
-			let hasEphemeral = false;
-			path.traverse({
-				StringLiteral(strPath) {
-					if (strPath.node.value === "ephemeral") {
-						hasEphemeral = true;
-					}
-				},
-				noScope: true,
-			});
-			if (!hasEphemeral) return;
-
-			foundCacheControlBuilder = true;
-
-			path.traverse({
-				ObjectExpression(objPath) {
-					if (hasCallerTtlGate && hasScopeForcedTtlGate) return;
-					const ttlProp = objPath.node.properties.find(
-						(prop): prop is t.ObjectProperty =>
-							t.isObjectProperty(prop) && getObjectKeyName(prop.key) === "ttl",
-					);
-					if (!ttlProp) return;
-
-					const parent = objPath.parentPath;
-					if (
-						!parent?.isLogicalExpression({ operator: "&&" }) ||
-						parent.node.right !== objPath.node
-					) {
-						return;
-					}
-
-					const left = parent.node.left;
-					if (
-						t.isIdentifier(left, { name: ttlLocalName }) &&
-						t.isIdentifier(ttlProp.value, { name: ttlLocalName })
-					) {
-						hasCallerTtlGate = true;
-					}
-					if (
-						t.isLogicalExpression(left, { operator: "||" }) &&
-						t.isIdentifier(left.left, { name: scopeLocalName }) &&
-						t.isIdentifier(left.right, { name: ttlLocalName }) &&
-						t.isConditionalExpression(ttlProp.value) &&
-						t.isIdentifier(ttlProp.value.test, { name: scopeLocalName }) &&
-						t.isStringLiteral(ttlProp.value.consequent, { value: "1h" }) &&
-						t.isIdentifier(ttlProp.value.alternate, { name: ttlLocalName })
-					) {
-						hasScopeForcedTtlGate = true;
-					}
-				},
-				noScope: true,
-			});
-
-			path.stop();
-		},
-		noScope: true,
-	});
-
-	if (!foundCacheControlBuilder) {
-		return "Could not locate cache control builder anchor";
-	}
-	if (hasScopeForcedTtlGate) {
-		return "Cache control builder forces 1h TTL from scope instead of respecting caller TTL";
-	}
-	if (!hasCallerTtlGate) {
-		return "Cache control builder no longer respects caller-provided TTL";
-	}
-	return true;
-}
-
-function verifyAgentCacheTtlAllowlist(ast: t.File): true | string {
-	let foundAllowlist = false;
-	let hasAgentQuerySource = false;
-	let hasRuntimeGuard = false;
-
-	traverse(ast, {
-		ObjectProperty(path) {
-			if (!isCacheTtlAllowlistProperty(path.node)) return;
-			foundAllowlist = true;
-
-			const values = getStringLiteralArrayValues(path.node.value);
-			if (values?.includes(AGENT_CACHE_TTL_QUERY_SOURCE)) {
-				hasAgentQuerySource = true;
-			}
-			const body = getEnclosingFunctionBody(path);
-			const allowlistReturn = body ? findCacheTtlAllowlistReturn(body) : null;
-			if (
-				body &&
-				allowlistReturn &&
-				hasAgentCacheTtlRuntimeGuard(body, allowlistReturn.allowlistName)
-			) {
-				hasRuntimeGuard = true;
-			}
-			if (hasAgentQuerySource && hasRuntimeGuard) {
-				path.stop();
-			}
-		},
-		noScope: true,
-	});
-
-	if (!foundAllowlist) {
-		return "Could not locate 1h cache TTL allowlist anchor";
-	}
-	if (!hasAgentQuerySource) {
-		return `1h cache TTL allowlist missing ${JSON.stringify(AGENT_CACHE_TTL_QUERY_SOURCE)} query source`;
-	}
-	if (!hasRuntimeGuard) {
-		return `1h cache TTL runtime allowlist missing ${JSON.stringify(AGENT_CACHE_TTL_QUERY_SOURCE)} query source`;
-	}
-	return true;
-}
-
-function verifyCacheControlBlockCap(
-	ast: t.File,
-	requestClampAnchor: ReturnType<typeof findRequestClampFunction>,
-): true | string {
-	if (!requestClampAnchor) {
-		return "Could not locate request clamp helper for cache_control cap";
-	}
-
-	let fixedClampDeclCount = 0;
-	let fixedRequestBuilderDeclCount = 0;
-	let hasDeleteInClamp = false;
-	let hasDeleteInRequestBuilder = false;
-
-	traverse(ast, {
-		Function(path) {
-			if (
-				!path.isFunctionDeclaration() &&
-				!path.isFunctionExpression() &&
-				!path.isArrowFunctionExpression()
-			) {
-				return;
-			}
-			const functionName = getFunctionIdentifierName(path.node);
-			if (!t.isBlockStatement(path.node.body)) return;
-
-			const isClampFunction = functionName === requestClampAnchor.functionName;
-			let requestBuilderVarName: string | null = null;
-
-			if (!isClampFunction) {
-				for (const stmt of path.node.body.body) {
-					if (t.isVariableDeclaration(stmt)) {
-						for (const decl of stmt.declarations) {
-							if (!t.isIdentifier(decl.id)) continue;
-							if (!t.isExpression(decl.init)) continue;
-							const requestName = decl.id.name;
-							const obj = getObjectExpressionFromExpression(decl.init);
-							if (!obj || !isMainRequestObjectExpression(obj)) continue;
-							if (
-								!path.node.body.body.some((bodyStmt) =>
-									isRequestBuilderSequenceReturn(bodyStmt, requestName),
-								)
-							) {
-								continue;
-							}
-							requestBuilderVarName = requestName;
-							break;
-						}
-					}
-					if (requestBuilderVarName) break;
-				}
-				if (!requestBuilderVarName) return;
-			}
-
-			path.traverse({
-				VariableDeclarator(varPath) {
-					if (
-						t.isIdentifier(varPath.node.id, {
-							name: "maxMsgCheckpoints",
-						}) &&
-						t.isBinaryExpression(varPath.node.init, { operator: "-" }) &&
-						t.isNumericLiteral(varPath.node.init.left, { value: 4 })
-					) {
-						if (isClampFunction) {
-							fixedClampDeclCount += 1;
-						} else {
-							fixedRequestBuilderDeclCount += 1;
-						}
-					}
-				},
-				UnaryExpression(deletePath) {
-					if (
-						deletePath.node.operator === "delete" &&
-						t.isMemberExpression(deletePath.node.argument) &&
-						isMemberPropertyName(deletePath.node.argument, "cache_control")
-					) {
-						if (isClampFunction) {
-							hasDeleteInClamp = true;
-						} else {
-							hasDeleteInRequestBuilder = true;
-						}
-					}
-				},
-				noScope: true,
-			});
-		},
-		noScope: true,
-	});
-
-	if (fixedClampDeclCount === 0) {
-		return "Request clamp helper missing fixed maxMsgCheckpoints block cap";
-	}
-	if (fixedClampDeclCount !== 1) {
-		return `Request clamp maxMsgCheckpoints declaration is ambiguous (${fixedClampDeclCount} declarations)`;
-	}
-	if (fixedRequestBuilderDeclCount === 0) {
-		return "Live request builder missing fixed maxMsgCheckpoints block cap";
-	}
-	if (fixedRequestBuilderDeclCount !== 1) {
-		return `Live request builder maxMsgCheckpoints declaration is ambiguous (${fixedRequestBuilderDeclCount} declarations)`;
-	}
-	if (!hasDeleteInClamp) {
-		return "Request clamp helper missing delete cp.block.cache_control statement";
-	}
-	if (!hasDeleteInRequestBuilder) {
-		return "Live request builder missing delete cp.block.cache_control statement";
-	}
-	return true;
-}
-
-function verifyOneHourTtlEnforced(ast: t.File): true | string {
-	let hasSystemTtlSet = false;
-	let toolsLoopTtlSetCount = 0;
-	let guardedToolsLoopTtlSetCount = 0;
+		const checkpointName = cacheControlMember.object.object.name;
+		const loopPath = path.findParent((parentPath) =>
+			parentPath.isForOfStatement(),
+		);
+		if (!loopPath?.isForOfStatement()) return false;
+		const loopBinding = loopPath.node.left;
+		if (
+			!t.isVariableDeclaration(loopBinding) ||
+			loopBinding.declarations.length !== 1 ||
+			!t.isIdentifier(loopBinding.declarations[0].id, {
+				name: checkpointName,
+			}) ||
+			!t.isIdentifier(loopPath.node.right, { name: "msgCheckpoints" })
+		) {
+			return false;
+		}
+		return true;
+	};
 
 	const isDeferredLoadingExclusionForTarget = (
 		node: t.Node,
@@ -1931,7 +1640,124 @@ function verifyOneHourTtlEnforced(ast: t.File): true | string {
 		);
 
 	traverse(ast, {
+		Function(path) {
+			if (!t.isBlockStatement(path.node.body)) return;
+			const body = path.node.body.body;
+
+			if (!tailFunctionNode) {
+				const markerStmt = body.find(
+					(stmt) => !t.isFunctionDeclaration(stmt) && nodeContainsMarker(stmt),
+				);
+				if (markerStmt) {
+					tailFunctionNode = path.node;
+					const markerSetName = getMarkerCountSetName(markerStmt);
+					hasTailWindowGate = markerSetName
+						? hasCacheTailWindowLoop(body, markerSetName)
+						: false;
+				}
+			}
+
+			if (!foundSyspromptMarker) {
+				for (const stmt of body) {
+					if (!t.isIfStatement(stmt)) continue;
+					if (!t.isBlockStatement(stmt.consequent)) continue;
+					if (!blockContainsSyspromptMarker(stmt.consequent.body)) continue;
+					foundSyspromptMarker = true;
+					walkScopedPushes(stmt.consequent.body);
+					break;
+				}
+			}
+
+			if (!cacheControlBuilderNode) {
+				const firstParam = path.node.params[0];
+				let pattern: t.ObjectPattern | null = null;
+				if (t.isObjectPattern(firstParam)) {
+					pattern = firstParam;
+				} else if (
+					t.isAssignmentPattern(firstParam) &&
+					t.isObjectPattern(firstParam.left)
+				) {
+					pattern = firstParam.left;
+				}
+				if (pattern) {
+					const scopeLocalName = getObjectPatternBindingName(pattern, "scope");
+					const ttlLocalName = getObjectPatternBindingName(pattern, "ttl");
+					const hasEphemeral = nodeContains(path.node, (candidate) =>
+						t.isStringLiteral(candidate, { value: "ephemeral" }),
+					);
+					if (scopeLocalName && ttlLocalName && hasEphemeral) {
+						cacheControlBuilderNode = path.node;
+						cacheControlScopeName = scopeLocalName;
+						cacheControlTtlName = ttlLocalName;
+					}
+				}
+			}
+
+			if (requestClampAnchor === undefined) {
+				const candidate = getRequestClampAnchor(path.node);
+				if (candidate) {
+					requestClampAnchor = candidate;
+					clampAnchorCache.set(ast, candidate);
+				}
+			}
+
+			if (
+				!requestBuilderFunctionNode &&
+				path.node !== requestClampAnchor?.functionNode &&
+				findRequestBuilderVariableName(body)
+			) {
+				requestBuilderFunctionNode = path.node;
+			}
+		},
+		VariableDeclarator(path) {
+			if (tailFunctionNode && isWithinFunction(path, tailFunctionNode)) {
+				if (t.isIdentifier(path.node.id, { name: "cacheTailWindow" })) {
+					tailWindowDeclCount += 1;
+					if (t.isNumericLiteral(path.node.init, { value: 2 })) {
+						hasTailWindowDecl = true;
+					}
+				}
+				if (t.isIdentifier(path.node.id, { name: "cacheUserOnly" })) {
+					userOnlyDeclCount += 1;
+					if (t.isBooleanLiteral(path.node.init, { value: true })) {
+						hasUserOnlyDecl = true;
+					}
+				}
+			}
+
+			const owner = getBlockCapOwner(path);
+			if (
+				owner &&
+				t.isIdentifier(path.node.id, { name: "maxMsgCheckpoints" }) &&
+				t.isBinaryExpression(path.node.init, { operator: "-" }) &&
+				t.isNumericLiteral(path.node.init.left, { value: 4 }) &&
+				t.isIdentifier(path.node.init.right, { name: "systemToolsCount" })
+			) {
+				if (owner === "clamp") {
+					fixedClampDeclCount += 1;
+				} else {
+					fixedRequestBuilderDeclCount += 1;
+				}
+			}
+		},
 		AssignmentExpression(assignPath) {
+			if (tailFunctionNode && isWithinFunction(assignPath, tailFunctionNode)) {
+				if (
+					t.isIdentifier(assignPath.node.left, {
+						name: "cacheTailWindow",
+					})
+				) {
+					hasTailWindowReassign = true;
+				}
+				if (
+					t.isIdentifier(assignPath.node.left, {
+						name: "cacheUserOnly",
+					})
+				) {
+					hasUserOnlyReassign = true;
+				}
+			}
+
 			const left = assignPath.node.left;
 			const right = assignPath.node.right;
 			if (
@@ -1971,19 +1797,257 @@ function verifyOneHourTtlEnforced(ast: t.File): true | string {
 				}
 			}
 		},
+		UpdateExpression(path) {
+			if (!tailFunctionNode || !isWithinFunction(path, tailFunctionNode)) {
+				return;
+			}
+			if (
+				t.isIdentifier(path.node.argument, {
+					name: "cacheTailWindow",
+				})
+			) {
+				hasTailWindowReassign = true;
+			}
+			if (
+				t.isIdentifier(path.node.argument, {
+					name: "cacheUserOnly",
+				})
+			) {
+				hasUserOnlyReassign = true;
+			}
+		},
+		ConditionalExpression(path) {
+			if (
+				tailFunctionNode &&
+				isWithinFunction(path, tailFunctionNode) &&
+				t.isIdentifier(path.node.test, {
+					name: "cacheUserOnly",
+				}) &&
+				t.isBooleanLiteral(path.node.consequent, {
+					value: false,
+				}) &&
+				t.isExpression(path.node.alternate)
+			) {
+				hasUserOnlyConditional = true;
+			}
+		},
+		BinaryExpression(path) {
+			if (
+				tailFunctionNode &&
+				isWithinFunction(path, tailFunctionNode) &&
+				path.node.operator === "===" &&
+				t.isBinaryExpression(path.node.left, { operator: "%" }) &&
+				t.isIdentifier(path.node.left.left, { name: "userMsgCount" }) &&
+				t.isNumericLiteral(path.node.left.right, { value: 15 }) &&
+				t.isNumericLiteral(path.node.right, { value: 0 })
+			) {
+				hasDecimationGate = true;
+			}
+		},
+		ObjectExpression(path) {
+			if (
+				!cacheControlBuilderNode ||
+				!cacheControlScopeName ||
+				!cacheControlTtlName ||
+				!isWithinFunction(path, cacheControlBuilderNode)
+			) {
+				return;
+			}
+			const ttlProp = path.node.properties.find(
+				(prop): prop is t.ObjectProperty =>
+					t.isObjectProperty(prop) && getObjectKeyName(prop.key) === "ttl",
+			);
+			if (!ttlProp) return;
+
+			const parent = path.parentPath;
+			if (
+				!parent?.isLogicalExpression({ operator: "&&" }) ||
+				parent.node.right !== path.node
+			) {
+				return;
+			}
+
+			const left = parent.node.left;
+			if (
+				t.isIdentifier(left, { name: cacheControlTtlName }) &&
+				t.isIdentifier(ttlProp.value, { name: cacheControlTtlName })
+			) {
+				hasCallerTtlGate = true;
+			}
+			if (
+				t.isLogicalExpression(left, { operator: "||" }) &&
+				t.isIdentifier(left.left, { name: cacheControlScopeName }) &&
+				t.isIdentifier(left.right, { name: cacheControlTtlName }) &&
+				t.isConditionalExpression(ttlProp.value) &&
+				t.isIdentifier(ttlProp.value.test, {
+					name: cacheControlScopeName,
+				}) &&
+				t.isStringLiteral(ttlProp.value.consequent, { value: "1h" }) &&
+				t.isIdentifier(ttlProp.value.alternate, {
+					name: cacheControlTtlName,
+				})
+			) {
+				hasScopeForcedTtlGate = true;
+			}
+		},
+		ObjectProperty(path) {
+			if (!isCacheTtlAllowlistProperty(path.node)) return;
+			foundAllowlist = true;
+
+			const values = getStringLiteralArrayValues(path.node.value);
+			if (values?.includes(AGENT_CACHE_TTL_QUERY_SOURCE)) {
+				hasAgentQuerySource = true;
+			}
+			const body = getEnclosingFunctionBody(path);
+			const allowlistReturn = body ? findCacheTtlAllowlistReturn(body) : null;
+			if (
+				body &&
+				allowlistReturn &&
+				hasAgentCacheTtlRuntimeGuard(body, allowlistReturn.allowlistName)
+			) {
+				hasRuntimeGuard = true;
+			}
+		},
+		UnaryExpression(path) {
+			if (
+				path.node.operator !== "delete" ||
+				!isCheckpointCacheControlDelete(path)
+			) {
+				return;
+			}
+			const owner = getBlockCapOwner(path);
+			if (owner === "clamp") {
+				hasDeleteInClamp = true;
+			} else if (owner === "request-builder") {
+				hasDeleteInRequestBuilder = true;
+			}
+		},
 		noScope: true,
 	});
 
-	if (!hasSystemTtlSet) {
-		return "System prompt 1h TTL enforcement not found";
+	if (requestClampAnchor === undefined) {
+		requestClampAnchor = null;
+		clampAnchorCache.set(ast, null);
 	}
-	if (toolsLoopTtlSetCount < 2) {
-		return "Tools array 1h TTL enforcement not found";
-	}
-	if (guardedToolsLoopTtlSetCount !== toolsLoopTtlSetCount) {
-		return "Tools array 1h TTL enforcement must skip defer_loading tools";
-	}
-	return true;
+
+	const verifyTailWindow = (): true | string => {
+		if (!tailFunctionNode) {
+			return "Could not locate cache breakpoint function anchor";
+		}
+		if (!hasTailWindowDecl) {
+			return "Missing fixed cacheTailWindow declaration";
+		}
+		if (tailWindowDeclCount !== 1) {
+			return `cacheTailWindow declaration is ambiguous (${tailWindowDeclCount} declarations)`;
+		}
+		if (!hasUserOnlyDecl) {
+			return "Missing cacheUserOnly gating declaration";
+		}
+		if (userOnlyDeclCount !== 1) {
+			return `cacheUserOnly declaration is ambiguous (${userOnlyDeclCount} declarations)`;
+		}
+		if (hasTailWindowReassign || hasUserOnlyReassign) {
+			return "cacheTailWindow/cacheUserOnly reassignment detected after declaration";
+		}
+		if (!hasTailWindowGate) {
+			return "Tail cache window was not patched";
+		}
+		if (!hasUserOnlyConditional) {
+			return "Assistant cache tail gating was not patched to user-only";
+		}
+		if (!hasDecimationGate) {
+			return "Decimation cache loop was not patched";
+		}
+		return true;
+	};
+
+	const verifySyspromptScope = (): true | string => {
+		if (!foundSyspromptMarker) {
+			return "Could not locate sysprompt tool-based cache anchor";
+		}
+		if (firstNonNullScope !== "global") {
+			return 'Sysprompt identity block not patched to cacheScope: "global"';
+		}
+		if (nonNullScopeCount > 1 && !hasLaterOrgScope) {
+			return 'Sysprompt scope rewrite no longer preserves later cacheScope: "org" blocks';
+		}
+		return true;
+	};
+
+	const verifyCallerTtl = (): true | string => {
+		if (!cacheControlBuilderNode) {
+			return "Could not locate cache control builder anchor";
+		}
+		if (hasScopeForcedTtlGate) {
+			return "Cache control builder forces 1h TTL from scope instead of respecting caller TTL";
+		}
+		if (!hasCallerTtlGate) {
+			return "Cache control builder no longer respects caller-provided TTL";
+		}
+		return true;
+	};
+
+	const verifyAgentAllowlist = (): true | string => {
+		if (!foundAllowlist) {
+			return "Could not locate 1h cache TTL allowlist anchor";
+		}
+		if (!hasAgentQuerySource) {
+			return `1h cache TTL allowlist missing ${JSON.stringify(AGENT_CACHE_TTL_QUERY_SOURCE)} query source`;
+		}
+		if (!hasRuntimeGuard) {
+			return `1h cache TTL runtime allowlist missing ${JSON.stringify(AGENT_CACHE_TTL_QUERY_SOURCE)} query source`;
+		}
+		return true;
+	};
+
+	const verifyBlockCap = (): true | string => {
+		if (!requestClampAnchor) {
+			return "Could not locate request clamp helper for cache_control cap";
+		}
+		if (fixedClampDeclCount === 0) {
+			return "Request clamp helper missing fixed maxMsgCheckpoints block cap";
+		}
+		if (fixedClampDeclCount !== 1) {
+			return `Request clamp maxMsgCheckpoints declaration is ambiguous (${fixedClampDeclCount} declarations)`;
+		}
+		if (fixedRequestBuilderDeclCount === 0) {
+			return "Live request builder missing fixed maxMsgCheckpoints block cap";
+		}
+		if (fixedRequestBuilderDeclCount !== 1) {
+			return `Live request builder maxMsgCheckpoints declaration is ambiguous (${fixedRequestBuilderDeclCount} declarations)`;
+		}
+		if (!hasDeleteInClamp) {
+			return "Request clamp helper missing delete cp.block.cache_control statement";
+		}
+		if (!hasDeleteInRequestBuilder) {
+			return "Live request builder missing delete cp.block.cache_control statement";
+		}
+		return true;
+	};
+
+	const verifyOneHourTtl = (): true | string => {
+		if (!hasSystemTtlSet) {
+			return "System prompt 1h TTL enforcement not found";
+		}
+		if (toolsLoopTtlSetCount < 2) {
+			return "Tools array 1h TTL enforcement not found";
+		}
+		if (guardedToolsLoopTtlSetCount !== toolsLoopTtlSetCount) {
+			return "Tools array 1h TTL enforcement must skip defer_loading tools";
+		}
+		return true;
+	};
+
+	return {
+		checks: [
+			{ id: "tail-window", result: verifyTailWindow() },
+			{ id: "sysprompt-scope", result: verifySyspromptScope() },
+			{ id: "caller-ttl", result: verifyCallerTtl() },
+			{ id: "agent-allowlist", result: verifyAgentAllowlist() },
+			{ id: "block-cap", result: verifyBlockCap() },
+			{ id: "one-hour-ttl", result: verifyOneHourTtl() },
+		],
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -2001,18 +2065,10 @@ function verifyCacheTailPolicy(
 		};
 	}
 
-	const requestClampAnchor = findRequestClampFunction(verifyAst);
-	const checks: Array<() => true | string> = [
-		() => verifyTailWindowPolicy(verifyAst),
-		() => verifySyspromptGlobalScope(verifyAst),
-		() => verifyCacheControlTtlRespectsCaller(verifyAst),
-		() => verifyAgentCacheTtlAllowlist(verifyAst),
-		() => verifyCacheControlBlockCap(verifyAst, requestClampAnchor),
-		() => verifyOneHourTtlEnforced(verifyAst),
-	];
+	const { checks } = collectCacheTailVerificationInventory(verifyAst);
 	let semanticChecksPassed = 0;
 	for (const check of checks) {
-		const result = check();
+		const { result } = check;
 		if (result !== true) {
 			return {
 				result,

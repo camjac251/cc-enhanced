@@ -33,6 +33,16 @@ export interface AstPassTelemetry {
 
 const SHAPE_ARRAY_SAMPLE_SIZE = 16;
 const SHAPE_DEPTH = 2;
+const TRAVERSAL_GLOBAL_VISITOR_OPTIONS = [
+	"noScope",
+	"denylist",
+	"shouldSkip",
+	"scope",
+	"blacklist",
+] as const;
+const TRAVERSAL_GLOBAL_VISITOR_OPTION_SET = new Set<string>(
+	TRAVERSAL_GLOBAL_VISITOR_OPTIONS,
+);
 
 function isNode(value: unknown): value is t.Node {
 	return (
@@ -172,17 +182,10 @@ function mergePassVisitors(entries: PatchPassEntry[]): Visitor {
 		for (const [rawKey, rawValue] of Object.entries(
 			visitor as Record<string, unknown>,
 		)) {
-			if (rawKey === "noScope") {
-				(merged as Record<string, unknown>).noScope = rawValue;
-				continue;
-			}
-			if (rawKey === "denylist") {
-				(merged as Record<string, unknown>).denylist = rawValue;
-				continue;
-			}
-			if (rawKey === "shouldSkip") {
-				(merged as Record<string, unknown>).shouldSkip = rawValue;
-				continue;
+			if (TRAVERSAL_GLOBAL_VISITOR_OPTION_SET.has(rawKey)) {
+				throw new Error(
+					`Unsupported traversal-global visitor option reached merge: ${rawKey}`,
+				);
 			}
 
 			if (rawKey === "enter" || rawKey === "exit") {
@@ -319,7 +322,7 @@ function materializePassVisitor(
 	for (const [key, rawValue] of Object.entries(
 		merged as Record<string, unknown>,
 	)) {
-		if (key === "noScope" || key === "denylist" || key === "shouldSkip") {
+		if (TRAVERSAL_GLOBAL_VISITOR_OPTION_SET.has(key)) {
 			(resolved as Record<string, unknown>)[key] = rawValue;
 			continue;
 		}
@@ -354,6 +357,31 @@ export async function runCombinedAstPasses(
 	const collectShapes = telemetryLevel === "deep";
 	const passOrder: AstPassName[] = ["discover", "mutate", "finalize"];
 	const globallyFailedTags = new Set<string>();
+	const unsupportedOptionsByTag = new Map<string, Set<string>>();
+	for (const entry of entries) {
+		const visitor = entry.pass.visitor as Record<string, unknown>;
+		for (const option of TRAVERSAL_GLOBAL_VISITOR_OPTIONS) {
+			if (!Object.hasOwn(visitor, option)) continue;
+			const unsupported =
+				unsupportedOptionsByTag.get(entry.tag) ?? new Set<string>();
+			unsupported.add(option);
+			unsupportedOptionsByTag.set(entry.tag, unsupported);
+		}
+	}
+	for (const [tag, unsupported] of unsupportedOptionsByTag) {
+		globallyFailedTags.add(tag);
+		const optionNames = TRAVERSAL_GLOBAL_VISITOR_OPTIONS.filter((option) =>
+			unsupported.has(option),
+		);
+		onPatchError(
+			tag,
+			new Error(
+				optionNames.length === 1
+					? `Unsupported traversal-global visitor option: ${optionNames[0]}`
+					: `Unsupported traversal-global visitor options: ${optionNames.join(", ")}`,
+			),
+		);
+	}
 	const handlerCalls: AstPassTelemetry["handlerCalls"] = {};
 	if (collectActivity) {
 		for (const { tag } of entries) {
@@ -384,7 +412,10 @@ export async function runCombinedAstPasses(
 	}
 	const overlapCounts = new Map<string, AstPassTelemetry["overlaps"][number]>();
 	for (const passName of passOrder) {
-		const passEntries = entries.filter((entry) => entry.pass.pass === passName);
+		const passEntries = entries.filter(
+			(entry) =>
+				entry.pass.pass === passName && !globallyFailedTags.has(entry.tag),
+		);
 		if (passEntries.length === 0) continue;
 		onPassStart(passName, passEntries.length);
 		const merged = mergePassVisitors(passEntries);

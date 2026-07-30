@@ -6,6 +6,7 @@ import {
 	type PatchPassEntry,
 	runCombinedAstPasses,
 } from "./ast-pass-engine.js";
+import type { Visitor } from "./babel.js";
 import { parse } from "./loader.js";
 
 test("bounded node shapes ignore identifiers and literals but retain structure", () => {
@@ -179,6 +180,67 @@ test("combined pass engine skips later passes for tags that fail early", async (
 	assert.equal(errors[0].includes("discover failed"), true);
 	assert.equal(mutateRan, false);
 	assert.equal(healthyMutateRan, true);
+});
+
+test("combined pass engine rejects patch-local traversal-global options", async () => {
+	const cases: Array<{
+		name: "noScope" | "denylist" | "shouldSkip" | "scope" | "blacklist";
+		value: unknown;
+	}> = [
+		{ name: "noScope", value: true },
+		{ name: "denylist", value: ["VariableDeclaration"] },
+		{ name: "shouldSkip", value: () => true },
+		{ name: "scope", value: {} },
+		{ name: "blacklist", value: ["VariableDeclaration"] },
+	];
+
+	for (const { name, value } of cases) {
+		const ast = parse("const value = 1;\n");
+		const errors: string[] = [];
+		let rejectedCalls = 0;
+		let healthyCalls = 0;
+		const rejectedVisitor = {
+			VariableDeclaration() {
+				rejectedCalls += 1;
+			},
+			[name]: value,
+		} as unknown as Visitor;
+
+		await runCombinedAstPasses(
+			ast,
+			[
+				{
+					tag: `global-option-${name}`,
+					pass: {
+						pass: "mutate",
+						visitor: rejectedVisitor,
+					},
+				},
+				{
+					tag: "healthy-peer",
+					pass: {
+						pass: "mutate",
+						visitor: {
+							VariableDeclaration() {
+								healthyCalls += 1;
+							},
+						},
+					},
+				},
+			],
+			() => {},
+			() => {},
+			(tag, error) => {
+				errors.push(`${tag}: ${error.message}`);
+			},
+		);
+
+		assert.deepEqual(errors, [
+			`global-option-${name}: Unsupported traversal-global visitor option: ${name}`,
+		]);
+		assert.equal(rejectedCalls, 0);
+		assert.equal(healthyCalls, 1);
+	}
 });
 
 test("combined pass engine reports handler activity and shared-node overlap", async () => {

@@ -566,6 +566,183 @@ test("cache-tail-policy reports semantic verifier coverage", async () => {
 	});
 });
 
+test("cache-tail-policy collects one ordered verification inventory", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const module = await import("./cache-tail-policy.js");
+	const collect = (
+		module as unknown as {
+			collectCacheTailVerificationInventory?: (
+				ast: ReturnType<typeof parse>,
+			) => {
+				checks: Array<{ id: string; result: true | string }>;
+			};
+		}
+	).collectCacheTailVerificationInventory;
+
+	assert.equal(typeof collect, "function");
+	assert.ok(collect);
+
+	const cachedInventory = collect(ast);
+	const freshInventory = collect(parse(output));
+
+	assert.deepEqual(cachedInventory, freshInventory);
+	assert.deepEqual(
+		cachedInventory.checks.map(({ id, result }) => [id, result]),
+		[
+			["tail-window", true],
+			["sysprompt-scope", true],
+			["caller-ttl", true],
+			["agent-allowlist", true],
+			["block-cap", true],
+			["one-hour-ttl", true],
+		],
+	);
+});
+
+test("cache-tail-policy preserves verifier failure order and witnesses", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const cases = [
+		{
+			label: "tail window",
+			regress: (code: string) =>
+				code.replace("cacheTailCount < cacheTailWindow", "cacheTailCount < 1"),
+			result: "Tail cache window was not patched",
+			passed: 0,
+		},
+		{
+			label: "sysprompt scope",
+			regress: (code: string) =>
+				code.replace('cacheScope: "global"', 'cacheScope: "org"'),
+			result: 'Sysprompt identity block not patched to cacheScope: "global"',
+			passed: 1,
+		},
+		{
+			label: "caller TTL",
+			regress: (code: string) =>
+				code.replace("$ && { ttl: $ }", '(H || $) && { ttl: H ? "1h" : $ }'),
+			result:
+				"Cache control builder forces 1h TTL from scope instead of respecting caller TTL",
+			passed: 2,
+		},
+		{
+			label: "agent allowlist",
+			regress: (code: string) =>
+				code.replaceAll('"agent:*"', '"agent:missing"'),
+			result: '1h cache TTL allowlist missing "agent:*" query source',
+			passed: 3,
+		},
+		{
+			label: "block cap",
+			regress: (code: string) =>
+				code.replace(
+					"let maxMsgCheckpoints = 4 - systemToolsCount;",
+					"let maxMsgCheckpoints = 5 - systemToolsCount;",
+				),
+			result: "Request clamp helper missing fixed maxMsgCheckpoints block cap",
+			passed: 4,
+		},
+		{
+			label: "deferred tool exclusion",
+			regress: (code: string) => code.replaceAll(" && !tool.defer_loading", ""),
+			result: "Tools array 1h TTL enforcement must skip defer_loading tools",
+			passed: 5,
+		},
+	] as const;
+
+	assert.ok(cacheTailPolicy.verifyWithWitness);
+	for (const scenario of cases) {
+		const regressed = scenario.regress(output);
+		assert.notEqual(regressed, output, scenario.label);
+		assert.deepEqual(
+			cacheTailPolicy.verifyWithWitness(regressed, parse(regressed)),
+			{
+				result: scenario.result,
+				witness: {
+					semanticChecksPassed: scenario.passed,
+					semanticChecksRequired: cases.length,
+				},
+			},
+			scenario.label,
+		);
+	}
+});
+
+test("cache-tail-policy keeps clamp evidence scoped to its anchor", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const regressed = `${output.replace("delete cp.block.cache_control;", "")}
+function unrelated(cp) {
+  delete cp.block.cache_control;
+}
+`;
+
+	assert.notEqual(regressed, output);
+	assert.ok(cacheTailPolicy.verifyWithWitness);
+	assert.deepEqual(
+		cacheTailPolicy.verifyWithWitness(regressed, parse(regressed)),
+		{
+			result:
+				"Request clamp helper missing delete cp.block.cache_control statement",
+			witness: {
+				semanticChecksPassed: 4,
+				semanticChecksRequired: 6,
+			},
+		},
+	);
+});
+
+test("cache-tail-policy rejects the wrong block-cap subtraction source", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replace(
+		"let maxMsgCheckpoints = 4 - systemToolsCount;",
+		"let maxMsgCheckpoints = 4 - wrongCount;",
+	);
+
+	assert.notEqual(regressed, output);
+	assert.ok(cacheTailPolicy.verifyWithWitness);
+	assert.deepEqual(
+		cacheTailPolicy.verifyWithWitness(regressed, parse(regressed)),
+		{
+			result: "Request clamp helper missing fixed maxMsgCheckpoints block cap",
+			witness: {
+				semanticChecksPassed: 4,
+				semanticChecksRequired: 6,
+			},
+		},
+	);
+});
+
+test("cache-tail-policy rejects a same-function cache-control delete decoy", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replace(
+		"delete cp.block.cache_control;",
+		"delete unrelated.cache_control;",
+	);
+
+	assert.notEqual(regressed, output);
+	assert.ok(cacheTailPolicy.verifyWithWitness);
+	assert.deepEqual(
+		cacheTailPolicy.verifyWithWitness(regressed, parse(regressed)),
+		{
+			result:
+				"Request clamp helper missing delete cp.block.cache_control statement",
+			witness: {
+				semanticChecksPassed: 4,
+				semanticChecksRequired: 6,
+			},
+		},
+	);
+});
+
 test("cache-tail-policy verify rejects scope-forced 1h cache control builder", async () => {
 	const ast = parse(FULL_VERIFY_FIXTURE);
 	await runCacheTailViaPasses(ast);

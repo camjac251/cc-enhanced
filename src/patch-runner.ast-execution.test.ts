@@ -3,7 +3,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
+import * as t from "@babel/types";
+import { print } from "./loader.js";
 import { PatchRunner } from "./patch-runner.js";
+import { signature } from "./patches/signature.js";
 import type { Patch } from "./types.js";
 
 test("PatchRunner executes astPasses", async () => {
@@ -45,6 +48,175 @@ test("PatchRunner executes astPasses", async () => {
 		const written = await fs.readFile(targetPath, "utf-8");
 		assert.equal(written.includes('"after"'), true);
 	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("PatchRunner reuses the verification output when signature injection is off", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "runner-output-reuse-"),
+	);
+	const targetPath = path.join(tempDir, "cli.js");
+	await fs.writeFile(targetPath, "const marker = true;\n", "utf-8");
+	let printCalls = 0;
+
+	const patch: Patch = {
+		tag: "output-reuse-probe",
+		verify: () => true,
+	};
+
+	try {
+		const runner = new PatchRunner([patch], {
+			signaturePolicy: "off",
+			runtime: {
+				print(ast) {
+					printCalls += 1;
+					return print(ast);
+				},
+			},
+		});
+
+		const result = await runner.run(targetPath, { dryRun: true });
+
+		assert.equal(printCalls, 1);
+		assert.deepEqual(result.appliedTags, ["output-reuse-probe"]);
+		assert.deepEqual(result.failedTags, []);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("PatchRunner reuses the verification output when failures skip signature injection", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "runner-failed-output-reuse-"),
+	);
+	const targetPath = path.join(tempDir, "cli.js");
+	await fs.writeFile(targetPath, "const marker = true;\n", "utf-8");
+	let printCalls = 0;
+
+	const patch: Patch = {
+		tag: "failed-output-reuse-probe",
+		verify: () => "synthetic verification failure",
+	};
+
+	try {
+		const runner = new PatchRunner([patch], {
+			signaturePolicy: "force",
+			runtime: {
+				print(ast) {
+					printCalls += 1;
+					return print(ast);
+				},
+			},
+		});
+
+		const result = await runner.run(targetPath, { dryRun: true });
+
+		assert.equal(printCalls, 1);
+		assert.deepEqual(result.appliedTags, []);
+		assert.deepEqual(result.failedTags, ["failed-output-reuse-probe"]);
+		assert.equal(
+			result.verifications.some(
+				(verification) => verification.tag === signature.tag,
+			),
+			false,
+		);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("PatchRunner prints again after successful signature injection", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "runner-signed-output-"),
+	);
+	const targetPath = path.join(tempDir, "cli.js");
+	await fs.writeFile(
+		targetPath,
+		`
+function makeTitle(theme, version) {
+  return \` \${format("product", theme)("Claude Code")} \${format("version", theme)(\`v\${version}\`)} \`;
+}
+function versionText(version) {
+  return \`\${version} (Claude Code)\${suffix()}\`;
+}
+`,
+		"utf-8",
+	);
+	let printCalls = 0;
+
+	const patch: Patch = {
+		tag: "signed-output-probe",
+		verify: () => true,
+	};
+
+	try {
+		const runner = new PatchRunner([patch], {
+			signaturePolicy: "force",
+			runtime: {
+				print(ast) {
+					printCalls += 1;
+					return print(ast);
+				},
+			},
+		});
+
+		const result = await runner.run(targetPath, { dryRun: true });
+
+		assert.equal(printCalls, 2);
+		assert.deepEqual(result.appliedTags, ["signed-output-probe", "signature"]);
+		assert.deepEqual(result.failedTags, []);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("PatchRunner prints a partially mutated AST after signature injection throws", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "runner-signature-failure-output-"),
+	);
+	const targetPath = path.join(tempDir, "cli.js");
+	await fs.writeFile(targetPath, "const marker = true;\n", "utf-8");
+	const originalPostApply = signature.postApply;
+	const printedOutputs: string[] = [];
+
+	const patch: Patch = {
+		tag: "signature-failure-output-probe",
+		verify: () => true,
+	};
+
+	try {
+		signature.postApply = (ast) => {
+			ast.program.body.push(
+				t.expressionStatement(t.stringLiteral("signature attempted")),
+			);
+			throw new Error("synthetic signature failure");
+		};
+		const runner = new PatchRunner([patch], {
+			signaturePolicy: "force",
+			runtime: {
+				print(ast) {
+					const output = print(ast);
+					printedOutputs.push(output);
+					return output;
+				},
+			},
+		});
+
+		const result = await runner.run(targetPath, { dryRun: true });
+
+		assert.equal(printedOutputs.length, 2);
+		assert.equal(printedOutputs[0].includes("signature attempted"), false);
+		assert.equal(printedOutputs[1].includes("signature attempted"), true);
+		assert.deepEqual(result.failedTags, ["signature"]);
+		assert.equal(
+			result.verifications.find(
+				(verification) => verification.tag === signature.tag,
+			)?.reason,
+			"Signature injection failed: synthetic signature failure",
+		);
+	} finally {
+		signature.postApply = originalPostApply;
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}
 });

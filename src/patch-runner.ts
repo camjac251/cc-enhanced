@@ -314,25 +314,28 @@ export class PatchRunner {
 			}
 		}
 		this.profileMemory("patch.verifiers-complete");
-		output = "";
+		const signaturePostApply = signature.postApply;
+		const shouldAttemptSignature =
+			this.injectSignature &&
+			failedTags.length === 0 &&
+			appliedTags.length > 0 &&
+			signaturePostApply !== undefined;
+		if (shouldAttemptSignature) {
+			output = "";
+		}
 		this.runtime.clearTraverseCache();
 		this.runtime.forceGarbageCollection();
 		this.profileMemory("patch.verifier-state-released");
 
 		// Phase 6: Inject signature with applied tags (use same AST, don't re-parse)
-		if (
-			this.injectSignature &&
-			failedTags.length === 0 &&
-			appliedTags.length > 0 &&
-			signature.postApply
-		) {
+		if (shouldAttemptSignature) {
 			const sigSpinner = ora({
 				text: "signature",
 				prefixText: "   ",
 				color: "blue",
 			}).start();
 			try {
-				await signature.postApply(ast, appliedTags);
+				await signaturePostApply(ast, appliedTags);
 				sigSpinner.succeed("signature");
 			} catch (e) {
 				const reason = e instanceof Error ? e.message : String(e);
@@ -349,9 +352,16 @@ export class PatchRunner {
 			}
 		}
 
-		// Phase 7: Print final output
-		const finalOutput = this.runtime.print(ast);
-		this.profileMemory("patch.final-print");
+		// Phase 7: Print again only when signature injection could mutate the AST.
+		const finalOutput = shouldAttemptSignature
+			? this.runtime.print(ast)
+			: output;
+		output = "";
+		this.profileMemory(
+			shouldAttemptSignature
+				? "patch.final-print"
+				: "patch.final-output-reused",
+		);
 
 		// Generate diff using external diff command (much faster than JS diff on large files)
 		if (options.showDiff) {
