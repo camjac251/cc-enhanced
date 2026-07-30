@@ -1,6 +1,6 @@
 [tools]
 "github:oven-sh/bun" = "canary"
-lefthook = "2.1.9"
+lefthook = "2.1.10"
 
 [hooks]
 enter = "lefthook install"
