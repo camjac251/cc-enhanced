@@ -125,7 +125,7 @@ Runtime behavior, caching, memory, and configuration.
 
 | Patch | Effect |
 |-------|--------|
-| [`cache-tail-policy`](src/patches/cache-tail-policy.ts) | Forces 1h TTL on system prompt and tools arrays, switches the system-prompt identity block to global cache scope, extends 1h cache TTL eligibility to Task-spawned subagents, implements turn-spaced checkpoints (decimation) at 15-turn intervals, and strips intermediate checkpoints when exceeding the 4-breakpoint limit. |
+| [`cache-tail-policy`](src/patches/cache-tail-policy.ts) | Forces 1h TTL on system prompt and eligible tools, switches the system-prompt identity block to global cache scope, and extends 1h eligibility to real `agent:*` subagents. Its two-user tail and 15-user decimation checkpoints stop at the stock skip-write boundary; deferred tools are scrubbed; and the final 4-breakpoint clamp evicts oldest tool/system overflow before retaining stable fork or rolling checkpoints ahead of generic decimation and the newest tail. |
 | [`effort-stack`](src/patches/effort-stack.ts) | Lets `CLAUDE_CODE_EFFORT_LEVEL=max` stack with ultracode workflow orchestration without sending a non-API `ultracode` effort value. Set `CLAUDE_CODE_EFFORT_LEVEL=max` plus either `CLAUDE_CODE_ULTRACODE=1` or a true `ultracode` setting. Env values seed new sessions, while `/effort` choices become session-only overrides instead of staying locked behind env. The active gate still requires workflows and an `xhigh`-capable model, and `/effort` shows the stacked max+ultracode state instead of claiming the env override disabled it. |
 | [`feature-flags`](src/patches/feature-flags.ts) | Enables the built-in Monitor tool locally instead of depending on the remote `tengu_amber_sentinel` GrowthBook flag. This keeps event-stream monitoring available when the flag cache is empty or GrowthBook traffic is disabled, while preserving the platform shell-availability gate. |
 | [`image-limits`](src/patches/image-limits.ts) | Restores the per-side image cap for `claude-fable-5`, `claude-mythos-5`, `claude-sonnet-5`, `claude-opus-4-7`, `claude-opus-4-8`, and `claude-opus-5` to the documented 2576px (3.75 MP). Upstream silently downgrades all six overrides to 2000px so conversations with more than 20 images stop tripping the API's many-image batch limit ("dimension exceeds max for many-image requests: 2000 pixels"), but the per-message API limit is 8000px and the models themselves process input up to 2576px on the long edge. The downgrade trades documented headroom for everyone to silence one error class for heavy multi-screenshot sessions. The patch keeps the headroom and, when a request has more than 20 image/document blocks with any image over 2000px on either side, downscales only the oversized image blocks to the API's many-image bucket before submission. |
@@ -277,7 +277,7 @@ bun run inspect prompts versions_clean/<version>/cli.js "Command sandbox"
 bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js
 bun run diff -- matrix versions_clean/<v1>/cli.js versions_clean/<v2>/cli.js versions_clean/<v3>/cli.js
 bun run cli --list                                   # List available patches
-bun run test                                      # Run the test suite (pinned to --parallel=1)
+bun run test                                      # Run one isolated test-file process at a time
 ```
 
 High-memory entrypoints are mutually exclusive across terminals and nested
@@ -485,7 +485,7 @@ Current target: **Claude Code 2.1.220**. Tracks the latest upstream release and 
 
 Babel AST + generator over the formatted bundle is the heaviest part of the patcher. JSC (Bun's engine) sizes its heap dynamically, so no explicit flag is required; both direct `bun src/index.ts ...` and `mise` task invocations work.
 
-The test suite uses `bun test` against the `node:test` API shim and is pinned to `--parallel=1` because bun's shim mishandles concurrent file loads. Use `bun run test` (which already pins the flag) rather than raw `bun test src/`.
+The test suite uses `bun test` against the `node:test` API shim. Use `bun run test`, which starts one isolated Bun process per test file, sequentially, to bound memory and avoid the shim's concurrent file-load failures. Raw `bun test src/`, even with `--parallel=1`, keeps the files in one Bun process and is not equivalent.
 
 ### Runtime Tooling Assumptions
 

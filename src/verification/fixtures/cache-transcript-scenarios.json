@@ -1,0 +1,26 @@
+{
+	"name": "cache-request-mode-benchmark",
+	"description": "Synthetic direct-API workload for comparing stock-shaped and patched cache policy across main, fork, normal-agent, and workflow request graphs. The planner deterministically pads the stable system prefix to the declared character floor; this is a cache-minimum safeguard, not a guarantee for every future model tokenizer.",
+	"minimumSystemCharacters": 12000,
+	"systemBlocks": [
+		"You are a deterministic evidence assistant operating on entirely synthetic benchmark data. Preserve the ordered tool surface and return only the requested compact result."
+	],
+	"turns": [
+		{
+			"user": "Inspect synthetic component alpha and return its status.",
+			"assistant": "Component alpha is stable."
+		},
+		{
+			"user": "Inspect synthetic component beta and return its status.",
+			"assistant": "Component beta is stable."
+		},
+		{
+			"user": "Inspect synthetic component gamma and return its status.",
+			"assistant": "Component gamma is stable."
+		},
+		{
+			"user": "Inspect the synthetic prompt surface and report drift.",
+			"assistant": "The synthetic prompt surface has no drift."
+		}
+	]
+}

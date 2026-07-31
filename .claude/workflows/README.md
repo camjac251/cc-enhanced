@@ -42,7 +42,7 @@ fragility, and verifier weakness.
   five render patches at once), and watched prompt-surface impact, then a
   synthesis in the upstream-tracking style. Requires clean bundles already
   pulled; fast-fails with the exact `native:pull` commands otherwise. Args:
-  `{old, new, mid, focus, models}`.
+  `{replayFingerprint, old, new, mid, focus, models}`.
 
 - `patch-smoke`: post-promote smoke check that the PROMOTED binary carries the
   current patch roster and post-patch invariants: signature tag list vs
@@ -50,7 +50,8 @@ fragility, and verifier weakness.
   bundle. Post-patch needles are expected PRESENT there (the inverse of the
   clean-bundle checks), so absence is real signal: a stale promote or a patch
   that silently did not land. Verdict: pass / stale-promote / fail /
-  inconclusive with exact next commands. Args: `{focus, models}`.
+  inconclusive with exact next commands. Args:
+  `{replayFingerprint, focus, models}`.
 
 ## Fan-out and cost
 
@@ -71,6 +72,15 @@ shared prompt cache, the rest run in small concurrent batches that stay under
 the runtime's concurrent-agent cap, and a unit that returns null is retried
 once. Any unit that still fails is surfaced as `not-inspected` in the result
 (patches) or `not-checked` (surfaces), never silently dropped.
+
+Every `agent()` call is a fresh subagent conversation, not a fork of the
+workflow's invoking conversation or a continuation of a sibling agent. Cache
+reuse comes from compatible request prefixes. A practical cache lane is the
+resolved model plus working-directory/system snapshot, agent definition,
+ordered tools and permissions, and the exact StructuredOutput schema. A model
+match alone is insufficient; different schemas can reuse an earlier system or
+tool prefix but not the complete schema-bearing prefix. The serial first unit
+warms one such compatible lane before its peers fan out.
 
 Agents are model-tiered so the orchestrating session model stays out of the
 wide passes: inventory, batch anchor units, surface checks, and docs-and-counts
@@ -124,9 +134,34 @@ running elsewhere, and never run two of these workflows at once.
 
 ## Arguments
 
-The two patch workflows accept an `args` object (or a JSON string, or a plain
-focus string):
+All four workflows require `replayFingerprint`. The two patch workflows also
+accept the remaining fields below through an `args` object (or JSON string):
 
+- `replayFingerprint`: opaque `wf-state-v1:<sha256>` identity for the external
+  repository, clean-bundle, export, or promoted-binary state the workflow will
+  inspect. Compute it immediately before the initial call and recompute it
+  before every resume:
+
+  ```bash
+  bun run workflow:fingerprint -- patch-audit
+  bun run workflow:fingerprint -- patch-update
+  bun run workflow:fingerprint -- release-triage
+  bun run workflow:fingerprint -- patch-smoke
+  ```
+
+  When `patch-update` receives `patchedExportPath`, include that same tree in
+  the fingerprint command:
+
+  ```bash
+  bun run workflow:fingerprint -- patch-update --patched-export-path 'exported-prompts/<latest>'
+  ```
+
+  The first `agent()` prompt includes this value, so a changed digest misses
+  the workflow result-replay cache and forces every later call in the replay
+  chain to run live. The runtime's generated resume call preserves the old
+  args; replace its fingerprint with a freshly computed value before using it.
+  This is workflow result replay, which returns completed agent results, and is
+  separate from the API prompt cache described under fan-out.
 - `mode`:
   - `patch-update`: `quick` (high-risk group subset of patches, first 5 prompt
     surfaces), `delta` (versioning additionally runs
@@ -159,9 +194,9 @@ focus string):
 Examples:
 
 ```js
-Workflow({ name: 'patch-audit', args: { mode: 'quick' } })
-Workflow({ name: 'patch-update', args: { tag: 'edit-extended,read-bat' } })
-Workflow({ name: 'patch-update', args: { version: '<latest>', patchedExportPath: 'exported-prompts/<latest>' } })
+Workflow({ name: 'patch-audit', args: { replayFingerprint: 'wf-state-v1:<64-hex>', mode: 'quick' } })
+Workflow({ name: 'patch-update', args: { replayFingerprint: 'wf-state-v1:<64-hex>', tag: 'edit-extended,read-bat' } })
+Workflow({ name: 'patch-update', args: { replayFingerprint: 'wf-state-v1:<64-hex>', version: '<latest>', patchedExportPath: 'exported-prompts/<latest>' } })
 ```
 
 ## Suggested usage

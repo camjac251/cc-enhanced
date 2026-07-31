@@ -1,7 +1,7 @@
 export const meta = {
   name: 'patch-smoke',
   description: 'Post-promote smoke check: verify the PROMOTED binary carries the current patch roster and post-patch invariants, catching stale promotes and verify-green-but-missing drift',
-  whenToUse: 'Use in cc-enhanced after mise run native:update promotes a binary, or whenever unsure the live binary matches current patch sources. Compares the signature tag list embedded in claude --version against the current roster, unpacks the promoted binary (single agent, memory-heavy, runs alone), then probes each patch for the post-patch needles its verify() asserts. This is the inverse of the clean-bundle checks: post-patch needles are expected PRESENT in a patched bundle, so absence is real signal. Two historical incidents shipped through a green verify but were broken or absent live; this closes that gap as far as headless checks can. Read-only on the repo; writes only a scratch unpack. Args: {focus, models}.',
+  whenToUse: 'Use in cc-enhanced after mise run native:update promotes a binary, or whenever unsure the live binary matches current patch sources. Compares the signature tag list embedded in claude --version against the current roster, unpacks the promoted binary (single agent, memory-heavy, runs alone), then probes each patch for the post-patch needles its verify() asserts. This is the inverse of the clean-bundle checks: post-patch needles are expected PRESENT in a patched bundle, so absence is real signal. Two historical incidents shipped through a green verify but were broken or absent live; this closes that gap as far as headless checks can. Read-only on the repo; writes only a scratch unpack. Args: {replayFingerprint, focus, models}.',
   phases: [
     { title: 'Status', detail: 'promoted version, symlink chain, signature tag list vs current roster, recent patch-source changes' },
     { title: 'Unpack', detail: 'unpack the promoted binary to scratch (single agent, memory-heavy, runs alone)' },
@@ -98,6 +98,16 @@ const argsObj = (() => {
   return {}
 })()
 
+const replayFingerprint = typeof argsObj.replayFingerprint === 'string'
+  ? argsObj.replayFingerprint.trim()
+  : ''
+if (!/^wf-state-v1:[a-f0-9]{64}$/.test(replayFingerprint)) {
+  return {
+    status: 'blocked',
+    summary: 'A current replayFingerprint is required. Recompute it with bun run workflow:fingerprint -- patch-smoke before the initial run and every resume.',
+  }
+}
+
 // Probes are mechanical needle checks; only the verdict inherits the session model.
 const models = {
   mechanical: typeof argsObj.models?.mechanical === 'string' ? argsObj.models.mechanical : 'sonnet',
@@ -109,6 +119,8 @@ const focus = typeof argsObj.focus === 'string' && argsObj.focus.trim()
 phase('Status')
 const statusRes = await agent(
   `Check whether the PROMOTED cc-enhanced binary matches the current patch roster.
+
+Replay state fingerprint (cache identity only): ${replayFingerprint}
 
 Steps:
 1. Run mise run status and claude --version. Record promotedVersion. The signature patch embeds the applied patch tag list in the version output; extract signatureTags from it. If no tag list is present, leave signatureTags empty and add a concern (the binary may be unpatched or predate the signature patch).

@@ -5,6 +5,11 @@ import chalk from "chalk";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import {
+	CACHE_DIAGNOSTICS_BETA,
+	type NormalizedCacheDiagnostics,
+	sendCacheDiagnosticMessage,
+} from "./cache-diagnostics.js";
+import {
 	buildCacheEfficiencyStats,
 	type CacheCostMultipliers,
 	type CachePricingPerMillionTokens,
@@ -14,6 +19,15 @@ import {
 	mergeCacheUsageTotals,
 	normalizeCacheUsage,
 } from "./cache-efficiency-lib.js";
+import {
+	buildCacheScenarioPlans,
+	type CacheScenario,
+	padCacheSystemText,
+} from "./cache-scenario-plan.js";
+import {
+	type CacheScenarioTransport,
+	executeCacheScenarioPlan,
+} from "./cache-scenario-runner.js";
 
 type CacheTtl = "5m" | "1h" | "none";
 
@@ -27,6 +41,7 @@ interface CacheTranscript {
 	description?: string;
 	system?: string;
 	systemBlocks?: string[];
+	minimumSystemCharacters?: number;
 	turns: TranscriptTurn[];
 }
 
@@ -60,6 +75,13 @@ interface TurnResult {
 	equivalentInputTokens: number;
 	estimatedCostUsd: number;
 	responseId?: string;
+	scenario?: CacheScenario;
+	stepId?: string;
+	phase?: string;
+	lineage?: string;
+	schemaLane?: string;
+	previousStepId?: string | null;
+	diagnostics?: NormalizedCacheDiagnostics;
 }
 
 interface PolicyResult {
@@ -146,12 +168,15 @@ function buildSystemBlocks(
 	cacheNamespace?: CachePolicy["cacheNamespace"],
 ): ApiTextBlock[] {
 	const cacheControl = getCacheControl(ttl);
-	const sourceBlocks =
+	const sourceBlocks = padCacheSystemText(
 		transcript.systemBlocks && transcript.systemBlocks.length > 0
 			? transcript.systemBlocks
 			: transcript.system
 				? [transcript.system]
-				: ["You are a concise assistant for cache policy benchmarking."];
+				: ["You are a concise assistant for cache policy benchmarking."],
+		transcript.minimumSystemCharacters ?? 0,
+		"legacy benchmark protocol",
+	);
 	const namespaceSuffix = cacheNamespace
 		? `\n[cache-benchmark-namespace:${cacheNamespace}]`
 		: "";
@@ -232,7 +257,22 @@ async function callAnthropicMessagesApi(
 	anthropicVersion: string,
 	body: Record<string, unknown>,
 	timeoutMs: number,
-): Promise<{ id?: string; usage: unknown }> {
+	diagnosticsPreviousMessageId?: string | null,
+): Promise<{
+	id?: string;
+	usage: unknown;
+	diagnostics?: NormalizedCacheDiagnostics;
+}> {
+	if (diagnosticsPreviousMessageId !== undefined) {
+		return sendCacheDiagnosticMessage({
+			apiUrl,
+			apiKey,
+			anthropicVersion,
+			body,
+			previousMessageId: diagnosticsPreviousMessageId,
+			timeoutMs,
+		});
+	}
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 	try {
@@ -271,9 +311,18 @@ async function main() {
 	const rawArgs = hideBin(process.argv);
 	const argv = await yargs(rawArgs)
 		.option("preset", {
-			choices: ["default", "agent"] as const,
+			choices: [
+				"default",
+				"agent",
+				"main",
+				"fork",
+				"normal-agent",
+				"workflow",
+				"all",
+			] as const,
 			default: "default" as const,
-			description: "Apply verifier defaults for a named benchmark preset",
+			description:
+				"Apply legacy or stock-vs-patched request-mode benchmark presets",
 		})
 		.option("transcript", {
 			type: "string",
@@ -387,6 +436,12 @@ async function main() {
 			default: false,
 			description: "Do not call the API; only render benchmark request plan",
 		})
+		.option("cache-diagnostics", {
+			type: "boolean",
+			default: false,
+			description:
+				"Enable the Claude API cache-diagnosis beta and chain diagnostic response IDs",
+		})
 		.option("output-json", {
 			type: "string",
 			description: "Path to write JSON benchmark report",
@@ -401,6 +456,21 @@ async function main() {
 
 	const hasFlag = (name: string): boolean =>
 		rawArgs.some((arg) => arg === `--${name}` || arg.startsWith(`--${name}=`));
+	const requestModePreset = [
+		"main",
+		"fork",
+		"normal-agent",
+		"workflow",
+		"all",
+	].includes(argv.preset);
+	if (requestModePreset) {
+		const ttlOverrides = ["ttl", "baseline-ttl", "patched-ttl"].filter(hasFlag);
+		if (ttlOverrides.length > 0) {
+			throw new Error(
+				`TTL overrides are not supported by request-mode presets; remove ${ttlOverrides.map((flag) => `--${flag}`).join(", ")}`,
+			);
+		}
+	}
 	if (argv.preset === "agent") {
 		if (!hasFlag("transcript")) {
 			argv.transcript = path.resolve(
@@ -414,6 +484,15 @@ async function main() {
 		if (!hasFlag("min-cache-read-delta")) {
 			argv.minCacheReadDelta = -1_000_000;
 		}
+	}
+	if (
+		["main", "fork", "normal-agent", "workflow", "all"].includes(argv.preset) &&
+		!hasFlag("transcript")
+	) {
+		argv.transcript = path.resolve(
+			process.cwd(),
+			"src/verification/fixtures/cache-transcript-scenarios.json",
+		);
 	}
 
 	const model = String(argv.model ?? "").trim();
@@ -444,77 +523,176 @@ async function main() {
 	const policyResults: PolicyResult[] = [];
 	const gateFailures: string[] = [];
 	const maxBreakpoints = Number(argv.maxBreakpoints);
+	const cacheDiagnosticsEnabled = Boolean(argv.cacheDiagnostics);
+	const selectedScenarios: CacheScenario[] | null =
+		argv.preset === "main"
+			? ["main"]
+			: argv.preset === "fork"
+				? ["fork"]
+				: argv.preset === "normal-agent"
+					? ["normal-agent"]
+					: argv.preset === "workflow"
+						? ["workflow"]
+						: argv.preset === "all"
+							? ["main", "fork", "normal-agent", "workflow"]
+							: null;
 
-	for (const policy of POLICIES) {
-		const turns: TurnResult[] = [];
-		const policyTtl = policy.name === "baseline" ? baselineTtl : patchedTtl;
-		const systemBlocks = buildSystemBlocks(
-			transcript,
-			policyTtl,
-			policy.cacheNamespace,
-		);
-		for (let turnIndex = 0; turnIndex < transcript.turns.length; turnIndex++) {
-			const baseMessages = buildConversationMessages(
-				transcript.turns,
-				turnIndex,
+	if (selectedScenarios) {
+		const turnsByPolicy: Record<"baseline" | "patched", TurnResult[]> = {
+			baseline: [],
+			patched: [],
+		};
+		const transport: CacheScenarioTransport = async (call) =>
+			callAnthropicMessagesApi(
+				String(argv.apiUrl),
+				apiKey,
+				String(argv.anthropicVersion),
+				call.body,
+				Number(argv.timeoutMs),
+				call.diagnosticsPreviousMessageId,
 			);
-			const messages = applyPolicy(baseMessages, policy, policyTtl);
-			const cacheBreakpointCount = countBreakpoints(systemBlocks, messages);
 
-			const exceedsBreakpointLimit = cacheBreakpointCount > maxBreakpoints;
-			if (argv.failOnBreakpointOverflow && exceedsBreakpointLimit) {
-				gateFailures.push(
-					`${policy.name} turn ${turnIndex + 1} has ${cacheBreakpointCount} cache breakpoints (max ${maxBreakpoints})`,
-				);
+		for (const scenario of selectedScenarios) {
+			for (const plan of buildCacheScenarioPlans({ scenario, transcript })) {
+				const execution = await executeCacheScenarioPlan(plan, transport, {
+					liveRun,
+					diagnosticsEnabled: cacheDiagnosticsEnabled,
+					model,
+					maxTokens: Number(argv.maxTokens),
+					temperature: Number(argv.temperature),
+					maxBreakpoints: argv.failOnBreakpointOverflow
+						? maxBreakpoints
+						: Number.POSITIVE_INFINITY,
+				});
+				const policyName =
+					execution.policy === "stock" ? "baseline" : "patched";
+				for (const [stepIndex, step] of execution.steps.entries()) {
+					const usage = normalizeCacheUsage(step.usage);
+					const stats = buildCacheEfficiencyStats(usage, multipliers, pricing);
+					const plannedRequest = plan.requests[stepIndex];
+					const prompt =
+						plannedRequest.body.messages.at(-1)?.content.at(-1)?.text ?? "";
+					turnsByPolicy[policyName].push({
+						turn: turnsByPolicy[policyName].length + 1,
+						userPrompt: prompt,
+						messageCount: step.messageCount,
+						cacheBreakpointCount: step.cacheBreakpointCount,
+						usage,
+						equivalentInputTokens: stats.equivalentInputTokens,
+						estimatedCostUsd: stats.estimatedCostUsd,
+						scenario,
+						stepId: step.stepId,
+						phase: step.phase,
+						lineage: step.lineage,
+						schemaLane: step.schemaLane,
+						previousStepId: step.diagnosticsPreviousRequestId,
+						...(step.responseId ? { responseId: step.responseId } : {}),
+						...(step.diagnostics ? { diagnostics: step.diagnostics } : {}),
+					});
+				}
 			}
-
-			let usage: CacheUsageTotals;
-			let responseId: string | undefined;
-			if (
-				liveRun &&
-				!(argv.failOnBreakpointOverflow && exceedsBreakpointLimit)
-			) {
-				const response = await callAnthropicMessagesApi(
-					String(argv.apiUrl),
-					apiKey,
-					String(argv.anthropicVersion),
-					{
-						model,
-						max_tokens: Number(argv.maxTokens),
-						temperature: Number(argv.temperature),
-						system: systemBlocks,
-						messages,
-					},
-					Number(argv.timeoutMs),
-				);
-				usage = normalizeCacheUsage(response.usage);
-				responseId = response.id;
-			} else {
-				usage = normalizeCacheUsage({});
-			}
-
-			const stats = buildCacheEfficiencyStats(usage, multipliers, pricing);
-			turns.push({
-				turn: turnIndex + 1,
-				userPrompt: transcript.turns[turnIndex].user,
-				messageCount: messages.length,
-				cacheBreakpointCount,
-				usage,
-				equivalentInputTokens: stats.equivalentInputTokens,
-				estimatedCostUsd: stats.estimatedCostUsd,
-				...(responseId ? { responseId } : {}),
-			});
 		}
 
-		const totals = mergeCacheUsageTotals(turns.map((turn) => turn.usage));
-		const stats = buildCacheEfficiencyStats(totals, multipliers, pricing);
-		policyResults.push({
-			policy: policy.name,
-			turns,
-			totals,
-			equivalentInputTokens: stats.equivalentInputTokens,
-			estimatedCostUsd: stats.estimatedCostUsd,
-		});
+		for (const policy of ["baseline", "patched"] as const) {
+			const turns = turnsByPolicy[policy];
+			const totals = mergeCacheUsageTotals(turns.map((turn) => turn.usage));
+			const stats = buildCacheEfficiencyStats(totals, multipliers, pricing);
+			policyResults.push({
+				policy,
+				turns,
+				totals,
+				equivalentInputTokens: stats.equivalentInputTokens,
+				estimatedCostUsd: stats.estimatedCostUsd,
+			});
+		}
+	} else {
+		for (const policy of POLICIES) {
+			const turns: TurnResult[] = [];
+			const policyTtl = policy.name === "baseline" ? baselineTtl : patchedTtl;
+			const systemBlocks = buildSystemBlocks(
+				transcript,
+				policyTtl,
+				policy.cacheNamespace,
+			);
+			let previousResponseId: string | null = null;
+			for (
+				let turnIndex = 0;
+				turnIndex < transcript.turns.length;
+				turnIndex++
+			) {
+				const baseMessages = buildConversationMessages(
+					transcript.turns,
+					turnIndex,
+				);
+				const messages = applyPolicy(baseMessages, policy, policyTtl);
+				const cacheBreakpointCount = countBreakpoints(systemBlocks, messages);
+				const exceedsBreakpointLimit = cacheBreakpointCount > maxBreakpoints;
+				if (argv.failOnBreakpointOverflow && exceedsBreakpointLimit) {
+					gateFailures.push(
+						`${policy.name} turn ${turnIndex + 1} has ${cacheBreakpointCount} cache breakpoints (max ${maxBreakpoints})`,
+					);
+				}
+
+				let usage = normalizeCacheUsage({});
+				let responseId: string | undefined;
+				let diagnostics: NormalizedCacheDiagnostics | undefined;
+				if (
+					liveRun &&
+					!(argv.failOnBreakpointOverflow && exceedsBreakpointLimit)
+				) {
+					const response = await callAnthropicMessagesApi(
+						String(argv.apiUrl),
+						apiKey,
+						String(argv.anthropicVersion),
+						{
+							model,
+							max_tokens: Number(argv.maxTokens),
+							temperature: Number(argv.temperature),
+							system: systemBlocks,
+							messages,
+						},
+						Number(argv.timeoutMs),
+						cacheDiagnosticsEnabled ? previousResponseId : undefined,
+					);
+					usage = normalizeCacheUsage(response.usage);
+					responseId = response.id;
+					diagnostics = response.diagnostics;
+					if (
+						cacheDiagnosticsEnabled &&
+						turnIndex < transcript.turns.length - 1 &&
+						!responseId
+					) {
+						throw new Error(
+							`${policy.name} turn ${turnIndex + 2} requires response ID from turn ${turnIndex + 1}`,
+						);
+					}
+					if (responseId) previousResponseId = responseId;
+				}
+
+				const stats = buildCacheEfficiencyStats(usage, multipliers, pricing);
+				turns.push({
+					turn: turnIndex + 1,
+					userPrompt: transcript.turns[turnIndex].user,
+					messageCount: messages.length,
+					cacheBreakpointCount,
+					usage,
+					equivalentInputTokens: stats.equivalentInputTokens,
+					estimatedCostUsd: stats.estimatedCostUsd,
+					...(responseId ? { responseId } : {}),
+					...(diagnostics ? { diagnostics } : {}),
+				});
+			}
+
+			const totals = mergeCacheUsageTotals(turns.map((turn) => turn.usage));
+			const stats = buildCacheEfficiencyStats(totals, multipliers, pricing);
+			policyResults.push({
+				policy: policy.name,
+				turns,
+				totals,
+				equivalentInputTokens: stats.equivalentInputTokens,
+				estimatedCostUsd: stats.estimatedCostUsd,
+			});
+		}
 	}
 
 	const baseline = policyResults.find((result) => result.policy === "baseline");
@@ -550,9 +728,31 @@ async function main() {
 		transcriptName: transcript.name ?? null,
 		transcriptDescription: transcript.description ?? null,
 		options: {
-			ttl: argv.ttl,
-			baselineTtl,
-			patchedTtl,
+			preset: argv.preset,
+			cacheDiagnostics: cacheDiagnosticsEnabled,
+			cacheDiagnosisBeta: cacheDiagnosticsEnabled
+				? CACHE_DIAGNOSTICS_BETA
+				: null,
+			syntheticRequestShapes: selectedScenarios !== null,
+			ttl: selectedScenarios ? null : argv.ttl,
+			baselineTtl: selectedScenarios ? null : baselineTtl,
+			patchedTtl: selectedScenarios ? null : patchedTtl,
+			scenarioTtls: selectedScenarios
+				? Object.fromEntries(
+						selectedScenarios.map((scenario) => [
+							scenario,
+							{
+								stock:
+									scenario === "main"
+										? "1h"
+										: scenario === "fork"
+											? "parent=1h,fork=5m"
+											: "5m",
+								patched: "1h",
+							},
+						]),
+					)
+				: null,
 			maxTokens: Number(argv.maxTokens),
 			temperature: Number(argv.temperature),
 			maxBreakpoints,
@@ -596,6 +796,15 @@ async function main() {
 				"output_tokens",
 				"equivalent_input_tokens",
 				"estimated_cost_usd",
+				"scenario",
+				"step_id",
+				"phase",
+				"lineage",
+				"schema_lane",
+				"previous_step_id",
+				"cache_diagnostic_status",
+				"cache_miss_reason_type",
+				"cache_missed_input_tokens",
 			].join(","),
 		];
 		for (const policy of policyResults) {
@@ -615,6 +824,15 @@ async function main() {
 						toCsvValue(turn.usage.outputTokens),
 						toCsvValue(turn.equivalentInputTokens),
 						toCsvValue(turn.estimatedCostUsd),
+						toCsvValue(turn.scenario ?? ""),
+						toCsvValue(turn.stepId ?? ""),
+						toCsvValue(turn.phase ?? ""),
+						toCsvValue(turn.lineage ?? ""),
+						toCsvValue(turn.schemaLane ?? ""),
+						toCsvValue(turn.previousStepId ?? ""),
+						toCsvValue(turn.diagnostics?.status ?? ""),
+						toCsvValue(turn.diagnostics?.cacheMissReason ?? ""),
+						toCsvValue(turn.diagnostics?.cacheMissedInputTokens ?? ""),
 					].join(","),
 				);
 			}
@@ -633,6 +851,15 @@ async function main() {
 					toCsvValue(policy.totals.outputTokens),
 					toCsvValue(policy.equivalentInputTokens),
 					toCsvValue(policy.estimatedCostUsd),
+					"",
+					"",
+					"",
+					"",
+					"",
+					"",
+					"",
+					"",
+					"",
 				].join(","),
 			);
 		}
@@ -649,16 +876,78 @@ async function main() {
 	console.log(chalk.bold("\nCache Efficiency Verification\n"));
 	console.log(`Transcript: ${transcriptPath}`);
 	console.log(`Model:      ${model}`);
+	console.log(`Preset:     ${argv.preset}`);
 	console.log(`Mode:       ${liveRun ? "live API" : "dry-run planning only"}`);
-	console.log(`TTL:        baseline=${baselineTtl}, patched=${patchedTtl}`);
 	console.log(
-		`Delta:      cache_read=${cacheReadDelta}, equivalent_input=${equivalentDelta.toFixed(2)}, estimated_cost_pct=${Number.isFinite(costDeltaPct) ? costDeltaPct.toFixed(2) : "inf"}%`,
+		`Diagnostics: ${cacheDiagnosticsEnabled ? CACHE_DIAGNOSTICS_BETA : "disabled"}`,
 	);
+	if (selectedScenarios) {
+		const ttlSummary = selectedScenarios
+			.map(
+				(scenario) =>
+					`${scenario}(stock=${
+						scenario === "main"
+							? "1h"
+							: scenario === "fork"
+								? "parent 1h -> fork 5m"
+								: "5m"
+					},patched=1h)`,
+			)
+			.join(", ");
+		console.log(`TTL:        ${ttlSummary}`);
+	} else {
+		console.log(`TTL:        baseline=${baselineTtl}, patched=${patchedTtl}`);
+	}
+	if (liveRun) {
+		console.log(
+			`Delta:      cache_read=${cacheReadDelta}, equivalent_input=${equivalentDelta.toFixed(2)}, estimated_cost_pct=${Number.isFinite(costDeltaPct) ? costDeltaPct.toFixed(2) : "inf"}%`,
+		);
+	} else {
+		console.log("Delta:      not measured during dry-run planning");
+	}
+	if (cacheDiagnosticsEnabled && liveRun) {
+		const diagnostics = policyResults.flatMap((policy) =>
+			policy.turns.flatMap((turn) =>
+				turn.diagnostics ? [turn.diagnostics] : [],
+			),
+		);
+		const statuses = new Map<string, number>();
+		const reasons = new Map<string, number>();
+		for (const diagnostic of diagnostics) {
+			statuses.set(
+				diagnostic.status,
+				(statuses.get(diagnostic.status) ?? 0) + 1,
+			);
+			if (diagnostic.cacheMissReason) {
+				reasons.set(
+					diagnostic.cacheMissReason,
+					(reasons.get(diagnostic.cacheMissReason) ?? 0) + 1,
+				);
+			}
+		}
+		const statusSummary = [...statuses.entries()]
+			.map(([status, count]) => `${status}=${count}`)
+			.join(", ");
+		const reasonSummary = [...reasons.entries()]
+			.map(([reason, count]) => `${reason}=${count}`)
+			.join(", ");
+		console.log(
+			`Diagnosis:  ${statusSummary || "no response diagnostics"}${reasonSummary ? `; reasons ${reasonSummary}` : ""}`,
+		);
+	}
 	if (!finalOk) {
 		for (const reason of report.comparison.reasons) {
 			console.log(chalk.red(`FAIL: ${reason}`));
 		}
 		process.exit(1);
+	}
+	if (!liveRun) {
+		console.log(
+			chalk.green(
+				"PLAN OK: request graph and breakpoint preflight passed; efficiency was not measured",
+			),
+		);
+		return;
 	}
 	console.log(chalk.green("PASS: cache efficiency gate satisfied"));
 }

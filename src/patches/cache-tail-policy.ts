@@ -237,6 +237,53 @@ function hasCacheTailWindowLoop(
 	});
 }
 
+function hasBoundedDecimationLoop(
+	body: t.Statement[],
+	setName: string,
+	primaryIndexName: string,
+): boolean {
+	return body.some((stmt) =>
+		nodeContains(stmt, (candidate) => {
+			if (!t.isForStatement(candidate)) return false;
+			if (!t.isVariableDeclaration(candidate.init)) return false;
+			if (candidate.init.declarations.length !== 1) return false;
+			const loopDecl = candidate.init.declarations[0];
+			if (!t.isIdentifier(loopDecl.id)) return false;
+			const loopIndexName = loopDecl.id.name;
+			if (
+				!t.isUpdateExpression(candidate.update, { operator: "++" }) ||
+				!t.isIdentifier(candidate.update.argument, { name: loopIndexName })
+			) {
+				return false;
+			}
+			if (!nodeContainsSetAdd(candidate, setName, loopIndexName)) return false;
+
+			const hasDecimationGate = nodeContains(candidate.body, (descendant) => {
+				if (!t.isBinaryExpression(descendant, { operator: "===" })) {
+					return false;
+				}
+				if (!t.isBinaryExpression(descendant.left, { operator: "%" })) {
+					return false;
+				}
+				return (
+					t.isNumericLiteral(descendant.left.right, { value: 15 }) &&
+					t.isNumericLiteral(descendant.right, { value: 0 })
+				);
+			});
+			if (!hasDecimationGate) return false;
+			if (!candidate.test) return false;
+
+			return nodeContains(candidate.test, (descendant) => {
+				return (
+					t.isBinaryExpression(descendant, { operator: "<=" }) &&
+					t.isIdentifier(descendant.left, { name: loopIndexName }) &&
+					t.isIdentifier(descendant.right, { name: primaryIndexName })
+				);
+			});
+		}),
+	);
+}
+
 function createCacheTailWindowStatements(
 	messagesName: string,
 	setName: string,
@@ -253,7 +300,7 @@ function createCacheTailWindowStatements(
 		`
 		var userMsgCount = 0;
 		if (Array.isArray(MESSAGES)) {
-			for (var idx = 0; idx < MESSAGES.length; idx++) {
+			for (var idx = 0; idx <= PRIMARY_INDEX && idx < MESSAGES.length; idx++) {
 				var msg = MESSAGES[idx];
 				if (msg && msg.type === "user") {
 					userMsgCount++;
@@ -264,10 +311,11 @@ function createCacheTailWindowStatements(
 			}
 		}
 		`,
-		{ placeholderPattern: /^(MESSAGES|SET_NAME)$/ },
+		{ placeholderPattern: /^(MESSAGES|SET_NAME|PRIMARY_INDEX)$/ },
 	)({
 		MESSAGES: t.identifier(messagesName),
 		SET_NAME: setId,
+		PRIMARY_INDEX: indexId,
 	});
 
 	return [
@@ -1118,7 +1166,7 @@ function createCacheControlCapStatements(
 		`
 		if (Array.isArray(REQUEST.system)) {
 			for (let cacheBlock of REQUEST.system) {
-				if (cacheBlock && typeof cacheBlock === "object" && cacheBlock.cache_control) {
+				if (cacheBlock && typeof cacheBlock === "object" && cacheBlock.cache_control && typeof cacheBlock.cache_control === "object") {
 					cacheBlock.cache_control.ttl = "1h";
 				}
 			}
@@ -1127,10 +1175,15 @@ function createCacheControlCapStatements(
 			let hasSystemCache = false;
 			if (Array.isArray(REQUEST.system)) {
 				for (let cacheBlock of REQUEST.system) {
-					if (cacheBlock && typeof cacheBlock === "object" && cacheBlock.cache_control) {
+					if (cacheBlock && typeof cacheBlock === "object" && cacheBlock.cache_control && typeof cacheBlock.cache_control === "object") {
 						hasSystemCache = true;
 						break;
 					}
+				}
+			}
+			for (let tool of REQUEST.tools) {
+				if (tool && typeof tool === "object" && tool.defer_loading && "cache_control" in tool) {
+					delete tool.cache_control;
 				}
 			}
 			if (hasSystemCache) {
@@ -1143,10 +1196,43 @@ function createCacheControlCapStatements(
 				}
 			}
 		}
+		let systemToolsExcess = -4;
+		if (Array.isArray(REQUEST.system)) {
+			for (let cacheBlock of REQUEST.system) {
+				if (cacheBlock && typeof cacheBlock === "object" && cacheBlock.cache_control && typeof cacheBlock.cache_control === "object") {
+					systemToolsExcess++;
+				}
+			}
+		}
+		if (Array.isArray(REQUEST.tools)) {
+			for (let cacheTool of REQUEST.tools) {
+				if (cacheTool && typeof cacheTool === "object" && cacheTool.cache_control && typeof cacheTool.cache_control === "object") {
+					systemToolsExcess++;
+				}
+			}
+		}
+		if (systemToolsExcess > 0 && Array.isArray(REQUEST.tools)) {
+			for (let cacheTool of REQUEST.tools) {
+				if (systemToolsExcess <= 0) break;
+				if (cacheTool && typeof cacheTool === "object" && cacheTool.cache_control && typeof cacheTool.cache_control === "object") {
+					delete cacheTool.cache_control;
+					systemToolsExcess--;
+				}
+			}
+		}
+		if (systemToolsExcess > 0 && Array.isArray(REQUEST.system)) {
+			for (let cacheBlock of REQUEST.system) {
+				if (systemToolsExcess <= 0) break;
+				if (cacheBlock && typeof cacheBlock === "object" && cacheBlock.cache_control && typeof cacheBlock.cache_control === "object") {
+					delete cacheBlock.cache_control;
+					systemToolsExcess--;
+				}
+			}
+		}
 		let systemCount = 0;
 		if (Array.isArray(REQUEST.system)) {
 			for (let cacheBlock of REQUEST.system) {
-				if (cacheBlock && typeof cacheBlock === "object" && "cache_control" in cacheBlock) {
+				if (cacheBlock && typeof cacheBlock === "object" && cacheBlock.cache_control && typeof cacheBlock.cache_control === "object") {
 					systemCount++;
 				}
 			}
@@ -1154,7 +1240,7 @@ function createCacheControlCapStatements(
 		let toolsCount = 0;
 		if (Array.isArray(REQUEST.tools)) {
 			for (let cacheTool of REQUEST.tools) {
-				if (cacheTool && typeof cacheTool === "object" && "cache_control" in cacheTool) {
+				if (cacheTool && typeof cacheTool === "object" && cacheTool.cache_control && typeof cacheTool.cache_control === "object") {
 					toolsCount++;
 				}
 			}
@@ -1173,7 +1259,7 @@ function createCacheControlCapStatements(
 					userMsgCount++;
 					if (msg.content && Array.isArray(msg.content)) {
 						for (let block of msg.content) {
-							if (block && typeof block === "object" && "cache_control" in block) {
+							if (block && typeof block === "object" && block.cache_control && typeof block.cache_control === "object") {
 								msgCheckpoints.push({
 									block: block,
 									userIndex: userMsgCount,
@@ -1184,7 +1270,7 @@ function createCacheControlCapStatements(
 					}
 				} else if (msg && msg.content && Array.isArray(msg.content)) {
 					for (let block of msg.content) {
-						if (block && typeof block === "object" && "cache_control" in block) {
+						if (block && typeof block === "object" && block.cache_control && typeof block.cache_control === "object") {
 							msgCheckpoints.push({
 								block: block,
 								userIndex: userMsgCount,
@@ -1202,6 +1288,20 @@ function createCacheControlCapStatements(
 					keepBlocks.add(block);
 				}
 			};
+			let latestCheckpoint = msgCheckpoints.length > 0 ? msgCheckpoints[msgCheckpoints.length - 1] : null;
+			let latestStableCheckpoint = null;
+			for (let i = msgCheckpoints.length - 2; i >= 0; i--) {
+				if (!msgCheckpoints[i].isDecimation) {
+					latestStableCheckpoint = msgCheckpoints[i];
+					break;
+				}
+			}
+			if (latestStableCheckpoint) {
+				addKeep(latestStableCheckpoint.block);
+			}
+			if (latestCheckpoint) {
+				addKeep(latestCheckpoint.block);
+			}
 			let latestDecimation = null;
 			for (let i = msgCheckpoints.length - 1; i >= 0; i--) {
 				if (msgCheckpoints[i].isDecimation) {
@@ -1211,9 +1311,6 @@ function createCacheControlCapStatements(
 			}
 			if (latestDecimation) {
 				addKeep(latestDecimation.block);
-			}
-			if (msgCheckpoints.length > 0) {
-				addKeep(msgCheckpoints[msgCheckpoints.length - 1].block);
 			}
 			for (let i = msgCheckpoints.length - 1; i >= 0; i--) {
 				addKeep(msgCheckpoints[i].block);
@@ -1464,6 +1561,7 @@ export function collectCacheTailVerificationInventory(
 	let hasTailWindowGate = false;
 	let hasUserOnlyConditional = false;
 	let hasDecimationGate = false;
+	let hasDecimationPrimaryBoundary = false;
 
 	let foundSyspromptMarker = false;
 	let firstNonNullScope: string | null = null;
@@ -1482,14 +1580,38 @@ export function collectCacheTailVerificationInventory(
 
 	let requestClampAnchor = clampAnchorCache.get(ast);
 	let requestBuilderFunctionNode: t.Node | null = null;
+	let requestBuilderRequestName: string | null = null;
 	let fixedClampDeclCount = 0;
 	let fixedRequestBuilderDeclCount = 0;
+	let fixedSystemToolsClampCount = 0;
+	let fixedSystemToolsRequestBuilderCount = 0;
 	let hasDeleteInClamp = false;
 	let hasDeleteInRequestBuilder = false;
+	let hasToolCapDeleteInClamp = false;
+	let hasToolCapDeleteInRequestBuilder = false;
+	let hasSystemCapDeleteInClamp = false;
+	let hasSystemCapDeleteInRequestBuilder = false;
+	let hasStablePriorityInClamp = false;
+	let hasStablePriorityInRequestBuilder = false;
 
-	let hasSystemTtlSet = false;
+	let hasSystemTtlSetInClamp = false;
+	let hasSystemTtlSetInRequestBuilder = false;
 	let toolsLoopTtlSetCount = 0;
 	let guardedToolsLoopTtlSetCount = 0;
+	let hasDeferredCleanupInClamp = false;
+	let hasDeferredCleanupInRequestBuilder = false;
+	const createSystemToolsOverflowAccounting = () => ({
+		systemIncrementCount: 0,
+		toolsIncrementCount: 0,
+		systemPositiveGuardCount: 0,
+		toolsPositiveGuardCount: 0,
+		systemCoupledDecrementCount: 0,
+		toolsCoupledDecrementCount: 0,
+	});
+	const systemToolsOverflowAccounting = {
+		clamp: createSystemToolsOverflowAccounting(),
+		"request-builder": createSystemToolsOverflowAccounting(),
+	};
 
 	const isWithinFunction = (path: NodePath, functionNode: t.Node): boolean =>
 		Boolean(path.findParent((parentPath) => parentPath.node === functionNode));
@@ -1557,6 +1679,156 @@ export function collectCacheTailVerificationInventory(
 		return null;
 	};
 
+	const getOwnerRequestName = (
+		owner: "clamp" | "request-builder",
+	): string | null =>
+		owner === "clamp"
+			? (requestClampAnchor?.requestCopyName ?? null)
+			: requestBuilderRequestName;
+
+	const getOwningRequestCollectionLoop = (
+		path: NodePath,
+		owner: "clamp" | "request-builder",
+	): { collection: "system" | "tools"; targetName: string } | null => {
+		const requestName = getOwnerRequestName(owner);
+		if (!requestName) return null;
+		const loopPath = path.findParent((parentPath) =>
+			parentPath.isForOfStatement(),
+		);
+		if (!loopPath?.isForOfStatement()) return null;
+		const loopBinding = loopPath.node.left;
+		const collectionAccess = loopPath.node.right;
+		if (
+			!t.isVariableDeclaration(loopBinding) ||
+			loopBinding.declarations.length !== 1 ||
+			!t.isIdentifier(loopBinding.declarations[0].id) ||
+			!t.isMemberExpression(collectionAccess) ||
+			!t.isIdentifier(collectionAccess.object, { name: requestName })
+		) {
+			return null;
+		}
+		if (isMemberPropertyName(collectionAccess, "system")) {
+			return {
+				collection: "system",
+				targetName: loopBinding.declarations[0].id.name,
+			};
+		}
+		if (isMemberPropertyName(collectionAccess, "tools")) {
+			return {
+				collection: "tools",
+				targetName: loopBinding.declarations[0].id.name,
+			};
+		}
+		return null;
+	};
+
+	const isTargetCacheControlMember = (
+		node: t.Node,
+		targetName: string,
+	): node is t.MemberExpression =>
+		t.isMemberExpression(node) &&
+		t.isIdentifier(node.object, { name: targetName }) &&
+		isMemberPropertyName(node, "cache_control");
+
+	const flattenLogicalAnd = (node: t.Node): t.Node[] => {
+		if (!t.isLogicalExpression(node, { operator: "&&" })) return [node];
+		return [...flattenLogicalAnd(node.left), ...flattenLogicalAnd(node.right)];
+	};
+
+	const hasEffectiveCacheControlGuard = (
+		node: t.Node,
+		targetName: string,
+	): boolean => {
+		const operands = flattenLogicalAnd(node);
+		const hasTruthyCacheControl = operands.some((operand) =>
+			isTargetCacheControlMember(operand, targetName),
+		);
+		const hasObjectTypeGuard = operands.some(
+			(operand) =>
+				t.isBinaryExpression(operand, { operator: "===" }) &&
+				t.isUnaryExpression(operand.left, { operator: "typeof" }) &&
+				isTargetCacheControlMember(operand.left.argument, targetName) &&
+				t.isStringLiteral(operand.right, { value: "object" }),
+		);
+		return hasTruthyCacheControl && hasObjectTypeGuard;
+	};
+
+	const isPositiveOverflowGuard = (
+		path: NodePath<t.IfStatement>,
+		owner: "clamp" | "request-builder",
+	): "system" | "tools" | null => {
+		const requestName = getOwnerRequestName(owner);
+		if (!requestName) return null;
+		const test = path.node.test;
+		if (!t.isLogicalExpression(test, { operator: "&&" })) return null;
+		if (
+			!t.isBinaryExpression(test.left, { operator: ">" }) ||
+			!t.isIdentifier(test.left.left, { name: "systemToolsExcess" }) ||
+			!t.isNumericLiteral(test.left.right, { value: 0 }) ||
+			!t.isCallExpression(test.right) ||
+			!t.isMemberExpression(test.right.callee) ||
+			!t.isIdentifier(test.right.callee.object, { name: "Array" }) ||
+			!isMemberPropertyName(test.right.callee, "isArray") ||
+			test.right.arguments.length !== 1
+		) {
+			return null;
+		}
+		const collectionAccess = test.right.arguments[0];
+		if (
+			!t.isMemberExpression(collectionAccess) ||
+			!t.isIdentifier(collectionAccess.object, { name: requestName })
+		) {
+			return null;
+		}
+		const collection = isMemberPropertyName(collectionAccess, "system")
+			? "system"
+			: isMemberPropertyName(collectionAccess, "tools")
+				? "tools"
+				: null;
+		if (!collection) return null;
+		const hasOwnedCleanupLoop = nodeContains(
+			path.node.consequent,
+			(candidate) => {
+				return (
+					t.isForOfStatement(candidate) &&
+					t.isMemberExpression(candidate.right) &&
+					t.isIdentifier(candidate.right.object, { name: requestName }) &&
+					isMemberPropertyName(candidate.right, collection)
+				);
+			},
+		);
+		return hasOwnedCleanupLoop ? collection : null;
+	};
+
+	const hasCoupledOverflowDecrement = (
+		path: NodePath<t.UnaryExpression>,
+		targetName: string,
+	): boolean => {
+		const guardPath = path.findParent((parentPath) =>
+			parentPath.isIfStatement(),
+		);
+		if (!guardPath?.isIfStatement()) return false;
+		if (!hasEffectiveCacheControlGuard(guardPath.node.test, targetName)) {
+			return false;
+		}
+		if (!t.isBlockStatement(guardPath.node.consequent)) return false;
+		const deleteStatement = path.findParent((parentPath) =>
+			parentPath.isExpressionStatement(),
+		);
+		if (!deleteStatement?.isExpressionStatement()) return false;
+		const statements = guardPath.node.consequent.body;
+		const deleteIndex = statements.indexOf(deleteStatement.node);
+		if (deleteIndex < 0) return false;
+		const decrement = statements[deleteIndex + 1];
+		return (
+			t.isExpressionStatement(decrement) &&
+			t.isUpdateExpression(decrement.expression, { operator: "--" }) &&
+			t.isIdentifier(decrement.expression.argument, {
+				name: "systemToolsExcess",
+			})
+		);
+	};
+
 	const isCheckpointCacheControlDelete = (
 		path: NodePath<t.UnaryExpression>,
 	): boolean => {
@@ -1588,6 +1860,73 @@ export function collectCacheTailVerificationInventory(
 			return false;
 		}
 		return true;
+	};
+
+	const getDirectCacheControlDelete = (
+		path: NodePath<t.UnaryExpression>,
+	): { collection: "system" | "tools"; targetName: string } | null => {
+		const cacheControlMember = path.node.argument;
+		if (
+			!t.isMemberExpression(cacheControlMember) ||
+			!isMemberPropertyName(cacheControlMember, "cache_control") ||
+			!t.isIdentifier(cacheControlMember.object)
+		) {
+			return null;
+		}
+		const targetName = cacheControlMember.object.name;
+		const loopPath = path.findParent((parentPath) =>
+			parentPath.isForOfStatement(),
+		);
+		if (!loopPath?.isForOfStatement()) return null;
+		const loopBinding = loopPath.node.left;
+		if (
+			!t.isVariableDeclaration(loopBinding) ||
+			loopBinding.declarations.length !== 1 ||
+			!t.isIdentifier(loopBinding.declarations[0].id, { name: targetName }) ||
+			!t.isMemberExpression(loopPath.node.right)
+		) {
+			return null;
+		}
+		if (isMemberPropertyName(loopPath.node.right, "tools")) {
+			return { collection: "tools", targetName };
+		}
+		if (isMemberPropertyName(loopPath.node.right, "system")) {
+			return { collection: "system", targetName };
+		}
+		return null;
+	};
+
+	const isDeferredCleanupDelete = (
+		path: NodePath<t.UnaryExpression>,
+		targetName: string,
+	): boolean =>
+		Boolean(
+			path.findParent(
+				(parentPath) =>
+					parentPath.isIfStatement() &&
+					nodeContains(parentPath.node.test, (candidate) => {
+						return (
+							t.isMemberExpression(candidate) &&
+							isMemberPropertyName(candidate, "defer_loading") &&
+							t.isIdentifier(candidate.object, { name: targetName })
+						);
+					}),
+			),
+		);
+
+	const isSystemToolsCapDelete = (
+		path: NodePath<t.UnaryExpression>,
+	): boolean => {
+		const loopPath = path.findParent((parentPath) =>
+			parentPath.isForOfStatement(),
+		);
+		if (!loopPath?.isForOfStatement()) return false;
+		return nodeContains(loopPath.node.body, (candidate) => {
+			return (
+				t.isUpdateExpression(candidate, { operator: "--" }) &&
+				t.isIdentifier(candidate.argument, { name: "systemToolsExcess" })
+			);
+		});
 	};
 
 	const isDeferredLoadingExclusionForTarget = (
@@ -1645,15 +1984,38 @@ export function collectCacheTailVerificationInventory(
 			const body = path.node.body.body;
 
 			if (!tailFunctionNode) {
-				const markerStmt = body.find(
+				const markerStmtIndex = body.findIndex(
 					(stmt) => !t.isFunctionDeclaration(stmt) && nodeContainsMarker(stmt),
 				);
-				if (markerStmt) {
+				const markerStmt = body[markerStmtIndex];
+				if (markerStmtIndex >= 0 && markerStmt) {
 					tailFunctionNode = path.node;
 					const markerSetName = getMarkerCountSetName(markerStmt);
 					hasTailWindowGate = markerSetName
 						? hasCacheTailWindowLoop(body, markerSetName)
 						: false;
+					const firstParam = path.node.params[0];
+					const messagesParamName = t.isIdentifier(firstParam)
+						? firstParam.name
+						: null;
+					const primaryTail =
+						markerSetName && messagesParamName
+							? findPrimaryTailSetAdd(
+									body,
+									markerStmtIndex,
+									markerSetName,
+									messagesParamName,
+								)
+							: null;
+					hasDecimationPrimaryBoundary = Boolean(
+						markerSetName &&
+							primaryTail &&
+							hasBoundedDecimationLoop(
+								body,
+								markerSetName,
+								primaryTail.indexName,
+							),
+					);
 				}
 			}
 
@@ -1701,12 +2063,14 @@ export function collectCacheTailVerificationInventory(
 				}
 			}
 
+			const requestBuilderName = findRequestBuilderVariableName(body);
 			if (
 				!requestBuilderFunctionNode &&
 				path.node !== requestClampAnchor?.functionNode &&
-				findRequestBuilderVariableName(body)
+				requestBuilderName
 			) {
 				requestBuilderFunctionNode = path.node;
+				requestBuilderRequestName = requestBuilderName;
 			}
 		},
 		VariableDeclarator(path) {
@@ -1739,6 +2103,18 @@ export function collectCacheTailVerificationInventory(
 					fixedRequestBuilderDeclCount += 1;
 				}
 			}
+			if (
+				owner &&
+				t.isIdentifier(path.node.id, { name: "systemToolsExcess" }) &&
+				t.isUnaryExpression(path.node.init, { operator: "-" }) &&
+				t.isNumericLiteral(path.node.init.argument, { value: 4 })
+			) {
+				if (owner === "clamp") {
+					fixedSystemToolsClampCount += 1;
+				} else {
+					fixedSystemToolsRequestBuilderCount += 1;
+				}
+			}
 		},
 		AssignmentExpression(assignPath) {
 			if (tailFunctionNode && isWithinFunction(assignPath, tailFunctionNode)) {
@@ -1767,7 +2143,12 @@ export function collectCacheTailVerificationInventory(
 				isMemberPropertyName(left.object, "cache_control") &&
 				t.isStringLiteral(right, { value: "1h" })
 			) {
-				hasSystemTtlSet = true;
+				const owner = getBlockCapOwner(assignPath);
+				if (owner === "clamp") {
+					hasSystemTtlSetInClamp = true;
+				} else if (owner === "request-builder") {
+					hasSystemTtlSetInRequestBuilder = true;
+				}
 			}
 			if (
 				t.isMemberExpression(left) &&
@@ -1797,7 +2178,78 @@ export function collectCacheTailVerificationInventory(
 				}
 			}
 		},
+		CallExpression(path) {
+			if (
+				!t.isIdentifier(path.node.callee, { name: "addKeep" }) ||
+				path.node.arguments.length !== 1
+			) {
+				return;
+			}
+			const checkpointBlock = path.node.arguments[0];
+			if (
+				!t.isMemberExpression(checkpointBlock) ||
+				!t.isIdentifier(checkpointBlock.object, {
+					name: "latestStableCheckpoint",
+				}) ||
+				!isMemberPropertyName(checkpointBlock, "block")
+			) {
+				return;
+			}
+			const isGuarded = Boolean(
+				path.findParent(
+					(parentPath) =>
+						parentPath.isIfStatement() &&
+						t.isIdentifier(parentPath.node.test, {
+							name: "latestStableCheckpoint",
+						}),
+				),
+			);
+			if (!isGuarded) return;
+
+			const owner = getBlockCapOwner(path);
+			if (owner === "clamp") {
+				hasStablePriorityInClamp = true;
+			} else if (owner === "request-builder") {
+				hasStablePriorityInRequestBuilder = true;
+			}
+		},
+		IfStatement(path) {
+			const owner = getBlockCapOwner(path);
+			if (!owner) return;
+			const collection = isPositiveOverflowGuard(path, owner);
+			if (!collection) return;
+			const accounting = systemToolsOverflowAccounting[owner];
+			if (collection === "system") {
+				accounting.systemPositiveGuardCount += 1;
+			} else {
+				accounting.toolsPositiveGuardCount += 1;
+			}
+		},
 		UpdateExpression(path) {
+			const owner = getBlockCapOwner(path);
+			if (
+				owner &&
+				t.isUpdateExpression(path.node, { operator: "++" }) &&
+				t.isIdentifier(path.node.argument, { name: "systemToolsExcess" })
+			) {
+				const loop = getOwningRequestCollectionLoop(path, owner);
+				const guardPath = path.findParent((parentPath) =>
+					parentPath.isIfStatement(),
+				);
+				if (
+					loop &&
+					guardPath?.isIfStatement() &&
+					hasEffectiveCacheControlGuard(guardPath.node.test, loop.targetName)
+				) {
+					const accounting = systemToolsOverflowAccounting[owner];
+					if (loop.collection === "system") {
+						accounting.systemIncrementCount += 1;
+					} else {
+						accounting.toolsIncrementCount += 1;
+					}
+				}
+			}
+
 			if (!tailFunctionNode || !isWithinFunction(path, tailFunctionNode)) {
 				return;
 			}
@@ -1909,17 +2361,58 @@ export function collectCacheTailVerificationInventory(
 			}
 		},
 		UnaryExpression(path) {
-			if (
-				path.node.operator !== "delete" ||
-				!isCheckpointCacheControlDelete(path)
-			) {
-				return;
-			}
+			if (path.node.operator !== "delete") return;
+
 			const owner = getBlockCapOwner(path);
-			if (owner === "clamp") {
-				hasDeleteInClamp = true;
+			if (isCheckpointCacheControlDelete(path)) {
+				if (owner === "clamp") {
+					hasDeleteInClamp = true;
+				} else if (owner === "request-builder") {
+					hasDeleteInRequestBuilder = true;
+				}
+			}
+
+			const directDelete = getDirectCacheControlDelete(path);
+			if (!directDelete) return;
+			if (owner) {
+				const loop = getOwningRequestCollectionLoop(path, owner);
+				if (
+					loop &&
+					loop.collection === directDelete.collection &&
+					loop.targetName === directDelete.targetName &&
+					hasCoupledOverflowDecrement(path, directDelete.targetName)
+				) {
+					const accounting = systemToolsOverflowAccounting[owner];
+					if (loop.collection === "system") {
+						accounting.systemCoupledDecrementCount += 1;
+					} else {
+						accounting.toolsCoupledDecrementCount += 1;
+					}
+				}
+			}
+
+			if (
+				directDelete.collection === "tools" &&
+				isDeferredCleanupDelete(path, directDelete.targetName)
+			) {
+				if (owner === "clamp") {
+					hasDeferredCleanupInClamp = true;
+				} else if (owner === "request-builder") {
+					hasDeferredCleanupInRequestBuilder = true;
+				}
+			}
+
+			if (!isSystemToolsCapDelete(path)) return;
+			if (directDelete.collection === "tools") {
+				if (owner === "clamp") {
+					hasToolCapDeleteInClamp = true;
+				} else if (owner === "request-builder") {
+					hasToolCapDeleteInRequestBuilder = true;
+				}
+			} else if (owner === "clamp") {
+				hasSystemCapDeleteInClamp = true;
 			} else if (owner === "request-builder") {
-				hasDeleteInRequestBuilder = true;
+				hasSystemCapDeleteInRequestBuilder = true;
 			}
 		},
 		noScope: true,
@@ -1957,6 +2450,9 @@ export function collectCacheTailVerificationInventory(
 		}
 		if (!hasDecimationGate) {
 			return "Decimation cache loop was not patched";
+		}
+		if (!hasDecimationPrimaryBoundary) {
+			return "Decimation cache loop exceeds the primary cache boundary";
 		}
 		return true;
 	};
@@ -2000,6 +2496,20 @@ export function collectCacheTailVerificationInventory(
 		return true;
 	};
 
+	const hasCompleteSystemToolsOverflowAccounting = (
+		owner: "clamp" | "request-builder",
+	): boolean => {
+		const accounting = systemToolsOverflowAccounting[owner];
+		return (
+			accounting.systemIncrementCount === 1 &&
+			accounting.toolsIncrementCount === 1 &&
+			accounting.systemPositiveGuardCount === 1 &&
+			accounting.toolsPositiveGuardCount === 1 &&
+			accounting.systemCoupledDecrementCount === 1 &&
+			accounting.toolsCoupledDecrementCount === 1
+		);
+	};
+
 	const verifyBlockCap = (): true | string => {
 		if (!requestClampAnchor) {
 			return "Could not locate request clamp helper for cache_control cap";
@@ -2016,6 +2526,21 @@ export function collectCacheTailVerificationInventory(
 		if (fixedRequestBuilderDeclCount !== 1) {
 			return `Live request builder maxMsgCheckpoints declaration is ambiguous (${fixedRequestBuilderDeclCount} declarations)`;
 		}
+		if (
+			fixedSystemToolsClampCount !== 1 ||
+			fixedSystemToolsRequestBuilderCount !== 1 ||
+			!hasToolCapDeleteInClamp ||
+			!hasToolCapDeleteInRequestBuilder ||
+			!hasSystemCapDeleteInClamp ||
+			!hasSystemCapDeleteInRequestBuilder ||
+			!hasCompleteSystemToolsOverflowAccounting("clamp") ||
+			!hasCompleteSystemToolsOverflowAccounting("request-builder")
+		) {
+			return "Request paths are missing the four-block system and tool cache_control cap";
+		}
+		if (!hasStablePriorityInClamp || !hasStablePriorityInRequestBuilder) {
+			return "Request paths are missing stable message checkpoint priority";
+		}
 		if (!hasDeleteInClamp) {
 			return "Request clamp helper missing delete cp.block.cache_control statement";
 		}
@@ -2026,7 +2551,7 @@ export function collectCacheTailVerificationInventory(
 	};
 
 	const verifyOneHourTtl = (): true | string => {
-		if (!hasSystemTtlSet) {
+		if (!hasSystemTtlSetInClamp || !hasSystemTtlSetInRequestBuilder) {
 			return "System prompt 1h TTL enforcement not found";
 		}
 		if (toolsLoopTtlSetCount < 2) {
@@ -2034,6 +2559,9 @@ export function collectCacheTailVerificationInventory(
 		}
 		if (guardedToolsLoopTtlSetCount !== toolsLoopTtlSetCount) {
 			return "Tools array 1h TTL enforcement must skip defer_loading tools";
+		}
+		if (!hasDeferredCleanupInClamp || !hasDeferredCleanupInRequestBuilder) {
+			return "Request paths are missing deferred tool cache_control cleanup";
 		}
 		return true;
 	};

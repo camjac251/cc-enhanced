@@ -743,6 +743,162 @@ test("cache-tail-policy rejects a same-function cache-control delete decoy", asy
 	);
 });
 
+test("cache-tail-policy verify rejects decimation beyond the primary cache boundary", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replaceAll(
+		"idx <= tailIndex && idx < messages.length",
+		"idx < messages.length",
+	);
+
+	assert.notEqual(regressed, output);
+	const result = cacheTailPolicy.verify(regressed, parse(regressed));
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /primary cache boundary/);
+});
+
+test("cache-tail-policy verify rejects missing deferred-tool cleanup", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replaceAll("delete tool.cache_control;", "");
+
+	assert.notEqual(regressed, output);
+	const result = cacheTailPolicy.verify(regressed, parse(regressed));
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /deferred tool cache_control cleanup/);
+});
+
+test("cache-tail-policy verify rejects a regressed system-tool cap", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replaceAll(
+		"let systemToolsExcess = -4;",
+		"let systemToolsExcess = -5;",
+	);
+
+	assert.notEqual(regressed, output);
+	const result = cacheTailPolicy.verify(regressed, parse(regressed));
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /system and tool cache_control cap/);
+});
+
+test("cache-tail-policy verify rejects missing or duplicate overflow increments", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const increment = "systemToolsExcess++;";
+	const occurrences = [...output.matchAll(/systemToolsExcess\+\+;/g)];
+
+	assert.equal(
+		occurrences.length,
+		4,
+		"each request owner should count system and tool cache_control blocks",
+	);
+
+	for (const match of occurrences) {
+		assert.notEqual(match.index, undefined);
+		const offset = match.index ?? 0;
+		for (const replacement of ["", `${increment}\n${increment}`]) {
+			const regressed =
+				output.slice(0, offset) +
+				replacement +
+				output.slice(offset + increment.length);
+			const result = cacheTailPolicy.verify(regressed, parse(regressed));
+			assert.equal(typeof result, "string");
+			assert.match(String(result), /system and tool cache_control cap/);
+		}
+	}
+});
+
+test("cache-tail-policy verify rejects missing positive overflow guards", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replaceAll("systemToolsExcess > 0", "true");
+
+	assert.notEqual(regressed, output);
+	const result = cacheTailPolicy.verify(regressed, parse(regressed));
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /system and tool cache_control cap/);
+});
+
+test("cache-tail-policy verify rejects property-presence-only accounting", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const regressed = output
+		.replaceAll(
+			'cacheBlock.cache_control && typeof cacheBlock.cache_control === "object"',
+			'"cache_control" in cacheBlock',
+		)
+		.replaceAll(
+			'cacheTool.cache_control && typeof cacheTool.cache_control === "object"',
+			'"cache_control" in cacheTool',
+		);
+
+	assert.notEqual(regressed, output);
+	const result = cacheTailPolicy.verify(regressed, parse(regressed));
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /system and tool cache_control cap/);
+});
+
+test("cache-tail-policy verify rejects overflow decrements detached from deletes", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const regressed = output
+		.replaceAll(
+			"delete cacheTool.cache_control;systemToolsExcess--;",
+			"delete cacheTool.cache_control;}systemToolsExcess--;if (false) {",
+		)
+		.replaceAll(
+			"delete cacheBlock.cache_control;systemToolsExcess--;",
+			"delete cacheBlock.cache_control;}systemToolsExcess--;if (false) {",
+		);
+
+	assert.notEqual(regressed, output);
+	const result = cacheTailPolicy.verify(regressed, parse(regressed));
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /system and tool cache_control cap/);
+});
+
+test("cache-tail-policy verify rejects missing stable-checkpoint priority", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replaceAll(
+		"if (latestStableCheckpoint) {addKeep(latestStableCheckpoint.block);}",
+		"",
+	);
+
+	assert.notEqual(regressed, output);
+	const result = cacheTailPolicy.verify(regressed, parse(regressed));
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /stable message checkpoint priority/);
+});
+
+test("cache-tail-policy verify keeps system TTL evidence scoped to request owners", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+	const regressed = `${output.replaceAll(
+		'cacheBlock.cache_control.ttl = "1h";',
+		"",
+	)}
+function unrelated(cacheBlock) {
+  cacheBlock.cache_control.ttl = "1h";
+}
+`;
+
+	assert.notEqual(regressed, output);
+	const result = cacheTailPolicy.verify(regressed, parse(regressed));
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /System prompt 1h TTL enforcement/);
+});
+
 test("cache-tail-policy verify rejects scope-forced 1h cache control builder", async () => {
 	const ast = parse(FULL_VERIFY_FIXTURE);
 	await runCacheTailViaPasses(ast);
@@ -903,6 +1059,50 @@ function buildCacheBreakpoints(messages) {
 	CACHE_CONTROL_BUILDER_FIXTURE +
 	CACHE_TTL_ALLOWLIST_FIXTURE +
 	CACHE_CONTROL_BLOCK_CAP_FIXTURE;
+
+async function buildCacheControlRuntime() {
+	const ast = parse(CACHE_TAIL_FIXTURE + CACHE_CONTROL_BLOCK_CAP_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+
+	return new Function(`
+let totalMessageCount, cachingEnabled, skipCacheWrite, forkPointPinned, markerCount;
+function gate(name, meta) {
+  totalMessageCount = meta.totalMessageCount;
+  cachingEnabled = meta.cachingEnabled;
+  skipCacheWrite = meta.skipCacheWrite;
+  forkPointPinned = meta.forkPointPinned;
+  markerCount = meta.markerCount;
+}
+function multiCacheEnabled() { return true; }
+function buildUser(msg, shouldCache) {
+  return { role: "user", content: msg.content.map(b => shouldCache ? { ...b, cache_control: { type: "ephemeral" } } : b) };
+}
+function buildAssistant(msg, shouldCache) {
+  return { role: "assistant", content: msg.content.map(b => shouldCache ? { ...b, cache_control: { type: "ephemeral" } } : b) };
+}
+${output}
+return { clampRequest, buildRequest, buildCacheBreakpoints };
+	`)() as {
+		clampRequest: (req: any, limit: number) => any;
+		buildRequest: (...args: any[]) => any;
+		buildCacheBreakpoints: (...args: any[]) => any[];
+	};
+}
+
+function countCacheControls(request: any) {
+	const system = request.system.filter(
+		(block: any) => block.cache_control,
+	).length;
+	const tools = request.tools.filter((tool: any) => tool.cache_control).length;
+	let messages = 0;
+	for (const msg of request.messages) {
+		for (const block of msg.content) {
+			if (block.cache_control) messages++;
+		}
+	}
+	return { system, tools, messages, total: system + tools + messages };
+}
 
 test("cache-tail-policy does not issue a synthetic request during CLI startup", async () => {
 	const ast = parse(STARTUP_MOCK_FIXTURE);
@@ -1144,49 +1344,7 @@ function buildRequestAlt(messages, system, tools, model, maxTokens) {
 });
 
 test("cache-tail-policy caps cache_control blocks dynamically during runtime execution", async () => {
-	const ast = parse(CACHE_TAIL_FIXTURE + CACHE_CONTROL_BLOCK_CAP_FIXTURE);
-	await runCacheTailViaPasses(ast);
-	const output = print(ast);
-
-	// Evaluate the patched functions
-	const runtime = new Function(`
-let totalMessageCount, cachingEnabled, skipCacheWrite, forkPointPinned, markerCount;
-function gate(name, meta) {
-  totalMessageCount = meta.totalMessageCount;
-  cachingEnabled = meta.cachingEnabled;
-  skipCacheWrite = meta.skipCacheWrite;
-  forkPointPinned = meta.forkPointPinned;
-  markerCount = meta.markerCount;
-}
-function multiCacheEnabled() { return true; }
-function buildUser(msg, shouldCache) {
-  return { role: "user", content: msg.content.map(b => shouldCache ? { ...b, cache_control: { type: "ephemeral" } } : b) };
-}
-function buildAssistant(msg, shouldCache) {
-  return { role: "assistant", content: msg.content.map(b => shouldCache ? { ...b, cache_control: { type: "ephemeral" } } : b) };
-}
-${output}
-return { clampRequest, buildRequest };
-	`)() as {
-		clampRequest: (req: any, limit: number) => any;
-		buildRequest: (...args: any[]) => any;
-	};
-
-	const countCacheControls = (request: any) => {
-		const system = request.system.filter(
-			(block: any) => block.cache_control,
-		).length;
-		const tools = request.tools.filter(
-			(tool: any) => tool.cache_control,
-		).length;
-		let messages = 0;
-		for (const msg of request.messages) {
-			for (const block of msg.content) {
-				if (block.cache_control) messages++;
-			}
-		}
-		return { system, tools, messages, total: system + tools + messages };
-	};
+	const runtime = await buildCacheControlRuntime();
 
 	const runScenario = ({
 		label,
@@ -1262,26 +1420,6 @@ return { clampRequest, buildRequest };
 			`${label}: total checkpoints must not exceed 4, got ${counts.total}`,
 		);
 
-		if (label.includes("distinct decimation")) {
-			// Verify decimation checkpoint prioritization:
-			// Decimation checkpoint (index 14) is kept because it's first priority,
-			// tail checkpoint (index 16) is deleted because maxMsgCheckpoints = 1.
-			assert.ok(
-				clamped.messages[14].content[0].cache_control,
-				"Decimation checkpoint at index 14 should survive",
-			);
-			assert.equal(
-				clamped.messages[15].content[0].cache_control,
-				undefined,
-				"Fork checkpoint at index 15 should be deleted",
-			);
-			assert.equal(
-				clamped.messages[16].content[0].cache_control,
-				undefined,
-				"Tail checkpoint at index 16 should be deleted",
-			);
-		}
-
 		if (deferLoadingLastTool && toolCount >= 2) {
 			assert.equal(
 				clamped.tools[toolCount - 1].cache_control,
@@ -1311,7 +1449,7 @@ return { clampRequest, buildRequest };
 		expectedMaxMessages: 0,
 	});
 	runScenario({
-		label: "one message slot with distinct decimation and tail checkpoints",
+		label: "one message slot with multiple message checkpoints",
 		systemCount: 2,
 		toolCount: 1,
 		messageCount: 17,
@@ -1325,6 +1463,216 @@ return { clampRequest, buildRequest };
 		expectedMaxMessages: 2,
 		deferLoadingLastTool: true,
 	});
+});
+
+test("cache-tail-policy does not re-add a skipped 15th-user cache write as decimation", async () => {
+	const runtime = await buildCacheControlRuntime();
+	const messages = Array.from({ length: 15 }, (_, index) => ({
+		type: "user",
+		content: [{ type: "text", text: `u${index}` }],
+	}));
+
+	const result = runtime.buildCacheBreakpoints(
+		messages,
+		true,
+		undefined,
+		false,
+		undefined,
+		undefined,
+		true,
+	);
+
+	assert.equal(
+		result[14].content[0].cache_control,
+		undefined,
+		"skipCacheWrite should keep the skipped 15th user free of cache_control",
+	);
+});
+
+test("cache-tail-policy caps combined system and tool cache_control blocks at four", async () => {
+	const runtime = await buildCacheControlRuntime();
+	const system = Array.from({ length: 3 }, (_, index) => ({
+		type: "text",
+		text: `sys${index}`,
+		cache_control: { type: "ephemeral" },
+	}));
+	const tools = Array.from({ length: 3 }, (_, index) => ({
+		name: `tool${index}`,
+		cache_control: { type: "ephemeral" },
+	}));
+	const request = runtime.buildRequest(
+		[],
+		system,
+		tools,
+		"model",
+		1024,
+		[],
+		true,
+		"1h",
+		false,
+		[],
+		false,
+	);
+
+	const clamped = runtime.clampRequest(request, 2048);
+
+	assert.equal(
+		countCacheControls(clamped).total,
+		4,
+		"combined system and tool cache_control blocks should be capped at four",
+	);
+});
+
+async function assertAbsentCacheControlsDoNotConsumeBudget(
+	cacheControlValue: null | undefined,
+	label: string,
+) {
+	const runtime = await buildCacheControlRuntime();
+	const system = Array.from({ length: 4 }, (_, index) => ({
+		type: "text",
+		text: `sys${index}`,
+		cache_control: cacheControlValue,
+	}));
+	const messages = [
+		{
+			type: "user",
+			content: [{ type: "text", text: "keep this checkpoint" }],
+		},
+	];
+
+	const built = runtime.buildRequest(
+		messages,
+		system,
+		[],
+		"model",
+		1024,
+		[],
+		true,
+		"1h",
+		true,
+		[],
+		false,
+	);
+	assert.equal(
+		countCacheControls(built).messages,
+		1,
+		`${label}: the live request builder must preserve the real message checkpoint`,
+	);
+
+	const clamped = runtime.clampRequest(
+		{
+			messages: [
+				{
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: "keep this checkpoint",
+							cache_control: { type: "ephemeral" },
+						},
+					],
+				},
+			],
+			system,
+			tools: [],
+			max_tokens: 1024,
+		},
+		2048,
+	);
+	assert.equal(
+		countCacheControls(clamped).messages,
+		1,
+		`${label}: the request clamp helper must preserve the real message checkpoint`,
+	);
+}
+
+test("cache-tail-policy treats null cache_control values as absent", async () => {
+	await assertAbsentCacheControlsDoNotConsumeBudget(null, "null cache_control");
+});
+
+test("cache-tail-policy treats undefined cache_control values as absent", async () => {
+	await assertAbsentCacheControlsDoNotConsumeBudget(
+		undefined,
+		"undefined cache_control",
+	);
+});
+
+test("cache-tail-policy removes incoming cache_control from deferred tools", async () => {
+	const runtime = await buildCacheControlRuntime();
+	const request = runtime.buildRequest(
+		[],
+		[],
+		[
+			{
+				name: "deferred-tool",
+				defer_loading: true,
+				cache_control: { type: "ephemeral" },
+			},
+		],
+		"model",
+		1024,
+		[],
+		true,
+		"1h",
+		false,
+		[],
+		false,
+	);
+
+	const clamped = runtime.clampRequest(request, 2048);
+
+	assert.equal(
+		clamped.tools[0].cache_control,
+		undefined,
+		"defer_loading tools must not retain caller-supplied cache_control",
+	);
+});
+
+test("cache-tail-policy prioritizes an explicit fork checkpoint when one message slot remains", async () => {
+	const runtime = await buildCacheControlRuntime();
+	const forkPointId = "fork-point";
+	const messages = Array.from({ length: 17 }, (_, index) => ({
+		type: "user",
+		uuid: index === 15 ? forkPointId : `message-${index}`,
+		content: [{ type: "text", text: `u${index}` }],
+	}));
+	const transformedMessages = runtime.buildCacheBreakpoints(
+		messages,
+		true,
+		undefined,
+		false,
+		undefined,
+		undefined,
+		false,
+		forkPointId,
+	);
+	const request = {
+		messages: transformedMessages,
+		system: Array.from({ length: 2 }, (_, index) => ({
+			type: "text",
+			text: `sys${index}`,
+			cache_control: { type: "ephemeral" },
+		})),
+		tools: [
+			{
+				name: "tool",
+				cache_control: { type: "ephemeral" },
+			},
+		],
+		max_tokens: 1024,
+	};
+
+	const clamped = runtime.clampRequest(request, 2048);
+	const retainedMessageIndexes = clamped.messages.flatMap(
+		(message: any, index: number) =>
+			message.content.some((block: any) => block.cache_control) ? [index] : [],
+	);
+
+	assert.deepEqual(
+		retainedMessageIndexes,
+		[15],
+		"the explicit fork checkpoint should outrank generic decimation and tail checkpoints",
+	);
 });
 
 test("cache-tail-policy verify rejects sysprompt rewrite that clobbers the later org scope", async () => {

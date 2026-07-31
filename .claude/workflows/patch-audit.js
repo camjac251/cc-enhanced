@@ -1,7 +1,7 @@
 export const meta = {
   name: 'patch-audit',
   description: 'Deep health audit of cc-enhanced patches through cli.js inspection plus verifier robustness, pipeline interaction, and docs cross-check',
-  whenToUse: 'Use in cc-enhanced for periodic patch health checks or before a push. Goes beyond mise run verify:patches by inspecting every patch in scope against the latest cached clean bundle, auditing each verify() function for false-positive and missed-bug risk in the same pass (standard and full modes), identifying cross-patch interactions in the AST pipeline, and verifying patch counts across docs. Large or rewrite-cascade patches get a dedicated agent; the rest are grouped to keep fan-out and tokens bounded. Standard is the default; full is the explicit deep gate. Accepts mode/group/tag filters and model-tier overrides via args. Mechanical passes run on sonnet, robustness passes on opus. Read-only.',
+  whenToUse: 'Use in cc-enhanced for periodic patch health checks or before a push. Goes beyond mise run verify:patches by inspecting every patch in scope against the latest cached clean bundle, auditing each verify() function for false-positive and missed-bug risk in the same pass (standard and full modes), identifying cross-patch interactions in the AST pipeline, and verifying patch counts across docs. Large or rewrite-cascade patches get a dedicated agent; the rest are grouped to keep fan-out and tokens bounded. Standard is the default; full is the explicit deep gate. Mechanical passes run on sonnet, robustness passes on opus. Read-only. Args: {replayFingerprint, mode, group, tag, focus, models}.',
   phases: [
     { title: 'PatchInspection', detail: 'patches grouped into work units (large or rewrite-cascade patches solo, the rest batched) and inspected in parallel via patch-verifier; depth scales with mode: anchors always, verify() robustness at standard and full, test-hardening at full' },
     { title: 'PipelineInteraction', detail: 'cross-patch risks in the AST pipeline (full mode only)' },
@@ -296,6 +296,16 @@ const argsObj = (() => {
   return {}
 })()
 
+const replayFingerprint = typeof argsObj.replayFingerprint === 'string'
+  ? argsObj.replayFingerprint.trim()
+  : ''
+if (!/^wf-state-v1:[a-f0-9]{64}$/.test(replayFingerprint)) {
+  return {
+    status: 'blocked',
+    summary: 'A current replayFingerprint is required. Recompute it with bun run workflow:fingerprint -- patch-audit before the initial run and every resume.',
+  }
+}
+
 const mode = argsObj.mode === 'quick' || argsObj.mode === 'standard' || argsObj.mode === 'full'
   ? argsObj.mode
   : 'standard'
@@ -333,6 +343,8 @@ const unitModel = includeRobustness ? models.deep : models.mechanical
 phase('PatchInspection')
 const inventory = await agent(
   `Discover the cc-enhanced patch inventory and identify the latest cached clean bundle.
+
+Replay state fingerprint (cache identity only): ${replayFingerprint}
 
 Steps:
 1. Determine the currently promoted version (run \`mise run status\` or read \`claude --version\` output). Set currentVersion as runtime context.

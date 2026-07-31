@@ -1,7 +1,7 @@
 export const meta = {
   name: 'release-triage',
   description: 'Triage an upstream release: sequential focused bundle diffs, feature inventory, patch-risk clustering, prompt-surface impact, and a release report',
-  whenToUse: 'Use in cc-enhanced when new upstream releases land and you want the full drift picture before touching patch code. Requires the clean bundles to already exist under versions_clean/ (fast-fails with the exact native:pull commands otherwise). By default it compares the newest cached clean bundle with its immediate predecessor; the older bundle is evidence only, never a compatibility target. One agent runs the mise run diff passes strictly sequentially (bundle diffs are memory-heavy and never overlap); three analysts then work from the reports in parallel (feature inventory, patch-risk clusters, watched prompt-surface impact); synthesis returns an upstream-tracking-style report with next steps. Release notes are treated as insufficient by design: the bundle diff is the source of truth. Read-only apart from the local diff cache. Args: {old, new, mid, focus, models}.',
+  whenToUse: 'Use in cc-enhanced when new upstream releases land and you want the full drift picture before touching patch code. Requires the clean bundles to already exist under versions_clean/ (fast-fails with the exact native:pull commands otherwise). By default it compares the newest cached clean bundle with its immediate predecessor; the older bundle is evidence only, never a compatibility target. One agent runs the mise run diff passes strictly sequentially (bundle diffs are memory-heavy and never overlap); three analysts then work from the reports in parallel (feature inventory, patch-risk clusters, watched prompt-surface impact); synthesis returns an upstream-tracking-style report with next steps. Release notes are treated as insufficient by design: the bundle diff is the source of truth. Read-only apart from the local diff cache. Args: {replayFingerprint, old, new, mid, focus, models}.',
   phases: [
     { title: 'Inventory', detail: 'resolve versions, verify clean bundles exist, enumerate patch tags and watched surfaces' },
     { title: 'Diff', detail: 'matrix/pairwise diff plus focused passes, run strictly sequentially by one agent (memory-heavy, never concurrent)' },
@@ -200,6 +200,16 @@ const argsObj = (() => {
   return {}
 })()
 
+const replayFingerprint = typeof argsObj.replayFingerprint === 'string'
+  ? argsObj.replayFingerprint.trim()
+  : ''
+if (!/^wf-state-v1:[a-f0-9]{64}$/.test(replayFingerprint)) {
+  return {
+    status: 'blocked',
+    summary: 'A current replayFingerprint is required. Recompute it with bun run workflow:fingerprint -- release-triage before the initial run and every resume.',
+  }
+}
+
 // Model tiers: mechanical work on sonnet, the patch-risk reasoning on opus, synthesis inherits
 // the session model. Override via args.models ({mechanical, deep}).
 const models = {
@@ -216,6 +226,8 @@ const focus = typeof argsObj.focus === 'string' && argsObj.focus.trim()
 phase('Inventory')
 const inventory = await agent(
   `Resolve the cc-enhanced release-triage inventory.
+
+Replay state fingerprint (cache identity only): ${replayFingerprint}
 
 Steps:
 1. List and semver-sort versions_clean/ subdirectories that contain a cli.js.

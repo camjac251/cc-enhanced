@@ -149,8 +149,9 @@ Use this command map instead of opening task files for orientation:
 - `prompts:export`, `prompts:bundle`: prompt artifact export (bundle mode is `--bundle` on the same exporter, not a separate workflow).
 - `prompts:compare`: vanilla-vs-patched prompt review (review-only; does not replace `verify:prompt-surfaces` or `verify:prompt-drift`).
 - `prompts:compare:matrix`: compare clean release drift, patched release drift, and patch impact across one adjacent release pair.
-- `verify:cache`, `verify:cache:agent`: live cache efficiency benchmark; needs `ANTHROPIC_API_KEY` unless `--dry-run` is set.
-- `test`, `typecheck`, `lint`, `format`, `lint:fix`: repository hygiene. Formatting and linting use Biome over `src/` and `scripts/`; tests run with one file worker through `bun run test`. The bundle normalizer (`src/normalizer.ts`) also shells to the bundled Biome to format the extracted `cli.js` before parsing.
+- `verify:cache`, `verify:cache:agent`: synthetic direct-API cache benchmark; needs `ANTHROPIC_API_KEY` unless `--dry-run` is set. `default` and `agent` preserve the original linear workloads and own `--ttl` / `--baseline-ttl` / `--patched-ttl`; request-mode presets reject those overrides because their stock and patched TTLs define the experiment. `--preset main|fork|normal-agent|workflow|all` builds equal-sized isolated policy namespaces, tool/schema prefixes, explicit fork ancestry, and independent workflow/agent lineages. The fork plan validates that its first branch can find the parent's stable message prefix within the API's 20-block lookback, then compares the sibling branch against the first branch's explicit fork checkpoint. `all` includes every request-mode scenario and makes 10 calls per policy (20 total). Add `--cache-diagnostics` to opt into the Claude API `cache-diagnosis-2026-04-07` beta; dry runs validate the graph and 4-breakpoint preflight but deliberately make no efficiency claim.
+- `workflow:fingerprint`: emit the mandatory content-based `wf-state-v1:<sha256>` replay identity for one project workflow. Recompute it before the initial run and every resume so repository, clean-bundle, export, or promoted-binary changes invalidate cached workflow results.
+- `test`, `typecheck`, `lint`, `format`, `lint:fix`: repository hygiene. Formatting and linting use Biome over `src/` and `scripts/`; `bun run test` starts one isolated test-file process at a time to bound memory and subprocess state. The bundle normalizer (`src/normalizer.ts`) also shells to the bundled Biome to format the extracted `cli.js` before parsing.
 
 Useful CLI flags on `src/index.ts` not always reflected in the alias table: `--dry-run`, `--force`, `--diff`, `--fast-verify` (skip duplicate per-patch verifier pass during update), `--skip-smoke-test`, `--summary-path <file>` for JSON dry-run summaries, and `--structural-evidence` to add deep structural hashes to a requested summary.
 
@@ -442,7 +443,7 @@ Triaging failures:
 
 ## Testing
 
-Tests use `bun test` against the `node:test` API shim. Run with `bun run test` (or `bun test src/ --parallel=1`). The `--parallel=1` flag is mandatory: bun's `node:test` shim mishandles concurrent file loads (`checkNotInsideTest` false-positives across files). The pre-push hook and `bun run test` already pin it; raw `bun test src/` will fail.
+Tests use `bun test` against the `node:test` API shim. Run the suite with `bun run test`, which discovers test files and starts one isolated Bun process per file, sequentially. The process boundary bounds memory and avoids the shim's `checkNotInsideTest` false-positives from concurrent file loads. Do not substitute raw `bun test src/`, even with `--parallel=1`: that keeps the files in one Bun process instead of providing per-file process isolation.
 
 Two bun runtime gotchas bite test fixtures:
 

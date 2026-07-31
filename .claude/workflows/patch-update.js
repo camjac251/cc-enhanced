@@ -1,7 +1,7 @@
 export const meta = {
   name: 'patch-update',
   description: 'Validate every patch against a target clean bundle through deep cli.js inspection, check watched prompt-surface reachability, and plan fixes',
-  whenToUse: 'Use in cc-enhanced when there is a new upstream release to validate against, or when planning a patch update. Goes beyond mise run verify:patches by inspecting patches and watched prompt-surface anchors against the target clean bundle through direct cli.js reading. Large or rewrite-cascade patches get a dedicated agent; the rest are grouped to keep fan-out and tokens bounded. Prompt-surface checks use patch-verifier prompt-surface mode; pass patchedExportPath to also validate needles. Modes: quick, delta (default; inspects only diff-flagged plus rewrite-cascade patches), full. Mechanical passes run on sonnet, deep passes on opus; override via args.models. Read-only.',
+  whenToUse: 'Use in cc-enhanced when there is a new upstream release to validate against, or when planning a patch update. Goes beyond mise run verify:patches by inspecting patches and watched prompt-surface anchors against the target clean bundle through direct cli.js reading. Large or rewrite-cascade patches get a dedicated agent; the rest are grouped to keep fan-out and tokens bounded. Prompt-surface checks use patch-verifier prompt-surface mode; pass patchedExportPath to also validate needles. Modes: quick, delta (default; inspects only diff-flagged plus rewrite-cascade patches), full. Mechanical passes run on sonnet, deep passes on opus; override via args.models. Read-only. Args: {replayFingerprint, mode, group, tag, version, patchedExportPath, focus, models}.',
   phases: [
     { title: 'Versioning', detail: 'identify promoted, latest target, and immediately previous comparison versions; enumerate patches and watched prompt surfaces; in delta mode derive the at-risk set from that adjacent release diff' },
     { title: 'PatchInspection', detail: 'patches grouped into work units and inspected in parallel via patch-verifier against the target bundle' },
@@ -306,6 +306,16 @@ const argsObj = (() => {
   return {}
 })()
 
+const replayFingerprint = typeof argsObj.replayFingerprint === 'string'
+  ? argsObj.replayFingerprint.trim()
+  : ''
+if (!/^wf-state-v1:[a-f0-9]{64}$/.test(replayFingerprint)) {
+  return {
+    status: 'blocked',
+    summary: 'A current replayFingerprint is required. Recompute it with bun run workflow:fingerprint -- patch-update before the initial run and every resume.',
+  }
+}
+
 const mode = argsObj.mode === 'quick' || argsObj.mode === 'full' ? argsObj.mode : 'delta'
 const groupFilter = typeof argsObj.group === 'string' ? argsObj.group : null
 const tagFilter = typeof argsObj.tag === 'string'
@@ -328,6 +338,8 @@ const models = {
 phase('Versioning')
 const versioning = await agent(
   `Discover the cc-enhanced patch and prompt-surface inventory plus the target clean bundle for validation.
+
+Replay state fingerprint (cache identity only): ${replayFingerprint}
 
 Steps:
 1. Identify the current promoted version (run \`mise run status\` or read \`claude --version\` output). Set currentVersion; this is runtime context only.
