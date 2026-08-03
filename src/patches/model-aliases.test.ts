@@ -136,6 +136,22 @@ function renderWorkflowAgent(agent) {
 function renderWorkflowCompact(agent) {
   return formatWorkflowModel(agent.model, agent.fallbackModel);
 }
+
+function buildAutoModeRequest(model) {
+  return {
+    model,
+    querySource: "auto_mode",
+    maxRetries: 2,
+  };
+}
+
+function buildAutoModeRetry(model) {
+  return {
+    maxRetries: 0,
+    querySource: "auto_mode",
+    model,
+  };
+}
 `;
 
 function loadNormalizer(
@@ -175,6 +191,22 @@ function loadWorkflowFunctions(
 	};
 }
 
+function loadAutoModeRequests(
+	code: string,
+	env: Record<string, string | undefined>,
+): {
+	buildAutoModeRequest: (model: string) => { model: string };
+	buildAutoModeRetry: (model: string) => { model: string };
+} {
+	return new Function(
+		"process",
+		`${code}; return { buildAutoModeRequest, buildAutoModeRetry };`,
+	)({ env }) as {
+		buildAutoModeRequest: (model: string) => { model: string };
+		buildAutoModeRetry: (model: string) => { model: string };
+	};
+}
+
 function disableValidationGuard(code: string, errorNeedle: string): string {
 	const ast = parse(code);
 	let changed = 0;
@@ -209,6 +241,30 @@ test("model-aliases resolves a case-insensitive configured alias before stock no
 	});
 
 	assert.equal(normalizeModel("  sOl  "), "sanitized:openai/gpt-5.6-sol");
+});
+
+test("model-aliases resolves an explicit auto-mode model only when configured", async () => {
+	const output = await patchSource(MODEL_ROUTING_FIXTURE);
+	const routedModel = "clodex:openai-oauth:gpt-5.6-sol";
+	const configured = loadAutoModeRequests(output, {
+		CLAUDE_CODE_AUTO_MODE_MODEL: "sol",
+		CLAUDE_CODE_MODEL_ALIASES: JSON.stringify({ sol: routedModel }),
+	});
+	const stock = loadAutoModeRequests(output, {});
+
+	assert.equal(
+		configured.buildAutoModeRequest("sonnet-model").model,
+		`sanitized:${routedModel}`,
+	);
+	assert.equal(
+		configured.buildAutoModeRetry("sonnet-model").model,
+		`sanitized:${routedModel}`,
+	);
+	assert.equal(
+		stock.buildAutoModeRequest("sonnet-model").model,
+		"sonnet-model",
+	);
+	assert.equal(stock.buildAutoModeRetry("sonnet-model").model, "sonnet-model");
 });
 
 test("model-aliases normalizes explicit teammate models and forwards the alias map", async () => {

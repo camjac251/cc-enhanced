@@ -93,6 +93,57 @@ grep -Fx -- '--model' "$test_root/injected.args" >/dev/null ||
 grep -Fx 'sol' "$test_root/injected.args" >/dev/null ||
 	fail "the original model argument was not retained"
 
+launcher_process_wrapper="$test_root/launcher-process-wrapper"
+prompt_composer="$test_root/prompt-composer"
+test_bin="$test_root/bin"
+mkdir -p "$test_bin" "$test_home/.local/share/claudex-clodex"
+tee "$launcher_process_wrapper" >/dev/null <<'SH'
+#!/bin/sh
+printf 'auto-model=%s\n' "${CLAUDE_CODE_AUTO_MODE_MODEL-unset}"
+shift
+for arg; do
+	printf 'arg=%s\n' "$arg"
+done
+SH
+tee "$prompt_composer" >/dev/null <<'SH'
+#!/bin/sh
+exit 0
+SH
+tee "$test_bin/systemctl" >/dev/null <<'SH'
+#!/bin/sh
+exit 0
+SH
+chmod 700 "$launcher_process_wrapper" "$prompt_composer" "$test_bin/systemctl"
+
+launcher_template="$setup_dir/templates/claudex"
+launcher="$test_root/claudex"
+sed \
+	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
+	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
+	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
+	-e "s|@CLAUDEX_PROMPT_COMPOSER@|$prompt_composer|g" \
+	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
+	"$launcher_template" >"$launcher"
+chmod 700 "$launcher"
+
+HOME="$test_home" PATH="$test_bin:$PATH" \
+	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	CLAUDE_CODE_AUTO_MODE_MODEL=inherited \
+	"$launcher" sol >"$test_root/launcher-sol.out"
+grep -Fx 'auto-model=sol' "$test_root/launcher-sol.out" >/dev/null ||
+	fail "the Sol shortcut did not select Sol for later auto-mode classification"
+grep -Fx 'arg=--model' "$test_root/launcher-sol.out" >/dev/null ||
+	fail "the Sol shortcut dropped the model flag"
+grep -Fx 'arg=sol' "$test_root/launcher-sol.out" >/dev/null ||
+	fail "the Sol shortcut dropped the model value"
+
+HOME="$test_home" PATH="$test_bin:$PATH" \
+	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	CLAUDE_CODE_AUTO_MODE_MODEL=inherited \
+	"$launcher" opus >"$test_root/launcher-opus.out"
+grep -Fx 'auto-model=unset' "$test_root/launcher-opus.out" >/dev/null ||
+	fail "a non-Sol shortcut retained an unreviewed auto-mode model override"
+
 HOME="$test_home" CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
 	"$process_wrapper" "$claude_bin" -- \
 	--append-system-prompt --append-subagent-system-prompt \

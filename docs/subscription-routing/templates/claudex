@@ -12,6 +12,7 @@ prompt_composer='@CLAUDEX_PROMPT_COMPOSER@'
 default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
 system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
 requested_model=''
+auto_mode_model=''
 
 case "${1:-}" in
 fable)
@@ -24,6 +25,7 @@ opus)
 	;;
 sol)
 	requested_model='sol'
+	auto_mode_model='sol'
 	shift
 	;;
 esac
@@ -90,6 +92,7 @@ unset \
 	CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_GATEWAY \
 	CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY CLAUDE_CODE_MAX_CONTEXT_TOKENS \
 	CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_MODEL_ALIAS_SOL CLAUDE_CODE_MODEL_ALIASES \
+	CLAUDE_CODE_AUTO_MODE_MODEL \
 	CLAUDE_CODE_CONFIGURED_MODEL_CATALOG CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY \
 	CLAUDE_CODE_ALWAYS_ENABLE_EFFORT CLAUDE_CODE_EFFORT_LEVEL \
 	CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY ENABLE_TOOL_SEARCH \
@@ -106,6 +109,9 @@ export CLAUDE_CODE_PROCESS_WRAPPER="$launcher_process_wrapper"
 export CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE="$system_prompt_file"
 export CLAUDE_CODE_BILLING_LABEL='Claude Max + ChatGPT Pro'
 export CLAUDE_CODE_MODEL_ALIASES='{"sol":"clodex:openai-oauth:gpt-5.6-sol"}'
+if [ -n "$auto_mode_model" ]; then
+	export CLAUDE_CODE_AUTO_MODE_MODEL="$auto_mode_model"
+fi
 export CLAUDE_CODE_CONFIGURED_MODEL_CATALOG='[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":258400,"maxOutputTokens":32000,"effortLevels":["low","medium","high","xhigh","max"],"defaultEffort":"medium"}]'
 export CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY=1
 export ENABLE_TOOL_SEARCH=true

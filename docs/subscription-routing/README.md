@@ -360,8 +360,10 @@ The smoke flag consumes subscription usage. It is not part of static
 installation validation.
 
 After installation, confirm `claudex sol`, a fresh Agent with `model: "sol"`,
-and a Workflow worker with `model: "sol"` all route correctly. Confirm a normal
-`claude` session still uses only native models.
+and a Workflow worker with `model: "sol"` all route correctly. On the enhanced
+profile, enter auto mode from `claudex sol` and confirm its classifier request
+also uses the Sol route. Confirm a normal `claude` session still uses only
+native models.
 
 ## Usage
 
@@ -370,7 +372,8 @@ claude                 # direct client, Claude Max, no routing environment
 claudex                # routed session, preserve the saved native parent
 claudex fable          # Fable parent through native passthrough
 claudex opus           # Opus parent through native passthrough
-claudex sol            # Sol parent through ChatGPT Pro OAuth
+claudex sol            # Sol parent and, when enabled, Sol auto classifier
+claudex sol --permission-mode auto # enter the same routed auto mode immediately
 clodex providers list  # isolated provider administration
 clodex models          # isolated favorites and aliases
 clodex-service restart # guarded service restart after routed clients are idle
@@ -382,6 +385,16 @@ selected `agent(...)` call. Do not encode the provider model ID in prompts or
 workflow source.
 
 The isolated Clodex home is `~/.local/share/claudex-clodex`.
+
+On the enhanced profile, the `sol` shortcut sets
+`CLAUDE_CODE_AUTO_MODE_MODEL=sol` for that process. Auto mode remains off until
+it is selected with Shift+Tab or `--permission-mode auto`. Once active, both
+the acting model and the separate classifier request resolve through the Sol
+alias. This intentionally removes the independent native classifier boundary.
+The launcher clears inherited auto-model overrides for every other shortcut,
+and the patched client preserves its upstream classifier selection whenever
+the variable is unset. The stock profile ignores this cc-enhanced-only
+override.
 
 ## Safe updates and restarts
 

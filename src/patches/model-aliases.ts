@@ -12,6 +12,7 @@ import {
 } from "./ast-helpers.js";
 
 const MODEL_ALIASES_ENV = "CLAUDE_CODE_MODEL_ALIASES";
+const AUTO_MODE_MODEL_ENV = "CLAUDE_CODE_AUTO_MODE_MODEL";
 const MODEL_NORMALIZER_CASES = [
 	"fable",
 	"opusplan",
@@ -56,6 +57,12 @@ interface WorkflowModelFormatterCandidate {
 	displayResolver: t.ArrowFunctionExpression;
 	displayParameterName: string;
 	displayHelperName?: string;
+	state: PatchSiteState;
+}
+
+interface AutoModeRequestCandidate {
+	node: t.ObjectExpression;
+	modelProperty: t.ObjectProperty;
 	state: PatchSiteState;
 }
 
@@ -121,6 +128,96 @@ function isProcessEnvMember(node: t.Node, envName: string): boolean {
 		getObjectKeyName(processObject.property as t.Expression | t.Identifier) ===
 			"process"
 	);
+}
+
+function buildProcessEnvMember(envName: string): t.MemberExpression {
+	return t.memberExpression(
+		t.memberExpression(t.identifier("process"), t.identifier("env")),
+		t.identifier(envName),
+	);
+}
+
+function getObjectProperties(
+	node: t.ObjectExpression,
+	propertyName: string,
+): t.ObjectProperty[] {
+	return node.properties.filter(
+		(property): property is t.ObjectProperty =>
+			t.isObjectProperty(property) &&
+			!property.computed &&
+			getObjectKeyName(property.key) === propertyName,
+	);
+}
+
+function isAutoModeResolution(
+	node: t.Node | null | undefined,
+	normalizerName: string,
+): boolean {
+	return (
+		t.isCallExpression(node) &&
+		t.isIdentifier(node.callee, { name: normalizerName }) &&
+		node.arguments.length === 1 &&
+		t.isExpression(node.arguments[0]) &&
+		isProcessEnvMember(node.arguments[0], AUTO_MODE_MODEL_ENV)
+	);
+}
+
+function classifyAutoModeRequest(
+	node: t.ObjectExpression,
+	normalizerName: string,
+): AutoModeRequestCandidate | null {
+	const querySourceProperties = getObjectProperties(node, "querySource");
+	if (
+		querySourceProperties.length !== 1 ||
+		getStaticString(querySourceProperties[0].value) !== "auto_mode"
+	) {
+		return null;
+	}
+
+	const modelProperties = getObjectProperties(node, "model");
+	if (modelProperties.length !== 1) return null;
+	const modelProperty = modelProperties[0];
+	if (!t.isExpression(modelProperty.value)) return null;
+
+	const value = modelProperty.value;
+	if (
+		t.isConditionalExpression(value) &&
+		isProcessEnvMember(value.test, AUTO_MODE_MODEL_ENV) &&
+		isAutoModeResolution(value.consequent, normalizerName) &&
+		!nodeContains(value.alternate, (child) =>
+			isProcessEnvMember(child, AUTO_MODE_MODEL_ENV),
+		)
+	) {
+		return { node, modelProperty, state: "patched" };
+	}
+	if (
+		nodeContains(value, (child) =>
+			isProcessEnvMember(child, AUTO_MODE_MODEL_ENV),
+		)
+	) {
+		return { node, modelProperty, state: "other" };
+	}
+	return { node, modelProperty, state: "unpatched" };
+}
+
+function patchAutoModeRequest(
+	candidate: AutoModeRequestCandidate,
+	normalizerName: string,
+): boolean {
+	if (candidate.state === "patched") return true;
+	if (candidate.state !== "unpatched") return false;
+	const originalModel = candidate.modelProperty.value;
+	if (!t.isExpression(originalModel)) return false;
+	candidate.modelProperty.value = t.conditionalExpression(
+		buildProcessEnvMember(AUTO_MODE_MODEL_ENV),
+		t.callExpression(t.identifier(normalizerName), [
+			buildProcessEnvMember(AUTO_MODE_MODEL_ENV),
+		]),
+		originalModel,
+	);
+	candidate.modelProperty.shorthand = false;
+	candidate.state = "patched";
+	return true;
 }
 
 function switchHasNormalizerCases(node: t.SwitchStatement): boolean {
@@ -1121,10 +1218,12 @@ function createModelAliasPasses(): PatchAstPass[] {
 	const teammateResolverShapes: TeammateResolverShape[] = [];
 	const environmentArrays: t.ArrayExpression[] = [];
 	const workflowModelFormatters: WorkflowModelFormatterCandidate[] = [];
+	const autoModeRequestObjects: t.ObjectExpression[] = [];
 	let normalizerPatched = false;
 	let teammateResolverPatched = false;
 	let environmentForwardingPatched = false;
 	let workflowModelFormatterPatched = false;
+	let autoModeRequestsPatched = false;
 
 	return [
 		{
@@ -1177,6 +1276,18 @@ function createModelAliasPasses(): PatchAstPass[] {
 						environmentArrays.push(path.node);
 					}
 				},
+				ObjectExpression(path) {
+					const querySourceProperties = getObjectProperties(
+						path.node,
+						"querySource",
+					);
+					if (
+						querySourceProperties.length === 1 &&
+						getStaticString(querySourceProperties[0].value) === "auto_mode"
+					) {
+						autoModeRequestObjects.push(path.node);
+					}
+				},
 			},
 		},
 		{
@@ -1196,6 +1307,18 @@ function createModelAliasPasses(): PatchAstPass[] {
 
 						const normalizerName = normalizer.path.node.id?.name;
 						if (normalizerName) {
+							const autoModeRequests = autoModeRequestObjects
+								.map((node) => classifyAutoModeRequest(node, normalizerName))
+								.filter(
+									(candidate): candidate is AutoModeRequestCandidate =>
+										candidate !== null,
+								);
+							autoModeRequestsPatched =
+								autoModeRequests.length === 2 &&
+								autoModeRequests.every((candidate) =>
+									patchAutoModeRequest(candidate, normalizerName),
+								);
+
 							const teammateResolvers = teammateResolverShapes.map(
 								(candidate) =>
 									classifyTeammateResolver(candidate, normalizerName),
@@ -1266,6 +1389,11 @@ function createModelAliasPasses(): PatchAstPass[] {
 								`Model aliases: Could not patch the unique workflow model formatter (${workflowModelFormatters.length} candidates)`,
 							);
 						}
+						if (!autoModeRequestsPatched) {
+							console.warn(
+								`Model aliases: Could not patch every auto-mode model request (${autoModeRequestObjects.length} candidates)`,
+							);
+						}
 					},
 				},
 			},
@@ -1284,6 +1412,7 @@ export const modelAliases: Patch = {
 		const teammateResolverShapes: TeammateResolverShape[] = [];
 		const environmentArrays = collectSubagentModelEnvArrays(verifyAst);
 		const workflowModelFormatters: WorkflowModelFormatterCandidate[] = [];
+		const autoModeRequestObjects: t.ObjectExpression[] = [];
 		traverse(verifyAst, {
 			FunctionDeclaration(path) {
 				const candidate = classifyWorkflowModelFormatter(path);
@@ -1327,6 +1456,18 @@ export const modelAliases: Patch = {
 					teammateResolverShapes.push(candidate);
 				}
 			},
+			ObjectExpression(path) {
+				const querySourceProperties = getObjectProperties(
+					path.node,
+					"querySource",
+				);
+				if (
+					querySourceProperties.length === 1 &&
+					getStaticString(querySourceProperties[0].value) === "auto_mode"
+				) {
+					autoModeRequestObjects.push(path.node);
+				}
+			},
 		});
 		if (candidates.length !== 1) {
 			return `Model normalizer is ambiguous or missing (${candidates.length} sites found)`;
@@ -1337,6 +1478,18 @@ export const modelAliases: Patch = {
 		const normalizerName = candidates[0].path.node.id?.name;
 		if (!normalizerName)
 			return "Model normalizer has no stable function binding";
+		const autoModeRequests = autoModeRequestObjects
+			.map((node) => classifyAutoModeRequest(node, normalizerName))
+			.filter(
+				(candidate): candidate is AutoModeRequestCandidate =>
+					candidate !== null,
+			);
+		if (autoModeRequests.length !== 2) {
+			return `Auto-mode model requests are ambiguous or missing (${autoModeRequests.length} sites found)`;
+		}
+		if (autoModeRequests.some((candidate) => candidate.state !== "patched")) {
+			return "Auto-mode model requests do not resolve the configured override";
+		}
 		const teammateResolvers = teammateResolverShapes.map((candidate) =>
 			classifyTeammateResolver(candidate, normalizerName),
 		);
