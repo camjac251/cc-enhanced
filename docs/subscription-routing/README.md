@@ -222,6 +222,7 @@ sed \
   templates/claudex-process-wrapper >"$rendered_dir/claudex-process-wrapper"
 sed \
   -e "s|@CLAUDE_BIN@|$claude_bin|g" \
+  -e "s|@CLODEX_BIN@|$clodex_bin|g" \
   -e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
   -e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
   -e "s|@CLAUDEX_PROMPT_COMPOSER@|$prompt_composer|g" \
@@ -362,8 +363,9 @@ installation validation.
 After installation, confirm `claudex sol`, a fresh Agent with `model: "sol"`,
 and a Workflow worker with `model: "sol"` all route correctly. On the enhanced
 profile, enter auto mode from `claudex sol` and confirm its classifier request
-also uses the Sol route. Confirm a normal `claude` session still uses only
-native models.
+also uses the Sol route. Confirm `claudex sol-direct` uses the same Sol route
+without adding a process-wide HTTP proxy. Confirm a normal `claude` session
+still uses only native models.
 
 ## Usage
 
@@ -374,6 +376,7 @@ claudex fable          # Fable parent through native passthrough
 claudex opus           # Opus parent through native passthrough
 claudex sol            # Sol parent and, when enabled, Sol auto classifier
 claudex sol --permission-mode auto # enter the same routed auto mode immediately
+claudex sol-direct     # Sol-only endpoint mode; child network traffic stays direct
 clodex providers list  # isolated provider administration
 clodex models          # isolated favorites and aliases
 clodex-service restart # guarded service restart after routed clients are idle
@@ -385,6 +388,19 @@ selected `agent(...)` call. Do not encode the provider model ID in prompts or
 workflow source.
 
 The isolated Clodex home is `~/.local/share/claudex-clodex`.
+
+`claudex sol` keeps the mixed-model session: native subscription models pass
+through unchanged and Sol routes to the OpenAI provider. That requires
+Clodex's selective HTTP proxy, so commands launched by the client inherit the
+proxy variables and non-Anthropic destinations traverse its CONNECT tunnel.
+
+`claudex sol-direct` is the Sol-only alternative. It uses Clodex endpoint mode,
+does not export a Claude process wrapper or Clodex HTTP proxy variables, and
+passes subsequent Claude arguments through after selecting the OpenAI OAuth
+provider. Background agents inherit the local Anthropic-format endpoint from
+the parent. Native subscription models are intentionally unavailable in that
+session; use `claudex sol` when live switching between native and Sol models is
+required.
 
 On the enhanced profile, the `sol` shortcut sets
 `CLAUDE_CODE_AUTO_MODE_MODEL=sol` for that process. Auto mode remains off until

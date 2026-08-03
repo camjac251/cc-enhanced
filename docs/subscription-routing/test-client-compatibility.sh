@@ -29,6 +29,14 @@ done
 SH
 tee "$clodex_cli" >/dev/null <<'SH'
 #!/bin/sh
+if [ -z "${ADMIN_LOG:-}" ]; then
+	printf 'auto-model=%s\n' "${CLAUDE_CODE_AUTO_MODE_MODEL-unset}"
+	printf 'process-wrapper=%s\n' "${CLAUDE_CODE_PROCESS_WRAPPER-unset}"
+	for arg; do
+		printf 'arg=%s\n' "$arg"
+	done
+	exit 0
+fi
 printf '%s' "$0" >>"$ADMIN_LOG"
 for arg; do
 	printf ' %s' "$arg" >>"$ADMIN_LOG"
@@ -119,6 +127,7 @@ launcher_template="$setup_dir/templates/claudex"
 launcher="$test_root/claudex"
 sed \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
+	-e "s|@CLODEX_BIN@|$clodex_cli|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
 	-e "s|@CLAUDEX_PROMPT_COMPOSER@|$prompt_composer|g" \
@@ -136,6 +145,39 @@ grep -Fx 'arg=--model' "$test_root/launcher-sol.out" >/dev/null ||
 	fail "the Sol shortcut dropped the model flag"
 grep -Fx 'arg=sol' "$test_root/launcher-sol.out" >/dev/null ||
 	fail "the Sol shortcut dropped the model value"
+
+HOME="$test_home" PATH="$test_bin:$PATH" \
+	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	CLAUDE_CODE_AUTO_MODE_MODEL=inherited \
+	CLAUDE_CODE_PROCESS_WRAPPER=inherited \
+	"$launcher" sol-direct --permission-mode auto >"$test_root/launcher-sol-direct.out"
+grep -Fx 'auto-model=sol' "$test_root/launcher-sol-direct.out" >/dev/null ||
+	fail "the direct Sol shortcut did not select Sol for later auto-mode classification"
+grep -Fx 'process-wrapper=unset' "$test_root/launcher-sol-direct.out" >/dev/null ||
+	fail "the direct Sol shortcut retained the proxy-mode process wrapper"
+for expected_arg in \
+	claude --endpoint --provider openai-oauth --model gpt-5.6-sol -- \
+	--permission-mode auto; do
+	grep -Fx "arg=$expected_arg" "$test_root/launcher-sol-direct.out" >/dev/null ||
+		fail "the direct Sol shortcut omitted Clodex argument: $expected_arg"
+done
+if grep -Fx 'arg=sol-direct' "$test_root/launcher-sol-direct.out" >/dev/null; then
+	fail "the direct Sol shortcut leaked its launcher-only name to Claude Code"
+fi
+if HOME="$test_home" PATH="$test_bin:$PATH" \
+	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	"$launcher" sol-direct --model opus \
+	>"$test_root/launcher-sol-direct-conflict.out" \
+	2>"$test_root/launcher-sol-direct-conflict.err"; then
+	fail "the direct Sol shortcut accepted a conflicting model argument"
+else
+	direct_conflict_exit=$?
+fi
+[ "$direct_conflict_exit" -eq 2 ] ||
+	fail "the direct Sol model conflict did not exit 2"
+grep -F 'do not combine a model shortcut with --model' \
+	"$test_root/launcher-sol-direct-conflict.err" >/dev/null ||
+	fail "the direct Sol model conflict did not explain the launcher boundary"
 
 HOME="$test_home" PATH="$test_bin:$PATH" \
 	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \

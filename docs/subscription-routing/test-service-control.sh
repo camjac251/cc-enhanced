@@ -123,6 +123,7 @@ chmod 700 "$controller"
 launcher="$test_root/claudex"
 sed \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
+	-e "s|@CLODEX_BIN@|$clodex_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$process_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
 	-e "s|@CLAUDEX_PROMPT_COMPOSER@|$prompt_composer|g" \

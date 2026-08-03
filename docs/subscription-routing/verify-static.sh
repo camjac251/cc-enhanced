@@ -108,6 +108,7 @@ sed \
 	fail "installed portable process wrapper does not match the reviewed template"
 sed \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
+	-e "s|@CLODEX_BIN@|$clodex_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
 	-e "s|@CLAUDEX_PROMPT_COMPOSER@|$prompt_composer|g" \
