@@ -43,6 +43,12 @@ interface StructuredOutputCandidate {
 	state: CandidateState;
 }
 
+interface WorkflowUsageCandidate {
+	assignment: t.AssignmentExpression;
+	accumulatorName: string;
+	state: CandidateState;
+}
+
 function getObjectPatternBinding(
 	functionNode: t.Function,
 	propertyName: string,
@@ -333,6 +339,111 @@ function getIdentifierMemberName(
 	}
 	if (getMemberPropertyName(node) !== propertyName) return null;
 	return t.isIdentifier(node.object) ? node.object.name : null;
+}
+
+function getAssistantEventName(node: t.Node): string | null {
+	if (!t.isBinaryExpression(node, { operator: "===" })) return null;
+	if (t.isStringLiteral(node.right, { value: "assistant" })) {
+		return getIdentifierMemberName(node.left, "type");
+	}
+	if (t.isStringLiteral(node.left, { value: "assistant" })) {
+		return getIdentifierMemberName(node.right, "type");
+	}
+	return null;
+}
+
+function isWorkflowUsageCall(
+	node: t.Node | null | undefined,
+	eventName: string,
+): node is t.CallExpression {
+	if (!t.isCallExpression(node) || node.arguments.length !== 1) return false;
+	const argument = node.arguments[0];
+	if (
+		!t.isExpression(argument) ||
+		(!t.isMemberExpression(argument) &&
+			!t.isOptionalMemberExpression(argument)) ||
+		getMemberPropertyName(argument) !== "usage"
+	) {
+		return false;
+	}
+	return getIdentifierMemberName(argument.object, "message") === eventName;
+}
+
+function workflowTokensUseAccumulator(
+	path: NodePath<t.IfStatement>,
+	accumulatorName: string,
+): boolean {
+	let found = false;
+	path.traverse({
+		ObjectProperty(propertyPath) {
+			if (
+				!found &&
+				getObjectKeyName(propertyPath.node.key) === "tokens" &&
+				t.isExpression(propertyPath.node.value) &&
+				nodeContainsName(propertyPath.node.value, accumulatorName)
+			) {
+				found = true;
+			}
+		},
+	});
+	return found;
+}
+
+function classifyWorkflowUsage(
+	path: NodePath<t.IfStatement>,
+): WorkflowUsageCandidate | null {
+	const eventName = getAssistantEventName(path.node.test);
+	if (
+		!eventName ||
+		!nodeContainsName(path.node, "isApiErrorMessage") ||
+		!nodeContainsObjectKey(path.node, "tokens") ||
+		!nodeContainsObjectKey(path.node, "toolCalls")
+	) {
+		return null;
+	}
+
+	const candidates: WorkflowUsageCandidate[] = [];
+	path.traverse({
+		AssignmentExpression(assignmentPath) {
+			const assignment = assignmentPath.node;
+			if (assignment.operator !== "=" || !t.isIdentifier(assignment.left)) {
+				return;
+			}
+			const accumulatorName = assignment.left.name;
+			const isUnpatched = isWorkflowUsageCall(assignment.right, eventName);
+			const isPatched =
+				t.isLogicalExpression(assignment.right, { operator: "||" }) &&
+				isWorkflowUsageCall(assignment.right.left, eventName) &&
+				t.isIdentifier(assignment.right.right, { name: accumulatorName });
+			if (
+				(!isUnpatched && !isPatched) ||
+				!workflowTokensUseAccumulator(path, accumulatorName)
+			) {
+				return;
+			}
+			candidates.push({
+				assignment,
+				accumulatorName,
+				state: isPatched ? "patched" : "unpatched",
+			});
+		},
+	});
+	return candidates.length === 1 ? candidates[0] : null;
+}
+
+function retainWorkflowUsage(candidate: WorkflowUsageCandidate): void {
+	if (
+		candidate.state !== "unpatched" ||
+		!t.isCallExpression(candidate.assignment.right)
+	) {
+		return;
+	}
+	candidate.assignment.right = t.logicalExpression(
+		"||",
+		t.cloneNode(candidate.assignment.right, true),
+		t.identifier(candidate.accumulatorName),
+	);
+	candidate.state = "patched";
 }
 
 function isSendMessageMethod(path: NodePath<t.ObjectMethod>): boolean {
@@ -642,12 +753,17 @@ function createWorkflowSafetyPasses(): PatchAstPass[] {
 	const metadataCandidates: WorkflowMetadataCandidate[] = [];
 	const sendMessageCandidates: SendMessageCandidate[] = [];
 	const structuredOutputCandidates: StructuredOutputCandidate[] = [];
+	const workflowUsageCandidates: WorkflowUsageCandidate[] = [];
 	let patched = false;
 
 	return [
 		{
 			pass: "discover",
 			visitor: {
+				IfStatement(path) {
+					const workflowUsage = classifyWorkflowUsage(path);
+					if (workflowUsage) workflowUsageCandidates.push(workflowUsage);
+				},
 				ObjectExpression(path) {
 					const candidate = classifyWorkflowMetadata(path);
 					if (candidate) metadataCandidates.push(candidate);
@@ -670,17 +786,20 @@ function createWorkflowSafetyPasses(): PatchAstPass[] {
 						if (
 							metadataCandidates.length !== 1 ||
 							sendMessageCandidates.length !== 1 ||
-							structuredOutputCandidates.length !== 1
+							structuredOutputCandidates.length !== 1 ||
+							workflowUsageCandidates.length !== 1
 						) {
 							return;
 						}
 						addWorkflowMetadata(metadataCandidates[0]);
 						addWorkflowSendGuard(sendMessageCandidates[0]);
 						addStructuredOutputHint(structuredOutputCandidates[0]);
+						retainWorkflowUsage(workflowUsageCandidates[0]);
 						patched =
 							metadataCandidates[0].state === "patched" &&
 							sendMessageCandidates[0].state === "patched" &&
-							structuredOutputCandidates[0].state === "patched";
+							structuredOutputCandidates[0].state === "patched" &&
+							workflowUsageCandidates[0].state === "patched";
 					},
 				},
 			},
@@ -692,7 +811,7 @@ function createWorkflowSafetyPasses(): PatchAstPass[] {
 					exit() {
 						if (patched) return;
 						console.warn(
-							`Workflow safety: Expected one metadata, SendMessage, and StructuredOutput site (found ${metadataCandidates.length}, ${sendMessageCandidates.length}, ${structuredOutputCandidates.length})`,
+							`Workflow safety: Expected one metadata, SendMessage, StructuredOutput, and usage site (found ${metadataCandidates.length}, ${sendMessageCandidates.length}, ${structuredOutputCandidates.length}, ${workflowUsageCandidates.length})`,
 						);
 					},
 				},
@@ -702,8 +821,9 @@ function createWorkflowSafetyPasses(): PatchAstPass[] {
 }
 
 /**
- * Keep workflow-owned agent lifecycles inside the workflow runtime and make
- * repeated malformed structured-output retries actionable.
+ * Keep workflow-owned agent lifecycles inside the workflow runtime, preserve
+ * progress across zero-usage stream records, and make repeated malformed
+ * structured-output retries actionable.
  */
 export const workflowSafety: Patch = {
 	tag: "workflow-safety",
@@ -716,7 +836,12 @@ export const workflowSafety: Patch = {
 		const metadataCandidates: WorkflowMetadataCandidate[] = [];
 		const sendMessageCandidates: SendMessageCandidate[] = [];
 		const structuredOutputCandidates: StructuredOutputCandidate[] = [];
+		const workflowUsageCandidates: WorkflowUsageCandidate[] = [];
 		traverse(verifyAst, {
+			IfStatement(path) {
+				const workflowUsage = classifyWorkflowUsage(path);
+				if (workflowUsage) workflowUsageCandidates.push(workflowUsage);
+			},
 			ObjectExpression(path) {
 				const candidate = classifyWorkflowMetadata(path);
 				if (candidate) metadataCandidates.push(candidate);
@@ -748,6 +873,12 @@ export const workflowSafety: Patch = {
 		}
 		if (structuredOutputCandidates[0].state !== "patched") {
 			return "StructuredOutput schema errors do not explain embedded field tags";
+		}
+		if (workflowUsageCandidates.length !== 1) {
+			return `Workflow usage site is ambiguous or missing (${workflowUsageCandidates.length} found)`;
+		}
+		if (workflowUsageCandidates[0].state !== "patched") {
+			return "Workflow progress discards the last nonzero token count";
 		}
 		return true;
 	},

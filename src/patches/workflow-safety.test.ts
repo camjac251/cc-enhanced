@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { workflowSafety } from "./workflow-safety.js";
@@ -19,6 +20,26 @@ async function* runChild({
     ...(model && { model }),
     ...extraMetadata,
   }).catch(reportMetadataError);
+}
+
+async function consumeWorkflowAgent() {
+  let latestTokens = 0;
+  for await (const event of streamAgent()) {
+    if (event.type === "assistant") {
+      if (!event.isApiErrorMessage) {
+        latestTokens = countUsage(event.message.usage);
+      }
+      let toolCalls = 0;
+      for (const block of event.message.content) {
+        if (block.type !== "tool_use") continue;
+        toolCalls++;
+      }
+      emitProgress("progress", {
+        tokens: carriedTokens + latestTokens,
+        toolCalls: carriedToolCalls + toolCalls,
+      });
+    }
+  }
 }
 
 const sendMessageTool = makeTool({
@@ -127,6 +148,40 @@ test("workflow-safety gives actionable guidance for XML-wrapped required fields"
 	assert.match(output, /_?schemaError\.keyword === "required"/);
 	assert.match(output, /_?schemaValue\.includes/);
 	assert.match(output, /"<" \+ _?schemaError\.params\.missingProperty \+ ">"/);
+	assert.equal(workflowSafety.verify(output, parse(output)), true);
+});
+
+test("workflow-safety retains the last nonzero workflow token count", async () => {
+	const output = await patch(FIXTURE);
+
+	assert.match(
+		output,
+		/latestTokens\s*=\s*countUsage\(event\.message\.usage\)\s*\|\|\s*latestTokens/,
+	);
+	const progress: number[] = [];
+	async function* streamAgent() {
+		for (const total of [12, 0, 7]) {
+			yield {
+				type: "assistant",
+				isApiErrorMessage: false,
+				message: { usage: { total }, content: [] },
+			};
+		}
+	}
+	const consumeWorkflowAgent = runInNewContext(
+		`${output}; consumeWorkflowAgent`,
+		{
+			streamAgent,
+			countUsage: (usage: { total: number }) => usage.total,
+			emitProgress: (_state: string, data: { tokens: number }) =>
+				progress.push(data.tokens),
+			carriedTokens: 0,
+			carriedToolCalls: 0,
+			makeTool: <T>(value: T) => value,
+		},
+	) as () => Promise<void>;
+	await consumeWorkflowAgent();
+	assert.deepEqual(progress, [12, 12, 7]);
 	assert.equal(workflowSafety.verify(output, parse(output)), true);
 });
 
