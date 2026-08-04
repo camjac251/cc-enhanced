@@ -1491,13 +1491,13 @@ function getPromptQueueCalleeFromBranch(
 			const arg = candidate.node.arguments[0];
 			if (!t.isObjectExpression(arg)) return;
 			const mode = getObjectPropertyValue(arg, "mode");
-			if (!t.isStringLiteral(mode, { value: "prompt" })) return;
-			if (!hasObjectProperty(arg, "value")) return;
-			// A human prompt is enqueued onto the active agent's command queue
-			// with an agentId; the queue drainer only submits commands whose
-			// agentId matches the current agent. Capture that agentId expression
-			// here so the end-turn drain re-enqueues with the same routing, rather
-			// than producing an unroutable command that is never submitted.
+			const priority = getObjectPropertyValue(arg, "priority");
+			if (!mode || !priority || !hasObjectProperty(arg, "value")) return;
+			// Concurrent messages are enqueued onto the active agent's command
+			// queue with a derived mode and priority. The queue drainer only submits
+			// commands whose agentId matches the current agent, so capture that
+			// routing expression for the deferred prompt instead of producing an
+			// unroutable command that is never submitted.
 			const agentId = getObjectPropertyValue(arg, "agentId");
 			if (!agentId) return;
 			if (t.isExpression(candidate.node.callee)) {

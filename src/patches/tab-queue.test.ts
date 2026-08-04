@@ -158,7 +158,13 @@ async function runPrompt(newMessages, abortController) {
   if (generation === null) {
     logEvent("concurrent query detected", {});
     for (const message of newMessages) {
-      enqueue({ value: getContentText(message), mode: "prompt", agentId: getCurrentAgentId() });
+      const value = getContentText(message);
+      enqueue({
+        value,
+        mode: getQueuedMessageMode(message),
+        agentId: getCurrentAgentId(),
+        priority: message.priority,
+      });
       logEvent("concurrent query enqueued", {});
     }
     return;
