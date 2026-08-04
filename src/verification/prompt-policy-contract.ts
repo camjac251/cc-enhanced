@@ -80,9 +80,47 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 		needle: "inspect the saved artifact by range or semantic selection",
 		reason: "Missing targeted saved-output inspection guidance",
 	},
+	{
+		id: "prompt-policy-background-foreground",
+		needle: "Immediate result: run Bash in the foreground",
+		reason:
+			"Missing foreground route for commands whose result is needed immediately",
+	},
+	{
+		id: "prompt-policy-background-monitor",
+		needle: "Streaming output or a condition watch: use Monitor.",
+		reason: "Missing Monitor route for streamed output and condition watches",
+	},
+	{
+		id: "prompt-policy-background-concurrency",
+		needle:
+			"Real concurrency: start Bash with run_in_background=true only when useful independent work will continue",
+		reason: "Missing useful-overlap requirement for background Bash",
+	},
+	{
+		id: "prompt-policy-taskoutput-status",
+		needle: "TaskOutput: use block=false for one deliberate status check.",
+		reason: "Missing one-time nonblocking TaskOutput status route",
+	},
+	{
+		id: "prompt-policy-no-immediate-blocking-wait",
+		needle:
+			"Never start Bash with run_in_background=true and immediately call TaskOutput with block=true",
+		reason: "Missing redundant immediate blocking-wait prohibition",
+	},
 ];
 
 export const FORBIDDEN_LEGACY_PROMPT_NEEDLES: readonly PromptPolicyNeedle[] = [
+	{
+		id: "legacy-taskoutput-default-blocking",
+		needle: "Use block=true (default) to wait for task completion",
+		reason: "TaskOutput still defaults model guidance to a blocking wait",
+	},
+	{
+		id: "legacy-taskoutput-deliberate-blocking",
+		needle: "Use block=true only when deliberately waiting for task completion",
+		reason: "TaskOutput still licenses ambiguous deliberate blocking waits",
+	},
 	{
 		id: "legacy-bash-token-warning-posix",
 		needle: "Pipe output through head, tail, or grep",

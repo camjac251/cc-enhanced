@@ -712,6 +712,34 @@ test("read-bat migrates schema and prompt from offset/limit to range/show_whites
 		output.includes("use TaskOutput to get the `output_file` path"),
 		false,
 	);
+	assert.equal(
+		output.includes(
+			"Never start Bash with run_in_background=true and immediately call TaskOutput with block=true",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes("Use TaskOutput only for an explicit wait"),
+		false,
+	);
+});
+
+test("read-bat verify rejects weakened background task routing", async () => {
+	const output = await getPatchedDelegationOutput();
+	const weakened = output
+		.split(
+			"Never start Bash with run_in_background=true and immediately call TaskOutput with block=true",
+		)
+		.join("Choose any wait mechanism after starting background Bash");
+	assert.notEqual(weakened, output);
+
+	const result = readWithBat.verify(weakened);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("background task routing"),
+		true,
+		`Expected background-task routing failure, got: ${result}`,
+	);
 });
 
 test("read-bat patches identifier-backed prompt/description bindings used by the current bundle shape", async () => {

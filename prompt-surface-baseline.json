@@ -1,18 +1,19 @@
 {
-  "version": "2.1.220",
+  "version": "2.1.221",
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
-    "agents/claude.md": "4cb13832a678130f72b5a8ef2b1a0075b66e1088b09177bedc9788e8d990cd46",
+    "agents/claude.md": "91490ee33df6577f0e81d752d0bc05a333a13570222c169e1d3d7f4d250117f0",
     "agents/explore.md": "819b31adb6b1d07bc1de890bfc017ae3193ed79b38a3c3e8083ebdc341120ef3",
     "agents/plan.md": "ce13b642a13b24a7b4d6974e2fa5982fa6ac16f9f8e7b94518a1ce9a23956599",
-    "agents/worker.md": "ddec2ad9a1ec10d48a2587a360ceac7e6c0ef4dac6fe3251c267631b0c0b1bd7",
-    "agents/workflow-subagent.md": "df21171adb55f70fa498626d43b1c6b01939c333a829fda531292ec337ea0eeb",
+    "agents/worker.md": "97804c9592a29c4aa11874a2cc24e3e3f293e2cfc402c9832943403c3f254e4f",
+    "agents/workflow-subagent.md": "14a1903b04bdcaae638011baf399590639089ed6310c1663027aca61ea5fa01d",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge-2.md": "8d24296a1459ba9472328887c294278e8be614df3168e70b1134b7ae13dd2ff9",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge.md": "ca6cf36e2d06d7db385d9b760fb409f7969299b56c91d185a35605259c40fd6f",
     "system/sections/dream-memory-consolidation.md": "f007e7bc4b8fd704ab557a39038d821f078d6a549e5a5fc0c14fd761ad3031f8",
     "system/sections/session-specific-guidance.md": "5eda14154b7ab1e9a62d5639481f8e1c49b13af3a7ed5e4c3a3601e672bdab6a",
     "system/sections/using-your-tools.md": "9f7e7a7321436c63b1a06629cfb11caefa722e8ab81b87ad744c8598b375ea7c",
-    "tools/builtin/agent.md": "8f3018e8aed3f8f7b594f55f1e80f0da842f1fb3fba736918589c382c4f53ca3"
+    "tools/builtin/agent.md": "8f3018e8aed3f8f7b594f55f1e80f0da842f1fb3fba736918589c382c4f53ca3",
+    "tools/builtin/taskoutput.md": "75253a34674c17b87f7ef20b592814ff65b9f4f6c97ef7fb7d794dbdc5ad94a5"
   }
 }

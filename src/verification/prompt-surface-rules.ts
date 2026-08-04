@@ -1,4 +1,6 @@
 import {
+	BACKGROUND_TASK_POLICY_LINES,
+	MODERN_BACKGROUND_AGENT_FILE_ROUTING,
 	MODERN_READ_CODE_FILE_CAVEAT,
 	MODERN_TOOL_PREFERENCE,
 } from "../patches/prompt-policy.js";
@@ -48,6 +50,28 @@ const REMOTE_PLANNING_REMINDER_FILES = [
 ] as const;
 
 export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
+	{
+		file: "tools/builtin/taskoutput.md",
+		required: BACKGROUND_TASK_POLICY_LINES.map((needle, index) => ({
+			id: `taskoutput-background-policy-${index + 1}`,
+			needle,
+			reason: "TaskOutput surface missing shared background execution policy",
+		})),
+		forbidden: [
+			{
+				id: "taskoutput-default-blocking",
+				needle: "Use block=true (default) to wait for task completion",
+				reason: "TaskOutput surface still defaults guidance to a blocking wait",
+			},
+			{
+				id: "taskoutput-deliberate-blocking",
+				needle:
+					"Use block=true only when deliberately waiting for task completion",
+				reason:
+					"TaskOutput surface still licenses ambiguous deliberate blocking waits",
+			},
+		],
+	},
 	{
 		file: "tools/builtin/read.md",
 		presence: "optional",
@@ -442,6 +466,17 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 		presence: "optional",
 		allowLiteralTemplatePlaceholders: true,
 		required: [
+			...BACKGROUND_TASK_POLICY_LINES.map((needle, index) => ({
+				id: `bash-background-policy-${index + 1}`,
+				needle,
+				reason: "Bash surface missing shared background execution policy",
+			})),
+			{
+				id: "bash-one-shot-foreground",
+				needle:
+					"For a one-shot result needed now, run Bash in the foreground with an appropriate timeout.",
+				reason: "Bash surface missing one-shot foreground guidance",
+			},
 			{
 				id: "bash-read-code-scope",
 				needle: "known code ranges",
@@ -454,6 +489,12 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			},
 		],
 		forbidden: [
+			{
+				id: "bash-one-shot-background",
+				needle: "use Bash with run_in_background instead",
+				reason:
+					"Bash surface still routes one-shot waits through background execution",
+			},
 			{
 				id: "bash-read-or-bat",
 				needle: "Read files: Use Read or `bat` for shell-native viewing",
@@ -535,12 +576,24 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 		file: "agents/claude.md",
 		allowSyntheticPlaceholders: true,
 		required: [
+			...BACKGROUND_TASK_POLICY_LINES.map((needle, index) => ({
+				id: `claude-background-policy-${index + 1}`,
+				needle,
+				reason:
+					"claude background-job agent missing shared background execution policy",
+			})),
 			{
 				id: "claude-investigation-routing",
 				needle:
 					"route by intent (Serena or LSP for symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, rg for exact lexical text, ast-grep CLI for syntax shapes)",
 				reason:
 					"claude background-job agent missing modern investigation routing",
+			},
+			{
+				id: "claude-background-file-routing",
+				needle: MODERN_BACKGROUND_AGENT_FILE_ROUTING,
+				reason:
+					"claude background-job agent missing fd, eza, Read, and bat routing",
 			},
 		],
 		forbidden: [

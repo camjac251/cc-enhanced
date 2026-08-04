@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { parse } from "../loader.js";
 import { allPatches } from "../patches/index.js";
 import {
+	BACKGROUND_TASK_POLICY_LINES,
 	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
 	MODERN_CODE_TOOL_SELF_CHECK,
 	MODERN_STDOUT_CAP,
@@ -163,6 +164,7 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 	const anchorText = [
 		...STRONG_CLAUDEMD_DISCLAIMER_LINES,
 		...MODERN_CODE_SEARCH_DECISION_TREE_LINES,
+		...BACKGROUND_TASK_POLICY_LINES,
 		MODERN_CODE_TOOL_SELF_CHECK,
 		'allowedTools: ["Read", "Bash"]',
 		"**Common tool matchers:** `Bash`, `Write`, `Edit`, `Read`, `Agent`",

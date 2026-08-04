@@ -5,6 +5,7 @@ import { parse, print } from "../loader.js";
 import { builtInAgentPrompt } from "./built-in-agent-prompt.js";
 import { promptDashStyle } from "./prompt-dash-style.js";
 import {
+	BACKGROUND_TASK_POLICY,
 	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
 	MODERN_CODE_SEARCH_POLICY,
 	MODERN_CODE_TOOL_SELF_CHECK,
@@ -583,6 +584,13 @@ test("built-in-agent-prompt modernizes the claude background-job investigation l
 		),
 		true,
 	);
+	assert.equal(
+		output.includes(
+			"Use fd for file discovery, eza for directory listings, Read for known files or ranges, and bat -r START:END for shell file ranges.",
+		),
+		true,
+	);
+	assert.equal(output.includes(BACKGROUND_TASK_POLICY), true);
 });
 
 test("built-in-agent-prompt verify flags an unpatched claude investigation line", () => {
@@ -596,6 +604,32 @@ test("built-in-agent-prompt verify flags an unpatched claude investigation line"
 		String(result).includes("claude background-job investigation"),
 		true,
 	);
+});
+
+test("built-in-agent-prompt verify flags missing claude background-job file routing", () => {
+	const weakened = patchedSubagentSurfaces().replace(
+		"Use fd for file discovery, eza for directory listings, Read for known files or ranges, and bat -r START:END for shell file ranges.",
+		"Use shell commands for file operations.",
+	);
+	const result = builtInAgentPrompt.verify(weakened);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("background-job file routing"), true);
+});
+
+test("built-in-agent-prompt verify flags missing claude background-task routing", () => {
+	const patched = patchedSubagentSurfaces();
+	const claudeSurface =
+		builtInAgentPrompt.string?.(CLAUDE_NOISY_FIXTURE) ?? CLAUDE_NOISY_FIXTURE;
+	assert.equal(claudeSurface.includes(BACKGROUND_TASK_POLICY), true);
+	const weakenedClaudeSurface = claudeSurface.replace(
+		BACKGROUND_TASK_POLICY,
+		"Choose background execution without a shared policy.",
+	);
+	const weakened = patched.replace(claudeSurface, weakenedClaudeSurface);
+	assert.notEqual(weakened, patched);
+	const result = builtInAgentPrompt.verify(weakened);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("background-task routing"), true);
 });
 
 test("built-in-agent-prompt verify flags a reworded Explore whenToUse surface", () => {

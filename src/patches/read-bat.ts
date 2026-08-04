@@ -17,7 +17,10 @@ import {
 	isMemberPropertyName,
 	resolveStringValue,
 } from "./ast-helpers.js";
-import { MODERN_READ_CODE_FILE_CAVEAT } from "./prompt-policy.js";
+import {
+	BACKGROUND_TASK_READ_GUIDANCE,
+	MODERN_READ_CODE_FILE_CAVEAT,
+} from "./prompt-policy.js";
 
 /**
  * Modify Read tool to use bat for text files.
@@ -79,7 +82,7 @@ Range parameter (for text files only, supported bat-style forms):
 - \`30:40:2\` - lines 30-40 with 2 lines of context
 - If \`range\` is omitted for \`*.output\` files, Read defaults to \`-500:\` (tail) to avoid oversized reads
 - If \`range\` is omitted and the file exceeds the size limit, Read auto-previews the first 200 lines with a truncation notice. Use a range to read further.
-- Use the output file path from the original background-task result or completion notification for large output, then read explicit non-overlapping ranges (e.g. \`1:2000\`, then \`2001:4000\`). Use TaskOutput only for an explicit wait or one-time status check, not to rediscover the path or poll logs.
+- Use the output file path from the original background-task result or completion notification for large output, then read explicit non-overlapping ranges (e.g. \`1:2000\`, then \`2001:4000\`). ${BACKGROUND_TASK_READ_GUIDANCE}
 
 Optional parameters:
 - \`pages: "1-5"\` - For PDF files only. Required for large PDFs; max 20 pages per request.
@@ -102,7 +105,7 @@ const DYNAMIC_READ_PROMPT_APPENDIX = `Range parameter (for text files only, supp
 - \`30:40:2\` - lines 30-40 with 2 lines of context
 - If \`range\` is omitted for \`*.output\` files, Read defaults to \`-500:\` (tail) to avoid oversized reads
 - If \`range\` is omitted and the file exceeds the size limit, Read auto-previews the first 200 lines with a truncation notice. Use a range to read further.
-- Use the output file path from the original background-task result or completion notification for large output, then read explicit non-overlapping ranges (e.g. \`1:2000\`, then \`2001:4000\`). Use TaskOutput only for an explicit wait or one-time status check, not to rediscover the path or poll logs.
+- Use the output file path from the original background-task result or completion notification for large output, then read explicit non-overlapping ranges (e.g. \`1:2000\`, then \`2001:4000\`). ${BACKGROUND_TASK_READ_GUIDANCE}
 
 Optional parameters:
 - \`show_whitespace: true\` - Reveal invisible characters (tabs→, spaces·, newlines␊). Use to debug indentation issues.
@@ -1539,6 +1542,9 @@ function verifyReadSchemaAndPrompt(ctx: ReadVerifyContextBase): string | null {
 		)
 	) {
 		return "Missing background-task output path guidance in Read prompt";
+	}
+	if (!promptSurface.includes(BACKGROUND_TASK_READ_GUIDANCE)) {
+		return "Missing shared background task routing in Read prompt";
 	}
 	if (promptSurface.includes("use TaskOutput to get the `output_file` path")) {
 		return "Read prompt still routes output path discovery through TaskOutput";

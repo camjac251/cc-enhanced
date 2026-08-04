@@ -42,3 +42,29 @@ test("verifyPromptPolicyContract reports missing and forbidden policy drift", ()
 		),
 	);
 });
+
+test("prompt policy contract covers background execution routing and legacy blocking permissions", () => {
+	for (const id of [
+		"prompt-policy-background-foreground",
+		"prompt-policy-background-monitor",
+		"prompt-policy-background-concurrency",
+		"prompt-policy-taskoutput-status",
+		"prompt-policy-no-immediate-blocking-wait",
+	]) {
+		assert.equal(
+			REQUIRED_PROMPT_POLICY_NEEDLES.some((rule) => rule.id === id),
+			true,
+			`missing required contract rule ${id}`,
+		);
+	}
+	for (const id of [
+		"legacy-taskoutput-default-blocking",
+		"legacy-taskoutput-deliberate-blocking",
+	]) {
+		assert.equal(
+			FORBIDDEN_LEGACY_PROMPT_NEEDLES.some((rule) => rule.id === id),
+			true,
+			`missing forbidden contract rule ${id}`,
+		);
+	}
+});

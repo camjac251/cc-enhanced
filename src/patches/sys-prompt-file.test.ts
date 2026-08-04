@@ -118,6 +118,36 @@ test("sys-prompt-file auto-read uses the append branch readFile callee", async (
 	assert.equal(output.includes("readFileSync"), false);
 });
 
+test("sys-prompt-file verify rejects a default path disconnected from the resolver", async () => {
+	const ast = parse(SYS_PROMPT_FILE_FIXTURE);
+	await runSystemPromptFileViaPasses(ast);
+	const output = print(ast);
+	const disconnected = output.replace(
+		"path.resolve(configuredSystemPromptFilePath)",
+		'path.resolve("/var/empty/unrelated-system-prompt.md")',
+	);
+	assert.notEqual(disconnected, output);
+
+	const result = systemPromptFile.verify(disconnected, parse(disconnected));
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("configured managed prompt path"), true);
+});
+
+test("sys-prompt-file verify rejects an auto-read callee that differs from the append-file branch", async () => {
+	const ast = parse(SYS_PROMPT_FILE_FIXTURE);
+	await runSystemPromptFileViaPasses(ast);
+	const output = print(ast);
+	const mismatched = output.replace(
+		/fs\.readFile\(\s*resolvedSystemPromptFile,\s*"utf8"\s*\)/,
+		'other.readFile(resolvedSystemPromptFile, "utf8")',
+	);
+	assert.notEqual(mismatched, output);
+
+	const result = systemPromptFile.verify(mismatched, parse(mismatched));
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("append-file readFile callee"), true);
+});
+
 test("sys-prompt-file patches only the append-file branch when a systemPromptFile twin is present", async () => {
 	const twinFixture = `
 async function handleAppend(M) {

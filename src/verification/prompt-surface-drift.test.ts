@@ -193,3 +193,10 @@ test("default drift paths exclude optional surfaces that review reports still tr
 	);
 	assert.ok(PROMPT_SURFACE_DRIFT_PATHS.includes("agents/explore.md"));
 });
+
+test("TaskOutput is a required review and drift surface", () => {
+	assert.ok(
+		PROMPT_SURFACE_REVIEW_PATHS.includes("tools/builtin/taskoutput.md"),
+	);
+	assert.ok(PROMPT_SURFACE_DRIFT_PATHS.includes("tools/builtin/taskoutput.md"));
+});

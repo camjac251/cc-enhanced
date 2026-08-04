@@ -4,6 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import {
+	BACKGROUND_TASK_POLICY_LINES,
+	MODERN_BACKGROUND_AGENT_FILE_ROUTING,
+} from "../patches/prompt-policy.js";
+import {
 	PROMPT_SURFACE_RULES,
 	type PromptSurfaceRule,
 } from "./prompt-surface-rules.js";
@@ -153,6 +157,70 @@ test("verifyPromptSurfaces allows intentionally disabled optional surfaces to be
 		const result = await verifyPromptSurfaces({ exportDir: tempDir });
 		assert.equal(result.ok, true);
 		assert.deepEqual(result.failures, []);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("verifyPromptSurfaces requires background routing on Bash and claude-agent surfaces", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "verify-prompt-surfaces-background-routing-"),
+	);
+	try {
+		await createValidSurfaceFixture(tempDir);
+		const missingBashPolicy = BACKGROUND_TASK_POLICY_LINES.at(-1);
+		assert.ok(missingBashPolicy);
+		const missingClaudePolicy = BACKGROUND_TASK_POLICY_LINES.at(-2);
+		assert.ok(missingClaudePolicy);
+		await writeSurface(
+			tempDir,
+			"tools/builtin/bash.md",
+			[
+				validContentForRule(ruleFor("tools/builtin/bash.md")),
+				...BACKGROUND_TASK_POLICY_LINES,
+				'For one-shot "wait until done," use Bash with run_in_background instead.',
+			]
+				.join("\n")
+				.split(missingBashPolicy)
+				.join("Background Bash may be followed by any wait."),
+		);
+		await writeSurface(
+			tempDir,
+			"agents/claude.md",
+			[
+				validContentForRule(ruleFor("agents/claude.md")).replace(
+					MODERN_BACKGROUND_AGENT_FILE_ROUTING,
+					"Use shell commands for all file operations.",
+				),
+				...BACKGROUND_TASK_POLICY_LINES,
+			]
+				.join("\n")
+				.split(missingClaudePolicy)
+				.join("Background tasks may be polled immediately."),
+		);
+
+		const result = await verifyPromptSurfaces({ exportDir: tempDir });
+		assert.equal(result.ok, false);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "bash-background-policy-6",
+			),
+		);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "bash-one-shot-background",
+			),
+		);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "claude-background-file-routing",
+			),
+		);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "claude-background-policy-5",
+			),
+		);
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}

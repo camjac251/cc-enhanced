@@ -159,15 +159,23 @@ function isProcessEnvOverrideAccess(node: t.Node): boolean {
 	);
 }
 
-function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
+function inspectAutoAppendGuard(
+	path: NodePath<t.IfStatement>,
+	expected: {
+		appendLocalName: string;
+		resolveCallee: t.Expression;
+		readFileCallee: t.Expression;
+	},
+): {
 	hasEnvOverride: boolean;
 	hasDefaultPath: boolean;
+	hasResolvedConfiguredPath: boolean;
 	hasAppendAssignment: boolean;
 	hasReadFile: boolean;
 	guardsReplacementPrompt: boolean;
 } | null {
 	const guardedProps = new Set<string>();
-	let guardsAppendLocal = false;
+	let guardedAppendLocal: string | null = null;
 	for (const part of flattenLogicalAnd(path.node.test)) {
 		for (const propName of [
 			"appendSystemPromptFile",
@@ -185,11 +193,13 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 			t.isUnaryExpression(part.right, { operator: "void" }) &&
 			t.isNumericLiteral(part.right.argument, { value: 0 })
 		) {
-			guardsAppendLocal = true;
+			guardedAppendLocal = part.left.name;
 		}
 	}
 	if (!guardedProps.has("appendSystemPromptFile")) return null;
-	if (!guardsAppendLocal) return null;
+	if (!guardedAppendLocal) return null;
+	if (guardedAppendLocal !== expected.appendLocalName) return null;
+	if (!t.isBlockStatement(path.node.consequent)) return null;
 
 	// The mutator injects a single wired shape:
 	//   appendPrompt = await readFile(resolvedVar, "utf8")
@@ -198,49 +208,89 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 	// ). Verify mirrors that wiring rather than checking the four pieces
 	// independently, so a dead env read, a swapped fallback, or a dropped
 	// catch fails instead of passing on incidental presence.
+	let configuredPathName: string | null = null;
 	let hasEnvOverride = false;
 	let hasDefaultPath = false;
-	let assignmentName: string | null = null;
-	let assignmentWiredToReadFile = false;
-
-	path.traverse({
-		LogicalExpression(innerPath) {
-			if (innerPath.node.operator !== "??") return;
-			if (!isProcessEnvOverrideAccess(innerPath.node.left)) return;
+	for (const statement of path.node.consequent.body) {
+		if (!t.isVariableDeclaration(statement)) continue;
+		for (const declaration of statement.declarations) {
+			if (!t.isIdentifier(declaration.id)) continue;
+			if (!t.isLogicalExpression(declaration.init, { operator: "??" })) {
+				continue;
+			}
+			if (!isProcessEnvOverrideAccess(declaration.init.left)) continue;
 			hasEnvOverride = true;
-			if (
-				t.isStringLiteral(innerPath.node.right, {
-					value: "/etc/claude-code/system-prompt.md",
-				})
-			) {
-				hasDefaultPath = true;
-			}
-		},
-		AssignmentExpression(innerPath) {
-			if (!t.isIdentifier(innerPath.node.left)) return;
-			if (!t.isAwaitExpression(innerPath.node.right)) return;
-			if (!t.isCallExpression(innerPath.node.right.argument)) return;
-			const call = innerPath.node.right.argument;
-			if (call.arguments.length < 2) return;
-			const [resolvedArg, encodingArg] = call.arguments;
-			if (!t.isIdentifier(resolvedArg)) return;
-			if (!t.isStringLiteral(encodingArg, { value: "utf8" })) {
-				return;
-			}
-			assignmentName = resolvedArg.name;
-			const insideTry = Boolean(
-				innerPath.findParent((parent) => parent.isTryStatement()),
-			);
-			if (insideTry) assignmentWiredToReadFile = true;
-		},
-	});
+			configuredPathName = declaration.id.name;
+			hasDefaultPath = t.isStringLiteral(declaration.init.right, {
+				value: "/etc/claude-code/system-prompt.md",
+			});
+		}
+	}
 
-	const hasReadFile = assignmentName !== null;
-	const hasAppendAssignment = hasReadFile && assignmentWiredToReadFile;
+	let resolvedPathName: string | null = null;
+	let hasResolvedConfiguredPath = false;
+	let hasReadFile = false;
+	let hasAppendAssignment = false;
+	for (const statement of path.node.consequent.body) {
+		if (!t.isTryStatement(statement) || !statement.handler) continue;
+		for (const innerStatement of statement.block.body) {
+			if (t.isVariableDeclaration(innerStatement)) {
+				for (const declaration of innerStatement.declarations) {
+					if (
+						!configuredPathName ||
+						!t.isIdentifier(declaration.id) ||
+						!t.isCallExpression(declaration.init) ||
+						declaration.init.arguments.length !== 1 ||
+						!t.isIdentifier(declaration.init.arguments[0], {
+							name: configuredPathName,
+						})
+					) {
+						continue;
+					}
+					if (
+						!t.isNodesEquivalent(
+							declaration.init.callee,
+							expected.resolveCallee,
+						)
+					) {
+						continue;
+					}
+					resolvedPathName = declaration.id.name;
+					hasResolvedConfiguredPath = true;
+				}
+			}
+			if (
+				!resolvedPathName ||
+				!t.isExpressionStatement(innerStatement) ||
+				!t.isAssignmentExpression(innerStatement.expression) ||
+				!t.isIdentifier(innerStatement.expression.left, {
+					name: guardedAppendLocal,
+				}) ||
+				!t.isAwaitExpression(innerStatement.expression.right) ||
+				!t.isCallExpression(innerStatement.expression.right.argument)
+			) {
+				continue;
+			}
+			const readCall = innerStatement.expression.right.argument;
+			if (readCall.arguments.length !== 2) continue;
+			if (
+				!t.isIdentifier(readCall.arguments[0], { name: resolvedPathName }) ||
+				!t.isStringLiteral(readCall.arguments[1], { value: "utf8" })
+			) {
+				continue;
+			}
+			hasReadFile = t.isNodesEquivalent(
+				readCall.callee,
+				expected.readFileCallee,
+			);
+			hasAppendAssignment = hasReadFile;
+		}
+	}
 
 	return {
 		hasEnvOverride,
 		hasDefaultPath,
+		hasResolvedConfiguredPath,
 		hasAppendAssignment,
 		hasReadFile,
 		guardsReplacementPrompt:
@@ -251,6 +301,7 @@ function inspectAutoAppendGuard(path: NodePath<t.IfStatement>): {
 function findAutoAppendGuardBeforeAppendBranch(ast: t.File): {
 	hasEnvOverride: boolean;
 	hasDefaultPath: boolean;
+	hasResolvedConfiguredPath: boolean;
 	hasAppendAssignment: boolean;
 	hasReadFile: boolean;
 	guardsReplacementPrompt: boolean;
@@ -258,6 +309,7 @@ function findAutoAppendGuardBeforeAppendBranch(ast: t.File): {
 	let found: {
 		hasEnvOverride: boolean;
 		hasDefaultPath: boolean;
+		hasResolvedConfiguredPath: boolean;
 		hasAppendAssignment: boolean;
 		hasReadFile: boolean;
 		guardsReplacementPrompt: boolean;
@@ -267,9 +319,19 @@ function findAutoAppendGuardBeforeAppendBranch(ast: t.File): {
 		IfStatement(path) {
 			if (found) return;
 			if (!isAppendSystemPromptFileBranch(path)) return;
+			if (!t.isMemberExpression(path.node.test)) return;
+			if (!t.isIdentifier(path.node.test.object)) return;
+			const optionsName = path.node.test.object.name;
+			const helpers = findAppendFileBranchHelpers(path.node, optionsName);
+			if (!helpers) return;
 
 			const statementPath = path.getStatementParent();
 			if (!statementPath) return;
+			const appendLocal = findAppendPromptLocalBeforeBranch(
+				statementPath,
+				optionsName,
+			);
+			if (!appendLocal) return;
 			const parentPath = statementPath.parentPath;
 			if (!parentPath?.isBlockStatement()) return;
 
@@ -280,7 +342,11 @@ function findAutoAppendGuardBeforeAppendBranch(ast: t.File): {
 			) as NodePath<t.Statement>;
 			if (!previousSibling.isIfStatement()) return;
 
-			found = inspectAutoAppendGuard(previousSibling);
+			found = inspectAutoAppendGuard(previousSibling, {
+				appendLocalName: appendLocal.localName,
+				resolveCallee: helpers.resolveCallee,
+				readFileCallee: helpers.readFileCallee,
+			});
 			path.stop();
 		},
 	});
@@ -359,11 +425,14 @@ export const systemPromptFile: Patch = {
 		if (!autoAppendGuard.hasDefaultPath) {
 			return "Missing default /etc/claude-code/system-prompt.md path";
 		}
-		if (!autoAppendGuard.hasAppendAssignment) {
-			return "Missing appendSystemPrompt assignment in auto-append flow";
+		if (!autoAppendGuard.hasResolvedConfiguredPath) {
+			return "Auto-append resolver is not connected to the configured managed prompt path";
 		}
 		if (!autoAppendGuard.hasReadFile) {
-			return "Missing readFile call within auto-append guard body";
+			return "Auto-append read does not use the append-file readFile callee";
+		}
+		if (!autoAppendGuard.hasAppendAssignment) {
+			return "Missing appendSystemPrompt assignment in auto-append flow";
 		}
 		if (autoAppendGuard.guardsReplacementPrompt) {
 			return "Auto-append guard must not skip replacement-mode systemPrompt/systemPromptFile";

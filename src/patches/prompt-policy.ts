@@ -17,6 +17,10 @@ export const MODERN_READONLY_OPS =
 export const MODERN_TOOL_PREFERENCE =
 	"Use fd for file discovery, eza for directory listings, Read for known files or ranges, bat -r for shell file ranges, rg for exact lexical text, and ast-grep run for structural code patterns and rewrites";
 
+/** Interpolation-safe file routing for the Claude background-job agent. */
+export const MODERN_BACKGROUND_AGENT_FILE_ROUTING =
+	"Use fd for file discovery, eza for directory listings, Read for known files or ranges, and bat -r START:END for shell file ranges.";
+
 /** Source-code tool-choice self-check shared by prompt surfaces. */
 export const MODERN_CODE_TOOL_SELF_CHECK =
 	"For code, choose by intent: direct Read or Edit for a known file and site; Serena or LSP for symbols when available; ChunkHound for unfamiliar concepts when available; Probe for known terms; rg for exact lexical text; ast-grep for syntax shapes and repeated structural rewrites";
@@ -50,6 +54,22 @@ export const MODERN_STDOUT_CAP =
 /** Alias for the stdout-cap text, retained for surfaces that previously imported a distinct constant. */
 export const MODERN_OUTPUT_LIMIT_WARNING = MODERN_STDOUT_CAP;
 
+/** Background execution policy shared by Bash, Read, and TaskOutput surfaces. */
+export const BACKGROUND_TASK_POLICY_LINES = [
+	"Choose execution mode by intent:",
+	"- Immediate result: run Bash in the foreground with an appropriate timeout.",
+	"- Streaming output or a condition watch: use Monitor.",
+	"- Real concurrency: start Bash with run_in_background=true only when useful independent work will continue, then rely on the completion notification.",
+	"- TaskOutput: use block=false for one deliberate status check. Use block=true only for an already-running task after useful independent work or when a later user request requires its result.",
+	"- Never start Bash with run_in_background=true and immediately call TaskOutput with block=true; that creates no concurrency.",
+] as const;
+
+export const BACKGROUND_TASK_POLICY = BACKGROUND_TASK_POLICY_LINES.join("\n");
+
+/** Compact TaskOutput routing used inside file-output guidance. */
+export const BACKGROUND_TASK_READ_GUIDANCE =
+	"Use TaskOutput with block=false for one deliberate status check, not to rediscover the path or poll logs. Never start Bash with run_in_background=true and immediately call TaskOutput with block=true. For an immediate result, run Bash in the foreground; for streaming output or a condition watch, use Monitor; for real concurrency, continue useful independent work and rely on the completion notification.";
+
 /** Prohibited operations line shared across prompts. */
 export const PROHIBITED_BASH_OPS =
 	"NEVER use %TOOL% for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification";
@@ -65,6 +85,7 @@ export const PROHIBITED_BASH_OPS =
 export const MODERN_SUBAGENT_CODE_ROUTING = [
 	"When the task involves code, route by intent: Serena or LSP for symbols when available; ChunkHound for unfamiliar concepts and architecture when available; Probe for known terms or boolean search; rg for exact lexical text, including code strings and comments; the ast-grep CLI for syntax shapes and structural rewrites.",
 	"Use Read or Edit directly for a known file and site. Use bat -r START:END for shell file ranges, fd to find files, eza to list directories, and Write or Edit to change files. For GitHub URLs, file content, and metadata use gh api.",
+	BACKGROUND_TASK_POLICY,
 	MODERN_STDOUT_CAP,
 	"Put temporary files in the session scratchpad or $TMPDIR, never /tmp.",
 ].join("\n");

@@ -9,7 +9,9 @@ import { traverse } from "../babel.js";
 import { parse, print } from "../loader.js";
 import { taskOutputExt } from "./taskout-ext.js";
 
-async function applyTaskOutputExtPatch(source: string): Promise<string> {
+async function patchTaskOutputExtWithoutVerification(
+	source: string,
+): Promise<{ output: string; ast: ReturnType<typeof parse> }> {
 	const stringPatched = taskOutputExt.string?.(source) ?? source;
 	const ast = parse(stringPatched);
 	const passes = (await taskOutputExt.astPasses?.(ast)) ?? [];
@@ -23,6 +25,11 @@ async function applyTaskOutputExtPatch(source: string): Promise<string> {
 		},
 	);
 	const output = print(ast);
+	return { output, ast };
+}
+
+async function applyTaskOutputExtPatch(source: string): Promise<string> {
+	const { output, ast } = await patchTaskOutputExtWithoutVerification(source);
 	assert.equal(taskOutputExt.verify(output, ast), true);
 	return output;
 }
@@ -46,7 +53,18 @@ export { serializeTask, TaskOutputTool };`,
 	};
 }
 
+const TASK_OUTPUT_SCHEMA_FIXTURE = `
+function buildTaskOutputSchema() {
+  return schema.strictObject({
+    task_id: schema.string().describe("The task ID to get output from"),
+    block: nullable(schema.boolean().default(true)).describe("Whether to wait for completion"),
+    timeout: schema.number().min(0).max(600000).default(30000).describe("Max wait time in ms"),
+  });
+}
+`;
+
 const TASK_OUTPUT_FIXTURE = `
+${TASK_OUTPUT_SCHEMA_FIXTURE}
 const TASK_PROMPT = \`- Retrieves output from a running or completed task (background shell, agent, or remote session)
 - Takes a task_id parameter identifying the task
 - Returns the task output along with status information
@@ -64,6 +82,10 @@ function serializeTask(task) {
 }
 
 const TaskOutputTool = {
+  name: "TaskOutput",
+  get inputSchema() {
+    return buildTaskOutputSchema();
+  },
   prompt() {
     return TASK_PROMPT;
   },
@@ -165,10 +187,12 @@ test("taskout-ext verify fails when prompt guidance is removed", async () => {
 
 test("taskout-ext patches a response method that nests tag pushes inside if(result.task)", async () => {
 	const nestedFixture = `
+${TASK_OUTPUT_SCHEMA_FIXTURE}
 function serializeTask(task) {
   return { task_id: task.taskId, status: task.status, output: task.output };
 }
 const TaskOutputTool = {
+  name: "TaskOutput",
   prompt() {
     return \`- Retrieves output from a running or completed task (background shell, agent, or remote session)
 - Takes a task_id parameter identifying the task
@@ -250,12 +274,99 @@ test("taskout-ext rewrites the stock TaskOutput prompt body", async () => {
 	assert.equal(output.includes('Read the tail first: range "-500:"'), false);
 });
 
+test("taskout-ext routes background execution by intent without licensing an immediate blocking wait", async () => {
+	const output = await applyTaskOutputExtPatch(TASK_OUTPUT_FIXTURE);
+
+	assert.equal(
+		output.includes(
+			"Immediate result: run Bash in the foreground with an appropriate timeout.",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes("Streaming output or a condition watch: use Monitor."),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"Never start Bash with run_in_background=true and immediately call TaskOutput with block=true",
+		),
+		true,
+	);
+	assert.equal(
+		output.includes("Use block=true only when deliberately waiting"),
+		false,
+	);
+});
+
+test("taskout-ext makes an omitted TaskOutput block request non-blocking", async () => {
+	const output = await applyTaskOutputExtPatch(TASK_OUTPUT_FIXTURE);
+
+	assert.equal(output.includes("schema.boolean().default(false)"), true);
+	assert.equal(output.includes("schema.boolean().default(true)"), false);
+});
+
+test("taskout-ext verify rejects a blocking TaskOutput schema default", async () => {
+	const output = await applyTaskOutputExtPatch(TASK_OUTPUT_FIXTURE);
+	const regressed = output.replace(
+		"schema.boolean().default(false)",
+		"schema.boolean().default(true)",
+	);
+	assert.notEqual(regressed, output);
+
+	const result = taskOutputExt.verify(regressed, parse(regressed));
+	assert.equal(result, "TaskOutput block must default to false");
+});
+
+test("taskout-ext verify binds prompt guidance to the named TaskOutput tool", async () => {
+	const output = await applyTaskOutputExtPatch(TASK_OUTPUT_FIXTURE);
+	const unbound = output.replace('name: "TaskOutput"', 'name: "OtherTool"');
+	assert.notEqual(unbound, output);
+
+	const result = taskOutputExt.verify(unbound, parse(unbound));
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("named TaskOutput tool"), true);
+});
+
+test("taskout-ext verify rejects a surviving stock TaskOutput prompt body", async () => {
+	const duplicateStockPrompt = `
+const LEGACY_TASK_PROMPT = \`- Retrieves output from a running or completed task (background shell, agent, or remote session)
+- Takes a task_id parameter identifying the task
+- Returns the task output along with status information
+- Use block=true (default) to wait for task completion
+- Use block=false for non-blocking check of current status
+- Task IDs can be found using the /tasks command
+- Works with all task types: background shells, async agents, and remote sessions\`;
+`;
+	const { output, ast } = await patchTaskOutputExtWithoutVerification(
+		`${TASK_OUTPUT_FIXTURE}\n${duplicateStockPrompt}`,
+	);
+
+	const result = taskOutputExt.verify(output, ast);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("stock TaskOutput prompt"), true);
+});
+
+test("taskout-ext verify rejects weakened background execution guidance", async () => {
+	const output = await applyTaskOutputExtPatch(TASK_OUTPUT_FIXTURE);
+	const weakened = output.replace(
+		"Immediate result: run Bash in the foreground with an appropriate timeout.",
+		"Immediate result: choose any execution mode.",
+	);
+	assert.notEqual(weakened, output);
+
+	const result = taskOutputExt.verify(weakened, parse(weakened));
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("background execution policy"), true);
+});
+
 test("taskout-ext ignores a task_id+status+output_file object that lacks a bare output key", async () => {
 	// emit() returns a task_id+status+output_file object with NO bare `output`
 	// key (the closest false-positive shape to the serializer). Only
 	// serializeTask() carries the bare `output` triad the patch targets, so the
 	// injection must land on it alone and leave emit() untouched.
 	const notifFixture = `
+${TASK_OUTPUT_SCHEMA_FIXTURE}
 function emit(n) {
   return { type: "system", task_id: n.id, status: n.status, output_file: n.outputFile ?? "", summary: "" };
 }
@@ -263,6 +374,7 @@ function serializeTask(task) {
   return { task_id: task.taskId, status: task.status, output: task.output };
 }
 const TaskOutputTool = {
+  name: "TaskOutput",
   prompt() { return \`- Retrieves output from a running or completed task (background shell, agent, or remote session)
 - Takes a task_id parameter identifying the task
 - Returns the task output along with status information

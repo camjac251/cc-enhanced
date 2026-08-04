@@ -3,7 +3,16 @@ import { test } from "node:test";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { bashPrompt } from "./bash-prompt.js";
-import { MODERN_OUTPUT_LIMIT_WARNING } from "./prompt-policy.js";
+import {
+	BACKGROUND_TASK_POLICY,
+	MODERN_OUTPUT_LIMIT_WARNING,
+} from "./prompt-policy.js";
+
+const STOCK_BACKGROUND_EXECUTION_GUIDANCE =
+	"You can use the `run_in_background` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. You do not need to use '&' at the end of the command when using this parameter.";
+
+const STOCK_ONE_SHOT_BACKGROUND_GUIDANCE =
+	'Use the Monitor tool to stream events from a background process (each stdout line is a notification). For one-shot "wait until done," use Bash with run_in_background instead.';
 
 async function runBashPromptViaPasses(ast: any): Promise<void> {
 	const passes = (await bashPrompt.astPasses?.(ast)) ?? [];
@@ -58,9 +67,15 @@ function ws_() {
   ].join("\\n");
 }
 
+function backgroundGuidance() {
+  if (backgroundTasksDisabled()) return null;
+  return ${JSON.stringify(STOCK_BACKGROUND_EXECUTION_GUIDANCE)};
+}
+
 function A4D() {
   let unrelated = shouldStay(),
     H = HO(),
+    background = backgroundGuidance(),
     n = [
       ...(H
         ? []
@@ -81,6 +96,8 @@ function A4D() {
     "The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).",
     \`IMPORTANT: Avoid using this tool to run \${A} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\`,
     "If your command will create new directories or files, first use this tool to run \`ls\` to verify the parent directory exists and is the correct location.",
+    ${JSON.stringify(STOCK_ONE_SHOT_BACKGROUND_GUIDANCE)},
+    ...(background !== null ? [background] : []),
     ...(H
       ? [
           "When running \`find\`, search from \`.\` (or a specific path), not \`/\` \u2014 scanning the full filesystem can exhaust system resources on large trees.",
@@ -196,6 +213,53 @@ test("bash-prompt patches only the embedded-search gate variable", async () => {
 	assert.equal(output.includes("When running `find`"), false);
 	assert.equal(output.includes("find -regex"), false);
 	assert.equal(bashPrompt.verify(output, ast), true);
+});
+
+test("bash-prompt replaces permissive background execution guidance with the shared intent policy", async () => {
+	const ast = parse(BASH_PROMPT_FIXTURE);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		output.includes(BACKGROUND_TASK_POLICY) ||
+			output.includes(JSON.stringify(BACKGROUND_TASK_POLICY).slice(1, -1)),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"Only use this if you don't need the result immediately and are OK being notified",
+		),
+		false,
+	);
+	assert.equal(
+		output.includes("use Bash with run_in_background instead"),
+		false,
+	);
+	assert.equal(
+		output.includes(
+			"For a one-shot result needed now, run Bash in the foreground with an appropriate timeout.",
+		),
+		true,
+	);
+	assert.equal(bashPrompt.verify(output, ast), true);
+});
+
+test("bash-prompt verify binds background policy to the Bash prompt", async () => {
+	const ast = parse(BASH_PROMPT_FIXTURE);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+	const weakened = output.replace(
+		"Immediate result: run Bash in the foreground with an appropriate timeout.",
+		"Immediate result: choose an execution mode.",
+	);
+	assert.notEqual(weakened, output);
+	const decoy = `${weakened}\nconst unrelatedPolicy = ${JSON.stringify(BACKGROUND_TASK_POLICY)};`;
+
+	const result = bashPrompt.verify(decoy, parse(decoy));
+	assert.equal(
+		result,
+		"Expected shared background execution policy missing from Bash prompt",
+	);
 });
 
 test("bash-prompt escapes backticks in template literal quasis", async () => {
@@ -461,8 +525,14 @@ test("bash-prompt forces a logical-&& conditional-init guide-agent gate and veri
 	// search-guidance. The fixture carries all three gate anchors so verify's
 	// per-anchor forced-gate check has every surface it requires.
 	const fixture = `
+function backgroundGuidance() {
+  if (backgroundTasksDisabled()) return null;
+  return ${JSON.stringify(STOCK_BACKGROUND_EXECUTION_GUIDANCE)};
+}
+
 function A4D() {
   let H = HO(),
+    background = backgroundGuidance(),
     n = [
       ...(H
         ? []
@@ -481,11 +551,13 @@ function A4D() {
     "Executes a given bash command and returns its output.",
     "The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).",
     \`IMPORTANT: Avoid using this tool to run \${A} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\`,
+    ${JSON.stringify(STOCK_ONE_SHOT_BACKGROUND_GUIDANCE)},
     ...(H
       ? [
           "When running \`find\`, search from \`.\` (or a specific path), not \`/\` — scanning the full filesystem can exhaust system resources on large trees.",
         ]
       : []),
+    ...(background !== null ? [background] : []),
     ...n,
   ].join("\\n");
 }

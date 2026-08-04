@@ -3,6 +3,7 @@ import { type NodePath, traverse } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getVerifyAst } from "./ast-helpers.js";
 import {
+	BACKGROUND_TASK_POLICY,
 	MODERN_BASH_SEARCH_GUIDANCE,
 	MODERN_FINDING_TOOLS,
 	MODERN_OUTPUT_LIMIT_WARNING,
@@ -20,12 +21,23 @@ const LEGACY_WORKING_DIRECTORY_GUIDANCE =
 const RUNTIME_NEUTRAL_WORKING_DIRECTORY_GUIDANCE =
 	"Working-directory behavior is controlled by runtime policy. Do not rely on `cd`, shell variables, or other shell state carrying between calls; use explicit paths.";
 
+const STOCK_BACKGROUND_EXECUTION_GUIDANCE =
+	"You can use the `run_in_background` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. You do not need to use '&' at the end of the command when using this parameter.";
+
+const STOCK_ONE_SHOT_BACKGROUND_GUIDANCE =
+	'Use the Monitor tool to stream events from a background process (each stdout line is a notification). For one-shot "wait until done," use Bash with run_in_background instead.';
+
+const MODERN_ONE_SHOT_FOREGROUND_GUIDANCE =
+	"Use the Monitor tool to stream events from a background process (each stdout line is a notification). For a one-shot result needed now, run Bash in the foreground with an appropriate timeout.";
+
+const FULL_BASH_PROMPT_ANCHOR = "Executes a given bash command";
+
 // Functions containing these anchors have an EMBEDDED_SEARCH_TOOLS gate (Yz()
 // or equivalent) as the init of their first VariableDeclarator.  Since tools-off
 // disables Glob/Grep, we force the gate to true so tool-list conditionals pick
 // the branch that omits Glob/Grep names.
 const EMBEDDED_SEARCH_GATE_ANCHORS = [
-	"Executes a given bash command", // Bash prompt builder
+	FULL_BASH_PROMPT_ANCHOR, // Bash prompt builder
 	"You are the Claude guide agent", // Guide agent prompt
 	"# Using your tools", // System prompt tool-guidance section
 ];
@@ -122,6 +134,10 @@ function rewriteLegacyText(text: string): string {
 			"Communication: Output text directly (NOT echo/printf)",
 			"Communication: Output text directly",
 		)
+		.replace(
+			STOCK_ONE_SHOT_BACKGROUND_GUIDANCE,
+			MODERN_ONE_SHOT_FOREGROUND_GUIDANCE,
+		)
 		.replace("`find`, and `grep`", MODERN_GUIDE_FINDING_TOOLS)
 		.replace(
 			"`cat`, `head`, `tail`, `sed`, `awk`, or `echo`",
@@ -206,6 +222,117 @@ function nodeContainsSearchGuidance(node: t.Node | null | undefined): boolean {
 	};
 	visit(node);
 	return found;
+}
+
+function nodeContainsPromptText(
+	node: t.Node | null | undefined,
+	text: string,
+): boolean {
+	const visit = (value: unknown): boolean => {
+		if (!value) return false;
+		if (Array.isArray(value)) return value.some((item) => visit(item));
+		if (typeof value !== "object") return false;
+		const maybeNode = value as t.Node;
+		if (typeof (maybeNode as { type?: unknown }).type !== "string") {
+			return false;
+		}
+		if (t.isStringLiteral(maybeNode)) return maybeNode.value.includes(text);
+		if (t.isTemplateElement(maybeNode)) {
+			return (
+				maybeNode.value.raw.includes(text) ||
+				maybeNode.value.cooked?.includes(text) === true
+			);
+		}
+		return Object.values(maybeNode as unknown as Record<string, unknown>).some(
+			(child) => visit(child),
+		);
+	};
+	return visit(node);
+}
+
+function directReturnedString(
+	node: t.FunctionDeclaration,
+	text: string,
+): t.StringLiteral | null {
+	if (node.params.length !== 0) return null;
+	for (const statement of node.body.body) {
+		if (
+			t.isReturnStatement(statement) &&
+			t.isStringLiteral(statement.argument, { value: text })
+		) {
+			return statement.argument;
+		}
+	}
+	return null;
+}
+
+function isBackgroundGuidanceHelperForBash(
+	path: NodePath<t.FunctionDeclaration>,
+	text: string,
+): boolean {
+	if (!path.node.id || !directReturnedString(path.node, text)) return false;
+	const binding = path.scope.getBinding(path.node.id.name);
+	if (!binding || binding.path.node !== path.node) return false;
+
+	return binding.referencePaths.some((referencePath) => {
+		const callPath = referencePath.parentPath;
+		if (
+			!callPath?.isCallExpression() ||
+			callPath.node.callee !== referencePath.node ||
+			callPath.node.arguments.length !== 0
+		) {
+			return false;
+		}
+		const consumer = callPath.findParent((parent) => parent.isFunction());
+		return (
+			consumer?.isFunction() === true &&
+			nodeContainsPromptText(consumer.node, FULL_BASH_PROMPT_ANCHOR)
+		);
+	});
+}
+
+function patchBackgroundGuidanceHelper(
+	path: NodePath<t.FunctionDeclaration>,
+): boolean {
+	if (
+		!isBackgroundGuidanceHelperForBash(
+			path,
+			STOCK_BACKGROUND_EXECUTION_GUIDANCE,
+		)
+	) {
+		return false;
+	}
+	const returned = directReturnedString(
+		path.node,
+		STOCK_BACKGROUND_EXECUTION_GUIDANCE,
+	);
+	if (!returned) return false;
+	returned.value = BACKGROUND_TASK_POLICY;
+	return true;
+}
+
+function inspectBackgroundGuidanceHelpers(ast: t.File): {
+	legacy: number;
+	policy: number;
+} {
+	let legacy = 0;
+	let policy = 0;
+	traverse(ast, {
+		FunctionDeclaration(path) {
+			if (
+				isBackgroundGuidanceHelperForBash(
+					path,
+					STOCK_BACKGROUND_EXECUTION_GUIDANCE,
+				)
+			) {
+				legacy += 1;
+			}
+			if (isBackgroundGuidanceHelperForBash(path, BACKGROUND_TASK_POLICY)) {
+				policy += 1;
+			}
+		},
+	});
+	return { legacy, policy };
 }
 
 function isEmptyLikeBranch(node: t.Node | null | undefined): boolean {
@@ -600,6 +727,13 @@ export const bashPrompt: Patch = {
 			pass: "mutate" as const,
 			visitor: {
 				Function(path: NodePath<t.Function>) {
+					if (
+						path.isFunctionDeclaration() &&
+						patchBackgroundGuidanceHelper(path)
+					) {
+						path.skip();
+						return;
+					}
 					if (!containsAnchor(path)) return;
 					patchGateInFunction(path);
 					patchPromptTextInFunction(path);
@@ -621,6 +755,16 @@ export const bashPrompt: Patch = {
 		}
 		if (code.includes(LEGACY_WORKING_DIRECTORY_GUIDANCE)) {
 			return "Legacy Bash working-directory guidance still present";
+		}
+		const backgroundGuidance = inspectBackgroundGuidanceHelpers(verifyAst);
+		if (backgroundGuidance.legacy > 0) {
+			return "Legacy Bash background execution guidance still present";
+		}
+		if (backgroundGuidance.policy === 0) {
+			return "Expected shared background execution policy missing from Bash prompt";
+		}
+		if (backgroundGuidance.policy !== 1) {
+			return `Expected one Bash background execution policy helper, found ${backgroundGuidance.policy}`;
 		}
 		if (
 			code.includes("Executes a given bash command") &&
@@ -651,7 +795,6 @@ export const bashPrompt: Patch = {
 		) {
 			return "Expected modern CLI Bash guidance missing";
 		}
-
 		// AST check: verify the embedded-search gate in each anchored function
 		// has been forced. Mutation may have forced any of these locations:
 		//   - declarator init itself (`H = !0`)
@@ -660,10 +803,22 @@ export const bashPrompt: Patch = {
 		// After mutation the pre-patch reference shape is gone, so scan the
 		// function for evidence of forcing rather than re-detecting the gate.
 		const forcedAnchors = new Set<string>();
+		let legacyOneShotGuidanceFound = false;
+		let modernOneShotGuidanceFound = false;
 		traverse(verifyAst, {
 			Function(path) {
 				const anchor = findAnchor(path);
 				if (!anchor) return;
+				if (anchor === FULL_BASH_PROMPT_ANCHOR) {
+					legacyOneShotGuidanceFound = nodeContainsPromptText(
+						path.node,
+						STOCK_ONE_SHOT_BACKGROUND_GUIDANCE,
+					);
+					modernOneShotGuidanceFound = nodeContainsPromptText(
+						path.node,
+						MODERN_ONE_SHOT_FOREGROUND_GUIDANCE,
+					);
+				}
 
 				let forced = false;
 				path.traverse({
@@ -729,7 +884,12 @@ export const bashPrompt: Patch = {
 				return `EMBEDDED_SEARCH_TOOLS gate not forced in function with: "${anchor.slice(0, 40)}..."`;
 			}
 		}
-
+		if (legacyOneShotGuidanceFound) {
+			return "Legacy one-shot Bash background guidance still present";
+		}
+		if (!modernOneShotGuidanceFound) {
+			return "Expected one-shot foreground Bash guidance missing";
+		}
 		return true;
 	},
 };

@@ -2,11 +2,19 @@ import * as t from "@babel/types";
 import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
+	findToolObject,
 	getObjectKeyName,
 	getVerifyAst,
 	hasObjectKeyName,
+	isFalseLike,
 	isMemberPropertyName,
+	isTrueLike,
+	resolveStringValue,
 } from "./ast-helpers.js";
+import {
+	BACKGROUND_TASK_POLICY,
+	BACKGROUND_TASK_POLICY_LINES,
+} from "./prompt-policy.js";
 
 /**
  * Enhance TaskOutput tool response with structured file metadata.
@@ -61,6 +69,70 @@ function isTaskSerializerObject(obj: t.ObjectExpression): boolean {
 	return hasTaskId && hasStatus && hasOutput;
 }
 
+function findObjectProperty(
+	obj: t.ObjectExpression,
+	key: string,
+): t.ObjectProperty | null {
+	return (
+		obj.properties.find(
+			(property): property is t.ObjectProperty =>
+				t.isObjectProperty(property) && getObjectKeyName(property.key) === key,
+		) ?? null
+	);
+}
+
+function isTaskOutputSchemaObject(obj: t.ObjectExpression): boolean {
+	const taskId = findObjectProperty(obj, "task_id");
+	const block = findObjectProperty(obj, "block");
+	const timeout = findObjectProperty(obj, "timeout");
+	return (
+		taskId !== null &&
+		block !== null &&
+		timeout !== null &&
+		nodeContainsText(taskId.value, "The task ID to get output from") &&
+		nodeContainsText(block.value, "Whether to wait for completion") &&
+		nodeContainsText(timeout.value, "Max wait time in ms")
+	);
+}
+
+function findDefaultCall(node: t.Node): t.CallExpression | null {
+	let result: t.CallExpression | null = null;
+	const visit = (value: unknown): void => {
+		if (result || !value) return;
+		if (Array.isArray(value)) {
+			for (const item of value) visit(item);
+			return;
+		}
+		if (typeof value !== "object") return;
+		const maybeNode = value as t.Node;
+		if (typeof (maybeNode as { type?: unknown }).type !== "string") return;
+		if (
+			t.isCallExpression(maybeNode) &&
+			t.isMemberExpression(maybeNode.callee) &&
+			isMemberPropertyName(maybeNode.callee, "default") &&
+			maybeNode.arguments.length === 1 &&
+			!t.isSpreadElement(maybeNode.arguments[0])
+		) {
+			result = maybeNode;
+			return;
+		}
+		for (const child of Object.values(
+			maybeNode as unknown as Record<string, unknown>,
+		)) {
+			visit(child);
+		}
+	};
+	visit(node);
+	return result;
+}
+
+function findTaskOutputBlockDefault(
+	obj: t.ObjectExpression,
+): t.CallExpression | null {
+	const block = findObjectProperty(obj, "block");
+	return block ? findDefaultCall(block.value) : null;
+}
+
 function nodeContainsTaskErrorRef(
 	node: t.Node | null | undefined,
 	resultVar: string,
@@ -102,12 +174,26 @@ function buildBasenameExpr(fileExpr: t.Expression): t.LogicalExpression {
 // --- Mutator ---
 
 function createTaskOutputExtMutator(): Visitor {
+	let schemaPatched = false;
 	let serializerPatched = false;
 	let responsePatched = false;
 
 	return {
 		// 1. Add output_file / output_filename to task serializer
 		ObjectExpression(path) {
+			if (!schemaPatched && isTaskOutputSchemaObject(path.node)) {
+				const defaultCall = findTaskOutputBlockDefault(path.node);
+				const defaultValue = defaultCall?.arguments[0];
+				if (defaultCall && defaultValue && !t.isSpreadElement(defaultValue)) {
+					if (isTrueLike(defaultValue)) {
+						defaultCall.arguments[0] = t.booleanLiteral(false);
+						schemaPatched = true;
+					} else if (isFalseLike(defaultValue)) {
+						schemaPatched = true;
+					}
+				}
+			}
+
 			if (serializerPatched) return;
 			if (!isTaskSerializerObject(path.node)) return;
 			if (path.node.properties.some((p) => hasObjectKeyName(p, "output_file")))
@@ -300,8 +386,7 @@ const OLD_PROMPT = `- Retrieves output from a running or completed task (backgro
 const NEW_PROMPT = `- Retrieves output from a running or completed task (background shell, agent, or remote session)
 - Takes a task_id parameter identifying the task
 - Returns: status, exit_code, error, output, output_file, output_filename
-- Use block=true only when deliberately waiting for task completion
-- Use block=false for a one-time non-blocking status check
+${BACKGROUND_TASK_POLICY}
 - Task IDs can be found using the /tasks command
 - Works with all task types: background shells, async agents, and remote sessions
 - Use the output_file path from the original background-task result or completion notification; do not call TaskOutput only to rediscover it
@@ -310,6 +395,37 @@ const NEW_PROMPT = `- Retrieves output from a running or completed task (backgro
 - Do not re-read a tail that TaskOutput already returned
 - Read persisted output with explicit non-overlapping ranges such as "1:2000", then "2001:4000"
 - Use output_filename for display labels; always use output_file as the Read path`;
+
+function findTaskOutputPrompt(ast: t.File): string | null {
+	let prompt: string | null = null;
+	traverse(ast, {
+		ObjectExpression(path) {
+			if (prompt !== null || !findToolObject(path, "TaskOutput")) return;
+			for (const property of path.node.properties) {
+				if (
+					t.isObjectMethod(property) &&
+					hasObjectKeyName(property, "prompt")
+				) {
+					for (const statement of property.body.body) {
+						if (!t.isReturnStatement(statement) || !statement.argument)
+							continue;
+						prompt = resolveStringValue(path, statement.argument);
+						break;
+					}
+				}
+				if (
+					t.isObjectProperty(property) &&
+					hasObjectKeyName(property, "prompt") &&
+					t.isExpression(property.value)
+				) {
+					prompt = resolveStringValue(path, property.value);
+				}
+				if (prompt !== null) break;
+			}
+		},
+	});
+	return prompt;
+}
 
 export const taskOutputExt: Patch = {
 	tag: "taskout-ext",
@@ -325,6 +441,30 @@ export const taskOutputExt: Patch = {
 	verify: (code, ast) => {
 		const verifyAst = getVerifyAst(code, ast);
 		if (!verifyAst) return "Unable to parse AST for taskout-ext verification";
+		if (code.includes(OLD_PROMPT)) {
+			return "A stock TaskOutput prompt body survived replacement";
+		}
+		const taskOutputPrompt = findTaskOutputPrompt(verifyAst);
+		if (taskOutputPrompt === null) {
+			return "Missing named TaskOutput tool with a statically resolved prompt";
+		}
+		if (
+			BACKGROUND_TASK_POLICY_LINES.some(
+				(line) => !taskOutputPrompt.includes(line),
+			)
+		) {
+			return "TaskOutput prompt is missing the shared background execution policy";
+		}
+		if (
+			taskOutputPrompt.includes(
+				"Use block=true only when deliberately waiting for task completion",
+			)
+		) {
+			return "TaskOutput prompt still contains ambiguous blocking-wait guidance";
+		}
+
+		const schemaResult = verifyTaskOutputSchema(verifyAst);
+		if (schemaResult !== true) return schemaResult;
 
 		const serializerResult = verifyTaskSerializer(verifyAst);
 		if (serializerResult !== true) return serializerResult;
@@ -334,31 +474,57 @@ export const taskOutputExt: Patch = {
 
 		// Prompt checks
 		if (
-			!code.includes(
+			!taskOutputPrompt.includes(
 				"Use the output_file path from the original background-task result or completion notification",
 			)
 		)
 			return "Missing original output_file guidance in prompt";
 		if (
-			!code.includes(
+			!taskOutputPrompt.includes(
 				"TaskOutput returns accumulated output, not an unread-output delta",
 			)
 		)
 			return "Missing accumulated-output guidance in prompt";
-		if (!code.includes("Do not repeatedly call TaskOutput to follow logs"))
+		if (
+			!taskOutputPrompt.includes(
+				"Do not repeatedly call TaskOutput to follow logs",
+			)
+		)
 			return "Missing TaskOutput polling guidance in prompt";
 		if (
-			!code.includes(
+			!taskOutputPrompt.includes(
 				"Read persisted output with explicit non-overlapping ranges",
 			)
 		)
 			return "Missing non-overlapping range guidance in prompt";
-		if (!code.includes("output_filename for display labels"))
+		if (!taskOutputPrompt.includes("output_filename for display labels"))
 			return "Missing output_filename guidance in prompt";
 
 		return true;
 	},
 };
+
+function verifyTaskOutputSchema(ast: t.File | t.Program): true | string {
+	let matches = 0;
+	let defaultIsFalse = false;
+	traverse(ast, {
+		ObjectExpression(path) {
+			if (!isTaskOutputSchemaObject(path.node)) return;
+			matches += 1;
+			const defaultValue = findTaskOutputBlockDefault(path.node)?.arguments[0];
+			if (defaultValue && !t.isSpreadElement(defaultValue)) {
+				defaultIsFalse = isFalseLike(defaultValue);
+			}
+		},
+	});
+	if (matches !== 1) {
+		return `Expected exactly one TaskOutput input schema, found ${matches}`;
+	}
+	if (!defaultIsFalse) {
+		return "TaskOutput block must default to false";
+	}
+	return true;
+}
 
 function verifyTaskSerializer(ast: t.File | t.Program): true | string {
 	let taskSerializerFound = false;

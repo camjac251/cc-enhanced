@@ -1,6 +1,8 @@
 import type { Patch } from "../types.js";
 import {
+	BACKGROUND_TASK_POLICY,
 	buildModernReadonlyReplacement,
+	MODERN_BACKGROUND_AGENT_FILE_ROUTING,
 	MODERN_CODE_SEARCH_POLICY,
 	MODERN_CODE_TOOL_SELF_CHECK,
 	MODERN_READONLY_OPS,
@@ -288,8 +290,10 @@ const CLAUDE_NOISY_INVESTIGATION_ANCHOR = "For noisy investigation";
 const CLAUDE_NOISY_INVESTIGATION_PATCHED_SIGNAL =
 	"route by intent (Serena or LSP for symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, rg for exact lexical text, ast-grep CLI for syntax shapes)";
 
+const CLAUDE_BACKGROUND_TASK_ROUTING = `${MODERN_BACKGROUND_AGENT_FILE_ROUTING}\n${BACKGROUND_TASK_POLICY}`;
+
 function claudeNoisyInvestigationReplacement(toolClause: string): string {
-	return `For noisy investigation (broad code search or log trawls), spawn a subagent${toolClause} and keep only the findings here. The subagent should route by intent (Serena or LSP for symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, rg for exact lexical text, ast-grep CLI for syntax shapes).`;
+	return `For noisy investigation (broad code search or log trawls), spawn a subagent${toolClause} and keep only the findings here. The subagent should route by intent (Serena or LSP for symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, rg for exact lexical text, ast-grep CLI for syntax shapes). ${CLAUDE_BACKGROUND_TASK_ROUTING}`;
 }
 
 const AGENT_TOOL_SYMBOL_LOOKUP_SOURCE = "`grep` via the Bash tool";
@@ -811,6 +815,12 @@ export const builtInAgentPrompt: Patch = {
 			}
 			if (!code.includes(CLAUDE_NOISY_INVESTIGATION_PATCHED_SIGNAL)) {
 				return "Reworded claude background-job investigation surface present but routing rewrite never landed";
+			}
+			if (!code.includes(MODERN_BACKGROUND_AGENT_FILE_ROUTING)) {
+				return "Claude background-job file routing is missing";
+			}
+			if (!code.includes(CLAUDE_BACKGROUND_TASK_ROUTING)) {
+				return "Claude background-job background-task routing is missing";
 			}
 		}
 		const workerCommitResult = verifyExactReplacement(
