@@ -21,6 +21,7 @@ launcher_process_wrapper="$test_root/claudex-process-wrapper"
 prompt_composer="$test_root/claudex-compose-system-prompt"
 credential_helper="$test_root/credential-helper"
 claude_bin="$test_root/claude"
+node_bin=$(mise --cd "$test_root" which node)
 system_prompt="$test_home/.config/claudex-clodex/system-prompt.md"
 mkdir -p "$fake_bin" "$clodex_home" "$(dirname "$system_prompt")"
 
@@ -122,6 +123,7 @@ chmod 700 "$controller"
 
 launcher="$test_root/claudex"
 sed \
+	-e "s|@NODE_BIN@|$node_bin|g" \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$process_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \

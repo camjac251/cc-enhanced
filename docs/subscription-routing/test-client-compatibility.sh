@@ -100,6 +100,7 @@ mkdir -p "$test_bin" "$test_home/.local/share/claudex-clodex"
 tee "$launcher_process_wrapper" >/dev/null <<'SH'
 #!/bin/sh
 printf 'auto-model=%s\n' "${CLAUDE_CODE_AUTO_MODE_MODEL-unset}"
+printf 'network-snapshot=%s\n' "${CLODEX_ORIGINAL_NETWORK_ENV-unset}"
 shift
 for arg; do
 	printf 'arg=%s\n' "$arg"
@@ -117,7 +118,9 @@ chmod 700 "$launcher_process_wrapper" "$prompt_composer" "$test_bin/systemctl"
 
 launcher_template="$setup_dir/templates/claudex"
 launcher="$test_root/claudex"
+node_bin=$(mise --cd "$test_root" which node)
 sed \
+	-e "s|@NODE_BIN@|$node_bin|g" \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
@@ -126,7 +129,10 @@ sed \
 	"$launcher_template" >"$launcher"
 chmod 700 "$launcher"
 
-HOME="$test_home" PATH="$test_bin:$PATH" \
+env -u CLODEX_ORIGINAL_NETWORK_ENV -u HTTP_PROXY -u https_proxy -u http_proxy \
+	-u no_proxy -u NODE_EXTRA_CA_CERTS \
+	HOME="$test_home" PATH="$test_bin:$PATH" \
+	HTTPS_PROXY='http://corp-proxy.example:8080' NO_PROXY='.internal.example' \
 	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
 	CLAUDE_CODE_AUTO_MODE_MODEL=inherited \
 	"$launcher" sol >"$test_root/launcher-sol.out"
@@ -136,13 +142,22 @@ grep -Fx 'arg=--model' "$test_root/launcher-sol.out" >/dev/null ||
 	fail "the Sol shortcut dropped the model flag"
 grep -Fx 'arg=sol' "$test_root/launcher-sol.out" >/dev/null ||
 	fail "the Sol shortcut dropped the model value"
+grep -Fx 'network-snapshot={"HTTPS_PROXY":"http://corp-proxy.example:8080","NO_PROXY":".internal.example"}' \
+	"$test_root/launcher-sol.out" >/dev/null ||
+	fail "the routed launcher did not preserve the original network environment"
 
+original_snapshot='{"HTTPS_PROXY":"http://corp-proxy.example:8080"}'
 HOME="$test_home" PATH="$test_bin:$PATH" \
 	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	CLODEX_ORIGINAL_NETWORK_ENV="$original_snapshot" \
+	HTTPS_PROXY='http://127.0.0.1:3457' \
 	CLAUDE_CODE_AUTO_MODE_MODEL=inherited \
 	"$launcher" opus >"$test_root/launcher-opus.out"
 grep -Fx 'auto-model=unset' "$test_root/launcher-opus.out" >/dev/null ||
 	fail "a non-Sol shortcut retained an unreviewed auto-mode model override"
+grep -Fx "network-snapshot=$original_snapshot" \
+	"$test_root/launcher-opus.out" >/dev/null ||
+	fail "a nested routed launch replaced the original network environment"
 
 HOME="$test_home" CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
 	"$process_wrapper" "$claude_bin" -- \

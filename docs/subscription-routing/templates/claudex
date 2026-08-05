@@ -8,6 +8,7 @@ process_wrapper='@CLODEX_CLAUDE_BIN@'
 launcher_process_wrapper='@CLAUDEX_PROCESS_WRAPPER@'
 session_lock="$clodex_home/routed-sessions.lock"
 claude_path='@CLAUDE_BIN@'
+node_bin='@NODE_BIN@'
 prompt_composer='@CLAUDEX_PROMPT_COMPOSER@'
 default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
 system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
@@ -62,12 +63,54 @@ for required_file in \
 	"$process_wrapper" \
 	"$launcher_process_wrapper" \
 	"$claude_path" \
+	"$node_bin" \
 	"$prompt_composer"; do
 	if [ ! -x "$required_file" ]; then
 		printf 'claudex: required executable is missing: %s\n' "$required_file" >&2
 		exit 1
 	fi
 done
+
+CLODEX_ORIGINAL_NETWORK_ENV=$(
+	"$node_bin" <<'NODE'
+const keys = [
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'https_proxy',
+  'http_proxy',
+  'NO_PROXY',
+  'no_proxy',
+  'NODE_EXTRA_CA_CERTS',
+];
+const raw = process.env.CLODEX_ORIGINAL_NETWORK_ENV;
+let preserved = false;
+if (raw !== undefined) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+  }
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    Object.entries(parsed).every(([key, value]) => keys.includes(key) && typeof value === 'string')
+  ) {
+    process.stdout.write(raw);
+    preserved = true;
+  }
+}
+if (!preserved) {
+  const snapshot = {};
+  for (const key of keys) {
+    if (process.env[key] !== undefined) snapshot[key] = process.env[key];
+  }
+  process.stdout.write(JSON.stringify(snapshot));
+}
+NODE
+)
+export CLODEX_ORIGINAL_NETWORK_ENV
 if [ "$system_prompt_file" = "$default_system_prompt_file" ]; then
 	"$prompt_composer"
 fi

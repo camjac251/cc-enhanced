@@ -6,6 +6,7 @@ export { bashPrompt } from "./bash-prompt.js";
 export { billingLabel } from "./billing-label.js";
 export { builtInAgentPrompt } from "./built-in-agent-prompt.js";
 export { cacheTailPolicy } from "./cache-tail-policy.js";
+export { childNetworkEnv } from "./child-network-env.js";
 export { claudeApiScope } from "./claude-api-scope.js";
 export { claudeMdSystemPrompt } from "./claudemd-strong.js";
 export { commandsOff } from "./commands-off.js";
@@ -54,6 +55,7 @@ import { bashPrompt } from "./bash-prompt.js";
 import { billingLabel } from "./billing-label.js";
 import { builtInAgentPrompt } from "./built-in-agent-prompt.js";
 import { cacheTailPolicy } from "./cache-tail-policy.js";
+import { childNetworkEnv } from "./child-network-env.js";
 import { claudeApiScope } from "./claude-api-scope.js";
 import { claudeMdSystemPrompt } from "./claudemd-strong.js";
 import { commandsOff } from "./commands-off.js";
@@ -118,6 +120,7 @@ export const registeredPatches: Patch[] = [
 	// AST-based patches
 	taskOutputExt,
 	cacheTailPolicy,
+	childNetworkEnv,
 	editTool,
 	effortStack,
 	featureFlags,

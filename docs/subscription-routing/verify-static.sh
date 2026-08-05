@@ -107,6 +107,7 @@ sed \
 	cmp -s - "$launcher_process_wrapper" ||
 	fail "installed portable process wrapper does not match the reviewed template"
 sed \
+	-e "s|@NODE_BIN@|$node_bin|g" \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
@@ -117,7 +118,7 @@ sed \
 cmp -s "$setup_dir/templates/claudex-compose-system-prompt" "$prompt_composer" ||
 	fail "installed prompt composer does not match the reviewed template"
 
-if grep -E '@(CLODEX_[A-Z_]+|CLAUDEX_[A-Z_]+|CLAUDE_BIN|HOME)@' \
+if grep -E '@(CLODEX_[A-Z_]+|CLAUDEX_[A-Z_]+|CLAUDE_BIN|NODE_BIN|HOME)@' \
 	"$claudex_bin" \
 	"$clodex_admin_bin" \
 	"$clodex_service_bin" \

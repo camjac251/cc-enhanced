@@ -163,7 +163,7 @@ mise_shims_dir="$mise_data_dir/shims"
 PATH="$mise_shims_dir:$PATH"
 export PATH
 
-node_bin=$(command -v node)
+node_bin=$(mise which node)
 clodex_bin=$(command -v clodex)
 clodex_wrapper=$(command -v clodex-claude)
 claude_bin=$(command -v claude)
@@ -221,6 +221,7 @@ sed \
   -e "s|@CLAUDEX_CLIENT_PROFILE@|$client_profile|g" \
   templates/claudex-process-wrapper >"$rendered_dir/claudex-process-wrapper"
 sed \
+  -e "s|@NODE_BIN@|$node_bin|g" \
   -e "s|@CLAUDE_BIN@|$claude_bin|g" \
   -e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
   -e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
@@ -264,6 +265,12 @@ overrides. Optional proxy or private-CA settings belong in:
 
 The file may contain `HTTPS_PROXY`, `NO_PROXY`, or `NODE_EXTRA_CA_CERTS`. Keep
 it mode 600 and do not put provider API keys in it.
+
+The rendered launcher snapshots the caller's proxy, bypass, and CA variables
+before the local bridge starts. The enhanced client restores that snapshot for
+ordinary child commands, while the parent client and nested wrapped client
+launches keep the local route. Do not set `CLODEX_ORIGINAL_NETWORK_ENV`
+manually; the launcher validates and owns it.
 
 ## 5. Install and compose the routed prompt
 

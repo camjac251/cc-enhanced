@@ -66,6 +66,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Cache tail policy",
 		group: "System",
 	},
+	"child-network-env": {
+		tag: "child-network-env",
+		label: "Child network environment",
+		group: "System",
+	},
 	"edit-extended": {
 		tag: "edit-extended",
 		label: "Edit tool",
