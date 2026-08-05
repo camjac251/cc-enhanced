@@ -59,8 +59,12 @@ function normalizeModel(model) {
   return sanitizeModel(trimmed);
 }
 
+const parsedEnvironment = {
+  CLAUDE_CODE_SUBAGENT_MODEL: process.env.CLAUDE_CODE_SUBAGENT_MODEL,
+};
+
 function resolveTeammateModel(explicitModel, parentModel) {
-  const globalModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL;
+  const globalModel = parsedEnvironment.CLAUDE_CODE_SUBAGENT_MODEL;
   if (globalModel && globalModel !== "inherit") {
     const normalized = normalizeModel(globalModel);
     if (isAllowed(normalized)) return normalized;

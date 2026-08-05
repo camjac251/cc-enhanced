@@ -130,6 +130,15 @@ function isProcessEnvMember(node: t.Node, envName: string): boolean {
 	);
 }
 
+function isParsedEnvironmentMember(node: t.Node, envName: string): boolean {
+	return (
+		t.isMemberExpression(node) &&
+		!node.computed &&
+		t.isIdentifier(node.object) &&
+		getObjectKeyName(node.property as t.Expression | t.Identifier) === envName
+	);
+}
+
 function buildProcessEnvMember(envName: string): t.MemberExpression {
 	return t.memberExpression(
 		t.memberExpression(t.identifier("process"), t.identifier("env")),
@@ -866,7 +875,7 @@ function getTeammateResolverShape(
 	const explicitModelName = firstParameter.name;
 	if (
 		!nodeContains(path.node.body, (child) =>
-			isProcessEnvMember(child, SUBAGENT_MODEL_ENV),
+			isParsedEnvironmentMember(child, SUBAGENT_MODEL_ENV),
 		)
 	) {
 		return null;
@@ -1252,7 +1261,7 @@ function createModelAliasPasses(): PatchAstPass[] {
 					}
 				},
 				MemberExpression(path) {
-					if (!isProcessEnvMember(path.node, SUBAGENT_MODEL_ENV)) {
+					if (!isParsedEnvironmentMember(path.node, SUBAGENT_MODEL_ENV)) {
 						return;
 					}
 					const functionPath = path.getFunctionParent();
@@ -1437,7 +1446,7 @@ export const modelAliases: Patch = {
 				}
 			},
 			MemberExpression(path) {
-				if (!isProcessEnvMember(path.node, SUBAGENT_MODEL_ENV)) {
+				if (!isParsedEnvironmentMember(path.node, SUBAGENT_MODEL_ENV)) {
 					return;
 				}
 				const functionPath = path.getFunctionParent();
