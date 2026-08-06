@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.4_canary-fbf0df.svg" alt="Bun 1.4 canary">
   <img src="https://img.shields.io/badge/Patches-46-orange.svg" alt="46 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.222-8A2BE2.svg" alt="Tested against Claude Code 2.1.222">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.223-8A2BE2.svg" alt="Tested against Claude Code 2.1.223">
 </p>
 
 ---
@@ -483,7 +483,7 @@ When a prompt patch changes live guidance, update both the patch verifier and th
 
 ## Compatibility
 
-Current target: **Claude Code 2.1.222**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. The immediately previous clean bundle may be retained for release-diff evidence, but it is not a matcher, fixture, matrix, or promotion target. Run `claude --version` on the promoted binary to confirm the active target.
+Current target: **Claude Code 2.1.223**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. The immediately previous clean bundle may be retained for release-diff evidence, but it is not a matcher, fixture, matrix, or promotion target. Run `claude --version` on the promoted binary to confirm the active target.
 
 `native:update` accepts `latest`, `next`, `stable`, or an explicit `X.Y.Z`. The `latest` resolver cross-checks the native release bucket with the npm `latest` and `next` dist-tags so release promotion can follow npm when a new version appears there before the bucket alias moves.
 
