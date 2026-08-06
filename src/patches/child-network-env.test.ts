@@ -126,6 +126,53 @@ test("removes bridge settings when the original environment had none", async () 
 	assert.deepEqual(runtime.buildChildEnvironment(), { PATH: "/usr/bin" });
 });
 
+test("removes all network routing from direct-mode child commands", async () => {
+	const ast = parse(CHILD_ENV_FIXTURE);
+	await runChildNetworkEnvViaPasses(ast);
+	const runtime = evaluatePatched(print(ast));
+	runtime.setEnv({
+		PATH: "/usr/bin",
+		HTTPS_PROXY: "http://127.0.0.1:3457",
+		HTTP_PROXY: "http://127.0.0.1:3457",
+		NO_PROXY: "localhost",
+		NODE_EXTRA_CA_CERTS: "/tmp/local-ca.pem",
+		CLODEX_ORIGINAL_NETWORK_ENV: JSON.stringify({
+			HTTPS_PROXY: "http://corp-proxy.example:8080",
+		}),
+		CLODEX_CHILD_NETWORK_MODE: "direct",
+	});
+
+	assert.deepEqual(runtime.buildChildEnvironment(), { PATH: "/usr/bin" });
+});
+
+test("routes child commands through only the selected upstream proxy", async () => {
+	const ast = parse(CHILD_ENV_FIXTURE);
+	await runChildNetworkEnvViaPasses(ast);
+	const runtime = evaluatePatched(print(ast));
+	const upstreamProxy = "http://proxy-user:proxy-secret@127.0.0.1:8080/";
+	runtime.setEnv({
+		PATH: "/usr/bin",
+		HTTPS_PROXY: "http://127.0.0.1:3457",
+		HTTP_PROXY: "http://127.0.0.1:3457",
+		NO_PROXY: "localhost",
+		NODE_EXTRA_CA_CERTS: "/tmp/local-ca.pem",
+		CLODEX_ORIGINAL_NETWORK_ENV: JSON.stringify({
+			HTTPS_PROXY: "http://corp-proxy.example:8080",
+			NO_PROXY: ".internal.example",
+		}),
+		CLODEX_CHILD_NETWORK_MODE: "upstream",
+		CLODEX_CHILD_UPSTREAM_PROXY: upstreamProxy,
+	});
+
+	assert.deepEqual(runtime.buildChildEnvironment(), {
+		PATH: "/usr/bin",
+		HTTPS_PROXY: upstreamProxy,
+		HTTP_PROXY: upstreamProxy,
+		https_proxy: upstreamProxy,
+		http_proxy: upstreamProxy,
+	});
+});
+
 test("drops a malformed snapshot without breaking child commands", async () => {
 	const ast = parse(CHILD_ENV_FIXTURE);
 	await runChildNetworkEnvViaPasses(ast);

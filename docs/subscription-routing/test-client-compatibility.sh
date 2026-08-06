@@ -196,6 +196,11 @@ chmod 700 "$admin_wrapper"
 
 admin_log="$test_root/admin.log"
 : >"$admin_log"
+HOME="$test_home" ADMIN_LOG="$admin_log" \
+	"$admin_wrapper" upstream-proxy status
+grep -Fx "$clodex_cli upstream-proxy status" "$admin_log" >/dev/null ||
+	fail "the upstream proxy command did not reach Clodex"
+: >"$admin_log"
 if HOME="$test_home" ADMIN_LOG="$admin_log" "$admin_wrapper" patch \
 	>"$test_root/patched.out" 2>"$test_root/patched.err"; then
 	fail "the administration wrapper patched an enhanced client"

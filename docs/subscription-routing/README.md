@@ -266,6 +266,33 @@ overrides. Optional proxy or private-CA settings belong in:
 The file may contain `HTTPS_PROXY`, `NO_PROXY`, or `NODE_EXTRA_CA_CERTS`. Keep
 it mode 600 and do not put provider API keys in it.
 
+Use `network.env` when the entire routing service must inherit one proxy
+environment. For a route-scoped HTTP CONNECT proxy, leave those variables out
+of `network.env` and configure Clodex instead:
+
+```sh
+clodex upstream-proxy set "$UPSTREAM_PROXY_URL"
+clodex upstream-proxy route anthropic on
+clodex upstream-proxy route openai off
+clodex upstream-proxy tools direct
+clodex upstream-proxy status
+```
+
+The Anthropic and OpenAI switches are independent. `tools original` restores
+the network environment from before the local bridge, `tools direct` clears
+proxy, bypass-list, and extra-CA variables, and `tools upstream` gives child
+commands only the configured upstream proxy. The parent Claude Code process
+continues to use the local Clodex bridge in every mode. The URL and policy live
+in the isolated Clodex config; `status` redacts an embedded password.
+
+Provider-route changes take effect when the idle routing service is next
+started. If it is already running, let routed sessions finish and use the
+guarded `clodex-service restart`. Child-tool changes also require a new
+`claudex` parent so its process tree receives the new handoff markers. The
+enhanced profile gets that handoff from cc-enhanced's `child-network-env`
+patch; the stock profile gets the equivalent behavior from `clodex patch`.
+Never apply both patchers to one client binary.
+
 The rendered launcher snapshots the caller's proxy, bypass, and CA variables
 before the local bridge starts. The enhanced client restores that snapshot for
 ordinary child commands, while the parent client and nested wrapped client

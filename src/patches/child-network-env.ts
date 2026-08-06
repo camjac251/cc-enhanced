@@ -5,11 +5,16 @@ import type { Patch, PatchAstPass } from "../types.js";
 import { getMemberPropertyName, getVerifyAst } from "./ast-helpers.js";
 
 const ORIGINAL_NETWORK_ENV = "CLODEX_ORIGINAL_NETWORK_ENV";
-const NETWORK_ENV_VARS = [
+const CHILD_NETWORK_MODE = "CLODEX_CHILD_NETWORK_MODE";
+const CHILD_UPSTREAM_PROXY = "CLODEX_CHILD_UPSTREAM_PROXY";
+const PROXY_ENV_VARS = [
 	"HTTPS_PROXY",
 	"HTTP_PROXY",
 	"https_proxy",
 	"http_proxy",
+] as const;
+const NETWORK_ENV_VARS = [
+	...PROXY_ENV_VARS,
 	"NO_PROXY",
 	"no_proxy",
 	"NODE_EXTRA_CA_CERTS",
@@ -91,12 +96,15 @@ function hasCall(
 
 function hasRestorePrelude(node: t.FunctionDeclaration): boolean {
 	return (
-		nodeContains(
-			node.body,
-			(child) => getStaticString(child) === ORIGINAL_NETWORK_ENV,
+		[ORIGINAL_NETWORK_ENV, CHILD_NETWORK_MODE, CHILD_UPSTREAM_PROXY].every(
+			(name) =>
+				nodeContains(node.body, (child) => getStaticString(child) === name),
 		) &&
 		NETWORK_ENV_VARS.every((name) =>
 			nodeContains(node.body, (child) => getStaticString(child) === name),
+		) &&
+		["original", "direct", "upstream"].every((mode) =>
+			nodeContains(node.body, (child) => getStaticString(child) === mode),
 		) &&
 		hasCall(node.body, "JSON", "parse") &&
 		hasCall(node.body, "Array", "isArray")
@@ -135,29 +143,55 @@ function buildRestorePrelude(
 	const original = path.scope.generateUidIdentifier(
 		"originalNetworkEnvironment",
 	);
+	const mode = path.scope.generateUidIdentifier("childNetworkMode");
+	const upstreamProxy = path.scope.generateUidIdentifier("childUpstreamProxy");
 	const snapshot = path.scope.generateUidIdentifier("networkSnapshot");
 	const key = path.scope.generateUidIdentifier("networkKey");
 	const parseError = path.scope.generateUidIdentifier("networkSnapshotError");
 	const source = parse(`
 function restoreChildNetworkEnvironment() {
   let ${childEnvName} = process.env,
-    ${original.name} = ${childEnvName}[${JSON.stringify(ORIGINAL_NETWORK_ENV)}];
-  if (${original.name} !== void 0) {
+    ${original.name} = ${childEnvName}[${JSON.stringify(ORIGINAL_NETWORK_ENV)}],
+    ${mode.name} = ${childEnvName}[${JSON.stringify(CHILD_NETWORK_MODE)}] || "original",
+    ${upstreamProxy.name} = ${childEnvName}[${JSON.stringify(CHILD_UPSTREAM_PROXY)}];
+  if (
+    ${original.name} !== void 0 ||
+    ${childEnvName}[${JSON.stringify(CHILD_NETWORK_MODE)}] !== void 0 ||
+    ${childEnvName}[${JSON.stringify(CHILD_UPSTREAM_PROXY)}] !== void 0
+  ) {
     ${childEnvName} = { ...${childEnvName} };
     delete ${childEnvName}[${JSON.stringify(ORIGINAL_NETWORK_ENV)}];
-    try {
-      let ${snapshot.name} = JSON.parse(${original.name});
-      if (${snapshot.name} && typeof ${snapshot.name} === "object" && !Array.isArray(${snapshot.name})) {
-        for (let ${key.name} of ${JSON.stringify(NETWORK_ENV_VARS)}) {
-          if (typeof ${snapshot.name}[${key.name}] === "string") {
-            ${childEnvName}[${key.name}] = ${snapshot.name}[${key.name}];
-          } else {
-            delete ${childEnvName}[${key.name}];
+    delete ${childEnvName}[${JSON.stringify(CHILD_NETWORK_MODE)}];
+    delete ${childEnvName}[${JSON.stringify(CHILD_UPSTREAM_PROXY)}];
+    if (${mode.name} === "direct" || ${mode.name} === "upstream") {
+      for (let ${key.name} of ${JSON.stringify(NETWORK_ENV_VARS)}) {
+        delete ${childEnvName}[${key.name}];
+      }
+    }
+    if (
+      ${mode.name} === "upstream" &&
+      typeof ${upstreamProxy.name} === "string" &&
+      ${upstreamProxy.name}
+    ) {
+      for (let ${key.name} of ${JSON.stringify(PROXY_ENV_VARS)}) {
+        ${childEnvName}[${key.name}] = ${upstreamProxy.name};
+      }
+    }
+    if (${mode.name} === "original" && ${original.name} !== void 0) {
+      try {
+        let ${snapshot.name} = JSON.parse(${original.name});
+        if (${snapshot.name} && typeof ${snapshot.name} === "object" && !Array.isArray(${snapshot.name})) {
+          for (let ${key.name} of ${JSON.stringify(NETWORK_ENV_VARS)}) {
+            if (typeof ${snapshot.name}[${key.name}] === "string") {
+              ${childEnvName}[${key.name}] = ${snapshot.name}[${key.name}];
+            } else {
+              delete ${childEnvName}[${key.name}];
+            }
           }
         }
+      } catch (${parseError.name}) {
+        if (!(${parseError.name} instanceof SyntaxError)) throw ${parseError.name};
       }
-    } catch (${parseError.name}) {
-      if (!(${parseError.name} instanceof SyntaxError)) throw ${parseError.name};
     }
   }
 }
@@ -251,7 +285,7 @@ export const childNetworkEnv: Patch = {
 			return `Child environment builder is ambiguous or missing (${candidates.length} sites found)`;
 		}
 		if (candidates[0].state !== "patched") {
-			return "Child environment builder does not restore the original network environment";
+			return "Child environment builder does not apply the selected network policy";
 		}
 		if (countProcessEnv(candidates[0].path.node) !== 1) {
 			return "Child environment builder still reads the routed process environment directly";
