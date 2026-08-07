@@ -41,6 +41,21 @@ const McpServer = A.strictObject({
 const Plain = A.object({ name: A.string() });
 `;
 
+const DIRECT_SCHEMA_FIXTURE = `
+const strictObjectSchema = (shape) => shape;
+const stringSchema = () => ({ min() { return this; }, optional() { return this; }, describe() { return this; } });
+const recordSchema = (key, value) => ({ refine() { return this; }, optional() { return this; }, describe() { return this; } });
+const keySchema = () => stringSchema().min(1);
+const languageSchema = () => stringSchema().min(1);
+const LspServer = strictObjectSchema({
+  command: stringSchema().min(1),
+  extensionToLanguage: recordSchema(keySchema(), languageSchema())
+    .refine((value) => Object.keys(value).length > 0)
+    .describe("Mapping from file extension to LSP language ID."),
+});
+const CommandOnly = strictObjectSchema({ command: stringSchema() });
+`;
+
 const MALFORMED_SCHEMA_FIXTURE = SCHEMA_FIXTURE.replace(
 	"startupTimeout: A.number().int().positive().optional(),",
 	`filenames: A.array(A.string()).optional(),
@@ -76,15 +91,31 @@ test("lsp-filename-schema adds filenames + filenamePatterns to the LSP schema", 
 	// Emitted as record(...).optional(), mirroring extensionToLanguage.
 	assert.match(
 		output,
-		/filenames:\s*A\.record\(A\.string\(\)\.min\(1\),\s*A\.string\(\)\.min\(1\)\)\.optional\(\)/s,
+		/filenames:\s*A\.record\(v_u\(\),\s*lms\(\)\)\.optional\(\)/s,
 	);
 	assert.match(
 		output,
-		/filenamePatterns:\s*A\.record\(A\.string\(\)\.min\(1\),\s*A\.string\(\)\.min\(1\)\)\.optional\(\)/s,
+		/filenamePatterns:\s*A\.record\(v_u\(\),\s*lms\(\)\)\.optional\(\)/s,
 	);
 
 	assert.equal(lspFilenameSchema.verify(output, ast), true);
 	assert.equal(lspFilenameSchema.verify(output), true);
+});
+
+test("lsp-filename-schema extends the latest direct-factory schema", async () => {
+	const ast = parse(DIRECT_SCHEMA_FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(
+		output,
+		/filenames:\s*recordSchema\(keySchema\(\),\s*languageSchema\(\)\)\.optional\(\)/s,
+	);
+	assert.match(
+		output,
+		/filenamePatterns:\s*recordSchema\(keySchema\(\),\s*languageSchema\(\)\)\.optional\(\)/s,
+	);
+	assert.equal(lspFilenameSchema.verify(output, parse(output)), true);
 });
 
 test("lsp-filename-schema leaves non-LSP strictObjects untouched", async () => {

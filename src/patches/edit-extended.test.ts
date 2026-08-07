@@ -344,6 +344,53 @@ function renderEditResult(
 }
 `;
 
+const EDIT_LATEST_COLLAPSE_FIXTURE = EDIT_FIXTURE.replace(
+	"collapsed: !isPlan && isScratchpadPath(filePath)",
+	"collapsed: !isPlan && (isScratchpadPath(filePath) || isMemoryPath(filePath))",
+).replace(
+	"function renderEditResult(",
+	`function isMemoryPath(filePath) {
+  return filePath.includes("/memory/");
+}
+
+function renderEditResult(`,
+);
+
+const EDIT_DIRECT_SCHEMA_FIXTURE = EDIT_FIXTURE.replace(
+	"const EditTool = {",
+	`const strictObjectSchema = (shape) => shape;
+const stringSchema = () => ({ optional() { return this; }, describe() { return this; } });
+const booleanSchema = () => ({ optional() { return this; }, default() { return this; }, describe() { return this; } });
+const objectSchema = (shape) => shape;
+const arraySchema = (entry) => ({ optional() { return this; } });
+const schemaFactories = {
+  strictObject: () => strictObjectSchema,
+  string: () => stringSchema,
+  boolean: () => booleanSchema,
+  object: () => objectSchema,
+  array: () => arraySchema,
+};
+
+const EditTool = {`,
+)
+	.replace(
+		"input_schema: z.strictObject({",
+		"input_schema: strictObjectSchema({",
+	)
+	.replace(
+		'z.string().describe("The absolute path to the file to modify")',
+		'stringSchema().describe("The absolute path to the file to modify")',
+	)
+	.replace(
+		'z.string().describe("Original text")',
+		'stringSchema().describe("Original text")',
+	)
+	.replace(
+		'z.string().describe("Replacement text")',
+		'stringSchema().describe("Replacement text")',
+	)
+	.replace("z.boolean().default(false)", "booleanSchema().default(false)");
+
 test("verify rejects unpatched code", () => {
 	const ast = parse(EDIT_FIXTURE);
 	const code = print(ast);
@@ -1055,6 +1102,24 @@ test("edit-extended runtime keeps scratchpad update diffs expanded", async () =>
 	} finally {
 		await cleanup();
 	}
+});
+
+test("edit-extended expands latest Edit results with either collapse predicate", async () => {
+	const ast = parse(EDIT_LATEST_COLLAPSE_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /collapsed: false/);
+	assert.equal(editTool.verify(output, parse(output)), true);
+});
+
+test("edit-extended patches and verifies the latest direct-factory schema", async () => {
+	const ast = parse(EDIT_DIRECT_SCHEMA_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /edits: arraySchema\(objectSchema\(/);
+	assert.equal(editTool.verify(output, parse(output)), true);
 });
 
 test("edit-extended verify rejects restored scratchpad diff collapsing", async () => {

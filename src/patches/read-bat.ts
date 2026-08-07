@@ -9,12 +9,14 @@ import { print } from "../loader.js";
 import type { Patch } from "../types.js";
 import {
 	findToolMethod,
+	getDescribedSchemaFactory,
 	getObjectKeyName,
 	getObjectPropertyByName,
 	getVerifyAst,
 	hasObjectKeyName,
 	isElementCall,
 	isMemberPropertyName,
+	resolveSiblingSchemaFactory,
 	resolveStringValue,
 } from "./ast-helpers.js";
 import {
@@ -615,6 +617,30 @@ function hasReadFilePathSchemaField(schemaObject: t.ObjectExpression): boolean {
 	return false;
 }
 
+function getReadSchemaObjectFromCall(
+	node: t.CallExpression,
+): t.ObjectExpression | null {
+	const arg0 = node.arguments[0];
+	return arg0 && t.isObjectExpression(arg0) && hasReadFilePathSchemaField(arg0)
+		? arg0
+		: null;
+}
+
+function buildOptionalDescribedSchema(
+	factory: t.Expression,
+	description: string,
+): t.CallExpression {
+	const schemaCall = t.callExpression(t.cloneNode(factory, true), []);
+	const optionalCall = t.callExpression(
+		t.memberExpression(schemaCall, t.identifier("optional")),
+		[],
+	);
+	return t.callExpression(
+		t.memberExpression(optionalCall, t.identifier("describe")),
+		[t.stringLiteral(description)],
+	);
+}
+
 function getReadInputSchemaObject(
 	ast: t.File,
 	readToolPath: NodePath<t.ObjectExpression>,
@@ -622,6 +648,8 @@ function getReadInputSchemaObject(
 	const readToolObject = readToolPath.node;
 	const schemaProp = getObjectPropertyByName(readToolObject, "input_schema");
 	if (schemaProp && t.isCallExpression(schemaProp.value)) {
+		const directSchema = getReadSchemaObjectFromCall(schemaProp.value);
+		if (directSchema) return directSchema;
 		if (
 			t.isMemberExpression(schemaProp.value.callee) &&
 			isMemberPropertyName(schemaProp.value.callee, "strictObject")
@@ -708,13 +736,8 @@ function getReadInputSchemaObject(
 	traverse(ast, {
 		CallExpression(path) {
 			if (found) return;
-			if (!t.isMemberExpression(path.node.callee)) return;
-			if (!isMemberPropertyName(path.node.callee, "strictObject")) return;
-			const arg0 = path.node.arguments[0];
-			if (!arg0 || !t.isObjectExpression(arg0)) return;
-			if (!hasReadFilePathSchemaField(arg0)) return;
-			found = arg0;
-			path.stop();
+			const schemaObject = getReadSchemaObjectFromCall(path.node);
+			if (schemaObject) found = schemaObject;
 		},
 	});
 	return found;
@@ -727,37 +750,54 @@ function expressionCode(expr: t.Expression): string {
 	return print(file);
 }
 
-function expressionHasMethodCall(
-	expr: t.Expression,
-	methodName: "string" | "boolean",
-): boolean {
-	let found = false;
-	const file = t.file(
-		t.program([t.expressionStatement(t.cloneNode(expr, true) as t.Expression)]),
-	);
-	traverse(file, {
-		CallExpression(path) {
-			if (found) {
-				path.stop();
-				return;
-			}
-			if (!t.isMemberExpression(path.node.callee)) return;
-			if (!isMemberPropertyName(path.node.callee, methodName)) return;
-			found = true;
-			path.stop();
-		},
-	});
-	return found;
+function getSchemaFactory(expr: t.Expression): t.Expression | null {
+	let current = expr;
+	while (
+		t.isCallExpression(current) &&
+		t.isMemberExpression(current.callee) &&
+		(isMemberPropertyName(current.callee, "describe") ||
+			isMemberPropertyName(current.callee, "optional")) &&
+		t.isExpression(current.callee.object)
+	) {
+		current = current.callee.object;
+	}
+	if (!t.isCallExpression(current) || current.arguments.length !== 0) {
+		return null;
+	}
+	return t.isExpression(current.callee) ? current.callee : null;
 }
 
-function schemaFieldHasMethodCall(
+function isSameSchemaFactory(
+	actual: t.Expression,
+	expected: t.Expression,
+): boolean {
+	if (t.isIdentifier(actual) && t.isIdentifier(expected)) {
+		return actual.name === expected.name;
+	}
+	if (!t.isMemberExpression(actual) || !t.isMemberExpression(expected)) {
+		return false;
+	}
+	if (
+		getObjectKeyName(actual.property) !== getObjectKeyName(expected.property)
+	) {
+		return false;
+	}
+	return (
+		t.isIdentifier(actual.object) &&
+		t.isIdentifier(expected.object) &&
+		actual.object.name === expected.object.name
+	);
+}
+
+function schemaFieldUsesFactory(
 	schemaObject: t.ObjectExpression,
 	fieldName: string,
-	methodName: "string" | "boolean",
+	factory: t.Expression,
 ): boolean {
 	const fieldProp = getObjectPropertyByName(schemaObject, fieldName);
 	if (!fieldProp || !t.isExpression(fieldProp.value)) return false;
-	return expressionHasMethodCall(fieldProp.value, methodName);
+	const fieldFactory = getSchemaFactory(fieldProp.value);
+	return fieldFactory !== null && isSameSchemaFactory(fieldFactory, factory);
 }
 
 function getFirstObjectPatternParam(
@@ -1480,6 +1520,7 @@ export function collectReadVerificationInventory(
 
 interface ReadVerifyContextBase {
 	code: string;
+	ast: t.File;
 	schemaObject: t.ObjectExpression;
 	callParam: t.ObjectPattern;
 	callKeys: Set<string>;
@@ -1549,10 +1590,26 @@ function verifyReadSchemaAndPrompt(ctx: ReadVerifyContextBase): string | null {
 	if (promptSurface.includes("use TaskOutput to get the `output_file` path")) {
 		return "Read prompt still routes output path discovery through TaskOutput";
 	}
-	if (!schemaFieldHasMethodCall(schemaObject, "range", "string")) {
+	const filePathProperty = getObjectPropertyByName(schemaObject, "file_path");
+	const stringFactory =
+		filePathProperty && t.isExpression(filePathProperty.value)
+			? getDescribedSchemaFactory(filePathProperty.value)
+			: null;
+	if (
+		!stringFactory ||
+		!schemaFieldUsesFactory(schemaObject, "range", stringFactory)
+	) {
 		return "Missing range parameter in schema";
 	}
-	if (!schemaFieldHasMethodCall(schemaObject, "show_whitespace", "boolean")) {
+	const booleanFactory = resolveSiblingSchemaFactory(
+		ctx.ast,
+		stringFactory,
+		"boolean",
+	);
+	if (
+		!booleanFactory ||
+		!schemaFieldUsesFactory(schemaObject, "show_whitespace", booleanFactory)
+	) {
 		return "Missing show_whitespace parameter in schema";
 	}
 	if (schemaHasLegacyOffsetOrLimit(schemaObject)) {
@@ -1972,87 +2029,58 @@ export const readWithBat: Patch = {
 
 						// 0b. Patch the Read tool schema from offset/limit to
 						// range/show_whitespace.
-						traverse(ast, {
-							CallExpression(path) {
-								const callee = path.node.callee;
-								if (!t.isMemberExpression(callee)) return;
-								if (!isMemberPropertyName(callee, "strictObject")) return;
-								if (!t.isIdentifier(callee.object)) return;
-								if (path.node.arguments.length < 1) return;
-
-								const arg0 = path.node.arguments[0];
-								if (!t.isObjectExpression(arg0)) return;
-
-								const hasFilePath = arg0.properties.some((p) =>
-									hasObjectKeyName(p, "file_path"),
-								);
-								if (!hasFilePath) return;
-
-								// Match the Read schema by file_path description string.
-								const filePathProp = arg0.properties.find(
-									(p): p is t.ObjectProperty =>
-										t.isObjectProperty(p) &&
-										hasObjectKeyName(p, "file_path") &&
-										t.isExpression(p.value) &&
-										t.isCallExpression(p.value) &&
-										t.isMemberExpression(p.value.callee) &&
-										isMemberPropertyName(p.value.callee, "describe") &&
-										p.value.arguments.length >= 1 &&
-										t.isStringLiteral(p.value.arguments[0], {
-											value: "The absolute path to the file to read",
-										}),
-								);
-								if (!filePathProp) return;
-
-								const hasRange = arg0.properties.some((p) =>
-									hasObjectKeyName(p, "range"),
-								);
-								if (hasRange) return;
-
-								const zodVarName = callee.object.name;
-								const rangeDesc =
-									"Line range using supported bat-style forms: '30:40', '-30:', ':50', '100::10', '30:40:2'. Omit to read entire file.";
-								const wsDesc =
-									"Reveal invisible characters: tabs (→), spaces (·), newlines (␊). Use to debug indentation issues.";
-
-								const rangeExpr = tplExpression(
-									`${zodVarName}.string().optional().describe(${JSON.stringify(rangeDesc)})`,
-								);
-								const wsExpr = tplExpression(
-									`${zodVarName}.boolean().optional().describe(${JSON.stringify(wsDesc)})`,
-								);
-
-								const rangeProp = t.objectProperty(
+						const schemaObject = readToolPath
+							? getReadInputSchemaObject(ast, readToolPath)
+							: null;
+						if (
+							schemaObject &&
+							!schemaObject.properties.some((property) =>
+								hasObjectKeyName(property, "range"),
+							)
+						) {
+							const filePathProperty = getObjectPropertyByName(
+								schemaObject,
+								"file_path",
+							);
+							const stringFactory =
+								filePathProperty && t.isExpression(filePathProperty.value)
+									? getDescribedSchemaFactory(filePathProperty.value)
+									: null;
+							const booleanFactory = stringFactory
+								? resolveSiblingSchemaFactory(ast, stringFactory, "boolean")
+								: null;
+							if (stringFactory && booleanFactory) {
+								const rangeProperty = t.objectProperty(
 									t.identifier("range"),
-									rangeExpr,
+									buildOptionalDescribedSchema(
+										stringFactory,
+										"Line range using supported bat-style forms: '30:40', '-30:', ':50', '100::10', '30:40:2'. Omit to read entire file.",
+									),
 								);
-								const wsProp = t.objectProperty(
+								const whitespaceProperty = t.objectProperty(
 									t.identifier("show_whitespace"),
-									wsExpr,
+									buildOptionalDescribedSchema(
+										booleanFactory,
+										"Reveal invisible characters: tabs (→), spaces (·), newlines (␊). Use to debug indentation issues.",
+									),
 								);
-
-								const newProps: typeof arg0.properties = [];
-								for (const prop of arg0.properties) {
+								const nextProperties: typeof schemaObject.properties = [];
+								for (const property of schemaObject.properties) {
 									if (
-										t.isObjectProperty(prop) &&
-										(hasObjectKeyName(prop, "offset") ||
-											hasObjectKeyName(prop, "limit"))
+										t.isObjectProperty(property) &&
+										(hasObjectKeyName(property, "offset") ||
+											hasObjectKeyName(property, "limit"))
 									) {
 										continue;
 									}
-
-									newProps.push(prop);
-
-									if (
-										t.isObjectProperty(prop) &&
-										hasObjectKeyName(prop, "file_path")
-									) {
-										newProps.push(rangeProp, wsProp);
+									nextProperties.push(property);
+									if (hasObjectKeyName(property, "file_path")) {
+										nextProperties.push(rangeProperty, whitespaceProperty);
 									}
 								}
-								arg0.properties = newProps;
-							},
-						});
+								schemaObject.properties = nextProperties;
+							}
+						}
 
 						// Track the range parameter variable name we create
 						let rangeVarName: string | null = null;
@@ -4278,6 +4306,7 @@ export const readWithBat: Patch = {
 
 		const baseContext: ReadVerifyContextBase = {
 			code,
+			ast: verifyAst,
 			schemaObject,
 			callParam,
 			callKeys,

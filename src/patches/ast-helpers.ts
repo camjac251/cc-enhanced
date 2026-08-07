@@ -199,6 +199,94 @@ export function getObjectPropertyByName(
 	return null;
 }
 
+function getReturnedSchemaFactory(
+	property: t.ObjectProperty | null,
+): t.Expression | null {
+	if (!property || !t.isExpression(property.value)) return null;
+	const value = property.value;
+	if (t.isArrowFunctionExpression(value)) {
+		if (t.isExpression(value.body)) return value.body;
+		for (const statement of value.body.body) {
+			if (
+				t.isReturnStatement(statement) &&
+				statement.argument &&
+				t.isExpression(statement.argument)
+			) {
+				return statement.argument;
+			}
+		}
+		return null;
+	}
+	if (!t.isFunctionExpression(value)) return null;
+	for (const statement of value.body.body) {
+		if (
+			t.isReturnStatement(statement) &&
+			statement.argument &&
+			t.isExpression(statement.argument)
+		) {
+			return statement.argument;
+		}
+	}
+	return null;
+}
+
+/**
+ * Resolve the zero-argument schema factory beneath a `.describe(...)` call.
+ * Supports both namespace members and direct factory functions.
+ */
+export function getDescribedSchemaFactory(
+	expr: t.Expression,
+): t.Expression | null {
+	if (!t.isCallExpression(expr) || !t.isMemberExpression(expr.callee)) {
+		return null;
+	}
+	if (!isMemberPropertyName(expr.callee, "describe")) return null;
+	const schemaCall = expr.callee.object;
+	if (!t.isCallExpression(schemaCall) || schemaCall.arguments.length !== 0) {
+		return null;
+	}
+	return t.isExpression(schemaCall.callee) ? schemaCall.callee : null;
+}
+
+/**
+ * Resolve a sibling schema factory from the same namespace or exported
+ * factory table as an observed string factory.
+ */
+export function resolveSiblingSchemaFactory(
+	ast: t.File,
+	knownFactory: t.Expression,
+	targetMethod: string,
+): t.Expression | null {
+	if (
+		t.isMemberExpression(knownFactory) &&
+		isMemberPropertyName(knownFactory, "string")
+	) {
+		return t.memberExpression(
+			t.cloneNode(knownFactory.object, true) as t.Expression,
+			t.identifier(targetMethod),
+		);
+	}
+	if (!t.isIdentifier(knownFactory)) return null;
+
+	let resolved: t.Expression | null = null;
+	traverse(ast, {
+		ObjectExpression(path) {
+			if (resolved) return;
+			const stringFactory = getReturnedSchemaFactory(
+				getObjectPropertyByName(path.node, "string"),
+			);
+			if (!stringFactory || !t.isNodesEquivalent(stringFactory, knownFactory)) {
+				return;
+			}
+			const targetFactory = getReturnedSchemaFactory(
+				getObjectPropertyByName(path.node, targetMethod),
+			);
+			if (targetFactory) resolved = t.cloneNode(targetFactory, true);
+		},
+	});
+	return resolved;
+}
+
 /**
  * Recognized React element-factory member names across the classic runtime
  * (`X.createElement(type, props, ...children)`) and the automatic JSX runtime

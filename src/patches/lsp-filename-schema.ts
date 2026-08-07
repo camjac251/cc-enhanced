@@ -1,6 +1,5 @@
 import * as t from "@babel/types";
 import { traverse, type Visitor } from "../babel.js";
-import { parse } from "../loader.js";
 import type { Patch } from "../types.js";
 import {
 	getMemberPropertyName,
@@ -12,88 +11,76 @@ import {
 /**
  * LSP filename-routing schema patch.
  *
- * Extends the per-server LSP plugin-manifest schema (the `strictObject` that
- * carries both `command` and `extensionToLanguage`) with two optional fields:
+ * Extends the per-server LSP plugin-manifest object schema that carries both
+ * `command` and `extensionToLanguage` with two optional fields:
  *   - `filenames`:        record(basename -> languageId)
  *   - `filenamePatterns`: record(glob -> languageId)
  *
- * The schema is a Zod `strictObject`, so without this patch those keys are
- * rejected and a plugin can only match files by extension. The runtime routing
- * that consumes these fields lives in the `lsp-multi-server` patch (the
- * `_lspByName` helper); this patch only widens the accepted manifest shape.
+ * The object schema rejects unknown keys, so without this patch a plugin can
+ * only match files by extension. The runtime routing that consumes these
+ * fields lives in the `lsp-multi-server` patch (the `_lspByName` helper); this
+ * patch only widens the accepted manifest shape.
  *
- * Both fields are emitted as
- *   `<zod>.record(<zod>.string().min(1), <zod>.string().min(1)).optional()`
- * mirroring the sibling `extensionToLanguage` record. The zod alias is lifted
- * from the `strictObject` call's own callee object, so no minified identifier
- * is hardcoded.
+ * Both fields clone the sibling `extensionToLanguage` record factory and make
+ * it optional. This preserves the release's own key/value validators without
+ * relying on bundle-local identifiers.
  */
 
 const NEW_FIELDS = ["filenames", "filenamePatterns"] as const;
 
-function isLspServerSchemaCall(node: t.CallExpression): boolean {
-	const callee = node.callee;
-	if (!t.isMemberExpression(callee)) return false;
-	if (getMemberPropertyName(callee) !== "strictObject") return false;
+function getLspServerSchemaObject(
+	node: t.CallExpression,
+): t.ObjectExpression | null {
 	const arg = node.arguments[0];
-	if (!t.isObjectExpression(arg)) return false;
+	if (!t.isObjectExpression(arg)) return null;
 	const hasCommand = arg.properties.some((p) => hasObjectKeyName(p, "command"));
 	const hasExtMap = arg.properties.some((p) =>
 		hasObjectKeyName(p, "extensionToLanguage"),
 	);
-	return hasCommand && hasExtMap;
+	return hasCommand && hasExtMap ? arg : null;
 }
 
-function buildRecordOptional(zodName: string): t.Expression {
-	const program = parse(
-		`(${zodName}.record(${zodName}.string().min(1), ${zodName}.string().min(1)).optional())`,
+function getLspRecordBase(
+	schemaObject: t.ObjectExpression,
+): t.CallExpression | null {
+	const extensionMap = getObjectPropertyByName(
+		schemaObject,
+		"extensionToLanguage",
 	);
-	const stmt = program.program.body[0];
-	if (!t.isExpressionStatement(stmt)) {
-		throw new Error("lsp-filename-schema: failed to build record expression");
+	if (!extensionMap || !t.isExpression(extensionMap.value)) return null;
+	let current: t.Expression = extensionMap.value;
+	while (
+		t.isCallExpression(current) &&
+		t.isMemberExpression(current.callee) &&
+		["describe", "refine"].includes(
+			getMemberPropertyName(current.callee) ?? "",
+		) &&
+		t.isExpression(current.callee.object)
+	) {
+		current = current.callee.object;
 	}
-	return stmt.expression;
+	return t.isCallExpression(current) && current.arguments.length >= 2
+		? current
+		: null;
 }
 
-function isRecordOptional(node: t.Node | null | undefined): boolean {
-	// Expect `<zod>.record(...).optional()`.
+function buildRecordOptional(recordBase: t.CallExpression): t.CallExpression {
+	return t.callExpression(
+		t.memberExpression(t.cloneNode(recordBase, true), t.identifier("optional")),
+		[],
+	);
+}
+
+function isRecordOptional(
+	node: t.Node | null | undefined,
+	recordBase: t.CallExpression,
+): boolean {
 	if (!node || !t.isCallExpression(node)) return false;
 	const optCallee = node.callee;
 	if (!t.isMemberExpression(optCallee)) return false;
 	if (getMemberPropertyName(optCallee) !== "optional") return false;
 	const inner = optCallee.object;
-	if (!t.isCallExpression(inner)) return false;
-	const recCallee = inner.callee;
-	if (
-		!t.isMemberExpression(recCallee) ||
-		getMemberPropertyName(recCallee) !== "record"
-	)
-		return false;
-	return (
-		inner.arguments.length >= 2 &&
-		isStringMinOneCall(inner.arguments[0]) &&
-		isStringMinOneCall(inner.arguments[1])
-	);
-}
-
-function isStringMinOneCall(node: t.Node | null | undefined): boolean {
-	if (!node || !t.isCallExpression(node)) return false;
-	const minCallee = node.callee;
-	if (!t.isMemberExpression(minCallee)) return false;
-	if (getMemberPropertyName(minCallee) !== "min") return false;
-	if (
-		minCallee.computed ||
-		!t.isCallExpression(minCallee.object) ||
-		minCallee.object.arguments.length !== 0
-	)
-		return false;
-	const stringCallee = minCallee.object.callee;
-	return (
-		t.isMemberExpression(stringCallee) &&
-		getMemberPropertyName(stringCallee) === "string" &&
-		node.arguments.length >= 1 &&
-		t.isNumericLiteral(node.arguments[0], { value: 1 })
-	);
+	return t.isCallExpression(inner) && t.isNodesEquivalent(inner, recordBase);
 }
 
 function createMutateVisitor(): Visitor {
@@ -101,17 +88,18 @@ function createMutateVisitor(): Visitor {
 	return {
 		CallExpression(path) {
 			const node = path.node;
-			if (!isLspServerSchemaCall(node)) return;
-			const arg = node.arguments[0];
-			if (!t.isObjectExpression(arg)) return;
+			const arg = getLspServerSchemaObject(node);
+			if (!arg) return;
 			// Idempotency: skip if already extended.
 			if (arg.properties.some((p) => hasObjectKeyName(p, "filenames"))) return;
-			const callee = node.callee as t.MemberExpression;
-			const zod = callee.object;
-			if (!t.isIdentifier(zod)) return;
+			const recordBase = getLspRecordBase(arg);
+			if (!recordBase) return;
 			for (const field of NEW_FIELDS) {
 				arg.properties.push(
-					t.objectProperty(t.identifier(field), buildRecordOptional(zod.name)),
+					t.objectProperty(
+						t.identifier(field),
+						buildRecordOptional(recordBase),
+					),
 				);
 			}
 			added++;
@@ -135,17 +123,18 @@ function verifyFilenameSchema(code: string, ast?: t.File): true | string {
 	let ok = false;
 	traverse(verifyAst, {
 		CallExpression(path) {
-			if (!isLspServerSchemaCall(path.node)) return;
+			const arg = getLspServerSchemaObject(path.node);
+			if (!arg) return;
 			foundSchema = true;
-			const arg = path.node.arguments[0];
-			if (!t.isObjectExpression(arg)) return;
+			const recordBase = getLspRecordBase(arg);
+			if (!recordBase) return;
 			const filenames = getObjectPropertyByName(arg, "filenames");
 			const patterns = getObjectPropertyByName(arg, "filenamePatterns");
 			if (
 				filenames &&
 				patterns &&
-				isRecordOptional(filenames.value) &&
-				isRecordOptional(patterns.value)
+				isRecordOptional(filenames.value, recordBase) &&
+				isRecordOptional(patterns.value, recordBase)
 			) {
 				ok = true;
 			}
@@ -153,7 +142,7 @@ function verifyFilenameSchema(code: string, ast?: t.File): true | string {
 	});
 
 	if (!foundSchema)
-		return "LSP per-server schema (strictObject with command + extensionToLanguage) not found";
+		return "LSP per-server object schema with command + extensionToLanguage not found";
 	if (!ok)
 		return "filenames/filenamePatterns not added as string record().optional()";
 	return true;

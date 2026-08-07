@@ -36,6 +36,20 @@ const agentInputSchema = A.object({
 });
 `;
 
+const DIRECT_AGENT_SCHEMA_FIXTURE = String.raw`
+const objectSchema = (shape) => shape;
+const stringSchema = () => ({ trim() { return this; }, min() { return this; }, optional() { return this; }, describe() { return this; } });
+const enumSchema = (values) => ({ optional() { return this; }, describe() { return this; } });
+const booleanSchema = () => ({ optional() { return this; }, describe() { return this; } });
+const agentInputSchema = objectSchema({
+  description: stringSchema().describe("A short (3-5 word) description of the task"),
+  prompt: stringSchema().describe("The task for the agent to perform"),
+  subagent_type: stringSchema().optional().describe("The type of specialized agent to use for this task"),
+  model: enumSchema(["sonnet", "opus", "haiku", "fable"]).optional().describe('Optional model override for this agent. Takes precedence over the agent definition\'s model frontmatter. Ignored for subagent_type: "fork"; forks always inherit the parent model.'),
+  run_in_background: booleanSchema().optional(),
+});
+`;
+
 const AGENT_LIFECYCLE_FIXTURE = `
 async function* runChild({ agentDefinition, model, extraMetadata }) {
   const parentModel = getParentModel(context);
@@ -184,6 +198,22 @@ test("subagent-model-tag accepts a nonempty full model ID in the Agent schema", 
 		true,
 		"Agent model guidance must explain how to select discovered models",
 	);
+});
+
+test("subagent-model-tag widens the latest direct-factory Agent schema", async () => {
+	const input = SUBAGENT_FIXTURE.replace(
+		AGENT_SCHEMA_FIXTURE,
+		DIRECT_AGENT_SCHEMA_FIXTURE,
+	);
+	const ast = parse(input);
+	await runSubagentModelTagViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(
+		output,
+		/model: stringSchema\(\)\.trim\(\)\.min\(1\)\.optional\(\)\.describe/,
+	);
+	assert.equal(subagentModelTag.verify(output, parse(output)), true);
 });
 
 test("subagent-model-tag keeps fork launches and resumes on the parent model", async () => {

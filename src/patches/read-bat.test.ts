@@ -88,6 +88,37 @@ const ReadTool = {
 };
 `;
 
+const READ_DIRECT_SCHEMA_FIXTURE = `
+function strictObjectSchema(value) { return value; }
+function stringSchema() { return { optional() { return this; }, describe() { return this; } }; }
+function numberSchema() { return { optional() { return this; }, describe() { return this; } }; }
+function booleanSchema() { return { optional() { return this; }, describe() { return this; } }; }
+const schemaFactories = {
+  strictObject: () => strictObjectSchema,
+  string: () => stringSchema,
+  boolean: () => booleanSchema,
+};
+
+const ReadTool = {
+  name: "Read",
+  description() {
+    return "A tool for reading files";
+  },
+  prompt() {
+    return "Use offset and limit parameters to read specific portions of the file, or use the GrepTool to search for specific content";
+  },
+  input_examples: [
+    { file_path: "/Users/username/project/README.md", limit: 100, offset: 50 },
+  ],
+  input_schema: strictObjectSchema({
+    file_path: stringSchema().describe("The absolute path to the file to read"),
+    offset: numberSchema().optional().describe("Legacy offset"),
+    limit: numberSchema().optional().describe("Legacy limit"),
+    pages: stringSchema().optional().describe("Use the pages parameter to read specific page ranges"),
+  }),
+};
+`;
+
 const READ_DELEGATION_FIXTURE = `
 const z = {
   strictObject(x) { return x; },
@@ -291,6 +322,35 @@ async function helperRead(input) {
   };
 }`,
 	);
+}
+
+function readDirectFactoryDelegationFixture(): string {
+	return READ_DELEGATION_FIXTURE.replace(
+		"function eG1()",
+		`const strictObjectSchema = (shape) => shape;
+const stringSchema = () => ({ optional() { return this; }, describe() { return this; } });
+const numberSchema = () => ({ optional() { return this; }, describe() { return this; } });
+const booleanSchema = () => ({ optional() { return this; }, describe() { return this; } });
+const schemaFactories = {
+  strictObject: () => strictObjectSchema,
+  string: () => stringSchema,
+  boolean: () => booleanSchema,
+};
+function eG1()`,
+	)
+		.replace(
+			"input_schema: z.strictObject({",
+			"input_schema: strictObjectSchema({",
+		)
+		.replace(
+			'file_path: z.string().describe("The absolute path to the file to read")',
+			'file_path: stringSchema().describe("The absolute path to the file to read")',
+		)
+		.replaceAll("z.number()", "numberSchema()")
+		.replace(
+			'pages: z.string().optional().describe("Use the pages parameter to read specific page ranges")',
+			'pages: stringSchema().optional().describe("Use the pages parameter to read specific page ranges")',
+		);
 }
 
 const READ_IDENTIFIER_PROMPT_FIXTURE = `
@@ -722,6 +782,25 @@ test("read-bat migrates schema and prompt from offset/limit to range/show_whites
 		output.includes("Use TaskOutput only for an explicit wait"),
 		false,
 	);
+});
+
+test("read-bat migrates the latest direct-factory Read schema", async () => {
+	const ast = parse(READ_DIRECT_SCHEMA_FIXTURE);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /range: stringSchema\(\)\.optional\(\)/);
+	assert.match(output, /show_whitespace: booleanSchema\(\)\.optional\(\)/);
+	assert.doesNotMatch(output, /offset: numberSchema/);
+	assert.doesNotMatch(output, /limit: numberSchema/);
+});
+
+test("read-bat verifies the latest direct-factory schema in the full patch", async () => {
+	const ast = parse(readDirectFactoryDelegationFixture());
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(readWithBat.verify(output, parse(output)), true);
 });
 
 test("read-bat verify rejects weakened background task routing", async () => {

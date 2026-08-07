@@ -92,11 +92,10 @@ function isAgentInputSchemaObject(node: t.ObjectExpression): boolean {
 	);
 }
 
-function getEnumReceiver(node: t.Node): t.Expression | null {
-	const enumCall = getMemberCall(node, "enum");
-	if (enumCall?.arguments.length !== 1) return null;
-	const values = enumCall.arguments[0];
-	if (!t.isArrayExpression(values)) return null;
+function isAliasEnumSchema(node: t.Node): boolean {
+	if (!t.isCallExpression(node) || node.arguments.length !== 1) return false;
+	const values = node.arguments[0];
+	if (!t.isArrayExpression(values)) return false;
 	// Recognize the built-in alias enum as a superset: every known alias must be
 	// present, but the enum may also carry additional aliases the mutator will
 	// discard when it widens the field to a full-ID string. Requiring exact
@@ -108,11 +107,24 @@ function getEnumReceiver(node: t.Node): t.Expression | null {
 			)
 			.map((element) => element.value),
 	);
-	if (!BUILTIN_MODEL_ALIASES.every((alias) => present.has(alias))) return null;
-	return t.isExpression(enumCall.callee.object) ? enumCall.callee.object : null;
+	return BUILTIN_MODEL_ALIASES.every((alias) => present.has(alias));
 }
 
-function getNonemptyStringReceiver(node: t.Node): t.Expression | null {
+function getDescribedStringFactory(
+	object: t.ObjectExpression,
+): t.Expression | null {
+	const descriptionProperty = getObjectPropertyByName(object, "description");
+	if (!descriptionProperty) return null;
+	const describeCall = getMemberCall(descriptionProperty.value, "describe");
+	if (!describeCall) return null;
+	const schemaCall = describeCall.callee.object;
+	if (!t.isCallExpression(schemaCall) || schemaCall.arguments.length !== 0) {
+		return null;
+	}
+	return t.isExpression(schemaCall.callee) ? schemaCall.callee : null;
+}
+
+function getNonemptyStringFactory(node: t.Node): t.Expression | null {
 	const minCall = getMemberCall(node, "min");
 	if (
 		minCall?.arguments.length !== 1 ||
@@ -122,11 +134,11 @@ function getNonemptyStringReceiver(node: t.Node): t.Expression | null {
 	}
 	const trimCall = getMemberCall(minCall.callee.object, "trim");
 	if (trimCall?.arguments.length !== 0) return null;
-	const stringCall = getMemberCall(trimCall.callee.object, "string");
-	if (stringCall?.arguments.length !== 0) return null;
-	return t.isExpression(stringCall.callee.object)
-		? stringCall.callee.object
-		: null;
+	const stringCall = trimCall.callee.object;
+	if (!t.isCallExpression(stringCall) || stringCall.arguments.length !== 0) {
+		return null;
+	}
+	return t.isExpression(stringCall.callee) ? stringCall.callee : null;
 }
 
 function getAgentModelSchemaShape(
@@ -138,24 +150,30 @@ function getAgentModelSchemaShape(
 	if (!describeCall) return null;
 	const optionalCall = getMemberCall(describeCall.callee.object, "optional");
 	if (!optionalCall) return null;
+	const stringFactory = getDescribedStringFactory(object);
+	if (!stringFactory) return null;
 
-	const enumReceiver = getEnumReceiver(optionalCall.callee.object);
-	if (enumReceiver) {
+	if (isAliasEnumSchema(optionalCall.callee.object)) {
 		return {
 			describeCall,
 			optionalCall,
 			kind: "aliases",
-			receiver: enumReceiver,
+			receiver: stringFactory,
 		};
 	}
 
-	const stringReceiver = getNonemptyStringReceiver(optionalCall.callee.object);
-	if (stringReceiver) {
+	const patchedStringFactory = getNonemptyStringFactory(
+		optionalCall.callee.object,
+	);
+	if (
+		patchedStringFactory &&
+		t.isNodesEquivalent(patchedStringFactory, stringFactory)
+	) {
 		return {
 			describeCall,
 			optionalCall,
 			kind: "nonempty-string",
-			receiver: stringReceiver,
+			receiver: stringFactory,
 		};
 	}
 
@@ -168,10 +186,7 @@ function getAgentModelSchemaShape(
 }
 
 function buildNonemptyStringSchema(receiver: t.Expression): t.CallExpression {
-	const stringCall = t.callExpression(
-		t.memberExpression(t.cloneNode(receiver, true), t.identifier("string")),
-		[],
-	);
+	const stringCall = t.callExpression(t.cloneNode(receiver, true), []);
 	const trimCall = t.callExpression(
 		t.memberExpression(stringCall, t.identifier("trim")),
 		[],

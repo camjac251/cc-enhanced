@@ -6,12 +6,14 @@ import { template, traverse } from "../babel.js";
 import { parse } from "../loader.js";
 import type { Patch } from "../types.js";
 import {
+	getDescribedSchemaFactory,
 	getObjectKeyName,
 	getObjectPropertyByName,
 	getVerifyAst,
 	hasObjectKeyName,
 	isMemberPropertyName,
 	objectPatternHasKey,
+	resolveSiblingSchemaFactory,
 } from "./ast-helpers.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1025,7 +1027,7 @@ function injectExtendedEditTransportHelpers(ast: t.File): void {
 }
 
 /**
- * Modify the Edit tool's Zod strictObject schema for batch edit support:
+ * Modify the Edit tool's object schema for batch edit support:
  * 1. Add `edits` as an optional array field
  * 2. Make `old_string` and `new_string` optional (required enforcement moves to validateInput)
  *
@@ -1033,27 +1035,65 @@ function injectExtendedEditTransportHelpers(ast: t.File): void {
  * with "unexpected parameter" and "required parameter missing" errors before the Edit
  * tool's own validation and normalization logic can run.
  */
+function getEditSchemaObject(
+	node: t.CallExpression,
+): t.ObjectExpression | null {
+	const arg0 = node.arguments[0];
+	if (!t.isObjectExpression(arg0)) return null;
+	const keys = new Set(
+		arg0.properties
+			.filter((property): property is t.ObjectProperty =>
+				t.isObjectProperty(property),
+			)
+			.map((property) => getObjectKeyName(property.key))
+			.filter((key): key is string => key !== null),
+	);
+	return keys.has("file_path") &&
+		keys.has("old_string") &&
+		keys.has("new_string") &&
+		keys.has("replace_all")
+		? arg0
+		: null;
+}
+
+function getEditStringFactory(schema: t.ObjectExpression): t.Expression | null {
+	const filePath = getObjectPropertyByName(schema, "file_path");
+	return filePath && t.isExpression(filePath.value)
+		? getDescribedSchemaFactory(filePath.value)
+		: null;
+}
+
+function callSchemaFactory(
+	factory: t.Expression,
+	args: t.Expression[],
+): t.CallExpression {
+	return t.callExpression(t.cloneNode(factory, true), args);
+}
+
+function isSameSchemaFactory(actual: t.Node, expected: t.Expression): boolean {
+	if (t.isIdentifier(actual) && t.isIdentifier(expected)) {
+		return actual.name === expected.name;
+	}
+	if (!t.isMemberExpression(actual) || !t.isMemberExpression(expected)) {
+		return false;
+	}
+	if (
+		getObjectKeyName(actual.property) !== getObjectKeyName(expected.property)
+	) {
+		return false;
+	}
+	return (
+		t.isIdentifier(actual.object) &&
+		t.isIdentifier(expected.object) &&
+		actual.object.name === expected.object.name
+	);
+}
+
 function patchEditSchemaForBatchEdits(ast: t.File): void {
 	traverse(ast, {
 		CallExpression(path) {
-			if (!t.isMemberExpression(path.node.callee)) return;
-			if (!isMemberPropertyName(path.node.callee, "strictObject")) return;
-			if (path.node.arguments.length < 1) return;
-
-			const arg0 = path.node.arguments[0];
-			if (!t.isObjectExpression(arg0)) return;
-
-			// Match the Edit schema by old_string + new_string + replace_all
-			const hasOldString = arg0.properties.some(
-				(p) => t.isObjectProperty(p) && hasObjectKeyName(p, "old_string"),
-			);
-			const hasNewString = arg0.properties.some(
-				(p) => t.isObjectProperty(p) && hasObjectKeyName(p, "new_string"),
-			);
-			const hasReplaceAll = arg0.properties.some(
-				(p) => t.isObjectProperty(p) && hasObjectKeyName(p, "replace_all"),
-			);
-			if (!hasOldString || !hasNewString || !hasReplaceAll) return;
+			const arg0 = getEditSchemaObject(path.node);
+			if (!arg0) return;
 
 			// Already patched?
 			const hasEdits = arg0.properties.some(
@@ -1061,9 +1101,24 @@ function patchEditSchemaForBatchEdits(ast: t.File): void {
 			);
 			if (hasEdits) return;
 
-			// Resolve the Zod variable name from the method receiver
-			if (!t.isIdentifier(path.node.callee.object)) return;
-			const zodVar = path.node.callee.object.name;
+			const stringFactory = getEditStringFactory(arg0);
+			if (!stringFactory) return;
+			const booleanFactory = resolveSiblingSchemaFactory(
+				ast,
+				stringFactory,
+				"boolean",
+			);
+			const objectFactory = resolveSiblingSchemaFactory(
+				ast,
+				stringFactory,
+				"object",
+			);
+			const arrayFactory = resolveSiblingSchemaFactory(
+				ast,
+				stringFactory,
+				"array",
+			);
+			if (!booleanFactory || !objectFactory || !arrayFactory) return;
 
 			// Make old_string and new_string optional so batch-only payloads pass safeParse.
 			// Wrap: y.string().describe(...) -> y.string().optional().describe(...)
@@ -1089,57 +1144,33 @@ function patchEditSchemaForBatchEdits(ast: t.File): void {
 				);
 			}
 
-			// Add edits field: z.array(z.object({ old_string, new_string, replace_all })).optional()
-			const editEntrySchema = t.callExpression(
-				t.memberExpression(t.identifier(zodVar), t.identifier("object")),
-				[
-					t.objectExpression([
-						t.objectProperty(
-							t.identifier("old_string"),
-							t.callExpression(
-								t.memberExpression(
-									t.identifier(zodVar),
-									t.identifier("string"),
-								),
-								[],
+			// Add edits field: array(object({ old_string, new_string, replace_all })).optional()
+			const editEntrySchema = callSchemaFactory(objectFactory, [
+				t.objectExpression([
+					t.objectProperty(
+						t.identifier("old_string"),
+						callSchemaFactory(stringFactory, []),
+					),
+					t.objectProperty(
+						t.identifier("new_string"),
+						callSchemaFactory(stringFactory, []),
+					),
+					t.objectProperty(
+						t.identifier("replace_all"),
+						t.callExpression(
+							t.memberExpression(
+								callSchemaFactory(booleanFactory, []),
+								t.identifier("optional"),
 							),
+							[],
 						),
-						t.objectProperty(
-							t.identifier("new_string"),
-							t.callExpression(
-								t.memberExpression(
-									t.identifier(zodVar),
-									t.identifier("string"),
-								),
-								[],
-							),
-						),
-						t.objectProperty(
-							t.identifier("replace_all"),
-							t.callExpression(
-								t.memberExpression(
-									t.callExpression(
-										t.memberExpression(
-											t.identifier(zodVar),
-											t.identifier("boolean"),
-										),
-										[],
-									),
-									t.identifier("optional"),
-								),
-								[],
-							),
-						),
-					]),
-				],
-			);
+					),
+				]),
+			]);
 
 			const editsSchema = t.callExpression(
 				t.memberExpression(
-					t.callExpression(
-						t.memberExpression(t.identifier(zodVar), t.identifier("array")),
-						[editEntrySchema],
-					),
+					callSchemaFactory(arrayFactory, [editEntrySchema]),
 					t.identifier("optional"),
 				),
 				[],
@@ -1676,6 +1707,23 @@ interface EditResultCollapseSite {
 	state: EditResultCollapseState;
 }
 
+function isEditResultCollapsePredicate(
+	node: t.Expression,
+	filePathBinding: string,
+): boolean {
+	if (t.isLogicalExpression(node, { operator: "||" })) {
+		return (
+			isEditResultCollapsePredicate(node.left, filePathBinding) &&
+			isEditResultCollapsePredicate(node.right, filePathBinding)
+		);
+	}
+	return (
+		t.isCallExpression(node) &&
+		node.arguments.length === 1 &&
+		t.isIdentifier(node.arguments[0], { name: filePathBinding })
+	);
+}
+
 function getEditResultCollapseSite(
 	node: t.FunctionDeclaration,
 ): EditResultCollapseSite | null {
@@ -1751,11 +1799,7 @@ function getEditResultCollapseSite(
 			t.isIdentifier(collapsed.value.left.argument) &&
 			(!stockPreviewHint ||
 				collapsed.value.left.argument.name === stockPreviewTestName) &&
-			t.isCallExpression(collapsed.value.right) &&
-			collapsed.value.right.arguments.length === 1 &&
-			t.isIdentifier(collapsed.value.right.arguments[0], {
-				name: filePathBinding,
-			})
+			isEditResultCollapsePredicate(collapsed.value.right, filePathBinding)
 		) {
 			state = "stock";
 		}
@@ -2480,41 +2524,34 @@ function verifyEditResultCollapse(ctx: EditVerifyContext): string | null {
 function verifyEditSchemaBatchEdits(ctx: EditVerifyContext): string | null {
 	const { ast } = ctx;
 	// The Edit schema lives outside the tool object in the bundle (the tool's
-	// inputSchema getter calls a factory). Walk all strictObject calls and
-	// pick the one whose object has file_path + old_string + new_string +
+	// inputSchema getter calls a factory). Walk all object-schema calls and pick
+	// the one whose object has file_path + old_string + new_string +
 	// replace_all keys. This matches what patchEditSchemaForBatchEdits does.
 	let schemaObj: t.ObjectExpression | null = null;
 	traverse(ast, {
 		CallExpression(path) {
-			if (!t.isMemberExpression(path.node.callee)) return;
-			if (!isMemberPropertyName(path.node.callee, "strictObject")) return;
-			const arg0 = path.node.arguments[0];
-			if (!t.isObjectExpression(arg0)) return;
-			const keys = new Set<string>();
-			for (const prop of arg0.properties) {
-				if (t.isObjectProperty(prop)) {
-					const k = getObjectKeyName(prop.key);
-					if (k) keys.add(k);
-				}
-			}
-			if (
-				keys.has("file_path") &&
-				keys.has("old_string") &&
-				keys.has("new_string") &&
-				keys.has("replace_all")
-			) {
-				schemaObj = arg0;
-				path.stop();
-			}
+			const candidate = getEditSchemaObject(path.node);
+			if (candidate) schemaObj = candidate;
 		},
 	});
 
 	if (!schemaObj) {
-		return "Edit schema (strictObject with file_path/old_string/new_string/replace_all) not found";
+		return "Edit object schema with file_path/old_string/new_string/replace_all not found";
 	}
 	// Re-bind to defeat TypeScript's let-narrowing-to-never inside the
 	// traverse callback's closure scope.
 	const schema: t.ObjectExpression = schemaObj;
+	const stringFactory = getEditStringFactory(schema);
+	if (!stringFactory) return "Edit schema string factory was not resolved";
+	const arrayFactory = resolveSiblingSchemaFactory(ast, stringFactory, "array");
+	const objectFactory = resolveSiblingSchemaFactory(
+		ast,
+		stringFactory,
+		"object",
+	);
+	if (!arrayFactory || !objectFactory) {
+		return "Edit schema array/object factories were not resolved";
+	}
 
 	const editsProp = schema.properties.find(
 		(p): p is t.ObjectProperty =>
@@ -2536,18 +2573,16 @@ function verifyEditSchemaBatchEdits(ctx: EditVerifyContext): string | null {
 	const arrayCall = editsValue.callee.object;
 	if (
 		!t.isCallExpression(arrayCall) ||
-		!t.isMemberExpression(arrayCall.callee) ||
-		!isMemberPropertyName(arrayCall.callee, "array")
+		!isSameSchemaFactory(arrayCall.callee, arrayFactory)
 	) {
-		return "Edit `edits` field is not z.array(...).optional()";
+		return "Edit `edits` field is not array(...).optional()";
 	}
 	const arrayArg = arrayCall.arguments[0];
 	if (
 		!t.isCallExpression(arrayArg) ||
-		!t.isMemberExpression(arrayArg.callee) ||
-		!isMemberPropertyName(arrayArg.callee, "object")
+		!isSameSchemaFactory(arrayArg.callee, objectFactory)
 	) {
-		return "Edit `edits` entries are not z.object({...})";
+		return "Edit `edits` entries are not object({...})";
 	}
 	const entryObj = arrayArg.arguments[0];
 	if (!t.isObjectExpression(entryObj)) {
