@@ -39,9 +39,39 @@ function removeMetadataEligibilityBranch(code: string): string {
 	return print(ast);
 }
 
+function weakenMetadataRecognitionGuard(code: string): string {
+	const ast = parse(code);
+	let changed = 0;
+	traverse(ast, {
+		IfStatement(path) {
+			if (!t.isLogicalExpression(path.node.test, { operator: "&&" })) return;
+			const consequent = t.isBlockStatement(path.node.consequent)
+				? path.node.consequent.body[0]
+				: path.node.consequent;
+			if (
+				!t.isReturnStatement(consequent) ||
+				!t.isObjectExpression(consequent.argument) ||
+				!consequent.argument.properties.some(
+					(property) =>
+						t.isObjectProperty(property) &&
+						t.isIdentifier(property.key, { name: "source" }) &&
+						t.isStringLiteral(property.value, { value: "auto" }),
+				)
+			) {
+				return;
+			}
+			path.node.test = t.booleanLiteral(false);
+			changed++;
+		},
+	});
+	assert.equal(changed, 1);
+	return print(ast);
+}
+
 const MODEL_CONTEXT_FIXTURE = `
 const env = {
   CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: true,
+  CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: false,
   CLAUDE_CODE_MAX_CONTEXT_TOKENS: 333000,
 };
 let cachedModels = [];
@@ -80,11 +110,19 @@ function contextWindow(model, betas) {
   return 200000;
 }
 function autoCompactConfig(model, configured) {
-  return {
-    window: contextWindow(model),
-    configured,
-    source: configured === undefined ? "auto" : "settings",
-  };
+  const window = contextWindow(model);
+  if (configured !== undefined) {
+    return { window: Math.min(window, configured), configured, source: "settings" };
+  }
+  if (
+    !env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT &&
+    !normalizeModel(model).startsWith("claude-") &&
+    !model.includes("application-inference-profile") &&
+    !nativeOneMillion(model)
+  ) {
+    return { window, configured: window, source: "unknown-model" };
+  }
+  return { window, configured: window, source: "auto" };
 }
 function hasConfiguredAutoCompactWindow(model, configured) {
   return autoCompactConfig(model, configured).source !== "auto";
@@ -100,7 +138,9 @@ function outputLimit(model) {
 function evaluatePatched(code: string): {
 	setModels: (models: unknown[]) => void;
 	setDiscovery: (enabled: boolean) => void;
+	setUnknownModelEnforcementDisabled: (disabled: boolean) => void;
 	contextWindow: (model: string, betas?: string[]) => number;
+	autoCompactSource: (model: string, configured?: number) => string;
 	hasConfiguredAutoCompactWindow: (
 		model: string,
 		configured?: number,
@@ -114,7 +154,9 @@ function evaluatePatched(code: string): {
 return {
   setModels(models) { cachedModels = models; },
   setDiscovery(enabled) { env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = enabled; },
+  setUnknownModelEnforcementDisabled(disabled) { env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT = disabled; },
   contextWindow,
+  autoCompactSource(model, configured) { return autoCompactConfig(model, configured).source; },
   hasConfiguredAutoCompactWindow,
   outputLimit,
 };`,
@@ -159,6 +201,7 @@ test("treats discovered context metadata as configured for auto compaction", asy
 	await runModelContextMetadataViaPasses(ast);
 	const output = print(ast);
 	const runtime = evaluatePatched(output);
+	runtime.setUnknownModelEnforcementDisabled(true);
 
 	runtime.setModels([{ id: "provider/worker-258k", max_input_tokens: 258400 }]);
 	assert.equal(
@@ -202,6 +245,25 @@ test("treats discovered context metadata as configured for auto compaction", asy
 	assert.match(
 		String(modelContextMetadata.verify(weakened)),
 		/Auto-compact eligibility/,
+	);
+});
+
+test("treats valid discovered context metadata as a recognized model window", async () => {
+	const ast = parse(MODEL_CONTEXT_FIXTURE);
+	await runModelContextMetadataViaPasses(ast);
+	const output = print(ast);
+	const runtime = evaluatePatched(output);
+
+	runtime.setModels([{ id: "provider/worker-258k", max_input_tokens: 258400 }]);
+	assert.equal(runtime.autoCompactSource("provider/worker-258k"), "auto");
+
+	runtime.setModels([{ id: "provider/invalid", max_input_tokens: 0 }]);
+	assert.equal(runtime.autoCompactSource("provider/invalid"), "unknown-model");
+
+	const weakened = weakenMetadataRecognitionGuard(output);
+	assert.match(
+		String(modelContextMetadata.verify(weakened)),
+		/Unknown-model enforcement/,
 	);
 });
 

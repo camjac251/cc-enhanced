@@ -33,12 +33,20 @@ interface AutoCompactEligibilityCandidate {
 	state: SiteState;
 }
 
+interface UnknownModelEnforcementCandidate {
+	path: NodePath<t.Function>;
+	modelName: string;
+	unknownIndex: number;
+	state: SiteState;
+}
+
 interface PatchAnalysis {
 	lookup: CapabilityLookupCandidate;
 	gate: t.FunctionDeclaration;
 	gateState: SiteState;
 	context: ContextResolverCandidate;
 	eligibility: AutoCompactEligibilityCandidate;
+	recognition: UnknownModelEnforcementCandidate;
 }
 
 function nodeHasMemberProperty(node: t.Node, propertyName: string): boolean {
@@ -229,6 +237,122 @@ function isPositiveMetadataCheck(node: t.Node, valueName: string): boolean {
 		t.isIdentifier(node.left, { name: valueName }) &&
 		t.isNumericLiteral(node.right, { value: 0 })
 	);
+}
+
+function getReturnSource(statement: t.Statement): string | null {
+	if (
+		!t.isReturnStatement(statement) ||
+		!t.isObjectExpression(statement.argument)
+	) {
+		return null;
+	}
+	for (const property of statement.argument.properties) {
+		if (
+			t.isObjectProperty(property) &&
+			getObjectKeyName(property.key) === "source" &&
+			t.isStringLiteral(property.value)
+		) {
+			return property.value.value;
+		}
+	}
+	return null;
+}
+
+function getConsequentReturn(
+	statement: t.IfStatement,
+): t.ReturnStatement | null {
+	const consequent = t.isBlockStatement(statement.consequent)
+		? statement.consequent.body[0]
+		: statement.consequent;
+	return t.isReturnStatement(consequent) ? consequent : null;
+}
+
+function hasMetadataRecognitionBlock(
+	statements: t.Statement[],
+	unknownIndex: number,
+	lookupName: string,
+	modelName: string,
+): boolean {
+	if (unknownIndex < 2) return false;
+	const declaration = statements[unknownIndex - 2];
+	const guard = statements[unknownIndex - 1];
+	if (
+		!t.isVariableDeclaration(declaration) ||
+		declaration.declarations.length !== 2 ||
+		!t.isIfStatement(guard) ||
+		!t.isLogicalExpression(guard.test, { operator: "&&" })
+	) {
+		return false;
+	}
+	const capability = declaration.declarations[0];
+	const context = declaration.declarations[1];
+	if (
+		!t.isIdentifier(capability.id) ||
+		!t.isCallExpression(capability.init) ||
+		!t.isIdentifier(capability.init.callee, { name: lookupName }) ||
+		capability.init.arguments.length !== 1 ||
+		!t.isIdentifier(capability.init.arguments[0], { name: modelName }) ||
+		!t.isIdentifier(context.id) ||
+		!isOptionalMaxInputRead(context.init, capability.id.name)
+	) {
+		return false;
+	}
+	const returned = getConsequentReturn(guard);
+	return (
+		isNumberSafeIntegerCall(guard.test.left, context.id.name) &&
+		isPositiveMetadataCheck(guard.test.right, context.id.name) &&
+		returned !== null &&
+		getReturnSource(returned) === "auto"
+	);
+}
+
+function classifyUnknownModelEnforcement(
+	path: NodePath<t.Function>,
+	lookupName: string,
+): UnknownModelEnforcementCandidate | null {
+	if (!t.isBlockStatement(path.node.body)) return null;
+	const modelParameter = path.node.params[0];
+	if (!t.isIdentifier(modelParameter)) return null;
+	if (
+		!nodeHasMemberProperty(
+			path.node,
+			"CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT",
+		)
+	) {
+		return null;
+	}
+	const statements = path.node.body.body;
+	const candidates = statements
+		.map((statement, index) => ({ statement, index }))
+		.filter(({ statement, index }) => {
+			if (!t.isIfStatement(statement)) return false;
+			const returned = getConsequentReturn(statement);
+			const fallback = statements[index + 1];
+			return (
+				returned !== null &&
+				getReturnSource(returned) === "unknown-model" &&
+				fallback !== undefined &&
+				getReturnSource(fallback) === "auto"
+			);
+		});
+	if (candidates.length !== 1) return null;
+	const candidate = candidates[0];
+	const patched = hasMetadataRecognitionBlock(
+		statements,
+		candidate.index,
+		lookupName,
+		modelParameter.name,
+	);
+	return {
+		path,
+		modelName: modelParameter.name,
+		unknownIndex: candidate.index,
+		state: patched
+			? "patched"
+			: nodeHasMemberProperty(path.node, "max_input_tokens")
+				? "other"
+				: "stock",
+	};
 }
 
 function hasMetadataEligibilityBlock(
@@ -489,6 +613,14 @@ function analyzePatchSites(
 	if (eligibilitySites.length !== 1) {
 		return `Auto-compact eligibility is ambiguous or missing (${eligibilitySites.length} sites found)`;
 	}
+	const recognitionSites = functionPaths
+		.map((path) => classifyUnknownModelEnforcement(path, lookup.functionName))
+		.filter((candidate): candidate is UnknownModelEnforcementCandidate =>
+			Boolean(candidate),
+		);
+	if (recognitionSites.length !== 1) {
+		return `Unknown-model enforcement is ambiguous or missing (${recognitionSites.length} sites found)`;
+	}
 	const binding = lookup.path.scope.getBinding(lookup.gateName);
 	if (!binding || !t.isFunctionDeclaration(binding.path.node)) {
 		return "Model capability feature gate binding was not found";
@@ -500,6 +632,7 @@ function analyzePatchSites(
 		gateState: classifyGate(gate, context.environmentName),
 		context,
 		eligibility: eligibilitySites[0],
+		recognition: recognitionSites[0],
 	};
 }
 
@@ -619,6 +752,59 @@ function patchMetadataEligibility(
 	return true;
 }
 
+function patchMetadataRecognition(
+	candidate: UnknownModelEnforcementCandidate,
+	lookupName: string,
+): boolean {
+	if (candidate.state === "patched") return true;
+	if (
+		candidate.state !== "stock" ||
+		!t.isBlockStatement(candidate.path.node.body)
+	) {
+		return false;
+	}
+	const statements = candidate.path.node.body.body;
+	const fallback = statements[candidate.unknownIndex + 1];
+	if (!fallback || getReturnSource(fallback) !== "auto") return false;
+	const capability =
+		candidate.path.scope.generateUidIdentifier("modelCapabilities");
+	const contextTokens =
+		candidate.path.scope.generateUidIdentifier("modelContextTokens");
+	const declaration = t.variableDeclaration("let", [
+		t.variableDeclarator(
+			capability,
+			t.callExpression(t.identifier(lookupName), [
+				t.identifier(candidate.modelName),
+			]),
+		),
+		t.variableDeclarator(
+			contextTokens,
+			t.optionalMemberExpression(
+				t.cloneNode(capability),
+				t.identifier("max_input_tokens"),
+				false,
+				true,
+			),
+		),
+	]);
+	const guard = t.ifStatement(
+		t.logicalExpression(
+			"&&",
+			t.callExpression(
+				t.memberExpression(
+					t.identifier("Number"),
+					t.identifier("isSafeInteger"),
+				),
+				[t.cloneNode(contextTokens)],
+			),
+			t.binaryExpression(">", t.cloneNode(contextTokens), t.numericLiteral(0)),
+		),
+		t.cloneNode(fallback, true),
+	);
+	statements.splice(candidate.unknownIndex, 0, declaration, guard);
+	return true;
+}
+
 function createModelContextMetadataPasses(): PatchAstPass[] {
 	const functionPaths: NodePath<t.Function>[] = [];
 	let schemaCount = 0;
@@ -645,7 +831,8 @@ function createModelContextMetadataPasses(): PatchAstPass[] {
 						if (
 							analysis.gateState === "other" ||
 							analysis.context.state === "other" ||
-							analysis.eligibility.state === "other"
+							analysis.eligibility.state === "other" ||
+							analysis.recognition.state === "other"
 						) {
 							return;
 						}
@@ -671,10 +858,15 @@ function createModelContextMetadataPasses(): PatchAstPass[] {
 								),
 							);
 						}
-						patched = patchMetadataEligibility(
+						const eligibilityPatched = patchMetadataEligibility(
 							analysis.eligibility,
 							analysis.lookup.functionName,
 						);
+						const recognitionPatched = patchMetadataRecognition(
+							analysis.recognition,
+							analysis.lookup.functionName,
+						);
+						patched = eligibilityPatched && recognitionPatched;
 					},
 				},
 			},
@@ -724,6 +916,9 @@ export const modelContextMetadata: Patch = {
 		}
 		if (analysis.eligibility.state !== "patched") {
 			return "Auto-compact eligibility does not recognize validated max_input_tokens metadata";
+		}
+		if (analysis.recognition.state !== "patched") {
+			return "Unknown-model enforcement does not recognize validated max_input_tokens metadata";
 		}
 		return true;
 	},
