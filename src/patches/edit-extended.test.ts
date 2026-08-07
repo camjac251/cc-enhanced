@@ -7,12 +7,30 @@ import { pathToFileURL } from "node:url";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { editTool } from "./edit-extended.js";
+import { planDiffUi } from "./plan-diff-ui.js";
 
 async function runEditToolViaPasses(ast: any): Promise<void> {
 	const passes = (await editTool.astPasses?.(ast)) ?? [];
 	await runCombinedAstPasses(
 		ast,
 		passes.map((pass) => ({ tag: editTool.tag, pass })),
+		() => {},
+		() => {},
+		(_tag, error) => {
+			throw error;
+		},
+	);
+}
+
+async function runEditAndPlanUiViaPasses(ast: any): Promise<void> {
+	const entries = [];
+	for (const patch of [editTool, planDiffUi]) {
+		const passes = (await patch.astPasses?.(ast)) ?? [];
+		for (const pass of passes) entries.push({ tag: patch.tag, pass });
+	}
+	await runCombinedAstPasses(
+		ast,
+		entries,
 		() => {},
 		() => {},
 		(_tag, error) => {
@@ -33,7 +51,7 @@ async function loadPatchedEditRuntimeModule() {
 		`const toolChoice = { name: "Other" };
 const incoming = {};
 ${output}
-export { EditTool, WriteTool, EditRenderer, GenericRenderer, editReadStatePrecondition, renderEditDialog, renderEditMessage, _claudeEditNormalizeEdits, _claudeApplyExtendedFileEdits, _claudeDecodeExtendedEditTransport, kB, Pj, S6_, yD7, jM_, v58 };`,
+export { EditTool, WriteTool, EditRenderer, GenericRenderer, editReadStatePrecondition, renderEditDialog, renderEditMessage, renderEditResult, _claudeEditNormalizeEdits, _claudeApplyExtendedFileEdits, _claudeDecodeExtendedEditTransport, kB, Pj, S6_, yD7, jM_, v58 };`,
 		"utf8",
 	);
 
@@ -297,6 +315,32 @@ function renderEditMessage({ file_path: f }, { verbose: v }) {
     return { type: "Text", props: { children: [f.slice(0, 100), "\\u2026"] } };
   }
   return v ? f : f.split("/").pop();
+}
+
+function isScratchpadPath(filePath) {
+  return filePath.includes("/scratchpad/");
+}
+
+function renderEditResult(
+  { filePath = "", structuredPatch, originalFile },
+  ignored,
+  { style, verbose },
+) {
+  if (!filePath) return null;
+  let isPlan = filePath.startsWith("/tmp/plan/");
+  return {
+    type: "Diff",
+    props: {
+      filePath,
+      structuredPatch,
+      firstLine: originalFile ? originalFile.split("\\n")[0] : null,
+      fileContent: originalFile || undefined,
+      style,
+      verbose,
+      previewHint: isPlan ? "/plan to preview" : undefined,
+      collapsed: !isPlan && isScratchpadPath(filePath),
+    },
+  };
 }
 `;
 
@@ -984,6 +1028,60 @@ test("edit-extended runtime surfaces batch and replace_all opts in tool chip", a
 	} finally {
 		await cleanup();
 	}
+});
+
+test("edit-extended runtime keeps scratchpad update diffs expanded", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const rendered = mod.renderEditResult(
+			{
+				filePath: "/tmp/claude-session/project/session/scratchpad/issue.md",
+				structuredPatch: [
+					{
+						oldStart: 1,
+						oldLines: 1,
+						newStart: 1,
+						newLines: 1,
+						lines: ["-before", "+after"],
+					},
+				],
+				originalFile: "before\n",
+			},
+			null,
+			{ style: "default", verbose: false },
+		);
+
+		assert.equal(rendered.props.collapsed, false);
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended verify rejects restored scratchpad diff collapsing", async () => {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+	const restored = output.replace("collapsed: false", "collapsed: true");
+
+	assert.notEqual(
+		restored,
+		output,
+		"fixture did not contain patched collapse flag",
+	);
+	assert.match(
+		String(editTool.verify(restored)),
+		/Scratchpad Edit result diffs are still collapsed/,
+	);
+});
+
+test("edit-extended verifier survives plan UI rewriting the preview hint", async () => {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditAndPlanUiViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /previewHint: void 0/);
+	assert.match(output, /collapsed: false/);
+	assert.equal(editTool.verify(output, parse(output)), true);
 });
 
 test("edit-extended verify passes when no ideDiff getConfig ternary exists (live-bundle shape)", async () => {

@@ -1666,6 +1666,114 @@ Error recovery:
 	});
 
 	patchEditRenderToolUseMessage(ast);
+	patchEditResultCollapse(ast);
+}
+
+type EditResultCollapseState = "stock" | "patched" | "other";
+
+interface EditResultCollapseSite {
+	property: t.ObjectProperty;
+	state: EditResultCollapseState;
+}
+
+function getEditResultCollapseSite(
+	node: t.FunctionDeclaration,
+): EditResultCollapseSite | null {
+	if (node.params.length !== 3) return null;
+	const inputParam = node.params[0];
+	const optionsParam = node.params[2];
+	if (!t.isObjectPattern(inputParam) || !t.isObjectPattern(optionsParam)) {
+		return null;
+	}
+
+	const inputKeys = getObjectPatternKeySet(inputParam);
+	if (
+		!inputKeys.has("filePath") ||
+		!inputKeys.has("structuredPatch") ||
+		!inputKeys.has("originalFile") ||
+		inputKeys.has("content") ||
+		inputKeys.has("type") ||
+		!objectPatternHasKey(optionsParam, "style") ||
+		!objectPatternHasKey(optionsParam, "verbose")
+	) {
+		return null;
+	}
+
+	const filePathBinding = getObjectPatternBindingName(inputParam, "filePath");
+	const patchBinding = getObjectPatternBindingName(
+		inputParam,
+		"structuredPatch",
+	);
+	if (!filePathBinding || !patchBinding) return null;
+
+	const sites: EditResultCollapseSite[] = [];
+	visitNodeValues(node.body, (child) => {
+		if (!t.isObjectExpression(child)) return false;
+		const filePath = getObjectPropertyByName(child, "filePath");
+		const structuredPatch = getObjectPropertyByName(child, "structuredPatch");
+		const previewHint = getObjectPropertyByName(child, "previewHint");
+		const collapsed = getObjectPropertyByName(child, "collapsed");
+		const stockPreviewTestName =
+			previewHint &&
+			t.isConditionalExpression(previewHint.value) &&
+			t.isIdentifier(previewHint.value.test)
+				? previewHint.value.test.name
+				: null;
+		const stockPreviewHint =
+			stockPreviewTestName !== null &&
+			t.isConditionalExpression(previewHint?.value) &&
+			t.isStringLiteral(previewHint.value.consequent, {
+				value: "/plan to preview",
+			});
+		const patchedPreviewHint =
+			previewHint &&
+			((t.isUnaryExpression(previewHint.value, { operator: "void" }) &&
+				t.isNumericLiteral(previewHint.value.argument, { value: 0 })) ||
+				t.isIdentifier(previewHint.value, { name: "undefined" }));
+		if (
+			!filePath ||
+			!structuredPatch ||
+			!previewHint ||
+			!collapsed ||
+			!t.isIdentifier(filePath.value, { name: filePathBinding }) ||
+			!t.isIdentifier(structuredPatch.value, { name: patchBinding }) ||
+			(!stockPreviewHint && !patchedPreviewHint)
+		) {
+			return false;
+		}
+
+		let state: EditResultCollapseState = "other";
+		if (t.isBooleanLiteral(collapsed.value, { value: false })) {
+			state = "patched";
+		} else if (
+			t.isLogicalExpression(collapsed.value, { operator: "&&" }) &&
+			t.isUnaryExpression(collapsed.value.left, { operator: "!" }) &&
+			t.isIdentifier(collapsed.value.left.argument) &&
+			(!stockPreviewHint ||
+				collapsed.value.left.argument.name === stockPreviewTestName) &&
+			t.isCallExpression(collapsed.value.right) &&
+			collapsed.value.right.arguments.length === 1 &&
+			t.isIdentifier(collapsed.value.right.arguments[0], {
+				name: filePathBinding,
+			})
+		) {
+			state = "stock";
+		}
+		sites.push({ property: collapsed, state });
+		return false;
+	});
+
+	return sites.length === 1 ? sites[0] : null;
+}
+
+function patchEditResultCollapse(ast: t.File): void {
+	traverse(ast, {
+		FunctionDeclaration(path) {
+			const site = getEditResultCollapseSite(path.node);
+			if (site?.state !== "stock") return;
+			site.property.value = t.booleanLiteral(false);
+		},
+	});
 }
 
 // Append "· batch(N)" / "· replace_all" suffix to the Edit tool-use chip when
@@ -2352,6 +2460,23 @@ function verifyEditRenderOpts(ctx: EditVerifyContext): string | null {
 	return null;
 }
 
+function verifyEditResultCollapse(ctx: EditVerifyContext): string | null {
+	const sites: EditResultCollapseSite[] = [];
+	traverse(ctx.ast, {
+		FunctionDeclaration(path) {
+			const site = getEditResultCollapseSite(path.node);
+			if (site) sites.push(site);
+		},
+	});
+	if (sites.length !== 1) {
+		return `Edit result renderer is ambiguous or missing (${sites.length} sites found)`;
+	}
+	if (sites[0].state !== "patched") {
+		return "Scratchpad Edit result diffs are still collapsed";
+	}
+	return null;
+}
+
 function verifyEditSchemaBatchEdits(ctx: EditVerifyContext): string | null {
 	const { ast } = ctx;
 	// The Edit schema lives outside the tool object in the bundle (the tool's
@@ -2589,6 +2714,7 @@ export const editTool: Patch = {
 			verifyReadStateHelper,
 			verifyWriteReadStateGuards,
 			verifyEditRenderOpts,
+			verifyEditResultCollapse,
 			verifyEditSchemaBatchEdits,
 			verifyEditInputsEquivalent,
 		];
