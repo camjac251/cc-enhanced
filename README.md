@@ -8,12 +8,12 @@
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Runtime-Bun_1.4_canary-fbf0df.svg" alt="Bun 1.4 canary">
   <img src="https://img.shields.io/badge/Patches-46-orange.svg" alt="46 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.224-8A2BE2.svg" alt="Tested against Claude Code 2.1.224">
+  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.226-8A2BE2.svg" alt="Tested against Claude Code 2.1.226">
 </p>
 
 ---
 
-cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 45 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 46 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
 
 Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting and LSP fan-out), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read and batched `edits[]` on Edit), and replace prompt fragments that steer the model toward better shell tooling.
 
@@ -483,7 +483,7 @@ When a prompt patch changes live guidance, update both the patch verifier and th
 
 ## Compatibility
 
-Current target: **Claude Code 2.1.224**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. The immediately previous clean bundle may be retained for release-diff evidence, but it is not a matcher, fixture, matrix, or promotion target. Run `claude --version` on the promoted binary to confirm the active target.
+Current target: **Claude Code 2.1.226**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. The immediately previous clean bundle may be retained for release-diff evidence, but it is not a matcher, fixture, matrix, or promotion target. Run `claude --version` on the promoted binary to confirm the active target.
 
 `native:update` accepts `latest`, `next`, `stable`, or an explicit `X.Y.Z`. The `latest` resolver cross-checks the native release bucket with the npm `latest` and `next` dist-tags so release promotion can follow npm when a new version appears there before the bucket alias moves.
 
