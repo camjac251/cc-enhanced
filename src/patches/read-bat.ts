@@ -9,6 +9,7 @@ import { print } from "../loader.js";
 import type { Patch } from "../types.js";
 import {
 	findToolMethod,
+	getDefaultedBooleanSchemaFactory,
 	getDescribedSchemaFactory,
 	getObjectKeyName,
 	getObjectPropertyByName,
@@ -16,7 +17,6 @@ import {
 	hasObjectKeyName,
 	isElementCall,
 	isMemberPropertyName,
-	resolveSiblingSchemaFactory,
 	resolveStringValue,
 } from "./ast-helpers.js";
 import {
@@ -639,6 +639,24 @@ function buildOptionalDescribedSchema(
 		t.memberExpression(optionalCall, t.identifier("describe")),
 		[t.stringLiteral(description)],
 	);
+}
+
+function resolveReadBooleanSchemaFactory(ast: t.File): t.Expression | null {
+	const candidates: t.Expression[] = [];
+	traverse(ast, {
+		ObjectProperty(path) {
+			if (getObjectKeyName(path.node.key) !== "replace_all") return;
+			if (!t.isExpression(path.node.value)) return;
+			const factory = getDefaultedBooleanSchemaFactory(path.node.value);
+			if (!factory) return;
+			if (
+				!candidates.some((candidate) => t.isNodesEquivalent(candidate, factory))
+			) {
+				candidates.push(factory);
+			}
+		},
+	});
+	return candidates.length === 1 ? candidates[0] : null;
 }
 
 function getReadInputSchemaObject(
@@ -1601,11 +1619,7 @@ function verifyReadSchemaAndPrompt(ctx: ReadVerifyContextBase): string | null {
 	) {
 		return "Missing range parameter in schema";
 	}
-	const booleanFactory = resolveSiblingSchemaFactory(
-		ctx.ast,
-		stringFactory,
-		"boolean",
-	);
+	const booleanFactory = resolveReadBooleanSchemaFactory(ctx.ast);
 	if (
 		!booleanFactory ||
 		!schemaFieldUsesFactory(schemaObject, "show_whitespace", booleanFactory)
@@ -2047,7 +2061,7 @@ export const readWithBat: Patch = {
 									? getDescribedSchemaFactory(filePathProperty.value)
 									: null;
 							const booleanFactory = stringFactory
-								? resolveSiblingSchemaFactory(ast, stringFactory, "boolean")
+								? resolveReadBooleanSchemaFactory(ast)
 								: null;
 							if (stringFactory && booleanFactory) {
 								const rangeProperty = t.objectProperty(

@@ -148,6 +148,8 @@ const WriteTool = {
   },
 };
 
+const editSchemaArrayExample = { lines: z.array(z.string()) };
+
 const EditTool = {
   name: "Edit",
   description() {
@@ -356,40 +358,42 @@ const EDIT_LATEST_COLLAPSE_FIXTURE = EDIT_FIXTURE.replace(
 function renderEditResult(`,
 );
 
-const EDIT_DIRECT_SCHEMA_FIXTURE = EDIT_FIXTURE.replace(
+const EDIT_CURRENT_DIRECT_SCHEMA_FIXTURE = EDIT_FIXTURE.replace(
 	"const EditTool = {",
-	`const strictObjectSchema = (shape) => shape;
-const stringSchema = () => ({ optional() { return this; }, describe() { return this; } });
-const booleanSchema = () => ({ optional() { return this; }, default() { return this; }, describe() { return this; } });
-const objectSchema = (shape) => shape;
-const arraySchema = (entry) => ({ optional() { return this; } });
-const schemaFactories = {
-  strictObject: () => strictObjectSchema,
-  string: () => stringSchema,
-  boolean: () => booleanSchema,
-  object: () => objectSchema,
-  array: () => arraySchema,
-};
+	`function memoize(factory) { return factory; }
+function strictObjectSchema(shape) { return shape; }
+function stringSchema() { return { optional() { return this; }, describe() { return this; } }; }
+function booleanSchema() { return { optional() { return this; }, default() { return this; }, describe() { return this; } }; }
+function coerceBoolean(schema) { return schema; }
+function objectSchema(shape) { return shape; }
+function arraySchema(entry) { return { entry, optional() { return this; } }; }
+function stringMetadata(schema) { return schema; }
+
+const EditSchema = memoize(() =>
+  strictObjectSchema({
+    file_path: stringSchema().describe("The absolute path to the file to modify"),
+    old_string: stringSchema().describe("Original text"),
+    new_string: stringSchema().describe("Replacement text"),
+    replace_all: coerceBoolean(booleanSchema().default(false).optional()).describe("Replace every match"),
+  })
+);
+const EditResultSchema = memoize(() =>
+  objectSchema({ lines: arraySchema(stringSchema()) })
+);
+const MetadataSchema = memoize(() =>
+  objectSchema({ description: stringMetadata(stringSchema()) })
+);
 
 const EditTool = {`,
-)
-	.replace(
-		"input_schema: z.strictObject({",
-		"input_schema: strictObjectSchema({",
-	)
-	.replace(
-		'z.string().describe("The absolute path to the file to modify")',
-		'stringSchema().describe("The absolute path to the file to modify")',
-	)
-	.replace(
-		'z.string().describe("Original text")',
-		'stringSchema().describe("Original text")',
-	)
-	.replace(
-		'z.string().describe("Replacement text")',
-		'stringSchema().describe("Replacement text")',
-	)
-	.replace("z.boolean().default(false)", "booleanSchema().default(false)");
+).replace(
+	`input_schema: z.strictObject({
+    file_path: z.string().describe("The absolute path to the file to modify"),
+    old_string: z.string().describe("Original text"),
+    new_string: z.string().describe("Replacement text"),
+    replace_all: z.boolean().default(false),
+  })`,
+	"input_schema: EditSchema()",
+);
 
 test("verify rejects unpatched code", () => {
 	const ast = parse(EDIT_FIXTURE);
@@ -1113,13 +1117,36 @@ test("edit-extended expands latest Edit results with either collapse predicate",
 	assert.equal(editTool.verify(output, parse(output)), true);
 });
 
-test("edit-extended patches and verifies the latest direct-factory schema", async () => {
-	const ast = parse(EDIT_DIRECT_SCHEMA_FIXTURE);
+test("edit-extended resolves direct schema factories without a registry table", async () => {
+	const ast = parse(EDIT_CURRENT_DIRECT_SCHEMA_FIXTURE);
 	await runEditToolViaPasses(ast);
 	const output = print(ast);
 
-	assert.match(output, /edits: arraySchema\(objectSchema\(/);
+	assert.match(output, /edits:\s*arraySchema\(strictObjectSchema\(/);
 	assert.equal(editTool.verify(output, parse(output)), true);
+});
+
+test("edit-extended verifier tolerates sibling schema factory uses", async () => {
+	const ast = parse(EDIT_CURRENT_DIRECT_SCHEMA_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+	const withSiblingArrayUse = output.replace(
+		"const EditTool = {",
+		`objectSchema({ aliases: alternateArraySchema(stringSchema()) });
+objectSchema({
+  file_path: stringSchema().describe("Sibling path"),
+  old_string: stringSchema().describe("Sibling old text"),
+  new_string: stringSchema().describe("Sibling new text"),
+  replace_all: booleanSchema().default(false),
+});
+const EditTool = {`,
+	);
+
+	assert.notEqual(withSiblingArrayUse, output);
+	assert.equal(
+		editTool.verify(withSiblingArrayUse, parse(withSiblingArrayUse)),
+		true,
+	);
 });
 
 test("edit-extended verify rejects restored scratchpad diff collapsing", async () => {

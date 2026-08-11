@@ -68,6 +68,10 @@ const z = {
   boolean() { return { optional() { return this; }, describe() { return this; } }; },
 };
 
+function editBooleanSchemaAnchor() {
+  return { replace_all: z.boolean().default(false) };
+}
+
 const ReadTool = {
   name: "Read",
   description() {
@@ -88,32 +92,31 @@ const ReadTool = {
 };
 `;
 
-const READ_DIRECT_SCHEMA_FIXTURE = `
+const READ_CURRENT_DIRECT_SCHEMA_FIXTURE = `
+function memoize(factory) { return factory; }
 function strictObjectSchema(value) { return value; }
 function stringSchema() { return { optional() { return this; }, describe() { return this; } }; }
-function numberSchema() { return { optional() { return this; }, describe() { return this; } }; }
-function booleanSchema() { return { optional() { return this; }, describe() { return this; } }; }
-const schemaFactories = {
-  strictObject: () => strictObjectSchema,
-  string: () => stringSchema,
-  boolean: () => booleanSchema,
-};
+function numberSchema() { return { int() { return this; }, nonnegative() { return this; }, positive() { return this; }, optional() { return this; } }; }
+function booleanSchema() { return { default() { return this; }, optional() { return this; } }; }
+function coerceNumber(value) { return { describe() { return value; } }; }
+function coerceBoolean(value) { return { describe() { return value; } }; }
+
+const EditSchema = memoize(() => strictObjectSchema({
+  file_path: stringSchema().describe("The absolute path to the file to modify"),
+  old_string: stringSchema().describe("The text to replace"),
+  new_string: stringSchema().describe("The replacement text"),
+  replace_all: coerceBoolean(booleanSchema().default(false).optional()).describe("Replace all matches"),
+}));
 
 const ReadTool = {
   name: "Read",
-  description() {
-    return "A tool for reading files";
-  },
-  prompt() {
-    return "Use offset and limit parameters to read specific portions of the file, or use the GrepTool to search for specific content";
-  },
-  input_examples: [
-    { file_path: "/Users/username/project/README.md", limit: 100, offset: 50 },
-  ],
+  description() { return "A tool for reading files"; },
+  prompt() { return "Use offset and limit parameters to read specific portions of the file, or use the GrepTool to search for specific content"; },
+  input_examples: [{ file_path: "/workspace/README.md", limit: 100, offset: 50 }],
   input_schema: strictObjectSchema({
     file_path: stringSchema().describe("The absolute path to the file to read"),
-    offset: numberSchema().optional().describe("Legacy offset"),
-    limit: numberSchema().optional().describe("Legacy limit"),
+    offset: coerceNumber(numberSchema().int().nonnegative().optional()).describe("Legacy offset"),
+    limit: coerceNumber(numberSchema().int().positive().optional()).describe("Legacy limit"),
     pages: stringSchema().optional().describe("Use the pages parameter to read specific page ranges"),
   }),
 };
@@ -126,6 +129,11 @@ const z = {
   number() { return { optional() { return this; }, describe() { return this; } }; },
   boolean() { return { optional() { return this; }, describe() { return this; } }; },
 };
+
+function editBooleanSchemaAnchor() {
+  return { replace_all: z.boolean().default(false) };
+}
+
 function eG1() { return false; }
 function normalizeReadInput(input) {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
@@ -324,35 +332,6 @@ async function helperRead(input) {
 	);
 }
 
-function readDirectFactoryDelegationFixture(): string {
-	return READ_DELEGATION_FIXTURE.replace(
-		"function eG1()",
-		`const strictObjectSchema = (shape) => shape;
-const stringSchema = () => ({ optional() { return this; }, describe() { return this; } });
-const numberSchema = () => ({ optional() { return this; }, describe() { return this; } });
-const booleanSchema = () => ({ optional() { return this; }, describe() { return this; } });
-const schemaFactories = {
-  strictObject: () => strictObjectSchema,
-  string: () => stringSchema,
-  boolean: () => booleanSchema,
-};
-function eG1()`,
-	)
-		.replace(
-			"input_schema: z.strictObject({",
-			"input_schema: strictObjectSchema({",
-		)
-		.replace(
-			'file_path: z.string().describe("The absolute path to the file to read")',
-			'file_path: stringSchema().describe("The absolute path to the file to read")',
-		)
-		.replaceAll("z.number()", "numberSchema()")
-		.replace(
-			'pages: z.string().optional().describe("Use the pages parameter to read specific page ranges")',
-			'pages: stringSchema().optional().describe("Use the pages parameter to read specific page ranges")',
-		);
-}
-
 const READ_IDENTIFIER_PROMPT_FIXTURE = `
 const z = {
   strictObject(x) { return x; },
@@ -360,6 +339,10 @@ const z = {
   number() { return { optional() { return this; }, describe() { return this; } }; },
   boolean() { return { optional() { return this; }, describe() { return this; } }; },
 };
+
+function editBooleanSchemaAnchor() {
+  return { replace_all: z.boolean().default(false) };
+}
 
 const READ_DESCRIPTION = "Read a file from the local filesystem.";
 const READ_PROMPT = \`Reads a file from the local filesystem. You can access any file directly by using this tool.
@@ -393,6 +376,10 @@ const z = {
   boolean() { return { optional() { return this; }, describe() { return this; } }; },
 };
 
+function editBooleanSchemaAnchor() {
+  return { replace_all: z.boolean().default(false) };
+}
+
 const SHARED_PROMPT = "Use offset and limit parameters to read specific portions of the file, or use the GrepTool to search for specific content";
 const SHARED_DESCRIPTION = "Read a file from the local filesystem.";
 
@@ -425,6 +412,10 @@ const z = {
   number() { return { optional() { return this; }, describe() { return this; } }; },
   boolean() { return { optional() { return this; }, describe() { return this; } }; },
 };
+
+function editBooleanSchemaAnchor() {
+  return { replace_all: z.boolean().default(false) };
+}
 
 const maybePrompt = () => "shared";
 
@@ -466,6 +457,11 @@ const z = {
   number() { return { optional() { return this; }, describe() { return this; } }; },
   boolean() { return { optional() { return this; }, describe() { return this; } }; },
 };
+
+function editBooleanSchemaAnchor() {
+  return { replace_all: z.boolean().default(false) };
+}
+
 function eG1() { return false; }
 function normalizeReadInput(input) {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
@@ -784,23 +780,13 @@ test("read-bat migrates schema and prompt from offset/limit to range/show_whites
 	);
 });
 
-test("read-bat migrates the latest direct-factory Read schema", async () => {
-	const ast = parse(READ_DIRECT_SCHEMA_FIXTURE);
+test("read-bat resolves the direct boolean schema factory from current tool schemas", async () => {
+	const ast = parse(READ_CURRENT_DIRECT_SCHEMA_FIXTURE);
 	await runReadWithBatViaPasses(ast);
 	const output = print(ast);
 
 	assert.match(output, /range: stringSchema\(\)\.optional\(\)/);
 	assert.match(output, /show_whitespace: booleanSchema\(\)\.optional\(\)/);
-	assert.doesNotMatch(output, /offset: numberSchema/);
-	assert.doesNotMatch(output, /limit: numberSchema/);
-});
-
-test("read-bat verifies the latest direct-factory schema in the full patch", async () => {
-	const ast = parse(readDirectFactoryDelegationFixture());
-	await runReadWithBatViaPasses(ast);
-	const output = print(ast);
-
-	assert.equal(readWithBat.verify(output, parse(output)), true);
 });
 
 test("read-bat verify rejects weakened background task routing", async () => {

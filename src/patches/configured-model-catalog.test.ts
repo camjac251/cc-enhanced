@@ -89,7 +89,7 @@ function restoreSessionModel(entries, currentModel) {
   }
   return { kind: "none" };
 }
-function buildModelOptions(includeLongContext) {
+function buildModelOptions(includeLongContext, pickerState) {
   let options = baseOptions(includeLongContext),
     custom = env.ANTHROPIC_CUSTOM_MODEL_OPTION;
   if (custom && !options.some((option) => option.value === custom)) {
@@ -230,6 +230,18 @@ test("adds configured models to capabilities and the model picker", async () => 
 		);
 	}
 	assert.equal(configuredModelCatalog.verify(output, ast), true);
+});
+
+test("configured-model-catalog patches the current two-parameter model picker", async () => {
+	const currentPickerFixture = CATALOG_FIXTURE.replace(
+		"let selectedModel = null,",
+		'if (pickerState) pickerState.disabledReasons.add("server_disabled");\n  let selectedModel = null,',
+	);
+	const ast = parse(currentPickerFixture);
+	await runConfiguredCatalogViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(configuredModelCatalog.verify(output, parse(output)), true);
 });
 
 test("exposes configured effort capabilities through native model resolvers", async () => {

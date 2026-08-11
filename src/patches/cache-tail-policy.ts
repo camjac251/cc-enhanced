@@ -143,79 +143,6 @@ function nodeContainsSetHas(
 	});
 }
 
-function findPrimaryTailSetAdd(
-	body: t.Statement[],
-	markerStmtIndex: number,
-	setName: string,
-	messagesParamName: string,
-): { indexName: string; helperName: string } | null {
-	// The tail-window loop steps back through cacheable positions using the
-	// "previous non-system index" closure. Resolve it from its canonical seed
-	// call `helper(messages.length - 1)` so the primary index it is paired with
-	// can be produced by any expression (a direct call, a conditional select,
-	// ...), not only a direct `helper(...)` declarator.
-	const helperName = findLastIndexHelperName(body, messagesParamName);
-	if (!helperName) return null;
-
-	for (let index = 0; index < markerStmtIndex; index++) {
-		const stmt = body[index];
-		let addName: string | null = null;
-
-		nodeContains(stmt, (candidate) => {
-			if (addName) return false;
-			if (!t.isCallExpression(candidate)) return false;
-			if (!t.isMemberExpression(candidate.callee)) return false;
-			if (!t.isIdentifier(candidate.callee.object, { name: setName })) {
-				return false;
-			}
-			if (!isMemberPropertyName(candidate.callee, "add")) return false;
-			const arg = candidate.arguments[0];
-			if (!t.isIdentifier(arg)) return false;
-			addName = arg.name;
-			return false;
-		});
-
-		if (!addName) continue;
-		return { indexName: addName, helperName };
-	}
-
-	return null;
-}
-
-/**
- * Resolve the "previous cacheable index" closure by its canonical seed call
- * `helper(messages.length - 1)` near the top of the breakpoint function. The
- * closure walks backward past trailing system messages; the injected
- * tail-window loop reuses it to step through earlier cacheable positions.
- */
-function findLastIndexHelperName(
-	body: t.Statement[],
-	messagesParamName: string,
-): string | null {
-	let helperName: string | null = null;
-	for (const stmt of body) {
-		nodeContains(stmt, (candidate) => {
-			if (helperName) return false;
-			if (!t.isCallExpression(candidate)) return false;
-			if (!t.isIdentifier(candidate.callee)) return false;
-			const arg = candidate.arguments[0];
-			if (
-				!t.isBinaryExpression(arg, { operator: "-" }) ||
-				!t.isMemberExpression(arg.left) ||
-				!t.isIdentifier(arg.left.object, { name: messagesParamName }) ||
-				!isMemberPropertyName(arg.left, "length") ||
-				!t.isNumericLiteral(arg.right, { value: 1 })
-			) {
-				return false;
-			}
-			helperName = candidate.callee.name;
-			return false;
-		});
-		if (helperName) break;
-	}
-	return helperName;
-}
-
 function hasCacheTailWindowLoop(
 	body: t.Statement[],
 	setName?: string,
@@ -287,12 +214,9 @@ function hasBoundedDecimationLoop(
 function createCacheTailWindowStatements(
 	messagesName: string,
 	setName: string,
-	indexName: string,
-	helperName: string,
 ): t.Statement[] {
 	const setId = t.identifier(setName);
-	const indexId = t.identifier(indexName);
-	const helperId = t.identifier(helperName);
+	const primaryIndexId = t.identifier("cachePrimaryIndex");
 	const tailIndexId = t.identifier("cacheTailIndex");
 	const tailCountId = t.identifier("cacheTailCount");
 
@@ -315,10 +239,27 @@ function createCacheTailWindowStatements(
 	)({
 		MESSAGES: t.identifier(messagesName),
 		SET_NAME: setId,
-		PRIMARY_INDEX: indexId,
+		PRIMARY_INDEX: primaryIndexId,
 	});
 
 	return [
+		t.variableDeclaration("var", [
+			t.variableDeclarator(
+				t.cloneNode(primaryIndexId),
+				t.conditionalExpression(
+					t.binaryExpression(
+						">",
+						t.memberExpression(t.cloneNode(setId), t.identifier("size")),
+						t.numericLiteral(0),
+					),
+					t.callExpression(
+						t.memberExpression(t.identifier("Math"), t.identifier("max")),
+						[t.spreadElement(t.cloneNode(setId))],
+					),
+					t.numericLiteral(-1),
+				),
+			),
+		]),
 		...decimationStatements,
 		t.variableDeclaration("var", [
 			t.variableDeclarator(t.cloneNode(tailCountId), t.numericLiteral(0)),
@@ -327,7 +268,7 @@ function createCacheTailWindowStatements(
 			t.variableDeclaration("var", [
 				t.variableDeclarator(
 					t.cloneNode(tailIndexId),
-					t.callExpression(t.cloneNode(helperId), [t.cloneNode(indexId)]),
+					t.cloneNode(primaryIndexId),
 				),
 			]),
 			t.logicalExpression(
@@ -339,17 +280,7 @@ function createCacheTailWindowStatements(
 					t.identifier("cacheTailWindow"),
 				),
 			),
-			t.assignmentExpression(
-				"=",
-				t.cloneNode(tailIndexId),
-				t.callExpression(t.cloneNode(helperId), [
-					t.binaryExpression(
-						"-",
-						t.cloneNode(tailIndexId),
-						t.numericLiteral(1),
-					),
-				]),
-			),
+			t.updateExpression("--", t.cloneNode(tailIndexId)),
 			t.blockStatement([
 				t.ifStatement(
 					t.logicalExpression(
@@ -534,23 +465,12 @@ function createCacheTailPolicyMutator(): Visitor {
 				const firstParam = path.node.params[0];
 				const messagesVarName = t.isIdentifier(firstParam)
 					? firstParam.name
-					: "e";
-				const primaryAdd = findPrimaryTailSetAdd(
-					body,
-					updatedMarkerStmtIndex,
-					markerSetName,
-					messagesVarName,
-				);
-				if (primaryAdd) {
+					: null;
+				if (messagesVarName) {
 					body.splice(
 						updatedMarkerStmtIndex,
 						0,
-						...createCacheTailWindowStatements(
-							messagesVarName,
-							markerSetName,
-							primaryAdd.indexName,
-							primaryAdd.helperName,
-						),
+						...createCacheTailWindowStatements(messagesVarName, markerSetName),
 					);
 					patchedWindow = true;
 				}
@@ -1994,26 +1914,12 @@ export function collectCacheTailVerificationInventory(
 					hasTailWindowGate = markerSetName
 						? hasCacheTailWindowLoop(body, markerSetName)
 						: false;
-					const firstParam = path.node.params[0];
-					const messagesParamName = t.isIdentifier(firstParam)
-						? firstParam.name
-						: null;
-					const primaryTail =
-						markerSetName && messagesParamName
-							? findPrimaryTailSetAdd(
-									body,
-									markerStmtIndex,
-									markerSetName,
-									messagesParamName,
-								)
-							: null;
 					hasDecimationPrimaryBoundary = Boolean(
 						markerSetName &&
-							primaryTail &&
 							hasBoundedDecimationLoop(
 								body,
 								markerSetName,
-								primaryTail.indexName,
+								"cachePrimaryIndex",
 							),
 					);
 				}

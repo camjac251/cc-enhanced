@@ -48,6 +48,25 @@ function isSameBinding(
 	);
 }
 
+function isAsyncFileSizeAccess(
+	path: any,
+	node: t.Node,
+	fileBinding: any,
+): boolean {
+	if (!t.isMemberExpression(node) || !isMemberPropertyName(node, "size")) {
+		return false;
+	}
+	if (!t.isAwaitExpression(node.object)) return false;
+	const statCall = node.object.argument;
+	if (!t.isCallExpression(statCall)) return false;
+	if (!t.isMemberExpression(statCall.callee)) return false;
+	if (!isMemberPropertyName(statCall.callee, "stat")) return false;
+	return (
+		statCall.arguments.length >= 1 &&
+		isSameBinding(path, statCall.arguments[0], fileBinding)
+	);
+}
+
 function isMathReference(node: t.Expression | t.Super): boolean {
 	if (t.isSuper(node)) return false;
 	if (t.isIdentifier(node)) return node.name === "Math";
@@ -194,19 +213,9 @@ function collectCurrentLimits(ast: t.File): {
 							if (node.operator !== "<=") return;
 							if (!isSameBinding(innerPath, node.right, limitBinding)) return;
 
-							const left = node.left;
-							if (!t.isMemberExpression(left)) return;
-							if (!isMemberPropertyName(left, "size")) return;
-
-							const statCall = left.object;
-							if (!t.isCallExpression(statCall)) return;
-							if (!t.isMemberExpression(statCall.callee)) return;
-							if (!isMemberPropertyName(statCall.callee, "statSync")) return;
-							if (
-								statCall.arguments.length < 1 ||
-								!isSameBinding(innerPath, statCall.arguments[0], fileBinding)
-							)
+							if (!isAsyncFileSizeAccess(innerPath, node.left, fileBinding)) {
 								return;
+							}
 
 							isFileSizeCheckFn = true;
 							innerPath.stop();
@@ -403,19 +412,9 @@ function runLimitsPatch(ast: t.File): void {
 						if (node.operator !== "<=") return;
 						if (!isSameBinding(innerPath, node.right, limitBinding)) return;
 
-						const left = node.left;
-						if (!t.isMemberExpression(left)) return;
-						if (!isMemberPropertyName(left, "size")) return;
-
-						const statCall = left.object;
-						if (!t.isCallExpression(statCall)) return;
-						if (!t.isMemberExpression(statCall.callee)) return;
-						if (!isMemberPropertyName(statCall.callee, "statSync")) return;
-						if (
-							statCall.arguments.length < 1 ||
-							!isSameBinding(innerPath, statCall.arguments[0], fileBinding)
-						)
+						if (!isAsyncFileSizeAccess(innerPath, node.left, fileBinding)) {
 							return;
+						}
 
 						isFileSizeCheckFn = true;
 						innerPath.stop();

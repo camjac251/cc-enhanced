@@ -288,6 +288,91 @@ export function resolveSiblingSchemaFactory(
 }
 
 /**
+ * Resolve the direct array factory from the string-list schema anchored by its
+ * stable `lines` property. Other schema wrappers also accept a string schema
+ * directly, so the argument shape alone is not unique.
+ */
+export function resolveDirectArraySchemaFactory(
+	ast: t.File,
+	knownStringFactory: t.Expression,
+	preferredFactory?: t.Expression,
+): t.Expression | null {
+	const candidates: t.Expression[] = [];
+	traverse(ast, {
+		CallExpression(path) {
+			if (!t.isObjectProperty(path.parent)) return;
+			if (getObjectKeyName(path.parent.key) !== "lines") return;
+			if (path.node.arguments.length !== 1) return;
+			const [argument] = path.node.arguments;
+			if (
+				!t.isCallExpression(argument) ||
+				argument.arguments.length !== 0 ||
+				!t.isNodesEquivalent(argument.callee, knownStringFactory) ||
+				!t.isExpression(path.node.callee)
+			) {
+				return;
+			}
+			if (
+				!candidates.some((candidate) =>
+					t.isNodesEquivalent(candidate, path.node.callee),
+				)
+			) {
+				candidates.push(t.cloneNode(path.node.callee, true));
+			}
+		},
+	});
+	if (preferredFactory) {
+		return (
+			candidates.find((candidate) =>
+				t.isNodesEquivalent(candidate, preferredFactory),
+			) ?? null
+		);
+	}
+	return candidates.length === 1 ? candidates[0] : null;
+}
+
+function isFalseSchemaDefault(node: t.Node): boolean {
+	return (
+		t.isBooleanLiteral(node, { value: false }) ||
+		(t.isUnaryExpression(node, { operator: "!" }) &&
+			t.isNumericLiteral(node.argument, { value: 1 }))
+	);
+}
+
+/** Resolve a boolean factory from a schema chain containing `.default(false)`. */
+export function getDefaultedBooleanSchemaFactory(
+	expr: t.Expression,
+): t.Expression | null {
+	const candidates: t.Expression[] = [];
+	t.traverseFast(expr, (node) => {
+		if (!t.isCallExpression(node) || !t.isMemberExpression(node.callee)) return;
+		if (!isMemberPropertyName(node.callee, "default")) return;
+		if (
+			node.arguments.length !== 1 ||
+			!isFalseSchemaDefault(node.arguments[0])
+		) {
+			return;
+		}
+		const receiver = node.callee.object;
+		if (
+			!t.isCallExpression(receiver) ||
+			receiver.arguments.length !== 0 ||
+			!t.isExpression(receiver.callee)
+		) {
+			return;
+		}
+		if (
+			!candidates.some((candidate) =>
+				t.isNodesEquivalent(candidate, receiver.callee),
+			)
+		) {
+			candidates.push(t.cloneNode(receiver.callee, true));
+		}
+	});
+	return candidates.length === 1 ? candidates[0] : null;
+}
+
+/**
  * Recognized React element-factory member names across the classic runtime
  * (`X.createElement(type, props, ...children)`) and the automatic JSX runtime
  * (`X.jsx(type, props)` / `X.jsxs(type, props)`). The bundle is transpiled with

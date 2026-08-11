@@ -702,7 +702,7 @@ function isSessionOnlySettingsGuard(stmt: t.Statement): boolean {
 }
 
 function patchEffortSettingsWriterFunction(fn: t.Function): boolean | null {
-	if (fn.params.length !== 2 || !t.isBlockStatement(fn.body)) return null;
+	if (fn.params.length !== 3 || !t.isBlockStatement(fn.body)) return null;
 	if (fn.body.body.some(isSessionOnlySettingsGuard)) return true;
 	let hasEffortSettingsWrite = false;
 	for (const stmt of fn.body.body) {
@@ -738,7 +738,7 @@ function patchEffortSettingsWriterFunction(fn: t.Function): boolean | null {
 
 function hasPatchedEffortSettingsWriterFunction(fn: t.Function): boolean {
 	return (
-		fn.params.length === 2 &&
+		fn.params.length === 3 &&
 		t.isBlockStatement(fn.body) &&
 		fn.body.body.some(isSessionOnlySettingsGuard)
 	);

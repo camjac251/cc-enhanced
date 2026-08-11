@@ -6,6 +6,7 @@ import { template, traverse } from "../babel.js";
 import { parse } from "../loader.js";
 import type { Patch } from "../types.js";
 import {
+	getDefaultedBooleanSchemaFactory,
 	getDescribedSchemaFactory,
 	getObjectKeyName,
 	getObjectPropertyByName,
@@ -13,7 +14,7 @@ import {
 	hasObjectKeyName,
 	isMemberPropertyName,
 	objectPatternHasKey,
-	resolveSiblingSchemaFactory,
+	resolveDirectArraySchemaFactory,
 } from "./ast-helpers.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1063,6 +1064,15 @@ function getEditStringFactory(schema: t.ObjectExpression): t.Expression | null {
 		: null;
 }
 
+function getEditBooleanFactory(
+	schema: t.ObjectExpression,
+): t.Expression | null {
+	const replaceAll = getObjectPropertyByName(schema, "replace_all");
+	return replaceAll && t.isExpression(replaceAll.value)
+		? getDefaultedBooleanSchemaFactory(replaceAll.value)
+		: null;
+}
+
 function callSchemaFactory(
 	factory: t.Expression,
 	args: t.Expression[],
@@ -1103,21 +1113,11 @@ function patchEditSchemaForBatchEdits(ast: t.File): void {
 
 			const stringFactory = getEditStringFactory(arg0);
 			if (!stringFactory) return;
-			const booleanFactory = resolveSiblingSchemaFactory(
-				ast,
-				stringFactory,
-				"boolean",
-			);
-			const objectFactory = resolveSiblingSchemaFactory(
-				ast,
-				stringFactory,
-				"object",
-			);
-			const arrayFactory = resolveSiblingSchemaFactory(
-				ast,
-				stringFactory,
-				"array",
-			);
+			const booleanFactory = getEditBooleanFactory(arg0);
+			const objectFactory = t.isExpression(path.node.callee)
+				? t.cloneNode(path.node.callee, true)
+				: null;
+			const arrayFactory = resolveDirectArraySchemaFactory(ast, stringFactory);
 			if (!booleanFactory || !objectFactory || !arrayFactory) return;
 
 			// Make old_string and new_string optional so batch-only payloads pass safeParse.
@@ -2527,31 +2527,38 @@ function verifyEditSchemaBatchEdits(ctx: EditVerifyContext): string | null {
 	// inputSchema getter calls a factory). Walk all object-schema calls and pick
 	// the one whose object has file_path + old_string + new_string +
 	// replace_all keys. This matches what patchEditSchemaForBatchEdits does.
-	let schemaObj: t.ObjectExpression | null = null;
+	const schemaCandidates: Array<{
+		schema: t.ObjectExpression;
+		objectFactory: t.Expression;
+	}> = [];
 	traverse(ast, {
 		CallExpression(path) {
 			const candidate = getEditSchemaObject(path.node);
-			if (candidate) schemaObj = candidate;
+			if (candidate && t.isExpression(path.node.callee)) {
+				schemaCandidates.push({
+					schema: candidate,
+					objectFactory: t.cloneNode(path.node.callee, true),
+				});
+			}
 		},
 	});
 
-	if (!schemaObj) {
+	if (schemaCandidates.length === 0) {
 		return "Edit object schema with file_path/old_string/new_string/replace_all not found";
 	}
-	// Re-bind to defeat TypeScript's let-narrowing-to-never inside the
-	// traverse callback's closure scope.
-	const schema: t.ObjectExpression = schemaObj;
+	const patchedSchemas = schemaCandidates.filter(({ schema }) =>
+		schema.properties.some(
+			(prop) => t.isObjectProperty(prop) && hasObjectKeyName(prop, "edits"),
+		),
+	);
+	if (patchedSchemas.length !== 1) {
+		return patchedSchemas.length === 0
+			? "Edit schema missing batch `edits` field"
+			: `Edit schema with batch \`edits\` field is ambiguous (${patchedSchemas.length} sites found)`;
+	}
+	const { schema, objectFactory } = patchedSchemas[0];
 	const stringFactory = getEditStringFactory(schema);
 	if (!stringFactory) return "Edit schema string factory was not resolved";
-	const arrayFactory = resolveSiblingSchemaFactory(ast, stringFactory, "array");
-	const objectFactory = resolveSiblingSchemaFactory(
-		ast,
-		stringFactory,
-		"object",
-	);
-	if (!arrayFactory || !objectFactory) {
-		return "Edit schema array/object factories were not resolved";
-	}
 
 	const editsProp = schema.properties.find(
 		(p): p is t.ObjectProperty =>
@@ -2571,10 +2578,15 @@ function verifyEditSchemaBatchEdits(ctx: EditVerifyContext): string | null {
 		return "Edit `edits` field is not wrapped in .optional()";
 	}
 	const arrayCall = editsValue.callee.object;
-	if (
-		!t.isCallExpression(arrayCall) ||
-		!isSameSchemaFactory(arrayCall.callee, arrayFactory)
-	) {
+	if (!t.isCallExpression(arrayCall) || !t.isExpression(arrayCall.callee)) {
+		return "Edit `edits` field is not array(...).optional()";
+	}
+	const arrayFactory = resolveDirectArraySchemaFactory(
+		ast,
+		stringFactory,
+		arrayCall.callee,
+	);
+	if (!arrayFactory || !isSameSchemaFactory(arrayCall.callee, arrayFactory)) {
 		return "Edit `edits` field is not array(...).optional()";
 	}
 	const arrayArg = arrayCall.arguments[0];

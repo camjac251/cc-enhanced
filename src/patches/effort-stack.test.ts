@@ -64,10 +64,10 @@ function effortWouldChange(next, current, model, cacheToken, hasConversationMess
   return !0;
 }
 
-function storeEffortSetting(H, persist = true) {
+function storeEffortSetting(H, persist = true, scope) {
   let parsed = H !== void 0 ? parsePersistedEffort(H) : void 0;
   if (persist && (H === void 0 || parsed !== void 0) && !remoteActive()) {
-    let result = saveSettings("userSettings", { effortLevel: parsed });
+    let result = saveSettings("userSettings", { effortLevel: parsed }, void 0, scope);
     if (result.error) return result.error;
   }
   if (persist) unpinLaunchEffort();
@@ -355,7 +355,9 @@ test("effort-stack keeps env-backed effort changes session-only", async () => {
 		true,
 	);
 	assert.equal(
-		output.includes('saveSettings("userSettings", { effortLevel: parsed })'),
+		output.includes(
+			'saveSettings("userSettings", { effortLevel: parsed }, void 0, scope)',
+		),
 		true,
 	);
 	assert.equal(output.includes("if (persist) unpinLaunchEffort();"), true);
@@ -518,6 +520,17 @@ test("effort-stack injects the session-override assignment at the result boundar
 		output.split("globalThis.__claudeCodeEffortSessionOverride = true").length -
 		1;
 	assert.equal(occurrences, 1);
+});
+
+test("effort-stack guards the current three-parameter settings writer", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(
+		output,
+		/if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\)/,
+	);
 });
 
 test("effort-stack does not inject the session-only guard into a writer without a top-level unpin call", async () => {

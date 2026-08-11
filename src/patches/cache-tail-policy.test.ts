@@ -75,6 +75,55 @@ function buildCacheBreakpoints(messages, cachingEnabled, ttl, includeEdits = fal
 }
 `;
 
+const CACHE_TAIL_SPLIT_HELPER_FIXTURE = `
+function computeMarkerIndices({ messages, enablePromptCaching, skipCacheWrite, forkPointUuid, canMarkApiSystem, forkCachePin, isForkPinStepBackEnabled }) {
+  let isCacheable = (message) => message.type !== "assistant";
+  let findCacheableIndex = (startIndex) => {
+    let candidate = startIndex;
+    while (candidate >= 0 && (messages[candidate].type === "api_system" || !isCacheable(messages[candidate]))) candidate--;
+    return candidate;
+  };
+  let tailIndex = findCacheableIndex(messages.length - 1);
+  if (skipCacheWrite) tailIndex = findCacheableIndex(tailIndex - 1);
+  let lastIndex = messages.length - 1,
+    lastMessage = messages[lastIndex],
+    hasTrailingSystem = lastMessage !== undefined && lastMessage.type === "api_system",
+    primaryIndex = canMarkApiSystem && enablePromptCaching && !skipCacheWrite && tailIndex >= 0 && hasTrailingSystem ? lastIndex : tailIndex,
+    markerIndexes = new Set();
+  if (primaryIndex >= 0) markerIndexes.add(primaryIndex);
+  let forkPointPinned = false;
+  if (forkCachePin && forkPointUuid && isForkPinStepBackEnabled()) forkPointPinned = true;
+  return { markerIndices: markerIndexes, forkPointPinned };
+}
+
+function buildCacheBreakpoints(messages, cachingEnabled, ttl, skipCacheWrite = false, forkPointId) {
+  let { markerIndices, forkPointPinned } = computeMarkerIndices({
+    messages,
+    enablePromptCaching: cachingEnabled,
+    skipCacheWrite,
+    forkPointUuid: forkPointId,
+    canMarkApiSystem: true,
+    forkCachePin: false,
+    isForkPinStepBackEnabled() { return false; },
+  });
+  return (
+    gate("tengu_api_cache_breakpoints", {
+      totalMessageCount: messages.length,
+      cachingEnabled,
+      skipCacheWrite,
+      forkPointPinned,
+      markerCount: markerIndices.size,
+    }),
+    messages.map((message, index) => {
+      let shouldCache = markerIndices.has(index);
+      if (message.type === "user") return buildUser(message, shouldCache, cachingEnabled, ttl);
+      if (message.type === "api_system") return { role: "system", content: message.message.content };
+      return buildAssistant(message, shouldCache, cachingEnabled, ttl);
+    })
+  );
+}
+`;
+
 async function buildCacheTailRuntime() {
 	const ast = parse(CACHE_TAIL_FIXTURE);
 	await runCacheTailViaPasses(ast, [0]);
@@ -127,6 +176,15 @@ test("cache-tail-policy marks the last two user messages when an assistant is la
 	assert.deepEqual(result[2].content[0].cache_control, {
 		type: "ephemeral",
 	});
+});
+
+test("cache-tail-policy patches a marker set returned by the current helper topology", async () => {
+	const ast = parse(CACHE_TAIL_SPLIT_HELPER_FIXTURE);
+	await runCacheTailViaPasses(ast, [0]);
+	const output = print(ast);
+
+	assert.match(output, /cacheTailCount < cacheTailWindow/);
+	assert.match(output, /markerIndices\.add\(cacheTailIndex\)/);
 });
 
 test("cache-tail-policy leaves assistant tail messages uncached", async () => {
@@ -234,7 +292,7 @@ function buildCacheBreakpoints(messages, cachingEnabled, ttl, skipCacheWrite = f
 }
 `;
 
-test("cache-tail-policy resolves the tail helper when the primary index is a conditional select", async () => {
+test("cache-tail-policy bounds the tail window to the highest returned marker", async () => {
 	const ast = parse(CACHE_TAIL_CONDITIONAL_INDEX_FIXTURE);
 	await runCacheTailViaPasses(ast, [0]);
 	const output = print(ast);
@@ -242,7 +300,12 @@ test("cache-tail-policy resolves the tail helper when the primary index is a con
 	assert.equal(output.includes("var cacheTailWindow = 2;"), true);
 	assert.equal(output.includes("var cacheUserOnly = true;"), true);
 	assert.equal(output.includes("var cacheTailCount = 0;"), true);
-	assert.equal(output.includes("findCacheableIndex(primaryIndex)"), true);
+	assert.equal(
+		output.includes(
+			"cachePrimaryIndex = markerIndexes.size > 0 ? Math.max(...markerIndexes) : -1",
+		),
+		true,
+	);
 	assert.equal(output.includes("cacheTailCount < cacheTailWindow"), true);
 	assert.equal(output.includes("markerIndexes.add(cacheTailIndex)"), true);
 	assert.equal(
@@ -264,7 +327,12 @@ test("cache-tail-policy applies declarations, window gate, and user-only conditi
 
 	// The Set-based tail window loop was inserted before the marker report.
 	assert.equal(output.includes("var cacheTailCount = 0;"), true);
-	assert.equal(output.includes("findCacheableIndex(tailIndex)"), true);
+	assert.equal(
+		output.includes(
+			"cachePrimaryIndex = markerIndexes.size > 0 ? Math.max(...markerIndexes) : -1",
+		),
+		true,
+	);
 	assert.equal(output.includes("cacheTailCount < cacheTailWindow"), true);
 	assert.equal(output.includes("markerIndexes.add(cacheTailIndex)"), true);
 	assert.equal(
@@ -748,7 +816,7 @@ test("cache-tail-policy verify rejects decimation beyond the primary cache bound
 	await runCacheTailViaPasses(ast);
 	const output = print(ast);
 	const regressed = output.replaceAll(
-		"idx <= tailIndex && idx < messages.length",
+		"idx <= cachePrimaryIndex && idx < messages.length",
 		"idx < messages.length",
 	);
 

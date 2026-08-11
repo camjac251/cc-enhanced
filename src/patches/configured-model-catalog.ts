@@ -184,7 +184,7 @@ function classifyCapabilityLookup(
 function getPickerShape(
 	path: NodePath<t.FunctionDeclaration>,
 ): PickerCandidate | null {
-	if (!path.node.id || path.node.params.length !== 1) return null;
+	if (!path.node.id || path.node.params.length !== 2) return null;
 	if (
 		!PICKER_ENV_KEYS.every((key) => nodeHasMemberProperty(path.node.body, key))
 	) {

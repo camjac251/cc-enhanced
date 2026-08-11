@@ -21,7 +21,7 @@ async function runLimitsViaPasses(ast: any): Promise<void> {
 // Uses realistic variable names that differ from patch constants (minified-like).
 //
 // Key structural requirements the patch traversal expects:
-// - byteCeiling: function(file, limit = VAR) with inline statSync(file).size <= limit
+// - byteCeiling: async function(file, limit = VAR) with inline stat(file).size <= limit
 // - tokenBudget: function containing CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS env ref + sibling default var after the function
 // - resultSizeCap: helper with third param defaulting to VAR and returning Math.min(secondParam, thirdParam)
 // - readMaxResultSize: object with name:"Read" and maxResultSizeChars:100000
@@ -42,8 +42,8 @@ function getMaxOutputTokens() {
 }
 var rTI = 25000;
 
-function checkFileSize(filePath, maxSize = bYC) {
-  if (require("fs").statSync(filePath).size <= maxSize) {
+async function checkFileSize(filePath, maxSize = bYC) {
+  if ((await require("fs").stat(filePath)).size <= maxSize) {
     return true;
   }
   return false;
@@ -298,8 +298,8 @@ function getMaxOutputTokens() {
 }
 var rTI = 25000;
 
-function checkFileSize(filePath, maxSize = bYC) {
-  if (require("fs").statSync(filePath).size <= maxSize) {
+async function checkFileSize(filePath, maxSize = bYC) {
+  if ((await require("fs").stat(filePath)).size <= maxSize) {
     return true;
   }
   return false;
@@ -339,8 +339,8 @@ function getMaxOutputTokens() {
   return;
 }
 var rTI = 25000;
-function checkFileSize(filePath, maxSize = bYC) {
-  return require("fs").statSync(filePath).size <= maxSize;
+async function checkFileSize(filePath, maxSize = bYC) {
+  return (await require("fs").stat(filePath)).size <= maxSize;
 }
 var readToolName = "Read";
 var readToolDef = {
@@ -387,8 +387,8 @@ function getMaxOutputTokens() {
   return;
 }
 var rTI = 25000;
-function checkFileSize(filePath, maxSize = bYC) {
-  return require("fs").statSync(filePath).size <= maxSize;
+async function checkFileSize(filePath, maxSize = bYC) {
+  return (await require("fs").stat(filePath)).size <= maxSize;
 }
 var readToolDef = { name: "Read", searchHint: "read files, images, PDFs, notebooks", maxResultSizeChars: 100000, description: "Read files" };
 function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
@@ -426,8 +426,8 @@ function getMaxOutputTokens() {
   return;
 }
 var rTI = 25000;
-function checkFileSize(filePath, maxSize = bYC) {
-  return require("fs").statSync(filePath).size <= maxSize;
+async function checkFileSize(filePath, maxSize = bYC) {
+  return (await require("fs").stat(filePath)).size <= maxSize;
 }
 var readToolDef = { name: "Read", searchHint: "read files, images, PDFs, notebooks", maxResultSizeChars: 100000, description: "Read files" };
 function decoyCap(a, b, c = DEC) {
@@ -475,8 +475,8 @@ function getMaxOutputTokens() {
   return;
 }
 var rTI = 25000;
-function checkFileSize(filePath, maxSize = bYC) {
-  return require("fs").statSync(filePath).size <= maxSize;
+async function checkFileSize(filePath, maxSize = bYC) {
+  return (await require("fs").stat(filePath)).size <= maxSize;
 }
 var readToolDef = { name: "Read", searchHint: "read files, images, PDFs, notebooks", maxResultSizeChars: 1 / 0, description: "Read files" };
 function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
@@ -514,7 +514,7 @@ function readPrompt(cond) {
 
 test("limits raises the shared byteCeiling constant so a second consumer sees the new value", async () => {
 	// Real topology: the byte-ceiling constant is referenced both by the
-	// statSync "<=" gate and by a separate config default. Rewriting the
+	// async stat "<=" gate and by a separate config default. Rewriting the
 	// shared declaration must update every reference site at once.
 	const sharedCeilingFixture = `
 var bYC = 262144;
@@ -525,8 +525,8 @@ function getMaxOutputTokens() {
   return;
 }
 var rTI = 25000;
-function checkFileSize(filePath, maxSize = bYC) {
-  return require("fs").statSync(filePath).size <= maxSize;
+async function checkFileSize(filePath, maxSize = bYC) {
+  return (await require("fs").stat(filePath)).size <= maxSize;
 }
 function readToolConfig(cfg) {
   return { maxSizeBytes: typeof cfg?.maxSizeBytes === "number" ? cfg.maxSizeBytes : bYC };
@@ -570,7 +570,7 @@ function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
 	);
 });
 
-test("limits byteCeiling ignores a statSync size check that uses '>' instead of '<='", async () => {
+test("limits byteCeiling ignores an unrelated synchronous size check", async () => {
 	// A separate file-size gate uses statSync(e).size > ceiling with its own
 	// 262144 constant. The matcher requires "<=", so the ">" gate's ceiling
 	// must be left untouched.
@@ -588,8 +588,8 @@ function themeGate(themePath, ceiling = GHI) {
   if (require("fs").statSync(themePath).size > ceiling) return;
   return true;
 }
-function checkFileSize(filePath, maxSize = bYC) {
-  return require("fs").statSync(filePath).size <= maxSize;
+async function checkFileSize(filePath, maxSize = bYC) {
+  return (await require("fs").stat(filePath)).size <= maxSize;
 }
 var readToolDef = { name: "Read", searchHint: "read files", maxResultSizeChars: 1 / 0, description: "Read files" };
 function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {

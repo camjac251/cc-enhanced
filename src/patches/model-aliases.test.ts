@@ -529,7 +529,7 @@ function restoreCatalogSessionModel(entries, currentModel) {
   }
   return { kind: "none" };
 }
-function buildModelOptions(includeLongContext) {
+function buildModelOptions(includeLongContext, pickerState) {
   let options = baseOptions(includeLongContext),
     custom = env.ANTHROPIC_CUSTOM_MODEL_OPTION;
   if (custom && !options.some((option) => option.value === custom)) {
