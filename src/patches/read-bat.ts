@@ -819,18 +819,56 @@ function schemaFieldUsesFactory(
 }
 
 function getFirstObjectPatternParam(
-	method: t.ObjectMethod | t.ObjectProperty | null,
+	method: t.ObjectMethod | t.ObjectProperty | t.FunctionDeclaration | null,
 ): t.ObjectPattern | null {
 	if (!method) return null;
-	const params = t.isObjectMethod(method)
-		? method.params
-		: t.isFunctionExpression(method.value) ||
-				t.isArrowFunctionExpression(method.value)
-			? method.value.params
-			: [];
+	const params =
+		t.isObjectMethod(method) || t.isFunctionDeclaration(method)
+			? method.params
+			: t.isFunctionExpression(method.value) ||
+					t.isArrowFunctionExpression(method.value)
+				? method.value.params
+				: [];
 	if (params.length === 0) return null;
 	const firstParam = params[0];
 	return t.isObjectPattern(firstParam) ? firstParam : null;
+}
+
+function getReadCallImplementationPath(
+	readToolPath: NodePath<t.ObjectExpression>,
+): NodePath<t.FunctionDeclaration> | null {
+	const callMethodPath = readToolPath
+		.get("properties")
+		.find(
+			(candidate) =>
+				candidate.isObjectMethod() && hasObjectKeyName(candidate.node, "call"),
+		);
+	if (!callMethodPath?.isObjectMethod()) return null;
+
+	const [inputParam] = callMethodPath.node.params;
+	if (!t.isIdentifier(inputParam)) return null;
+	if (callMethodPath.node.body.body.length !== 1) return null;
+	const onlyStatement = callMethodPath.node.body.body[0];
+	if (!t.isReturnStatement(onlyStatement) || !onlyStatement.argument)
+		return null;
+	const returnedExpression = t.isAwaitExpression(onlyStatement.argument)
+		? onlyStatement.argument.argument
+		: onlyStatement.argument;
+	if (
+		!t.isCallExpression(returnedExpression) ||
+		!t.isIdentifier(returnedExpression.callee) ||
+		returnedExpression.arguments.length === 0 ||
+		!t.isIdentifier(returnedExpression.arguments[0], { name: inputParam.name })
+	) {
+		return null;
+	}
+
+	const binding = callMethodPath.scope.getBinding(
+		returnedExpression.callee.name,
+	);
+	if (!binding?.path.isFunctionDeclaration()) return null;
+	if (!t.isObjectPattern(binding.path.node.params[0])) return null;
+	return binding.path as NodePath<t.FunctionDeclaration>;
 }
 
 function getObjectPatternKeys(pattern: t.ObjectPattern): Set<string> {
@@ -1273,6 +1311,12 @@ export function collectReadVerificationInventory(
 	ast: t.File,
 	rangeBindingName: string,
 ): ReadVerificationInventory {
+	let readToolPath = findReadToolObjectPath(ast);
+	const callImplementation = readToolPath
+		? (getReadCallImplementationPath(readToolPath)?.node ?? null)
+		: null;
+	readToolPath = null;
+	clearTraverseCache();
 	const inventory: ReadVerificationInventory = {
 		hasBatCall: false,
 		hasFallbackFnBoundedArgs: false,
@@ -1295,7 +1339,7 @@ export function collectReadVerificationInventory(
 		hasFallbackSingleLineLimit: false,
 		hasFallbackSizeLimitBinding: false,
 	};
-	let callMethodDepth = 0;
+	let callImplementationDepth = 0;
 	let readStateRebuildCandidates = 0;
 	let allReadStateRebuildCandidatesPatched = true;
 	let hasChangedFileMtimeDeclaration = false;
@@ -1303,15 +1347,15 @@ export function collectReadVerificationInventory(
 
 	traverse(ast, {
 		noScope: true,
-		ObjectMethod: {
+		FunctionDeclaration: {
 			enter(path) {
-				if (getObjectKeyName(path.node.key) === "call") {
-					callMethodDepth += 1;
+				if (path.node === callImplementation) {
+					callImplementationDepth += 1;
 				}
 			},
 			exit(path) {
-				if (getObjectKeyName(path.node.key) === "call") {
-					callMethodDepth -= 1;
+				if (path.node === callImplementation) {
+					callImplementationDepth -= 1;
 				}
 			},
 		},
@@ -1423,7 +1467,7 @@ export function collectReadVerificationInventory(
 		},
 		IfStatement(path) {
 			if (
-				callMethodDepth > 0 &&
+				callImplementationDepth > 0 &&
 				isCallCompatRangeBridge(path, rangeBindingName)
 			) {
 				inventory.hasCallCompatRangeBridge = true;
@@ -2275,9 +2319,9 @@ export const readWithBat: Patch = {
 									return null;
 								};
 
-								const callMethodPath = findMethodPath("call");
+								const callMethodPath = getReadCallImplementationPath(path);
 								patchBlankOptionalReadInputs(path);
-								if (!callMethodPath?.isObjectMethod()) return;
+								if (!callMethodPath) return;
 								const callMethod = callMethodPath.node;
 								const callBodyPath = callMethodPath.get(
 									"body",
@@ -4303,7 +4347,8 @@ export const readWithBat: Patch = {
 		if (!schemaObject) {
 			return "Unable to resolve Read input schema for verification";
 		}
-		const callMethod = findToolMethod(readToolObject, "call");
+		const callMethod =
+			getReadCallImplementationPath(readToolPath)?.node ?? null;
 		const callParam = getFirstObjectPatternParam(callMethod);
 		if (!callParam) {
 			return "Unable to resolve Read.call object parameter for verification";

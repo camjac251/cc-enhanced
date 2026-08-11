@@ -164,13 +164,21 @@ const ReadTool = {
     if (!eG1(Y) && !Q && !B) return { result: false };
     return { result: true };
   },
-  async call({ file_path: A, offset: Q = 1, limit: B = void 0, ...READ_COMPAT }, G) {
-    if (R === void 0 && READ_COMPAT.offset !== void 0 && READ_COMPAT.limit !== void 0) {
-      R = String(READ_COMPAT.offset) + ":" + String(READ_COMPAT.limit);
-    }
-    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);
+  async call(INPUT, G, UNUSED, EXTRA) {
+    return readCallImplementation(INPUT, G, EXTRA);
   },
 };
+
+async function readCallImplementation(
+  { file_path: A, offset: Q = 1, limit: B = void 0, ...READ_COMPAT },
+  G,
+  EXTRA,
+) {
+  if (R === void 0 && READ_COMPAT.offset !== void 0 && READ_COMPAT.limit !== void 0) {
+    R = String(READ_COMPAT.offset) + ":" + String(READ_COMPAT.limit);
+  }
+  return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);
+}
 
 async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2) {
   let W = offset === 0 ? 0 : offset - 1, { content: K, lineCount: O, totalLines: T } = await D2I(filePath, W, limit, maxBytes, signal);
@@ -241,13 +249,21 @@ function readObjectDelegationFixture(): string {
     if (!eG1(Y) && !Q && !B) return { result: false };
     return { result: true };
   },
-  async call({ file_path: A, offset: Q = 1, limit: B = void 0, ...READ_COMPAT }, G) {
-    if (R === void 0 && READ_COMPAT.offset !== void 0 && READ_COMPAT.limit !== void 0) {
-      R = String(READ_COMPAT.offset) + ":" + String(READ_COMPAT.limit);
-    }
-    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);
+  async call(INPUT, G, UNUSED, EXTRA) {
+    return readCallImplementation(INPUT, G, EXTRA);
   },
 };
+
+async function readCallImplementation(
+  { file_path: A, offset: Q = 1, limit: B = void 0, ...READ_COMPAT },
+  G,
+  EXTRA,
+) {
+  if (R === void 0 && READ_COMPAT.offset !== void 0 && READ_COMPAT.limit !== void 0) {
+    R = String(READ_COMPAT.offset) + ":" + String(READ_COMPAT.limit);
+  }
+  return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);
+}
 
 async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2) {
   let W = offset === 0 ? 0 : offset - 1, { content: K, lineCount: O, totalLines: T } = await D2I(filePath, W, limit, maxBytes, signal);
@@ -257,14 +273,23 @@ async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1
 		`  async validateInput({ file_path: A, pages: Y }, G) {
     return { result: true };
   },
-  async call({ file_path: A, offset: Q = 1, limit: B = void 0, pages: Y, ...READ_COMPAT }, G) {
-    let F = A;
-    let S = G.readFileState.get(F);
-    if (S && S.seededFromContext && !S.isPartialView && Q === 1 && B === void 0) return { data: { type: "file_unchanged" } };
-    if (S && !S.isPartialView && S.offset !== void 0) {
-      if (S.offset === Q && S.limit === B) return { data: { type: "file_unchanged" } };
-    }
-    let request = {
+  async call(INPUT, G, UNUSED, EXTRA) {
+    return readCallImplementation(INPUT, G, EXTRA);
+  },
+};
+
+async function readCallImplementation(
+  { file_path: A, offset: Q = 1, limit: B = void 0, pages: Y, ...READ_COMPAT },
+  G,
+  EXTRA,
+) {
+  let F = A;
+  let S = G.readFileState.get(F);
+  if (S && S.seededFromContext && !S.isPartialView && Q === 1 && B === void 0) return { data: { type: "file_unchanged" } };
+  if (S && !S.isPartialView && S.offset !== void 0) {
+    if (S.offset === Q && S.limit === B) return { data: { type: "file_unchanged" } };
+  }
+  let request = {
       file_path: A,
       fullFilePath: F,
       ext: "txt",
@@ -275,14 +300,13 @@ async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1
       maxTokens: MAX_TOKENS,
       context: G,
       messageId: MSG,
-    };
-    try {
-      return await helperRead({ ...request, resolvedFilePath: F });
-    } catch (E) {
-      return await helperRead({ ...request, resolvedFilePath: A });
-    }
-  },
-};
+  };
+  try {
+    return await helperRead({ ...request, resolvedFilePath: F });
+  } catch (E) {
+    return await helperRead({ ...request, resolvedFilePath: A });
+  }
+}
 
 async function helperRead(input) {
   let {
@@ -435,13 +459,21 @@ const ReadTool = {
   async validateInput({ file_path: A, offset: Q, limit: B, pages: Y }, G) {
     return { result: true };
   },
-  async call({ file_path: A, offset: Q = 1, limit: B = void 0, ...READ_COMPAT }, G) {
-    if (R === void 0 && READ_COMPAT.offset !== void 0 && READ_COMPAT.limit !== void 0) {
-      R = String(READ_COMPAT.offset) + ":" + String(READ_COMPAT.limit);
-    }
-    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);
+  async call(INPUT, G, UNUSED, EXTRA) {
+    return readCallImplementation(INPUT, G, EXTRA);
   },
 };
+
+async function readCallImplementation(
+  { file_path: A, offset: Q = 1, limit: B = void 0, ...READ_COMPAT },
+  G,
+  EXTRA,
+) {
+  if (R === void 0 && READ_COMPAT.offset !== void 0 && READ_COMPAT.limit !== void 0) {
+    R = String(READ_COMPAT.offset) + ":" + String(READ_COMPAT.limit);
+  }
+  return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);
+}
 
 async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2) {
   let W = offset === 0 ? 0 : offset - 1, { content: K, lineCount: O, totalLines: T } = await D2I(filePath, W, limit, maxBytes, signal);
@@ -502,13 +534,21 @@ const ReadTool = {
     if (!eG1(Y) && !Q && !B) return { result: false };
     return { result: true };
   },
-  async call({ file_path: A, offset: Q = 1, limit: B = void 0, ...READ_COMPAT }, G) {
-    if (R === void 0 && READ_COMPAT.offset !== void 0 && READ_COMPAT.limit !== void 0) {
-      R = String(READ_COMPAT.offset) + ":" + String(READ_COMPAT.limit);
-    }
-    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);
+  async call(INPUT, G, UNUSED, EXTRA) {
+    return readCallImplementation(INPUT, G, EXTRA);
   },
 };
+
+async function readCallImplementation(
+  { file_path: A, offset: Q = 1, limit: B = void 0, ...READ_COMPAT },
+  G,
+  EXTRA,
+) {
+  if (R === void 0 && READ_COMPAT.offset !== void 0 && READ_COMPAT.limit !== void 0) {
+    R = String(READ_COMPAT.offset) + ":" + String(READ_COMPAT.limit);
+  }
+  return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);
+}
 
 async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2) {
   let W = offset === 0 ? 0 : offset - 1, { content: K, lineCount: O, totalLines: T } = await D2I(filePath, W, limit, maxBytes, signal);
@@ -899,6 +939,15 @@ test("read-bat patches delegated helper calls and appends range/whitespace param
 	assert.equal(output.includes("__ccChangedFileMtime <= S.timestamp"), true);
 	assert.equal(output.includes("S.timestamp = __ccChangedFileMtime"), true);
 	assert.equal(output.includes('var style = "numbers"'), true);
+});
+
+test("read-bat follows the Read.call delegated implementation", async () => {
+	const ast = parse(READ_DELEGATION_FIXTURE);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /async call\(INPUT, G, UNUSED, EXTRA\)/);
+	assert.equal(readWithBat.verify(output, ast), true);
 });
 
 test("read-bat patches object-payload delegated read helpers", async () => {
@@ -1321,8 +1370,8 @@ test("read-bat runtime: content-identical re-read bumps timestamp to observed mt
 
 test("read-bat threads range/whitespace through EVERY delegation call site", async () => {
 	const twoCallFixture = READ_DELEGATION_FIXTURE.replace(
-		"    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n  },",
-		"    try {\n      return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n    } catch (E) {\n      return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n    }\n  },",
+		"  return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n}",
+		"  try {\n    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n  } catch (E) {\n    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n  }\n}",
 	);
 	assert.notEqual(twoCallFixture, READ_DELEGATION_FIXTURE);
 	const ast = parse(twoCallFixture);
@@ -1456,9 +1505,8 @@ test("read-bat wraps a non-resolvable description METHOD return and statics the 
 });
 
 test("read-bat handles validateInput without offset/limit and still adds range param", async () => {
-	// 2.1.185 validateInput destructures only { file_path, pages }. The section-1b
-	// large-file guard rewrite is a no-op on this shape; only the additive
-	// range: R param should land, and verify must still pass.
+	// validateInput destructures only { file_path, pages }. The large-file guard
+	// rewrite is a no-op on this shape; only the additive range parameter lands.
 	const fixture = READ_DELEGATION_FIXTURE.replace(
 		"async validateInput({ file_path: A, offset: Q, limit: B, pages: Y }, G) {\n    if (!eG1(Y) && !Q && !B) return { result: false };\n    return { result: true };\n  },",
 		"async validateInput({ file_path: A, pages: Y }, G) {\n    return { result: true };\n  },",
@@ -1474,14 +1522,13 @@ test("read-bat handles validateInput without offset/limit and still adds range p
 	assert.equal(readWithBat.verify(output), true);
 });
 
-test("read-bat threads both delegation sites when the second lives in the call catch block", async () => {
-	// The real bundle's second delegation site lives inside call()'s own catch
-	// block (the missing-file path), not a try/catch wrapping the helper return.
-	// This mirrors that nesting so the threading loop is exercised against the
-	// real structural position and a third or missed site would be caught.
+test("read-bat threads both delegation sites in the implementation catch block", async () => {
+	// The implementation's missing-file path delegates again from a catch block.
+	// This mirrors that nesting so the threading loop catches a third or missed
+	// call site.
 	const fixture = READ_DELEGATION_FIXTURE.replace(
-		"    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n  },",
-		"    try {\n      return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n    } catch (ENOENT_E) {\n      return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n    }\n  },",
+		"  return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n}",
+		"  try {\n    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n  } catch (ENOENT_E) {\n    return await helperRead(A, Q, B, MAX_BYTES, SIGNAL, G, EXTRA1, EXTRA2);\n  }\n}",
 	);
 	assert.notEqual(fixture, READ_DELEGATION_FIXTURE);
 	const ast = parse(fixture);

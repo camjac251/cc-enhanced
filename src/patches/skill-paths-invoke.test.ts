@@ -92,6 +92,22 @@ test("skill-paths-invoke returns unconditional and path-scoped skills", async ()
 	assert.equal(skillPathsInvoke.verify(output, ast), true);
 });
 
+test("skill-paths-invoke matches the activation-only bucket split", async () => {
+	const fixture = SKILL_PATHS_FIXTURE.replace(
+		`      entry.paths &&
+      entry.paths.length > 0 &&
+`,
+		"",
+	);
+	assert.notEqual(fixture, SKILL_PATHS_FIXTURE);
+	const ast = parse(fixture);
+	await runSkillPathsInvokeViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes("[...unconditional, ...conditional]"), true);
+	assert.equal(skillPathsInvoke.verify(output, ast), true);
+});
+
 test("skill-paths-invoke keeps the activation guard across the cache reset only", async () => {
 	const ast = parse(SKILL_PATHS_FIXTURE);
 	await runSkillPathsInvokeViaPasses(ast);

@@ -196,7 +196,6 @@ function findSkillBucketNames(
 	path.traverse({
 		IfStatement(ifPath) {
 			if (ifPath.getFunctionParent() !== path) return;
-			if (!nodeContainsMemberProperty(ifPath.node.test, "paths")) return;
 			if (
 				!nodeContainsMemberProperty(
 					ifPath.node.test,
