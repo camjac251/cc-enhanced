@@ -159,6 +159,46 @@ function isProcessEnvOverrideAccess(node: t.Node): boolean {
 	);
 }
 
+function isMissingFileOnlyCatch(handler: t.CatchClause | null): boolean {
+	if (!handler || !t.isIdentifier(handler.param)) return false;
+	if (handler.body.body.length !== 1) return false;
+
+	const [statement] = handler.body.body;
+	if (!t.isIfStatement(statement) || statement.alternate) return false;
+	if (!t.isLogicalExpression(statement.test, { operator: "||" })) return false;
+	if (
+		!t.isUnaryExpression(statement.test.left, { operator: "!" }) ||
+		!t.isIdentifier(statement.test.left.argument, {
+			name: handler.param.name,
+		})
+	) {
+		return false;
+	}
+	if (!t.isBinaryExpression(statement.test.right, { operator: "!==" })) {
+		return false;
+	}
+	if (
+		!t.isMemberExpression(statement.test.right.left) ||
+		!t.isIdentifier(statement.test.right.left.object, {
+			name: handler.param.name,
+		}) ||
+		getObjectKeyName(
+			statement.test.right.left.property as t.Expression | t.Identifier,
+		) !== "code" ||
+		!t.isStringLiteral(statement.test.right.right, { value: "ENOENT" })
+	) {
+		return false;
+	}
+
+	const consequent = t.isBlockStatement(statement.consequent)
+		? statement.consequent.body[0]
+		: statement.consequent;
+	return (
+		t.isThrowStatement(consequent) &&
+		t.isIdentifier(consequent.argument, { name: handler.param.name })
+	);
+}
+
 function inspectAutoAppendGuard(
 	path: NodePath<t.IfStatement>,
 	expected: {
@@ -172,6 +212,7 @@ function inspectAutoAppendGuard(
 	hasResolvedConfiguredPath: boolean;
 	hasAppendAssignment: boolean;
 	hasReadFile: boolean;
+	hasMissingFileOnlyCatch: boolean;
 	guardsReplacementPrompt: boolean;
 } | null {
 	const guardedProps = new Set<string>();
@@ -227,12 +268,14 @@ function inspectAutoAppendGuard(
 		}
 	}
 
-	let resolvedPathName: string | null = null;
 	let hasResolvedConfiguredPath = false;
 	let hasReadFile = false;
 	let hasAppendAssignment = false;
+	let hasMissingFileOnlyCatch = false;
 	for (const statement of path.node.consequent.body) {
 		if (!t.isTryStatement(statement) || !statement.handler) continue;
+		let resolvedPathName: string | null = null;
+		let tryHasReadFile = false;
 		for (const innerStatement of statement.block.body) {
 			if (t.isVariableDeclaration(innerStatement)) {
 				for (const declaration of innerStatement.declarations) {
@@ -279,11 +322,17 @@ function inspectAutoAppendGuard(
 			) {
 				continue;
 			}
-			hasReadFile = t.isNodesEquivalent(
+			tryHasReadFile = t.isNodesEquivalent(
 				readCall.callee,
 				expected.readFileCallee,
 			);
-			hasAppendAssignment = hasReadFile;
+			if (tryHasReadFile) {
+				hasReadFile = true;
+				hasAppendAssignment = true;
+			}
+		}
+		if (tryHasReadFile) {
+			hasMissingFileOnlyCatch = isMissingFileOnlyCatch(statement.handler);
 		}
 	}
 
@@ -293,6 +342,7 @@ function inspectAutoAppendGuard(
 		hasResolvedConfiguredPath,
 		hasAppendAssignment,
 		hasReadFile,
+		hasMissingFileOnlyCatch,
 		guardsReplacementPrompt:
 			guardedProps.has("systemPromptFile") || guardedProps.has("systemPrompt"),
 	};
@@ -304,6 +354,7 @@ function findAutoAppendGuardBeforeAppendBranch(ast: t.File): {
 	hasResolvedConfiguredPath: boolean;
 	hasAppendAssignment: boolean;
 	hasReadFile: boolean;
+	hasMissingFileOnlyCatch: boolean;
 	guardsReplacementPrompt: boolean;
 } | null {
 	let found: {
@@ -312,6 +363,7 @@ function findAutoAppendGuardBeforeAppendBranch(ast: t.File): {
 		hasResolvedConfiguredPath: boolean;
 		hasAppendAssignment: boolean;
 		hasReadFile: boolean;
+		hasMissingFileOnlyCatch: boolean;
 		guardsReplacementPrompt: boolean;
 	} | null = null;
 
@@ -434,6 +486,9 @@ export const systemPromptFile: Patch = {
 		if (!autoAppendGuard.hasAppendAssignment) {
 			return "Missing appendSystemPrompt assignment in auto-append flow";
 		}
+		if (!autoAppendGuard.hasMissingFileOnlyCatch) {
+			return "Auto-append catch must rethrow non-ENOENT errors";
+		}
 		if (autoAppendGuard.guardsReplacementPrompt) {
 			return "Auto-append guard must not skip replacement-mode systemPrompt/systemPromptFile";
 		}
@@ -483,7 +538,9 @@ function createSystemPromptFileMutator(): Visitor {
                     try {
 						let resolvedSystemPromptFile = RESOLVE(configuredSystemPromptFilePath);
 						APPEND_PROMPT = await READ_FILE(resolvedSystemPromptFile, "utf8");
-					} catch (err) {}
+					} catch (err) {
+						if (!err || err.code !== "ENOENT") throw err;
+					}
 				}
 			`,
 				{ placeholderPattern: /^(APPEND_PROMPT|OPTIONS|RESOLVE|READ_FILE)$/ },

@@ -51,7 +51,7 @@ export const MODERN_BASH_SEARCH_GUIDANCE = MODERN_CODE_SEARCH_DECISION_TREE;
 export const MODERN_STDOUT_CAP =
 	"Keep command results available for inspection. When the task asks for a bounded result, use the producer's native limit. Otherwise run normally; if Bash persists oversized output, inspect the saved artifact by range or semantic selection.";
 
-/** Alias for the stdout-cap text, retained for surfaces that previously imported a distinct constant. */
+/** Shared stdout-cap text export. */
 export const MODERN_OUTPUT_LIMIT_WARNING = MODERN_STDOUT_CAP;
 
 /** Background execution policy shared by Bash, Read, and TaskOutput surfaces. */

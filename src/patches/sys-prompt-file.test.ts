@@ -148,6 +148,41 @@ test("sys-prompt-file verify rejects an auto-read callee that differs from the a
 	assert.equal(String(result).includes("append-file readFile callee"), true);
 });
 
+test("sys-prompt-file verify rejects an auto-append catch that suppresses non-ENOENT errors", async () => {
+	const ast = parse(SYS_PROMPT_FILE_FIXTURE);
+	await runSystemPromptFileViaPasses(ast);
+	const output = print(ast);
+	const suppressing = output.replace(
+		/catch \(err\) \{\s*if \(!err \|\| err\.code !== "ENOENT"\) throw err;\s*\}/,
+		"catch (err) {}",
+	);
+	assert.notEqual(suppressing, output);
+
+	const result = systemPromptFile.verify(suppressing, parse(suppressing));
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("non-ENOENT"), true);
+});
+
+test("sys-prompt-file verify couples the ENOENT catch to the managed prompt read", async () => {
+	const ast = parse(SYS_PROMPT_FILE_FIXTURE);
+	await runSystemPromptFileViaPasses(ast);
+	const output = print(ast);
+	const splitCatch = output.replace(
+		/catch \(err\) \{\s*if \(!err \|\| err\.code !== "ENOENT"\) throw err;\s*\}/,
+		`catch (err) {}
+		try {
+			void 0;
+		} catch (decoyError) {
+			if (!decoyError || decoyError.code !== "ENOENT") throw decoyError;
+		}`,
+	);
+	assert.notEqual(splitCatch, output);
+
+	const result = systemPromptFile.verify(splitCatch, parse(splitCatch));
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("non-ENOENT"), true);
+});
+
 test("sys-prompt-file patches only the append-file branch when a systemPromptFile twin is present", async () => {
 	const twinFixture = `
 async function handleAppend(M) {
@@ -199,7 +234,9 @@ async function handleAppend(M) {
     try {
       let resolvedSystemPromptFile = path.resolve(configuredSystemPromptFilePath);
       GH = await fs.readFile(resolvedSystemPromptFile, "utf8");
-    } catch (err) {}
+    } catch (err) {
+      if (!err || err.code !== "ENOENT") throw err;
+    }
   }
   if (M.appendSystemPromptFile) {
     if (M.appendSystemPrompt) throw new Error("conflict");

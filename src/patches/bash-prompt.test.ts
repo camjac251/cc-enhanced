@@ -263,8 +263,8 @@ test("bash-prompt verify binds background policy to the Bash prompt", async () =
 });
 
 test("bash-prompt escapes backticks in template literal quasis", async () => {
-	// 2.1.76+ moved backtick-containing text from StringLiteral into a
-	// TemplateLiteral quasi.  rewriteLegacyText replacements that inject
+	// Backtick-containing text can live in a TemplateLiteral quasi.
+	// rewriteLegacyText replacements that inject
 	// backticks must be escaped in quasi.value.raw so Babel's generator
 	// produces valid JS.
 	const fixture = `

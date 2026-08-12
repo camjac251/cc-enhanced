@@ -2036,14 +2036,8 @@ export const readWithBat: Patch = {
 						const patchText = (text: string): string => {
 							let updated = text;
 
-							// Two compile-time patterns audited against clean 2.1.148:
-							// - "Use offset and limit parameters..." (3 hits in bundle) and
-							//   "shorter than the provided offset" (1 hit) remain LIVE.
-							// - The earlier "Please use offset and limit..." / GrepTool /
-							//   " tool to search for specific content" patterns no longer
-							//   match upstream (0 hits) and have been removed; the runtime
-							//   `_claudePatchReadPrompt` helper still handles dynamic
-							//   prompt rewrites for surfaces that aren't in the bundle.
+							// Rewrite the live compile-time guidance surfaces. The runtime
+							// `_claudePatchReadPrompt` helper handles dynamic prompt text.
 							updated = updated.replace(
 								/Use offset and limit parameters to read specific portions of the file,/g,
 								"Use the range parameter (supported bat-style forms) to read specific portions of the file,",

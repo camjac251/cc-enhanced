@@ -16,51 +16,10 @@ import type {
 	RollbackResult,
 	StatusInfo,
 } from "./promote.js";
+import { stringifySummary } from "./summary-serializer.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
-
-function stringifySummary(report: unknown): string {
-	const seen = new WeakSet<object>();
-	const MAX_STRING_LENGTH = 200_000;
-
-	try {
-		return JSON.stringify(
-			report,
-			(key, value) => {
-				if (key === "ast") return "[omitted: Babel AST]";
-				if (typeof value === "bigint") return value.toString();
-				if (value instanceof Error) {
-					return {
-						name: value.name,
-						message: value.message,
-						stack: value.stack,
-					};
-				}
-				if (typeof value === "string" && value.length > MAX_STRING_LENGTH) {
-					const truncatedBy = value.length - MAX_STRING_LENGTH;
-					return `${value.slice(0, MAX_STRING_LENGTH)}... [truncated ${truncatedBy} chars]`;
-				}
-				if (typeof value === "object" && value !== null) {
-					if (seen.has(value)) return "[Circular]";
-					seen.add(value);
-				}
-				return value;
-			},
-			2,
-		);
-	} catch (error) {
-		const reason = error instanceof Error ? error.message : String(error);
-		return JSON.stringify(
-			{
-				error: "Failed to serialize full summary",
-				reason,
-			},
-			null,
-			2,
-		);
-	}
-}
 
 function runPostUpdateVerification(promotedBinary?: string): void {
 	console.log(chalk.bold("\nPost-update verification"));

@@ -469,11 +469,9 @@ const AGENT_TOOL_LOOKUP_FIXTURE =
 const AGENT_TOOL_FORK_SELECTION_FIXTURE =
 	'return `${flag ? `When using the ${toolName} tool, specify a subagent_type to select an agent: \\`"fork"\\` forks yourself (the fork inherits your full conversation context and always runs on your model \\u2014 a \\`model\\` override is ignored); any other type \\u2014 or omitting it \\u2014 starts a fresh agent (general-purpose by default).` : `When using the ${toolName} tool, specify a subagent_type parameter to select which agent type to use. If omitted, the general-purpose agent is used.`}`;';
 
-// Mirrors the 2.1.219 wording: an availability clause carrying a release-volatile
-// tool interpolation sits between "spawn a subagent" and "and keep only the
-// findings here." The placeholder token stands in for the minified name so the
-// rewrite is proven token-independent; a matcher that does not tolerate the clause
-// no-ops and fails the assertions below.
+// An availability clause carrying a release-volatile tool interpolation sits
+// between "spawn a subagent" and "and keep only the findings here." The
+// placeholder token proves the rewrite is independent of minified names.
 const CLAUDE_NOISY_FIXTURE =
 	"For noisy investigation (grep sweeps, log trawls, broad search), spawn a subagent when you have the ${toolName} tool, and keep only the findings here.";
 

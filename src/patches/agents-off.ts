@@ -11,8 +11,8 @@ import {
  * Remove built-in agents from the registry that exposes them to the model.
  *
  * The current bundle assembles built-in agents in a central registry function
- * and conditionally pushes optional entries. Filtering that registry is enough;
- * we no longer rewrite agent object definitions themselves.
+ * and conditionally pushes optional entries. Filtering that registry preserves
+ * definitions used by internal consumers while hiding disabled entries.
  */
 
 const AGENTS_TO_DISABLE = new Set(["statusline-setup", "claude-code-guide"]);
