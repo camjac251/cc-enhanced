@@ -148,6 +148,14 @@ return { calls, control, dispatchClickedLink };
 	) as PatchedRuntime;
 }
 
+function snapshotRuntimeCalls(calls: RuntimeCall[]): RuntimeCall[] {
+	return Array.from(calls, (call) => ({
+		command: call.command,
+		args: Array.from(call.args),
+		extra: Array.from(call.extra),
+	}));
+}
+
 test("verify rejects an unpatched stock file dispatcher", () => {
 	const ast = parse(FILE_DISPATCH_FIXTURE);
 	const code = print(ast);
@@ -194,7 +202,7 @@ test("auto mode detects standard WSL environment markers", async () => {
 	]) {
 		const runtime = loadPatchedRuntime(output, env);
 		assert.equal(await runtime.dispatchClickedLink(fileUrl), true);
-		assert.deepEqual(runtime.calls, [
+		assert.deepEqual(snapshotRuntimeCalls(runtime.calls), [
 			{ command: "wslview", args: [filePath], extra: [] },
 		]);
 	}
@@ -236,7 +244,7 @@ test("explicit modes override automatic WSL routing", async () => {
 		"darwin",
 	);
 	assert.equal(await forcedWslview.dispatchClickedLink(fileUrl), true);
-	assert.deepEqual(forcedWslview.calls, [
+	assert.deepEqual(snapshotRuntimeCalls(forcedWslview.calls), [
 		{ command: "wslview", args: [filePath], extra: [] },
 	]);
 
@@ -244,7 +252,7 @@ test("explicit modes override automatic WSL routing", async () => {
 		CLAUDE_CODE_FILE_OPEN_MODE: "vscode",
 	});
 	assert.equal(await vscode.dispatchClickedLink(fileUrl), true);
-	assert.deepEqual(vscode.calls, [
+	assert.deepEqual(snapshotRuntimeCalls(vscode.calls), [
 		{
 			command: "code",
 			args: ["--reuse-window", filePath],
@@ -257,7 +265,7 @@ test("explicit modes override automatic WSL routing", async () => {
 		WSL_DISTRO_NAME: "Ubuntu",
 	});
 	assert.equal(await custom.dispatchClickedLink(fileUrl), true);
-	assert.deepEqual(custom.calls, [
+	assert.deepEqual(snapshotRuntimeCalls(custom.calls), [
 		{
 			command: "/opt/bin/smart-open",
 			args: [filePath],
@@ -313,7 +321,7 @@ test("a nonzero enhanced opener logs safely without a second launch", async () =
 	const fileUrl = "file:///tmp/recoverable.png";
 	assert.equal(await runtime.dispatchClickedLink(fileUrl), false);
 	assert.deepEqual(
-		runtime.calls.map((call) => call.command),
+		snapshotRuntimeCalls(runtime.calls).map((call) => call.command),
 		["wslview", "log"],
 	);
 	assert.match(
@@ -335,7 +343,7 @@ test("a thrown enhanced opener logs only the error class", async () => {
 		false,
 	);
 	assert.deepEqual(
-		runtime.calls.map((call) => call.command),
+		snapshotRuntimeCalls(runtime.calls).map((call) => call.command),
 		["wslview", "log"],
 	);
 	const message = String(runtime.calls[1]?.args[0]);
