@@ -700,6 +700,16 @@ function renderPromptExpression(
 			);
 		}
 
+		if (t.isMemberExpression(expression)) {
+			const rendered = renderMemberExpression(
+				expression,
+				context,
+				seenFunctions,
+				seenBindings,
+			);
+			if (rendered !== null) return rendered;
+		}
+
 		if (t.isArrayExpression(expression)) {
 			const items = renderPromptListExpression(
 				expression,
@@ -874,6 +884,125 @@ function renderPromptExpression(
 	} finally {
 		if (expressionKey) context.activeExpressions.delete(expressionKey);
 	}
+}
+
+function renderMemberExpression(
+	expression: t.MemberExpression,
+	context: RenderContext,
+	seenFunctions: Set<string>,
+	seenBindings: Set<string>,
+): string | null {
+	const propertyName =
+		!expression.computed && t.isIdentifier(expression.property)
+			? expression.property.name
+			: t.isStringLiteral(expression.property)
+				? expression.property.value
+				: null;
+	if (!propertyName || !t.isExpression(expression.object)) return null;
+	return renderObjectPropertyValue(
+		expression.object,
+		propertyName,
+		context,
+		seenFunctions,
+		seenBindings,
+	);
+}
+
+function renderObjectPropertyValue(
+	expression: t.Expression,
+	propertyName: string,
+	context: RenderContext,
+	seenFunctions: Set<string>,
+	seenBindings: Set<string>,
+): string | null {
+	if (t.isObjectExpression(expression)) {
+		const property = getObjectProperty(expression, propertyName);
+		if (!property || !t.isObjectProperty(property)) return null;
+		return t.isExpression(property.value)
+			? renderPromptExpression(
+					property.value,
+					context,
+					seenFunctions,
+					seenBindings,
+				)
+			: null;
+	}
+
+	if (t.isIdentifier(expression)) {
+		if (seenBindings.has(expression.name)) return null;
+		const bound = context.expressionBindings.get(expression.name);
+		if (!bound) return null;
+		const nextSeenBindings = new Set(seenBindings);
+		nextSeenBindings.add(expression.name);
+		return renderObjectPropertyValue(
+			bound,
+			propertyName,
+			context,
+			seenFunctions,
+			nextSeenBindings,
+		);
+	}
+
+	if (t.isCallExpression(expression) && t.isIdentifier(expression.callee)) {
+		const symbol = expression.callee.name;
+		if (seenFunctions.has(symbol)) return null;
+		const target = context.functionBindings.get(symbol);
+		if (!target) return null;
+		const nextSeenFunctions = new Set(seenFunctions);
+		nextSeenFunctions.add(symbol);
+		return withParameterBindings(
+			context,
+			target,
+			expression.arguments,
+			nextSeenFunctions,
+			seenBindings,
+			() =>
+				extractObjectPropertyFromFunctionNode(
+					target,
+					propertyName,
+					context,
+					nextSeenFunctions,
+					seenBindings,
+				),
+		);
+	}
+
+	return null;
+}
+
+function extractObjectPropertyFromFunctionNode(
+	node: FunctionLikeNode,
+	propertyName: string,
+	context: RenderContext,
+	seenFunctions: Set<string>,
+	seenBindings: Set<string>,
+): string | null {
+	if (t.isArrowFunctionExpression(node) && !t.isBlockStatement(node.body)) {
+		return renderObjectPropertyValue(
+			node.body,
+			propertyName,
+			context,
+			seenFunctions,
+			seenBindings,
+		);
+	}
+	if (!t.isBlockStatement(node.body)) return null;
+	const blockBody = node.body.body;
+	const localExprs = collectLocalBindings(blockBody);
+	return withLocalBindings(context, localExprs, seenFunctions, () => {
+		for (const statement of blockBody) {
+			if (!t.isReturnStatement(statement) || !statement.argument) continue;
+			const rendered = renderObjectPropertyValue(
+				statement.argument,
+				propertyName,
+				context,
+				seenFunctions,
+				seenBindings,
+			);
+			if (rendered !== null) return rendered;
+		}
+		return null;
+	});
 }
 
 function renderArrayFindCallExpression(

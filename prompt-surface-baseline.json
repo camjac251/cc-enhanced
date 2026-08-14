@@ -1,5 +1,5 @@
 {
-  "version": "2.1.228",
+  "version": "2.1.233",
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
@@ -11,7 +11,7 @@
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge-2.md": "8d24296a1459ba9472328887c294278e8be614df3168e70b1134b7ae13dd2ff9",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge.md": "ca6cf36e2d06d7db385d9b760fb409f7969299b56c91d185a35605259c40fd6f",
     "system/sections/dream-memory-consolidation.md": "2c1f842b2911603b38825858d98f31285cfea96278adb9a3ad3081b46baba84b",
-    "system/sections/session-specific-guidance.md": "5eda14154b7ab1e9a62d5639481f8e1c49b13af3a7ed5e4c3a3601e672bdab6a",
+    "system/sections/session-specific-guidance.md": "f2cfef1db00c1af26fc7976d3877975569ce25fb151315662cba935070ca1eee",
     "system/sections/using-your-tools.md": "9f7e7a7321436c63b1a06629cfb11caefa722e8ab81b87ad744c8598b375ea7c",
     "tools/builtin/agent.md": "3a4e517f45aec455586b60f201cdec5b673ab085a9156e2a8bf78790eb27b7d3",
     "tools/builtin/taskoutput.md": "75253a34674c17b87f7ef20b592814ff65b9f4f6c97ef7fb7d794dbdc5ad94a5"

@@ -79,3 +79,70 @@ function registerBuiltInSkill() {
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}
 });
+
+test("prompt exporter resolves object properties returned by local helper calls", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "prompt-export-object-property-"),
+	);
+	const cliPath = path.join(tempDir, "cli.js");
+	const outputDir = path.join(tempDir, "exported");
+	try {
+		await fs.writeFile(
+			cliPath,
+			`
+function isFeatureEnabled() {
+  return false;
+}
+function getFeatureStatus() {
+  if (isFeatureEnabled()) {
+    return { enabled: true, text: "The optional feature is available." };
+  }
+  return { enabled: false, text: "The optional feature is unavailable." };
+}
+function buildGuidePrompt() {
+  const status = getFeatureStatus();
+  return \`# Product guide
+
+Session status: \${status.text}
+
+Use the current product documentation when answering configuration questions.\`;
+}
+const builtInGuide = {
+  agentType: "product-guide",
+  getSystemPrompt: buildGuidePrompt,
+};
+`,
+			"utf8",
+		);
+
+		const result = spawnSync(
+			process.execPath,
+			[
+				"scripts/export-prompts.ts",
+				cliPath,
+				"--label",
+				"fixture",
+				"--output-dir",
+				outputDir,
+			],
+			{
+				cwd: repoRoot,
+				encoding: "utf8",
+				env: { ...process.env, CLAUDE_PATCHER_PROFILE: "1" },
+			},
+		);
+		assert.equal(result.status, 0, result.stderr);
+
+		const prompt = await fs.readFile(
+			path.join(outputDir, "agents", "product-guide.md"),
+			"utf8",
+		);
+		assert.match(
+			prompt,
+			/Session status: The optional feature is unavailable\./,
+		);
+		assert.doesNotMatch(prompt, /\$\{value_/);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
