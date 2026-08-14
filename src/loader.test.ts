@@ -76,23 +76,24 @@ test("loader prints escaped non-ASCII bundle output", () => {
 	assert.doesNotThrow(() => parse(output));
 });
 
-test("loader can parse a detected installed Claude bundle when available", {
-	timeout: 30000,
-}, (t) => {
-	const detected = detectInstalledClaudeTarget();
-	if (!detected) {
-		t.skip("No installed Claude target detected");
-		return;
-	}
+const detectedClaudeTarget = detectInstalledClaudeTarget();
 
-	try {
+test(
+	"loader can parse a detected installed Claude bundle when available",
+	{
+		timeout: 30000,
+		skip: detectedClaudeTarget
+			? false
+			: "No installed Claude target detected",
+	},
+	() => {
+		assert.ok(detectedClaudeTarget);
 		const bundle =
-			detected.kind === "cli.js"
-				? fs.readFileSync(detected.targetPath, "utf8")
-				: extractClaudeJsFromNativeBinary(detected.targetPath).toString("utf8");
+			detectedClaudeTarget.kind === "cli.js"
+				? fs.readFileSync(detectedClaudeTarget.targetPath, "utf8")
+				: extractClaudeJsFromNativeBinary(
+						detectedClaudeTarget.targetPath,
+					).toString("utf8");
 		assert.doesNotThrow(() => parse(bundle));
-	} catch (error) {
-		const reason = error instanceof Error ? error.message : String(error);
-		t.skip(`Could not extract installed Claude bundle: ${reason}`);
-	}
-});
+	},
+);
