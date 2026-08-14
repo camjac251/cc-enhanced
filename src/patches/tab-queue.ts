@@ -8,6 +8,25 @@ import {
 	getVerifyAst,
 	isElementCall,
 } from "./ast-helpers.js";
+import {
+	buildEditHintStatement,
+	buildPromptBarPreviewDeclarations,
+	buildQueueHintStatement,
+	buildQueuePartsFallbackCondition,
+	buildTypeaheadQueueBypass,
+	buildWrappedTextInputElement,
+	isNegatedQueueHasItems,
+	isPreventDefaultCall,
+	isPromptBarPreviewKey,
+	isQueuePartsLengthFallback,
+	isQueuePartsUnshiftCall,
+	isStringProperty,
+	isTextInputChoice,
+	isThinkingToggleHintKey,
+	isTrimmedEmptyInputTest,
+	getPromptBarBoxComponent as matchPromptBarBoxComponent,
+	getPromptBarTextComponent as matchPromptBarTextComponent,
+} from "./tab-queue-presentation.js";
 
 type FunctionLike =
 	| t.FunctionDeclaration
@@ -187,36 +206,6 @@ function isGlobalQueueMember(node: t.Node | null | undefined): boolean {
 		t.isIdentifier(node.object, { name: "globalThis" }) &&
 		getMemberName(node) === TAB_QUEUE_GLOBAL
 	);
-}
-
-/**
- * Matches the negated queue-has-items shape the typeahead bypass injects:
- * `!(Array.isArray(globalThis.<queue>) && globalThis.<queue>.length > 0)`.
- * Mirrors buildQueueHasItems wrapped in `!`, so the bypass is verified by its
- * exact polarity rather than merely "the queue member appears in the test",
- * which a polarity-flipped regression would otherwise satisfy.
- */
-function isNegatedQueueHasItems(node: t.Node | null | undefined): boolean {
-	if (!node || !t.isUnaryExpression(node, { operator: "!" })) return false;
-	const inner = node.argument;
-	if (!t.isLogicalExpression(inner, { operator: "&&" })) return false;
-
-	const isArrayCheck =
-		t.isCallExpression(inner.left) &&
-		t.isMemberExpression(inner.left.callee) &&
-		t.isIdentifier(inner.left.callee.object, { name: "Array" }) &&
-		getMemberName(inner.left.callee) === "isArray" &&
-		inner.left.arguments.length === 1 &&
-		isGlobalQueueMember(inner.left.arguments[0]);
-
-	const isLengthCheck =
-		t.isBinaryExpression(inner.right, { operator: ">" }) &&
-		t.isMemberExpression(inner.right.left) &&
-		getMemberName(inner.right.left) === "length" &&
-		isGlobalQueueMember(inner.right.left.object) &&
-		t.isNumericLiteral(inner.right.right, { value: 0 });
-
-	return isArrayCheck && isLengthCheck;
 }
 
 function buildTrimCall(input: t.Expression): t.CallExpression {
@@ -898,36 +887,6 @@ function patchSubmitForward(target: DraftQueueTarget): boolean {
 	return patched;
 }
 
-function getCreateElementFactory(node: t.CallExpression): t.Expression | null {
-	if (!isElementCall(node) || !t.isMemberExpression(node.callee)) {
-		return null;
-	}
-	return t.isExpression(node.callee.object) ? node.callee.object : null;
-}
-
-function getCreateElementComponent(
-	node: t.CallExpression,
-): t.Expression | null {
-	const component = node.arguments[0];
-	return t.isExpression(component) ? component : null;
-}
-
-function getCreateElementProps(
-	node: t.CallExpression,
-): t.ObjectExpression | null {
-	const props = node.arguments[1];
-	return t.isObjectExpression(props) ? props : null;
-}
-
-function isTextInputChoice(node: t.Node | null | undefined): boolean {
-	if (!t.isConditionalExpression(node)) return false;
-	return [node.consequent, node.alternate].every((branch) => {
-		if (!isElementCall(branch)) return false;
-		const props = getCreateElementProps(branch);
-		return !!props && props.properties.some((prop) => t.isSpreadElement(prop));
-	});
-}
-
 function findPromptBarBoxComponent(
 	functionNode: FunctionLike,
 	textInputId: t.Identifier,
@@ -943,22 +902,7 @@ function findPromptBarBoxComponent(
 			},
 			CallExpression(path) {
 				if (component || !isElementCall(path.node)) return;
-				const props = getCreateElementProps(path.node);
-				if (
-					!props ||
-					!hasObjectProperty(props, "flexGrow") ||
-					!hasObjectProperty(props, "flexShrink")
-				) {
-					return;
-				}
-				if (
-					!getElementChildren(path.node).some((arg) =>
-						t.isIdentifier(arg, { name: textInputId.name }),
-					)
-				) {
-					return;
-				}
-				component = getCreateElementComponent(path.node);
+				component = matchPromptBarBoxComponent(path.node, textInputId);
 			},
 		},
 		undefined,
@@ -982,14 +926,7 @@ function findPromptBarTextComponent(
 			},
 			CallExpression(path) {
 				if (component || !isElementCall(path.node)) return;
-				const props = getCreateElementProps(path.node);
-				if (!props || !hasObjectProperty(props, "dimColor")) return;
-				if (
-					!getElementChildren(path.node).some((arg) => t.isStringLiteral(arg))
-				) {
-					return;
-				}
-				component = getCreateElementComponent(path.node);
+				component = matchPromptBarTextComponent(path.node);
 			},
 		},
 		undefined,
@@ -1001,19 +938,11 @@ function findPromptBarTextComponent(
 
 function hasPromptBarPreview(functionNode: FunctionLike): boolean {
 	return (
-		nodeContains(
-			functionNode,
-			(node) =>
-				t.isObjectProperty(node) &&
-				getObjectKeyName(node.key) === "key" &&
-				t.isStringLiteral(node.value, { value: "tab-queue-status" }),
+		nodeContains(functionNode, (node) =>
+			isPromptBarPreviewKey(node, "tab-queue-status"),
 		) &&
-		nodeContains(
-			functionNode,
-			(node) =>
-				t.isObjectProperty(node) &&
-				getObjectKeyName(node.key) === "key" &&
-				t.isStringLiteral(node.value, { value: "tab-queue-draft" }),
+		nodeContains(functionNode, (node) =>
+			isPromptBarPreviewKey(node, "tab-queue-draft"),
 		) &&
 		nodeContains(functionNode, isGlobalQueueMember)
 	);
@@ -1045,7 +974,11 @@ function getPromptBarPreviewTarget(
 	if (!t.isConditionalExpression(init) || !isElementCall(init.alternate)) {
 		return null;
 	}
-	const react = getCreateElementFactory(init.alternate);
+	const callee = init.alternate.callee;
+	const react =
+		t.isMemberExpression(callee) && t.isExpression(callee.object)
+			? callee.object
+			: null;
 	const box = findPromptBarBoxComponent(functionPath.node, textInputId);
 	const text = findPromptBarTextComponent(functionPath.node);
 	if (!react || !box || !text) return null;
@@ -1061,186 +994,6 @@ function getPromptBarPreviewTarget(
 	};
 }
 
-function buildReactElementCall(
-	react: t.Expression,
-	component: t.Expression,
-	props: t.Expression | null,
-	children: t.Expression[],
-): t.CallExpression {
-	// The bundle renders through the automatic JSX runtime, so build elements as
-	// `react.jsx(component, props)` with children folded into the props
-	// `children` slot rather than passed as positional arguments. The captured
-	// `react` factory exposes `jsx`, which accepts a single child or an array.
-	const propsObject =
-		props && t.isObjectExpression(props) ? props : t.objectExpression([]);
-	if (children.length > 0) {
-		propsObject.properties.push(
-			t.objectProperty(
-				t.identifier("children"),
-				children.length === 1 ? children[0] : t.arrayExpression(children),
-			),
-		);
-	}
-	return t.callExpression(
-		t.memberExpression(t.cloneNode(react, true), t.identifier("jsx")),
-		[t.cloneNode(component, true), propsObject],
-	);
-}
-
-function buildPromptBarPreviewDeclarations(
-	target: PromptBarPreviewTarget,
-): t.VariableDeclaration[] {
-	const queuedDrafts = t.identifier("__ccTabQueuedDrafts");
-	const queuedDraft = t.identifier("__ccTabQueuedDraft");
-	const queuedPreview = t.identifier("__ccTabQueuedPreview");
-	const lastIndex = t.binaryExpression(
-		"-",
-		t.memberExpression(t.cloneNode(queuedDrafts), t.identifier("length")),
-		t.numericLiteral(1),
-	);
-	const countSuffix = t.conditionalExpression(
-		t.binaryExpression(
-			">",
-			t.memberExpression(t.cloneNode(queuedDrafts), t.identifier("length")),
-			t.numericLiteral(1),
-		),
-		t.binaryExpression(
-			"+",
-			t.binaryExpression(
-				"+",
-				t.stringLiteral(" ("),
-				t.memberExpression(t.cloneNode(queuedDrafts), t.identifier("length")),
-			),
-			t.stringLiteral(")"),
-		),
-		t.stringLiteral(""),
-	);
-
-	return [
-		t.variableDeclaration("let", [
-			t.variableDeclarator(queuedDrafts, globalQueueMember()),
-		]),
-		t.variableDeclaration("let", [
-			t.variableDeclarator(
-				queuedDraft,
-				t.conditionalExpression(
-					buildAnd([
-						t.callExpression(
-							t.memberExpression(
-								t.identifier("Array"),
-								t.identifier("isArray"),
-							),
-							[t.cloneNode(queuedDrafts)],
-						),
-						t.binaryExpression(
-							">",
-							t.memberExpression(
-								t.cloneNode(queuedDrafts),
-								t.identifier("length"),
-							),
-							t.numericLiteral(0),
-						),
-					]),
-					t.memberExpression(t.cloneNode(queuedDrafts), lastIndex, true),
-					t.stringLiteral(""),
-				),
-			),
-		]),
-		t.variableDeclaration("let", [
-			t.variableDeclarator(
-				queuedPreview,
-				t.conditionalExpression(
-					t.cloneNode(queuedDraft),
-					buildReactElementCall(
-						target.react,
-						target.box,
-						t.objectExpression([
-							t.objectProperty(
-								t.identifier("flexDirection"),
-								t.stringLiteral("column"),
-							),
-							t.objectProperty(t.identifier("width"), t.stringLiteral("100%")),
-						]),
-						[
-							buildReactElementCall(
-								target.react,
-								target.text,
-								t.objectExpression([
-									t.objectProperty(
-										t.identifier("color"),
-										t.stringLiteral("warning"),
-									),
-									t.objectProperty(
-										t.identifier("key"),
-										t.stringLiteral("tab-queue-status"),
-									),
-									t.objectProperty(
-										t.identifier("wrap"),
-										t.stringLiteral("truncate"),
-									),
-								]),
-								[
-									t.stringLiteral("Queued follow-up"),
-									countSuffix,
-									t.stringLiteral(" | Tab to edit"),
-								],
-							),
-							buildReactElementCall(
-								target.react,
-								target.text,
-								t.objectExpression([
-									t.objectProperty(
-										t.identifier("dimColor"),
-										t.booleanLiteral(true),
-									),
-									t.objectProperty(
-										t.identifier("italic"),
-										t.booleanLiteral(true),
-									),
-									t.objectProperty(
-										t.identifier("key"),
-										t.stringLiteral("tab-queue-draft"),
-									),
-									t.objectProperty(
-										t.identifier("wrap"),
-										t.stringLiteral("truncate"),
-									),
-								]),
-								[t.stringLiteral("> "), t.cloneNode(queuedDraft)],
-							),
-						],
-					),
-					t.nullLiteral(),
-				),
-			),
-		]),
-	];
-}
-
-function buildWrappedTextInputElement(
-	target: PromptBarPreviewTarget,
-	originalInit: t.Expression,
-): t.ConditionalExpression {
-	const wrappedInput = buildReactElementCall(
-		target.react,
-		target.box,
-		t.objectExpression([
-			t.objectProperty(
-				t.identifier("flexDirection"),
-				t.stringLiteral("column"),
-			),
-			t.objectProperty(t.identifier("width"), t.stringLiteral("100%")),
-		]),
-		[t.identifier("__ccTabQueuedPreview"), t.cloneNode(originalInit, true)],
-	);
-
-	return t.conditionalExpression(
-		t.identifier("__ccTabQueuedPreview"),
-		wrappedInput,
-		originalInit,
-	);
-}
-
 function patchPromptBarPreviewTarget(target: DraftQueueTarget): boolean {
 	if (hasPromptBarPreview(target.ownerFunction.node)) return true;
 	const previewTarget = getPromptBarPreviewTarget(target);
@@ -1250,67 +1003,48 @@ function patchPromptBarPreviewTarget(target: DraftQueueTarget): boolean {
 	const declaration = previewTarget.textInputDeclaration.parentPath;
 	if (!declaration.isVariableDeclaration()) return false;
 
-	declaration.insertBefore(buildPromptBarPreviewDeclarations(previewTarget));
+	declaration.insertBefore(
+		buildPromptBarPreviewDeclarations(
+			previewTarget.react,
+			previewTarget.box,
+			previewTarget.text,
+			globalQueueMember(),
+		),
+	);
 	previewTarget.textInputDeclaration.node.init = buildWrappedTextInputElement(
-		previewTarget,
+		previewTarget.react,
+		previewTarget.box,
 		originalInit,
 	);
 	return true;
 }
 
 function hasThinkingToggleHint(node: t.Node | null | undefined): boolean {
-	return nodeContains(
-		node,
-		(candidate) =>
-			t.isObjectProperty(candidate) &&
-			getObjectKeyName(candidate.key) === "key" &&
-			t.isStringLiteral(candidate.value, { value: "thinking-toggle-hint" }),
-	);
-}
-
-function hasPreventDefaultCall(node: t.Node | null | undefined): boolean {
-	return nodeContains(
-		node,
-		(candidate) =>
-			t.isCallExpression(candidate) &&
-			t.isMemberExpression(candidate.callee) &&
-			getMemberName(candidate.callee) === "preventDefault",
-	);
-}
-
-function hasTrimmedEmptyInputTest(node: t.Node | null | undefined): boolean {
-	return nodeContains(
-		node,
-		(candidate) =>
-			t.isBinaryExpression(candidate, { operator: "===" }) &&
-			t.isStringLiteral(candidate.right, { value: "" }) &&
-			t.isCallExpression(candidate.left) &&
-			t.isMemberExpression(candidate.left.callee) &&
-			getMemberName(candidate.left.callee) === "trim",
-	);
+	return nodeContains(node, isThinkingToggleHintKey);
 }
 
 function getTypeaheadThinkingHintTarget(
 	path: NodePath<t.IfStatement>,
 ): TypeaheadThinkingHintTarget | null {
-	if (!hasTrimmedEmptyInputTest(path.node.test)) return null;
+	if (!nodeContains(path.node.test, isTrimmedEmptyInputTest)) return null;
 	if (!hasThinkingToggleHint(path.node.consequent)) return null;
-	if (!hasPreventDefaultCall(path.node.consequent)) return null;
+	if (!nodeContains(path.node.consequent, isPreventDefaultCall)) return null;
 	return { hintIf: path };
 }
 
 function hasTypeaheadQueueBypass(target: TypeaheadThinkingHintTarget): boolean {
-	return nodeContains(target.hintIf.node.test, isNegatedQueueHasItems);
+	return nodeContains(target.hintIf.node.test, (node) =>
+		isNegatedQueueHasItems(node, isGlobalQueueMember),
+	);
 }
 
 function patchTypeaheadThinkingHintTarget(
 	target: TypeaheadThinkingHintTarget,
 ): boolean {
 	if (hasTypeaheadQueueBypass(target)) return true;
-	target.hintIf.node.test = t.logicalExpression(
-		"&&",
-		t.cloneNode(target.hintIf.node.test, true),
-		t.unaryExpression("!", buildQueueHasItems()),
+	target.hintIf.node.test = buildTypeaheadQueueBypass(
+		target.hintIf.node.test,
+		buildQueueHasItems(),
 	);
 	return true;
 }
@@ -1768,12 +1502,8 @@ function expressionHasStringProp(
 	propName: string,
 	value: string,
 ): boolean {
-	return nodeContains(
-		node,
-		(candidate) =>
-			t.isObjectProperty(candidate) &&
-			getObjectKeyName(candidate.key) === propName &&
-			t.isStringLiteral(candidate.value, { value }),
+	return nodeContains(node, (candidate) =>
+		isStringProperty(candidate, propName, value),
 	);
 }
 
@@ -1929,10 +1659,7 @@ function hasQueueHint(target: FooterHintTarget): boolean {
 	return nodeContains(
 		target.functionPath.node,
 		(node) =>
-			t.isCallExpression(node) &&
-			t.isMemberExpression(node.callee) &&
-			t.isIdentifier(node.callee.object, { name: target.queueParts.name }) &&
-			getMemberName(node.callee) === "unshift" &&
+			isQueuePartsUnshiftCall(node, target.queueParts) &&
 			expressionHasStringProp(node, "key", "queue-draft") &&
 			expressionHasStringProp(node, "chord", "tab") &&
 			expressionHasStringProp(node, "action", "queue"),
@@ -1943,10 +1670,7 @@ function hasEditHint(target: FooterHintTarget): boolean {
 	return nodeContains(
 		target.functionPath.node,
 		(node) =>
-			t.isCallExpression(node) &&
-			t.isMemberExpression(node.callee) &&
-			t.isIdentifier(node.callee.object, { name: target.queueParts.name }) &&
-			getMemberName(node.callee) === "unshift" &&
+			isQueuePartsUnshiftCall(node, target.queueParts) &&
 			expressionHasStringProp(node, "key", "edit-queued-draft") &&
 			expressionHasStringProp(node, "chord", "tab") &&
 			expressionHasStringProp(node, "action", "edit queued"),
@@ -1954,92 +1678,8 @@ function hasEditHint(target: FooterHintTarget): boolean {
 }
 
 function hasQueuePartsLengthFallback(target: FooterHintTarget): boolean {
-	return nodeContains(
-		target.pushIf.node.test,
-		(node) =>
-			t.isBinaryExpression(node, { operator: ">" }) &&
-			t.isMemberExpression(node.left) &&
-			t.isIdentifier(node.left.object, { name: target.queueParts.name }) &&
-			getMemberName(node.left) === "length" &&
-			t.isNumericLiteral(node.right, { value: 0 }),
-	);
-}
-
-function buildShortcutHintElement(
-	target: FooterHintTarget,
-	key: string,
-	action: string,
-): t.CallExpression {
-	const shortcutElement = buildReactElementCall(
-		target.factories.react,
-		target.factories.shortcut,
-		t.objectExpression([
-			t.objectProperty(t.identifier("chord"), t.stringLiteral("tab")),
-			t.objectProperty(t.identifier("action"), t.stringLiteral(action)),
-			t.objectProperty(
-				t.identifier("format"),
-				t.objectExpression([
-					t.objectProperty(t.identifier("keyCase"), t.stringLiteral("lower")),
-				]),
-			),
-		]),
-		[],
-	);
-
-	return buildReactElementCall(
-		target.factories.react,
-		target.factories.text,
-		t.objectExpression([
-			t.objectProperty(t.identifier("dimColor"), t.booleanLiteral(true)),
-			t.objectProperty(t.identifier("key"), t.stringLiteral(key)),
-		]),
-		[shortcutElement],
-	);
-}
-
-function buildQueueHintElement(target: FooterHintTarget): t.CallExpression {
-	return buildShortcutHintElement(target, "queue-draft", "queue");
-}
-
-function buildEditHintElement(target: FooterHintTarget): t.CallExpression {
-	return buildShortcutHintElement(target, "edit-queued-draft", "edit queued");
-}
-
-function buildQueueHintStatement(target: FooterHintTarget): t.IfStatement {
-	return t.ifStatement(
-		t.logicalExpression(
-			"&&",
-			t.identifier(target.isLoading.name),
-			t.unaryExpression("!", t.identifier(target.isInputEmpty.name)),
-		),
-		t.blockStatement([
-			t.expressionStatement(
-				t.callExpression(
-					t.memberExpression(
-						t.identifier(target.queueParts.name),
-						t.identifier("unshift"),
-					),
-					[buildQueueHintElement(target)],
-				),
-			),
-		]),
-	);
-}
-
-function buildEditHintStatement(target: FooterHintTarget): t.IfStatement {
-	return t.ifStatement(
-		buildAnd([t.identifier(target.isInputEmpty.name), buildQueueHasItems()]),
-		t.blockStatement([
-			t.expressionStatement(
-				t.callExpression(
-					t.memberExpression(
-						t.identifier(target.queueParts.name),
-						t.identifier("unshift"),
-					),
-					[buildEditHintElement(target)],
-				),
-			),
-		]),
+	return nodeContains(target.pushIf.node.test, (node) =>
+		isQueuePartsLengthFallback(node, target.queueParts),
 	);
 }
 
@@ -2055,17 +1695,9 @@ function patchPushCondition(target: FooterHintTarget): boolean {
 		return false;
 	}
 
-	target.pushIf.node.test = t.logicalExpression(
-		"||",
-		t.identifier(target.showHint.name),
-		t.binaryExpression(
-			">",
-			t.memberExpression(
-				t.identifier(target.queueParts.name),
-				t.identifier("length"),
-			),
-			t.numericLiteral(0),
-		),
+	target.pushIf.node.test = buildQueuePartsFallbackCondition(
+		target.showHint,
+		target.queueParts,
 	);
 	return true;
 }
@@ -2074,10 +1706,28 @@ function patchFooterHintTarget(target: FooterHintTarget): boolean {
 	const queueHintReady = hasQueueHint(target);
 	const editHintReady = hasEditHint(target);
 	if (!queueHintReady) {
-		target.queuePartsDeclaration.insertAfter(buildQueueHintStatement(target));
+		target.queuePartsDeclaration.insertAfter(
+			buildQueueHintStatement(
+				target.queueParts,
+				target.isLoading,
+				target.isInputEmpty,
+				target.factories.react,
+				target.factories.text,
+				target.factories.shortcut,
+			),
+		);
 	}
 	if (!editHintReady) {
-		target.queuePartsDeclaration.insertAfter(buildEditHintStatement(target));
+		target.queuePartsDeclaration.insertAfter(
+			buildEditHintStatement(
+				target.queueParts,
+				target.isInputEmpty,
+				target.factories.react,
+				target.factories.text,
+				target.factories.shortcut,
+				buildQueueHasItems(),
+			),
+		);
 	}
 	return patchPushCondition(target);
 }

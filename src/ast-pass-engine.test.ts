@@ -3,11 +3,32 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
 	boundedNodeShape,
+	createPatchOutcomeRecorder,
 	type PatchPassEntry,
 	runCombinedAstPasses,
 } from "./ast-pass-engine.js";
 import type { Visitor } from "./babel.js";
 import { parse } from "./loader.js";
+
+test("patch outcome recorder counts only explicit semantic occurrences", () => {
+	const recorder = createPatchOutcomeRecorder();
+
+	recorder.recordMatch("observed");
+	recorder.recordMatch("mutated");
+	recorder.recordMatch("already-satisfied");
+	recorder.recordIssue("match-ambiguous");
+
+	assert.deepEqual(recorder.snapshot(), {
+		matched: 3,
+		mutated: 1,
+		alreadySatisfied: 1,
+		verified: 0,
+		issues: ["match-ambiguous"],
+	});
+
+	recorder.recordVerification(true);
+	assert.equal(recorder.snapshot().verified, 1);
+});
 
 test("bounded node shapes ignore identifiers and literals but retain structure", () => {
 	const first = parse("const short = 1;\n").program.body[0];

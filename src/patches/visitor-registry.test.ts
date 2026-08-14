@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parse } from "../loader.js";
 import { allPatches } from "./index.js";
+import {
+	generateSharedVisitorPairInventory,
+	SHARED_VISITOR_FAMILIES,
+} from "./patch-scenario.js";
 
 // Drift sentinel for the maintainer reference's "Shared visitor kinds" table.
 // It records the top-level visitor node kinds each patch exposes per pass to the
@@ -103,4 +107,24 @@ test("no patch registers a visitor for a retired or renamed pass", async () => {
 			);
 		}
 	}
+});
+
+test("selected shared families generate canonical pairs and declared reverse cases only", async () => {
+	const inventory = await generateSharedVisitorPairInventory(
+		allPatches,
+		SHARED_VISITOR_FAMILIES,
+	);
+	assert.deepEqual(
+		inventory.map(({ patchTags, order }) => ({ patchTags, order })),
+		[
+			{
+				patchTags: ["skill-paths-invoke", "skill-activation-notice"],
+				order: "canonical",
+			},
+			{
+				patchTags: ["skill-activation-notice", "skill-paths-invoke"],
+				order: "reverse",
+			},
+		],
+	);
 });

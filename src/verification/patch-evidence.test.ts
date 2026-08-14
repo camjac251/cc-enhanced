@@ -19,6 +19,13 @@ function manifest(
 				tag: "first",
 				passed: true,
 				coverage: "semantic",
+				outcomes: {
+					matched: 2,
+					mutated: 2,
+					alreadySatisfied: 0,
+					verified: 1,
+					issues: [],
+				},
 				handlerCalls: { discover: 1, mutate: 2, finalize: 0 },
 				structuralHashes: {
 					mutate: {
@@ -63,6 +70,33 @@ test("extractPatchEvidence rejects malformed and duplicate patch evidence", () =
 				}),
 			),
 		/duplicate patch evidence tag/i,
+	);
+});
+
+test("extractPatchEvidence validates bounded structured outcomes", () => {
+	const direct = manifest();
+	assert.deepEqual(extractPatchEvidence(direct).patches[0]?.outcomes, {
+		matched: 2,
+		mutated: 2,
+		alreadySatisfied: 0,
+		verified: 1,
+		issues: [],
+	});
+
+	const malformed = manifest();
+	malformed.patches[0] = {
+		...malformed.patches[0],
+		outcomes: {
+			matched: 1,
+			mutated: 1,
+			alreadySatisfied: 1,
+			verified: 1,
+			issues: [],
+		},
+	};
+	assert.throws(
+		() => extractPatchEvidence(malformed),
+		/mutated plus alreadySatisfied cannot exceed matched/,
 	);
 });
 
@@ -147,6 +181,11 @@ test("comparePatchEvidence reports bounded field-level release drift", () => {
 		result.deltas[0]?.changes.map((change) => change.field),
 		[
 			"passed",
+			"outcomes.matched",
+			"outcomes.mutated",
+			"outcomes.alreadySatisfied",
+			"outcomes.verified",
+			"outcomes.issues",
 			"handlerCalls.mutate",
 			"structuralHashes.mutate.beforeSha256",
 			"structuralHashes.mutate.afterSha256",

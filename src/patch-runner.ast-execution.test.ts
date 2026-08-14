@@ -594,3 +594,75 @@ test("PatchRunner preserves semantic evidence when verification fails", async ()
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}
 });
+
+test("PatchRunner normalizes legacy and structured verification at one seam", async () => {
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "runner-outcomes-"));
+	const targetPath = path.join(tempDir, "cli.js");
+	await fs.writeFile(targetPath, 'const marker = "before";\n', "utf-8");
+
+	const patches: Patch[] = [
+		{ tag: "legacy-true", verify: () => true },
+		{ tag: "legacy-string", verify: () => "legacy failure" },
+		{
+			tag: "legacy-witness",
+			verify: () => true,
+			verifyWithWitness: () => ({
+				result: true,
+				witness: { targetCount: 1 },
+			}),
+		},
+		{
+			tag: "structured-result",
+			astPasses: (_ast, recorder) => [
+				{
+					pass: "mutate",
+					visitor: {
+						StringLiteral(path: any) {
+							if (path.node.value !== "before") return;
+							recorder?.recordMatch("mutated");
+							path.node.value = "after";
+						},
+					},
+				},
+			],
+			verify: () => true,
+			verifyWithWitness: () => ({
+				passed: true,
+				issues: [],
+				witness: { targetCount: 1, patchedCount: 1 },
+			}),
+		},
+	];
+
+	try {
+		const result = await new PatchRunner(patches, {
+			signaturePolicy: "off",
+		}).run(targetPath, { dryRun: true });
+
+		assert.deepEqual(result.appliedTags, [
+			"legacy-true",
+			"legacy-witness",
+			"structured-result",
+		]);
+		assert.deepEqual(result.failedTags, ["legacy-string"]);
+		assert.deepEqual(
+			result.evidence?.patches.find(
+				(patch) => patch.tag === "structured-result",
+			)?.outcomes,
+			{
+				matched: 1,
+				mutated: 1,
+				alreadySatisfied: 0,
+				verified: 1,
+				issues: [],
+			},
+		);
+		assert.deepEqual(
+			result.evidence?.patches.find((patch) => patch.tag === "legacy-string")
+				?.outcomes?.issues,
+			["verification-failed"],
+		);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});

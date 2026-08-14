@@ -495,6 +495,8 @@ Current target: **Claude Code 2.1.228**. Tracks the latest upstream release and 
 - A working **Claude Code** installation
 - A local Claude Code policy file at `/etc/claude-code/system-prompt.md`, or set `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE` to the file you want auto-appended
 
+CI keeps the Bun 1.4 canary compatibility lane and a separate required lane pinned to Bun 1.3.14. Both lanes record the installed Bun version and revision, install from `bun.lock` with `--frozen-lockfile`, and run typecheck, lint, and the serial test command. The pinned `Required / Bun 1.3.14` job is the reproducible branch-protection target; canary failures remain visible as compatibility failures.
+
 Babel AST + generator over the formatted bundle is the heaviest part of the patcher. JSC (Bun's engine) sizes its heap dynamically, so no explicit flag is required; both direct `bun src/index.ts ...` and `mise` task invocations work.
 
 The test suite uses `bun test` against the `node:test` API shim. Use `bun run test`, which starts one isolated Bun process per test file, sequentially, to bound memory and avoid the shim's concurrent file-load failures. Raw `bun test src/`, even with `--parallel=1`, keeps the files in one Bun process and is not equivalent.

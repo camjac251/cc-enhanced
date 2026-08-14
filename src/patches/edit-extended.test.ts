@@ -1108,6 +1108,29 @@ test("edit-extended runtime keeps scratchpad update diffs expanded", async () =>
 	}
 });
 
+test("edit-extended public Patch preserves result presentation across repeated and sibling passes", async () => {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const firstOutput = print(ast);
+
+	assert.match(firstOutput, /function _editAppendOpts\(/);
+	assert.match(firstOutput, /collapsed: false/);
+	assert.equal(editTool.verify(firstOutput, ast), true);
+
+	await runEditToolViaPasses(ast);
+	const repeatedOutput = print(ast);
+	assert.equal(repeatedOutput, firstOutput);
+	assert.equal(editTool.verify(repeatedOutput, ast), true);
+
+	const siblingAst = parse(EDIT_FIXTURE);
+	await runEditAndPlanUiViaPasses(siblingAst);
+	const siblingOutput = print(siblingAst);
+	assert.match(siblingOutput, /previewHint: void 0/);
+	assert.match(siblingOutput, /function _editAppendOpts\(/);
+	assert.match(siblingOutput, /collapsed: false/);
+	assert.equal(editTool.verify(siblingOutput, siblingAst), true);
+});
+
 test("edit-extended expands latest Edit results with either collapse predicate", async () => {
 	const ast = parse(EDIT_LATEST_COLLAPSE_FIXTURE);
 	await runEditToolViaPasses(ast);

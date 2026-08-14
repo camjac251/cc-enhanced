@@ -2,7 +2,44 @@ import { createHash, type Hash } from "node:crypto";
 import type * as t from "@babel/types";
 import { VISITOR_KEYS } from "@babel/types";
 import { type NodePath, traverse, type Visitor } from "./babel.js";
-import type { AstPassName, PatchAstPass } from "./types.js";
+import type {
+	AstPassName,
+	PatchAstPass,
+	PatchIssueCode,
+	PatchOutcomeEvidence,
+	PatchOutcomeRecorder,
+} from "./types.js";
+
+export function createPatchOutcomeRecorder(): PatchOutcomeRecorder {
+	let matched = 0;
+	let mutated = 0;
+	let alreadySatisfied = 0;
+	let verified: 0 | 1 = 0;
+	const issues = new Set<PatchIssueCode>();
+
+	return {
+		recordMatch(outcome) {
+			matched += 1;
+			if (outcome === "mutated") mutated += 1;
+			if (outcome === "already-satisfied") alreadySatisfied += 1;
+		},
+		recordIssue(code) {
+			issues.add(code);
+		},
+		recordVerification(passed) {
+			verified = passed ? 1 : 0;
+		},
+		snapshot(): PatchOutcomeEvidence {
+			return {
+				matched,
+				mutated,
+				alreadySatisfied,
+				verified,
+				issues: [...issues],
+			};
+		},
+	};
+}
 
 export interface PatchPassEntry {
 	tag: string;

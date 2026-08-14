@@ -246,6 +246,50 @@ test("tab-queue adds busy-only Tab queue handler, preview, edit, and footer hint
 	assert.equal(tabQueue.verify(output, ast), true);
 });
 
+test("tab-queue public Patch preserves the presentation boundary", async () => {
+	const ast = parse(TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const firstOutput = print(ast);
+
+	assert.match(firstOutput, /key: "tab-queue-status"/);
+	assert.match(firstOutput, /key: "tab-queue-draft"/);
+	assert.match(firstOutput, /let textInputElement = __ccTabQueuedPreview \?/);
+	assert.match(
+		firstOutput,
+		/input\.trim\(\) === "" && !\(Array\.isArray\(globalThis\.__ccEnhancedTabQueue\) && globalThis\.__ccEnhancedTabQueue\.length > 0\)/,
+	);
+	assert.match(firstOutput, /key: "queue-draft"/);
+	assert.match(firstOutput, /chord: "tab"/);
+	assert.match(firstOutput, /action: "queue"/);
+	assert.match(firstOutput, /key: "edit-queued-draft"/);
+	assert.match(firstOutput, /action: "edit queued"/);
+	assert.equal(tabQueue.verify(firstOutput, ast), true);
+
+	await runTabQueueViaPasses(ast);
+	const repeatedOutput = print(ast);
+	assert.equal(repeatedOutput, firstOutput);
+	assert.equal(tabQueue.verify(repeatedOutput, ast), true);
+
+	const ambiguousAst = parse(`${TAB_QUEUE_FIXTURE}
+function renderSecondFooter({ showHint, isInputEmpty, isLoading }) {
+  let parts = showHint ? getHintParts(isLoading) : [];
+  if (viewingCompletedTeammate) {
+    parts.push(React.jsx(Text, { dimColor: true, key: "esc-return",
+      children: React.jsx(KeyboardShortcutHint, { chord: "esc", action: "return to team lead", format: { keyCase: "lower" } }) }));
+  } else if (showHint) { parts.push(...parts); }
+  return React.jsx(Box, { children: parts });
+}
+`);
+	await runTabQueueViaPasses(ambiguousAst);
+	const ambiguousOutput = print(ambiguousAst);
+	assert.doesNotMatch(ambiguousOutput, /action: "queue"/);
+	assert.doesNotMatch(ambiguousOutput, /action: "edit queued"/);
+	assert.equal(
+		tabQueue.verify(ambiguousOutput, ambiguousAst),
+		"Draft Tab queue footer hint not found",
+	);
+});
+
 test("tab-queue receiver guard pushes the trimmed draft and resets the buffer", async () => {
 	const ast = parse(TAB_QUEUE_FIXTURE);
 	await runTabQueueViaPasses(ast);

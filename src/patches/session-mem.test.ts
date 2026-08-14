@@ -61,11 +61,80 @@ test("session-memory reports semantic gate cardinality", async () => {
 
 	assert.ok(sessionMemory.verifyWithWitness);
 	assert.deepEqual(sessionMemory.verifyWithWitness(output, ast), {
-		result: true,
+		passed: true,
+		issues: [],
 		witness: {
 			targetGateCount: 1,
 			patchedGateCount: 1,
 		},
+	});
+});
+
+test("session-memory records mutation and idempotent outcomes semantically", async () => {
+	const { createPatchOutcomeRecorder } = await import("../ast-pass-engine.js");
+	const firstAst = parse(SESSION_MEMORY_FIXTURE);
+	const firstRecorder = createPatchOutcomeRecorder();
+	const firstPasses =
+		(await sessionMemory.astPasses?.(firstAst, firstRecorder)) ?? [];
+	await runCombinedAstPasses(
+		firstAst,
+		firstPasses.map((pass) => ({ tag: sessionMemory.tag, pass })),
+		() => {},
+		() => {},
+		(_tag, error) => {
+			throw error;
+		},
+	);
+	assert.deepEqual(firstRecorder.snapshot(), {
+		matched: 1,
+		mutated: 1,
+		alreadySatisfied: 0,
+		verified: 0,
+		issues: [],
+	});
+
+	const secondRecorder = createPatchOutcomeRecorder();
+	const secondPasses =
+		(await sessionMemory.astPasses?.(firstAst, secondRecorder)) ?? [];
+	await runCombinedAstPasses(
+		firstAst,
+		secondPasses.map((pass) => ({ tag: sessionMemory.tag, pass })),
+		() => {},
+		() => {},
+		(_tag, error) => {
+			throw error;
+		},
+	);
+	assert.deepEqual(secondRecorder.snapshot(), {
+		matched: 1,
+		mutated: 0,
+		alreadySatisfied: 1,
+		verified: 0,
+		issues: [],
+	});
+});
+
+test("session-memory structured verification classifies missing and mutation failures", () => {
+	assert.ok(sessionMemory.verifyWithWitness);
+	assert.deepEqual(
+		sessionMemory.verifyWithWitness(
+			"const unrelated = true;",
+			parse("const unrelated = true;"),
+		),
+		{
+			passed: false,
+			issues: ["match-missing"],
+			diagnostic: "Missing autoDreamEnabled force-on gate",
+			witness: { targetGateCount: 0, patchedGateCount: 0 },
+		},
+	);
+	const ast = parse(SESSION_MEMORY_FIXTURE);
+	assert.deepEqual(sessionMemory.verifyWithWitness(print(ast), ast), {
+		passed: false,
+		issues: ["mutation-missing"],
+		diagnostic:
+			"Auto-dream availability gate present but not force-on (missing `autoDreamEnabled !== true &&` prefix)",
+		witness: { targetGateCount: 1, patchedGateCount: 0 },
 	});
 });
 

@@ -48,6 +48,41 @@ type AstPassName = "discover" | "mutate" | "finalize";
 6. **Signature**: if all other patches verified, `signature.postApply` injects the applied tag list, then `signature.verify` runs.
 7. **Write**: only if `failedTags.length === 0`. Failed verifications skip the write entirely.
 
+**Patch-local result presentation boundary**: the Edit patch facade retains its
+sole public `Patch` export, tag, pass declaration, verifier order, and per-AST
+idempotence guard. A private rendering module owns result-shape matching, option
+chip and result-collapse mutation, and their paired verifiers. A private shape
+module contains only the three pure tree and object-pattern helpers shared with
+the facade. Neither helper module is a patch registration surface, and rendering
+mutations remain invoked from the facade's guarded mutation site.
+
+**Tab queue presentation boundary**: the Tab queue facade retains its sole
+public `Patch` export, path-bearing targets, target discovery, pass-local state,
+mutation sites, warning order, one verification traversal, and ordered
+diagnostics. A private presentation module contains only stateless AST builders
+and node predicates for the queued-draft preview, thinking-hint suppression,
+and footer queue/edit hints. It receives and returns node values only, performs
+no traversal, and is not a patch registration surface.
+
+**Model aliases workflow-display boundary**: the Model aliases facade retains
+its sole public `Patch` export, scope-derived reference counting, binding lookup,
+collision-safe identifier generation, insertion and resolver mutation sites,
+pass-local candidates and flags, warning order, one verification traversal, and
+ordered diagnostics. A private workflow-display module projects formatter node
+shapes and builds the alias-label helper and patched resolver expression from
+facade-supplied scalar names. It receives and returns node values only, owns no
+scope or traversal state, and is not a patch registration surface.
+
+**Effort stack session-override boundary**: the Effort stack facade retains its
+sole public `Patch` export, shared mutator visitor, handler order, counters,
+warnings, one verification traversal, flags, and ordered diagnostics. A private
+session-override module contains stateless node-value matching, construction,
+mutation, and paired verification predicates for the environment resolver,
+environment-scoped settings guard, successful update marker, and effective
+effort no-op exception. The facade supplies environment and session names as
+scalars and injects the settings-write expression predicate; the private module
+owns no traversal or path state and is not a patch registration surface.
+
 **Memory hygiene** (load-bearing): one run holds a large fixed Babel working set over the formatted bundle. To keep that from compounding, `run()` drops the parsed AST from `PatchResult` (`src/types.ts`) after printing, `src/patch-runner.ts` releases combined-pass handlers, clears Babel traversal state, and forces GC both before and after verification, then clears traversal state again on every exit. Verifier sets with at least 32 patches also release traversal state and force one GC at their midpoint; smaller filtered runs avoid that rebuild. High-cardinality syntax checks should share one `noScope` inventory instead of repeatedly traversing the bundle. Bundle diff releases each parsed AST before loading the next bundle, prompt export clears AST-backed binding maps before artifact writes, and the `--update` path (`src/index.ts`) forces a GC before spawning post-update verification. Normal patch, update, and routine summary runs collect no structural telemetry. `--structural-evidence` adds handler counts, overlap evidence, and recursive structural hashes to a requested summary. The verification scripts request deep evidence only when `PATCH_EVIDENCE_OUTPUT` or `PATCH_EVIDENCE_DIR` persists a release manifest. Heavy entrypoints share a fail-fast process-tree lease, but there is no fixed RAM admission threshold. The operating system releases the lease after a crash. Removing the cleanup, explicit evidence mode, or mutual exclusion reintroduces update-time OOM risk.
 
 **Native binary lifecycle** (`src/manager.ts`, `src/native.ts`, `src/native-linux.ts`):
@@ -202,6 +237,26 @@ Shared visitor kinds. Multiple patches register visitors for the same node kinds
 | `IfStatement` | `plan-diff-ui`, `plan-compact-execute`, `session-mem`, `no-collapse`, `sys-prompt-file`, `effort-stack` | `plan-diff-ui` rewrites tests to `false`. Other handlers reading the test can misidentify a rewritten guard if they don't anchor on the unique shape of their target. |
 | `Function` / `FunctionDeclaration` / `FunctionExpression` | `bash-prompt`, `cache-tail-policy`, `effort-stack`, `no-autoupdate`, `agents-off`, `skill-paths-invoke`, `skill-activation-notice`, `plan-compact-execute` | `cache-tail-policy` uses `body.splice()` at a marker statement index, sensitive to upstream insertion of extra statements. Anchors on body length or specific statement positions can drift. |
 | `ObjectExpression` | `tools-off`, `commands-off`, `image-limits`, `plan-compact-execute`, `taskout-ext`, `effort-stack`, `skill-global-paths` | `tools-off` mutates `isEnabled` properties on tool objects. Patches that scan tool ObjectExpressions for other properties may see a partially mutated shape depending on which mutator visited first. |
+
+`src/patches/patch-scenario.ts` is the interaction-test contract. A patch
+scenario suite covers positive, missing, ambiguous, already-satisfied, decoy,
+and sibling-mutation cases exactly once. `runPatchScenarioSuite` executes every
+case and checks its explicit per-patch pass/fail status plus bounded required or
+forbidden output expectations. Diagnostics name only the scenario, case, patch
+tags, and normalized pass/fail status; they are capped at 240 characters and
+never include fixture source or raw verifier failures. Public scenario results
+are likewise code-free. The generated pair inventory is deliberately bounded:
+each selected mutate-visitor family may name at most eight patches, and the
+complete inventory may produce at most 24 cases. It does not take the Cartesian
+product of the full patch roster.
+
+Every selected pair runs in canonical `registeredPatches` order. A reverse run
+is generated only when the pair declaration marks the interaction
+order-independent. Intentional order dependencies use a canonical-only
+declaration with a non-empty semantic reason. Add a family or dependency only
+when a synthetic fixture can exercise the public behavior without reproducing
+bundle internals. These declarations affect tests only; never reorder
+`registeredPatches` to make an interaction scenario pass.
 
 Rule of thumb: if a verifier needs to detect "did MY mutation land", it should mirror the mutator's own predicates exactly (capture per-site counters in module scope when feasible) rather than rely on a global shape check that could be satisfied by another patch's output.
 

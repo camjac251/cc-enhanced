@@ -23,22 +23,34 @@ test("patch telemetry is deep only when explicitly requested", () => {
 	);
 });
 
-test("source fingerprint changes when a patch helper changes", () => {
+test("source fingerprint includes nested helper content and relative paths", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "cc-fingerprint-"));
 	try {
-		fs.mkdirSync(path.join(root, "patches"));
+		fs.mkdirSync(path.join(root, "patches", "rendering"), {
+			recursive: true,
+		});
 		fs.writeFileSync(
 			path.join(root, "patches", "feature.ts"),
 			"export const patch = () => helper();\n",
 		);
-		const helperPath = path.join(root, "patches", "helper.ts");
+		const helperPath = path.join(root, "patches", "rendering", "helper.ts");
 		fs.writeFileSync(helperPath, "export const helper = () => false;\n");
 		const before = computeSourceTreeFingerprint(root);
 
 		fs.writeFileSync(helperPath, "export const helper = () => true;\n");
-		const after = computeSourceTreeFingerprint(root);
+		const afterContentChange = computeSourceTreeFingerprint(root);
+		assert.notEqual(afterContentChange, before);
 
-		assert.notEqual(after, before);
+		const relocatedHelperPath = path.join(
+			root,
+			"patches",
+			"rendering",
+			"relocated-helper.ts",
+		);
+		fs.renameSync(helperPath, relocatedHelperPath);
+		const afterPathChange = computeSourceTreeFingerprint(root);
+
+		assert.notEqual(afterPathChange, afterContentChange);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}
@@ -47,11 +59,14 @@ test("source fingerprint changes when a patch helper changes", () => {
 test("source fingerprint ignores tests that do not affect runtime output", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "cc-fingerprint-"));
 	try {
+		fs.mkdirSync(path.join(root, "patches", "rendering"), {
+			recursive: true,
+		});
 		fs.writeFileSync(
 			path.join(root, "patch.ts"),
 			"export const patch = true;\n",
 		);
-		const testPath = path.join(root, "patch.test.ts");
+		const testPath = path.join(root, "patches", "rendering", "helper.test.ts");
 		fs.writeFileSync(testPath, "test('one', () => {});\n");
 		const before = computeSourceTreeFingerprint(root);
 

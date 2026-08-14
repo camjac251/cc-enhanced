@@ -5,9 +5,14 @@ import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { editTool } from "./edit-extended.js";
 import { allPatches } from "./index.js";
+import {
+	generateSharedVisitorPairInventory,
+	INTENTIONAL_PATCH_ORDER_DEPENDENCIES,
+	runPatchScenarioPair,
+	SHARED_VISITOR_FAMILIES,
+} from "./patch-scenario.js";
 import { planDiffUi } from "./plan-diff-ui.js";
 import { skillActivationNotice } from "./skill-activation-notice.js";
-import { skillGlobalPaths } from "./skill-global-paths.js";
 import { skillPathsInvoke } from "./skill-paths-invoke.js";
 
 // Combined-engine collision guards. Several patches register visitors for the
@@ -50,6 +55,25 @@ async function runMutateTogether(
 // skill-paths-invoke / skill-global-paths also patch is exercised by their own
 // tests and by `mise run verify:patches`).
 const SKILL_MATCHER_FIXTURE = `
+function resetSkillCaches() {
+  loaderMemo.cache?.clear?.(), promptMemo.cache?.clear?.();
+  let snapshot = state();
+  if (snapshot) snapshot.conditionalSkills.clear(), snapshot.activatedConditionalSkillNames.clear();
+}
+function resetAllSkillState() {
+  let snapshot = state();
+  if (!snapshot) return;
+  snapshot.dynamicSkillDirs.clear(), snapshot.dynamicSkills.clear(), snapshot.conditionalSkills.clear(), snapshot.activatedConditionalSkillNames.clear();
+}
+function loadSkills() {
+  let discovered = discoverSkills(), unconditional = [], conditional = [];
+  for (let entry of discovered)
+    if (entry.type === "prompt" && entry.paths && entry.paths.length > 0 && !state().activatedConditionalSkillNames.has(entry.name)) conditional.push(entry);
+    else unconditional.push(entry);
+  for (let entry of conditional) state().conditionalSkills.set(entry.name, entry);
+  if (conditional.length > 0) log(\`[skills] \${conditional.length} conditional skills stored (activated when matching files are touched)\`);
+  return log(\`Loaded \${discovered.length} unique skills (\${unconditional.length} unconditional, \${conditional.length} conditional)\`), unconditional;
+}
 function activate(H, $) {
   if ((state()?.conditionalSkills.size ?? 0) === 0) return [];
   let q = [];
@@ -80,15 +104,44 @@ async function produce(H) {
 }
 `;
 
+test("generated shared-visitor scenarios pass in every declared order", async () => {
+	const inventory = await generateSharedVisitorPairInventory(
+		allPatches,
+		SHARED_VISITOR_FAMILIES,
+	);
+	for (const interaction of inventory) {
+		const result = await runPatchScenarioPair({
+			name: `${interaction.family} ${interaction.order}`,
+			source: SKILL_MATCHER_FIXTURE,
+			patches: interaction.patchTags.map((tag) => {
+				const patch = allPatches.find((candidate) => candidate.tag === tag);
+				assert.ok(patch, `registered patch ${tag} must exist`);
+				return patch;
+			}),
+		});
+		assert.deepEqual(
+			result.verifications,
+			interaction.patchTags.map((tag) => ({ tag, status: "pass" })),
+			result.diagnostic,
+		);
+	}
+});
+
 test("skill-global-paths reshaping the matcher does not break the activation notice anchor", async () => {
 	const ast = parse(SKILL_MATCHER_FIXTURE);
+	const dependency = INTENTIONAL_PATCH_ORDER_DEPENDENCIES.find(
+		({ name }) => name === "conditional skill matcher reshape",
+	);
+	assert.ok(dependency, "matcher reshape order dependency must be declared");
+	assert.ok(dependency.reason.length > 0, "order dependency needs a reason");
+	const dependentPatches = dependency.canonicalPatchTags.map((tag) => {
+		const patch = allPatches.find((candidate) => candidate.tag === tag);
+		assert.ok(patch, `registered patch ${tag} must exist`);
+		return patch;
+	});
 	// Registration order: skill-paths-invoke, skill-global-paths,
 	// skill-activation-notice. global-paths runs before the notice patch.
-	await runMutateTogether(ast, [
-		skillPathsInvoke,
-		skillGlobalPaths,
-		skillActivationNotice,
-	]);
+	await runMutateTogether(ast, [skillPathsInvoke, ...dependentPatches]);
 	const output = print(ast);
 
 	// skill-global-paths reshaped the conditional-skill matcher...

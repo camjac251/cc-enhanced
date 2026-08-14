@@ -1,6 +1,11 @@
 import * as t from "@babel/types";
 import { type NodePath, template, traverse, type Visitor } from "../babel.js";
-import type { Patch, PatchVerificationWithWitness } from "../types.js";
+import type {
+	Patch,
+	PatchIssueCode,
+	PatchOutcomeRecorder,
+	PatchVerificationResult,
+} from "../types.js";
 import {
 	getObjectKeyName,
 	getVerifyAst,
@@ -431,10 +436,13 @@ function nodeContainsMarkerOutsideNestedFunctions(
 	return visit(node, true);
 }
 
-function createCacheTailPolicyMutator(): Visitor {
+function createCacheTailPolicyMutator(
+	recorder?: PatchOutcomeRecorder,
+): Visitor {
 	let patchedWindow = false;
 	let patchedUserOnly = false;
 	let patchedDecls = false;
+	let changed = false;
 	let done = false;
 
 	return {
@@ -455,6 +463,7 @@ function createCacheTailPolicyMutator(): Visitor {
 			if (missingDeclarations.length > 0) {
 				body.splice(markerStmtIndex, 0, ...missingDeclarations);
 				patchedDecls = true;
+				changed = true;
 			}
 			const updatedMarkerStmtIndex =
 				markerStmtIndex + missingDeclarations.length;
@@ -473,6 +482,7 @@ function createCacheTailPolicyMutator(): Visitor {
 						...createCacheTailWindowStatements(messagesVarName, markerSetName),
 					);
 					patchedWindow = true;
+					changed = true;
 				}
 			}
 
@@ -545,6 +555,7 @@ function createCacheTailPolicyMutator(): Visitor {
 						t.identifier(arg1.name),
 					);
 					patchedUserOnly = true;
+					changed = true;
 				}
 
 				for (const cbStmt of callback.body.body) {
@@ -587,6 +598,7 @@ function createCacheTailPolicyMutator(): Visitor {
 						t.identifier(assistantArg.name),
 					);
 					patchedUserOnly = true;
+					changed = true;
 				}
 			};
 
@@ -594,6 +606,9 @@ function createCacheTailPolicyMutator(): Visitor {
 				forEachMapCallback(stmt, (callback) => patchMapCallback(callback));
 			}
 
+			if (patchedWindow && patchedUserOnly) {
+				recorder?.recordMatch(changed ? "mutated" : "already-satisfied");
+			}
 			if (patchedWindow || patchedUserOnly || patchedDecls) {
 				done = true;
 			}
@@ -683,25 +698,32 @@ function tryPatchPushCacheScope(
 	return "miss";
 }
 
-function patchFirstCacheScopeOrgToGlobal(body: t.Statement[]): boolean {
+function patchFirstCacheScopeOrgToGlobal(
+	body: t.Statement[],
+): "patched" | "already-patched" | "miss" {
 	for (const stmt of body) {
 		// Walk into if-statements: handle both block and single-statement forms
 		if (t.isIfStatement(stmt)) {
 			if (t.isBlockStatement(stmt.consequent)) {
-				if (patchFirstCacheScopeOrgToGlobal(stmt.consequent.body)) return true;
-			} else if (tryPatchPushCacheScope(stmt.consequent) !== "miss") {
-				return true;
+				const result = patchFirstCacheScopeOrgToGlobal(stmt.consequent.body);
+				if (result !== "miss") return result;
+			} else {
+				const result = tryPatchPushCacheScope(stmt.consequent);
+				if (result !== "miss") return result;
 			}
 			continue;
 		}
 
 		// Direct expression statement
-		if (tryPatchPushCacheScope(stmt) !== "miss") return true;
+		const result = tryPatchPushCacheScope(stmt);
+		if (result !== "miss") return result;
 	}
-	return false;
+	return "miss";
 }
 
-function createSyspromptGlobalScopeMutator(): Visitor {
+function createSyspromptGlobalScopeMutator(
+	recorder?: PatchOutcomeRecorder,
+): Visitor {
 	let patched = false;
 
 	return {
@@ -717,7 +739,11 @@ function createSyspromptGlobalScopeMutator(): Visitor {
 				if (!blockContainsSyspromptMarker(stmt.consequent.body)) continue;
 
 				// Found the skipGlobalCacheForSystemPrompt branch
-				if (patchFirstCacheScopeOrgToGlobal(stmt.consequent.body)) {
+				const result = patchFirstCacheScopeOrgToGlobal(stmt.consequent.body);
+				if (result !== "miss") {
+					recorder?.recordMatch(
+						result === "patched" ? "mutated" : "already-satisfied",
+					);
 					patched = true;
 					return;
 				}
@@ -907,7 +933,9 @@ function patchAgentCacheTtlRuntimeGuard(path: NodePath): boolean {
 	return true;
 }
 
-function createAgentCacheTtlAllowlistMutator(): Visitor {
+function createAgentCacheTtlAllowlistMutator(
+	recorder?: PatchOutcomeRecorder,
+): Visitor {
 	let patchedDefault = false;
 	let patchedRuntimeGuard = false;
 
@@ -918,13 +946,26 @@ function createAgentCacheTtlAllowlistMutator(): Visitor {
 
 			const values = getStringLiteralArrayValues(path.node.value);
 			if (!values) return;
+			let changed = false;
 			if (!values.includes(AGENT_CACHE_TTL_QUERY_SOURCE)) {
 				path.node.value.elements.push(
 					t.stringLiteral(AGENT_CACHE_TTL_QUERY_SOURCE),
 				);
+				changed = true;
 			}
 			patchedDefault = true;
+			const body = getEnclosingFunctionBody(path);
+			const allowlistReturn = body ? findCacheTtlAllowlistReturn(body) : null;
+			const hadRuntimeGuard =
+				body !== null &&
+				allowlistReturn !== null &&
+				hasAgentCacheTtlRuntimeGuard(body, allowlistReturn.allowlistName);
 			patchedRuntimeGuard = patchAgentCacheTtlRuntimeGuard(path);
+			if (patchedRuntimeGuard) {
+				recorder?.recordMatch(
+					changed || !hadRuntimeGuard ? "mutated" : "already-satisfied",
+				);
+			}
 		},
 		Program: {
 			exit() {
@@ -1336,7 +1377,10 @@ function findRequestClampFunction(ast: t.File): RequestClampAnchor | null {
 	return match;
 }
 
-function createCacheControlBlockCapClampInjector(ast: t.File): Visitor {
+function createCacheControlBlockCapClampInjector(
+	ast: t.File,
+	recorder?: PatchOutcomeRecorder,
+): Visitor {
 	return {
 		Program: {
 			exit() {
@@ -1349,6 +1393,7 @@ function createCacheControlBlockCapClampInjector(ast: t.File): Visitor {
 				}
 
 				if (hasCacheControlCapDeclaration(clampFn.body)) {
+					recorder?.recordMatch("already-satisfied");
 					return; // already injected
 				}
 
@@ -1359,12 +1404,15 @@ function createCacheControlBlockCapClampInjector(ast: t.File): Visitor {
 					t.identifier(clampFn.requestCopyName),
 				);
 				clampFn.body.splice(returnIndex, 0, ...injected);
+				recorder?.recordMatch("mutated");
 			},
 		},
 	};
 }
 
-function createCacheControlBlockCapRequestBuilderInjector(): Visitor {
+function createCacheControlBlockCapRequestBuilderInjector(
+	recorder?: PatchOutcomeRecorder,
+): Visitor {
 	let patched = false;
 
 	return {
@@ -1395,6 +1443,7 @@ function createCacheControlBlockCapRequestBuilderInjector(): Visitor {
 						t.identifier(requestName),
 					);
 					body.splice(index + 1, 0, ...injected);
+					recorder?.recordMatch("mutated");
 					patched = true;
 					return;
 				}
@@ -2491,11 +2540,13 @@ export function collectCacheTailVerificationInventory(
 function verifyCacheTailPolicy(
 	code: string,
 	ast?: t.File,
-): PatchVerificationWithWitness {
+): PatchVerificationResult {
 	const verifyAst = getVerifyAst(code, ast);
 	if (!verifyAst) {
 		return {
-			result: "Unable to parse AST for cache-tail-policy verification",
+			passed: false,
+			issues: ["verification-failed"],
+			diagnostic: "Unable to parse AST for cache-tail-policy verification",
 		};
 	}
 
@@ -2504,8 +2555,15 @@ function verifyCacheTailPolicy(
 	for (const check of checks) {
 		const { result } = check;
 		if (result !== true) {
+			const issue: PatchIssueCode = result.includes("ambiguous")
+				? "match-ambiguous"
+				: result.startsWith("Missing") || result.includes("not found")
+					? "match-missing"
+					: "mutation-missing";
 			return {
-				result,
+				passed: false,
+				issues: [issue],
+				diagnostic: result,
 				witness: {
 					semanticChecksPassed,
 					semanticChecksRequired: checks.length,
@@ -2516,7 +2574,8 @@ function verifyCacheTailPolicy(
 	}
 
 	return {
-		result: true,
+		passed: true,
+		issues: [],
 		witness: {
 			semanticChecksPassed,
 			semanticChecksRequired: checks.length,
@@ -2527,29 +2586,32 @@ function verifyCacheTailPolicy(
 export const cacheTailPolicy: Patch = {
 	tag: "cache-tail-policy",
 
-	astPasses: (ast) => [
+	astPasses: (ast, recorder) => [
 		{
 			pass: "mutate",
-			visitor: createCacheTailPolicyMutator(),
+			visitor: createCacheTailPolicyMutator(recorder),
 		},
 		{
 			pass: "mutate",
-			visitor: createSyspromptGlobalScopeMutator(),
+			visitor: createSyspromptGlobalScopeMutator(recorder),
 		},
 		{
 			pass: "mutate",
-			visitor: createCacheControlBlockCapClampInjector(ast),
+			visitor: createCacheControlBlockCapClampInjector(ast, recorder),
 		},
 		{
 			pass: "mutate",
-			visitor: createCacheControlBlockCapRequestBuilderInjector(),
+			visitor: createCacheControlBlockCapRequestBuilderInjector(recorder),
 		},
 		{
 			pass: "mutate",
-			visitor: createAgentCacheTtlAllowlistMutator(),
+			visitor: createAgentCacheTtlAllowlistMutator(recorder),
 		},
 	],
 
-	verify: (code, ast) => verifyCacheTailPolicy(code, ast).result,
+	verify: (code, ast) => {
+		const result = verifyCacheTailPolicy(code, ast);
+		return result.passed ? true : (result.diagnostic ?? "Verification failed");
+	},
 	verifyWithWitness: verifyCacheTailPolicy,
 };

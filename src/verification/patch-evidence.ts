@@ -3,6 +3,8 @@ import type {
 	AstPassName,
 	PatchDriftEvidence,
 	PatchEvidenceManifest,
+	PatchIssueCode,
+	PatchOutcomeEvidence,
 	PatchWitnessValue,
 } from "../types.js";
 
@@ -12,6 +14,13 @@ const WITNESS_KEY_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const NODE_TYPE_RE = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
 const PASS_ORDER: AstPassName[] = ["discover", "mutate", "finalize"];
 const MAX_PATCH_COUNT = 512;
+const PATCH_ISSUE_CODES = new Set<PatchIssueCode>([
+	"match-missing",
+	"match-ambiguous",
+	"mutation-missing",
+	"verification-failed",
+	"execution-failed",
+]);
 
 export interface PatchEvidenceFieldChange {
 	field: string;
@@ -209,6 +218,7 @@ function normalizePatchEvidence(
 		patch.structuralHashes,
 		`${label}.structuralHashes`,
 	);
+	const outcomes = normalizeOutcomes(patch.outcomes, `${label}.outcomes`);
 
 	return {
 		tag,
@@ -219,7 +229,52 @@ function normalizePatchEvidence(
 			? { structuralHashes }
 			: {}),
 		...(witness ? { witness } : {}),
+		...(outcomes ? { outcomes } : {}),
 		overlaps,
+	};
+}
+
+function normalizeOutcomes(
+	value: unknown,
+	label: string,
+): PatchOutcomeEvidence | undefined {
+	if (value === undefined) return undefined;
+	const outcomes = requireRecord(value, label);
+	const matched = requireCount(outcomes.matched, `${label}.matched`);
+	const mutated = requireCount(outcomes.mutated, `${label}.mutated`);
+	const alreadySatisfied = requireCount(
+		outcomes.alreadySatisfied,
+		`${label}.alreadySatisfied`,
+	);
+	if (mutated + alreadySatisfied > matched) {
+		throw new Error(
+			`${label}.mutated plus alreadySatisfied cannot exceed matched`,
+		);
+	}
+	if (outcomes.verified !== 0 && outcomes.verified !== 1) {
+		throw new Error(`${label}.verified must be 0 or 1`);
+	}
+	if (!Array.isArray(outcomes.issues) || outcomes.issues.length > 5) {
+		throw new Error(`${label}.issues must contain at most 5 stable codes`);
+	}
+	const issues = outcomes.issues.map((issue, index) => {
+		if (
+			typeof issue !== "string" ||
+			!PATCH_ISSUE_CODES.has(issue as PatchIssueCode)
+		) {
+			throw new Error(`${label}.issues[${index}] is unsupported`);
+		}
+		return issue as PatchIssueCode;
+	});
+	if (new Set(issues).size !== issues.length) {
+		throw new Error(`${label}.issues must not contain duplicates`);
+	}
+	return {
+		matched,
+		mutated,
+		alreadySatisfied,
+		verified: outcomes.verified,
+		issues,
 	};
 }
 
@@ -295,6 +350,25 @@ function comparePatch(
 	const changes: PatchEvidenceFieldChange[] = [];
 	pushScalarChange(changes, "passed", previous.passed, current.passed);
 	pushScalarChange(changes, "coverage", previous.coverage, current.coverage);
+	for (const field of [
+		"matched",
+		"mutated",
+		"alreadySatisfied",
+		"verified",
+	] as const) {
+		pushScalarChange(
+			changes,
+			`outcomes.${field}`,
+			previous.outcomes?.[field],
+			current.outcomes?.[field],
+		);
+	}
+	pushScalarChange(
+		changes,
+		"outcomes.issues",
+		previous.outcomes?.issues.join(","),
+		current.outcomes?.issues.join(","),
+	);
 	for (const pass of PASS_ORDER) {
 		pushScalarChange(
 			changes,

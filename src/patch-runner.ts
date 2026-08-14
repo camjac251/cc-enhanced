@@ -9,6 +9,7 @@ import ora from "ora";
 import {
 	type AstPassTelemetry,
 	type AstPassTelemetryLevel,
+	createPatchOutcomeRecorder,
 	runCombinedAstPasses,
 } from "./ast-pass-engine.js";
 import { clearTraverseCache } from "./babel.js";
@@ -24,9 +25,12 @@ import type {
 	AstPassName,
 	Patch,
 	PatchAstPass,
+	PatchOutcomeRecorder,
 	PatchResult,
 	PatchSemanticWitness,
 	PatchVerification,
+	PatchVerificationOutput,
+	PatchVerificationResult,
 } from "./types.js";
 
 export type SignatureInjectionPolicy = "auto" | "force" | "off";
@@ -53,12 +57,35 @@ function sha256Text(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
-function normalizeVerificationOutcome(result: true | string): {
-	passed: boolean;
+function normalizeVerificationOutcome(result: PatchVerificationOutput): {
+	result: PatchVerificationResult;
 	reason?: string;
 } {
-	if (result === true) return { passed: true };
-	return { passed: false, reason: result };
+	if (result === true) {
+		return { result: { passed: true, issues: [] } };
+	}
+	if (typeof result === "string") {
+		return {
+			result: { passed: false, issues: ["verification-failed"] },
+			reason: result,
+		};
+	}
+	if ("passed" in result) {
+		return {
+			result,
+			...(!result.passed
+				? { reason: result.diagnostic ?? "Structured verification failed" }
+				: {}),
+		};
+	}
+	const normalized = normalizeVerificationOutcome(result.result);
+	return {
+		result: {
+			...normalized.result,
+			...(result.witness ? { witness: result.witness } : {}),
+		},
+		...(normalized.reason ? { reason: normalized.reason } : {}),
+	};
 }
 
 export class PatchRunner {
@@ -143,6 +170,9 @@ export class PatchRunner {
 		const errors: { tag: string; error: Error }[] = [];
 		const patchExecutionErrors = new Map<string, string>();
 		const semanticWitnesses = new Map<string, PatchSemanticWitness>();
+		const outcomeRecorders = new Map<string, PatchOutcomeRecorder>(
+			this.patches.map((patch) => [patch.tag, createPatchOutcomeRecorder()]),
+		);
 		// Phase 1: Run string-based patches
 		for (const patch of this.patches) {
 			if (!patch.string) continue;
@@ -161,6 +191,7 @@ export class PatchRunner {
 				const err = e instanceof Error ? e : new Error(String(e));
 				errors.push({ tag: patch.tag, error: err });
 				patchExecutionErrors.set(patch.tag, err.message);
+				outcomeRecorders.get(patch.tag)?.recordIssue("execution-failed");
 				spinner.fail(`${meta.label}: ${err.message}`);
 			}
 		}
@@ -190,7 +221,10 @@ export class PatchRunner {
 				color: "blue",
 			}).start();
 			try {
-				const passes = await patch.astPasses(ast);
+				const passes = await patch.astPasses(
+					ast,
+					outcomeRecorders.get(patch.tag),
+				);
 				for (const pass of passes) {
 					combinedPatchEntries.push({ tag: patch.tag, pass });
 				}
@@ -199,6 +233,7 @@ export class PatchRunner {
 				const err = e instanceof Error ? e : new Error(String(e));
 				errors.push({ tag: patch.tag, error: err });
 				patchExecutionErrors.set(patch.tag, err.message);
+				outcomeRecorders.get(patch.tag)?.recordIssue("execution-failed");
 				spinner.fail(`${meta.label}: ${err.message}`);
 			}
 		}
@@ -225,6 +260,7 @@ export class PatchRunner {
 					if (!patchExecutionErrors.has(tag)) {
 						errors.push({ tag, error });
 						patchExecutionErrors.set(tag, error.message);
+						outcomeRecorders.get(tag)?.recordIssue("execution-failed");
 					}
 				},
 				{ telemetryLevel: this.telemetryLevel },
@@ -249,6 +285,7 @@ export class PatchRunner {
 				? Math.floor(this.patches.length / 2)
 				: null;
 		for (const [patchIndex, patch] of this.patches.entries()) {
+			const outcomeRecorder = outcomeRecorders.get(patch.tag);
 			try {
 				const executionError = patchExecutionErrors.get(patch.tag);
 				if (executionError) {
@@ -264,18 +301,20 @@ export class PatchRunner {
 					continue;
 				}
 				const verifyStart = performance.now();
-				const verificationWithWitness = patch.verifyWithWitness
+				const verificationOutput = patch.verifyWithWitness
 					? patch.verifyWithWitness(output, ast)
-					: { result: patch.verify(output, ast) };
+					: patch.verify(output, ast);
 				verifyTimings.set(patch.tag, performance.now() - verifyStart);
 				const meta = getPatchMetadata(patch.tag);
-				const outcome = normalizeVerificationOutcome(
-					verificationWithWitness.result,
-				);
-				if (verificationWithWitness.witness) {
-					semanticWitnesses.set(patch.tag, verificationWithWitness.witness);
+				const outcome = normalizeVerificationOutcome(verificationOutput);
+				for (const issue of outcome.result.issues) {
+					outcomeRecorder?.recordIssue(issue);
 				}
-				if (outcome.passed) {
+				outcomeRecorder?.recordVerification(outcome.result.passed);
+				if (outcome.result.witness) {
+					semanticWitnesses.set(patch.tag, outcome.result.witness);
+				}
+				if (outcome.result.passed) {
 					verifications.push({
 						tag: patch.tag,
 						passed: true,
@@ -295,6 +334,7 @@ export class PatchRunner {
 				}
 			} catch (e) {
 				const reason = e instanceof Error ? e.message : String(e);
+				outcomeRecorder?.recordIssue("execution-failed");
 				const meta = getPatchMetadata(patch.tag);
 				verifications.push({
 					tag: patch.tag,
@@ -441,7 +481,7 @@ export class PatchRunner {
 				signature.verify(finalOutput, ast),
 			);
 			const sigMeta = getPatchMetadata(signature.tag);
-			if (sigResult.passed) {
+			if (sigResult.result.passed) {
 				appliedTags.push("signature");
 				verifications.push({
 					tag: signature.tag,
@@ -476,22 +516,30 @@ export class PatchRunner {
 					)
 				: undefined;
 			const witness = semanticWitnesses.get(verification.tag);
-			const hasStructuralActivity =
-				handlerCalls.discover + handlerCalls.mutate + handlerCalls.finalize > 0;
+			const outcomes = outcomeRecorders.get(verification.tag)?.snapshot();
+			const hasSemanticOutcome =
+				(outcomes?.matched ?? 0) > 0 ||
+				(outcomes?.mutated ?? 0) > 0 ||
+				(outcomes?.alreadySatisfied ?? 0) > 0;
+			const hasStructuralEvidence =
+				activeStructuralHashes !== undefined &&
+				Object.keys(activeStructuralHashes).length > 0;
 			return {
 				tag: verification.tag,
 				passed: verification.passed,
-				coverage: witness
-					? ("semantic" as const)
-					: hasStructuralActivity
-						? ("structural" as const)
-						: ("verification" as const),
+				coverage:
+					witness || hasSemanticOutcome
+						? ("semantic" as const)
+						: hasStructuralEvidence
+							? ("structural" as const)
+							: ("verification" as const),
 				handlerCalls,
 				...(activeStructuralHashes &&
 				Object.keys(activeStructuralHashes).length > 0
 					? { structuralHashes: activeStructuralHashes }
 					: {}),
 				...(witness ? { witness } : {}),
+				...(outcomes ? { outcomes } : {}),
 				overlaps: astTelemetry.overlaps.filter((overlap) =>
 					overlap.tags.includes(verification.tag),
 				),

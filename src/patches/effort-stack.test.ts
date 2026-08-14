@@ -165,6 +165,201 @@ async function runEffortCommand(H, setState, done) {
 }
 `;
 
+const SESSION_OVERRIDE_CHARACTERIZATION_FIXTURE = `
+function readEnvEffort() {
+  let raw = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  return parseEffort(raw);
+}
+
+function storeEffortSetting(value, persist = true, scope) {
+  if (persist) {
+    let result = saveSettings("userSettings", { effortLevel: value });
+    if (result.error) return result.error;
+  }
+  if (persist) unpinLaunchEffort();
+  return;
+}
+
+async function runEffortCommand(input, setState) {
+  let result = await pickCommand(input, (update) => setState(update));
+  if (didOptimisticUpdate && !result.effortUpdate) rollbackState();
+  return result;
+}
+
+function effortWouldChange(next, current, model) {
+  if (resolveEffectiveEffort(model, next) === resolveEffectiveEffort(model, current)) return !1;
+  return !0;
+}
+
+function nearMissEnvResolver(unused) {
+  let raw = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  return parseEffort(raw);
+}
+
+function nearMissSettingsWriter(value, persist, scope) {
+  let result = saveSettings("userSettings", { effortLevel: value });
+  if (result.error) return result.error;
+}
+
+async function nearMissResultUpdate(input) {
+  let result = await pickCommand(input, (update) => update);
+  return result;
+}
+
+function nearMissEffectiveNoop(next, current, model) {
+  if (resolveEffectiveEffort(model, next) === otherEffectiveEffort(model, current)) return !1;
+  return !0;
+}
+`;
+
+const SESSION_OVERRIDE_CHARACTERIZATION_EXPECTED = `
+function readEnvEffort() {if (globalThis.__claudeCodeEffortSessionOverride === true) return;
+  let raw = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  return parseEffort(raw);
+}
+
+function storeEffortSetting(value, persist = true, scope) {if (process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0) {
+
+
+
+
+    if (persist) unpinLaunchEffort();return;}if (persist) {let result = saveSettings("userSettings", { effortLevel: value });if (result.error) return result.error;}if (persist) unpinLaunchEffort();
+  return;
+}
+
+async function runEffortCommand(input, setState) {
+  let result = await pickCommand(input, (update) => setState(update));if (result.effortUpdate) globalThis.__claudeCodeEffortSessionOverride = true;
+  if (didOptimisticUpdate && !result.effortUpdate) rollbackState();
+  return result;
+}
+
+function effortWouldChange(next, current, model) {
+  if (resolveEffectiveEffort(model, next) === resolveEffectiveEffort(model, current) && !(process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0 && next !== current)) return !1;
+  return !0;
+}
+
+function nearMissEnvResolver(unused) {
+  let raw = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  return parseEffort(raw);
+}
+
+function nearMissSettingsWriter(value, persist, scope) {
+  let result = saveSettings("userSettings", { effortLevel: value });
+  if (result.error) return result.error;
+}
+
+async function nearMissResultUpdate(input) {
+  let result = await pickCommand(input, (update) => update);
+  return result;
+}
+
+function nearMissEffectiveNoop(next, current, model) {
+  if (resolveEffectiveEffort(model, next) === otherEffectiveEffort(model, current)) return !1;
+  return !0;
+}
+`;
+
+test("effort-stack characterizes the public session-override subsystem", async () => {
+	const focusedAst = parse(SESSION_OVERRIDE_CHARACTERIZATION_FIXTURE);
+	const warnings: string[] = [];
+	const originalWarn = console.warn;
+	console.warn = (...args: unknown[]) =>
+		warnings.push(args.map(String).join(" "));
+	try {
+		await runEffortStackViaPasses(focusedAst);
+	} finally {
+		console.warn = originalWarn;
+	}
+	const focusedOutput = print(focusedAst);
+	assert.equal(
+		focusedOutput,
+		SESSION_OVERRIDE_CHARACTERIZATION_EXPECTED.trimEnd(),
+	);
+	assert.deepEqual(warnings, [
+		"effort-stack: Could not find ultracode-forces-xhigh resolver guard",
+		"effort-stack: Could not find ultrathink notification text",
+		"effort-stack: Could not find ultracode-picker override message",
+		"effort-stack: Could not find effort-picker override message",
+		"effort-stack: Could not find current-effort display function",
+		"effort-stack: Could not find ultracode description template",
+		"effort-stack: Could not find ultracode active-state gate",
+		"effort-stack: Could not find ultracode settings/env source",
+	]);
+
+	const repeatWarnings: string[] = [];
+	console.warn = (...args: unknown[]) =>
+		repeatWarnings.push(args.map(String).join(" "));
+	try {
+		await runEffortStackViaPasses(focusedAst);
+	} finally {
+		console.warn = originalWarn;
+	}
+	assert.equal(print(focusedAst), focusedOutput);
+	assert.deepEqual(repeatWarnings, warnings);
+
+	const fullAst = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(fullAst);
+	const fullOutput = print(fullAst);
+	assert.equal(effortStack.verify(fullOutput, fullAst), true);
+
+	const regressions = [
+		{
+			code: fullOutput.replace(
+				"if (globalThis.__claudeCodeEffortSessionOverride === true) return;",
+				"",
+			),
+			diagnostic: "Did not find session override guard in env effort resolver",
+		},
+		{
+			code: fullOutput.replace(
+				/if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) \{\s+if \(persist\) unpinLaunchEffort\(\);\s*return;\s*\}/,
+				"",
+			),
+			diagnostic: "Did not find env-scoped session-only effort settings guard",
+		},
+		{
+			code: fullOutput.replace(
+				"if (result.effortUpdate) globalThis.__claudeCodeEffortSessionOverride = true;",
+				"",
+			),
+			diagnostic: "Did not find /effort session override state update",
+		},
+		{
+			code: fullOutput.replace(
+				" && !(process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0 && next !== current)",
+				"",
+			),
+			diagnostic: "Effort picker still treats env-overridden choices as no-ops",
+		},
+	] as const;
+	for (const { code, diagnostic } of regressions) {
+		assert.notEqual(code, fullOutput);
+		assert.equal(effortStack.verify(code), diagnostic);
+	}
+
+	const allRegressed = fullOutput
+		.replace(
+			"if (globalThis.__claudeCodeEffortSessionOverride === true) return;",
+			"",
+		)
+		.replace(
+			/if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) \{\s+if \(persist\) unpinLaunchEffort\(\);\s*return;\s*\}/,
+			"",
+		)
+		.replace(
+			"if (result.effortUpdate) globalThis.__claudeCodeEffortSessionOverride = true;",
+			"",
+		)
+		.replace(
+			" && !(process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0 && next !== current)",
+			"",
+		);
+	assert.equal(
+		effortStack.verify(allRegressed),
+		"Did not find session override guard in env effort resolver",
+	);
+});
+
 test("verify rejects unpatched fixture", () => {
 	const ast = parse(EFFORT_STACK_FIXTURE);
 	const code = print(ast);

@@ -11,8 +11,7 @@ import { configuredModelCatalog } from "./configured-model-catalog.js";
 import { modelAliases } from "./model-aliases.js";
 import { modelPickerSessionOnly } from "./model-picker-session-only.js";
 
-async function patchSource(source: string): Promise<string> {
-	const ast = parse(source);
+async function runModelAliasesViaPasses(ast: t.File): Promise<void> {
 	const passes = (await modelAliases.astPasses?.(ast)) ?? [];
 	await runCombinedAstPasses(
 		ast,
@@ -23,6 +22,11 @@ async function patchSource(source: string): Promise<string> {
 			throw error;
 		},
 	);
+}
+
+async function patchSource(source: string): Promise<string> {
+	const ast = parse(source);
+	await runModelAliasesViaPasses(ast);
 	return print(ast);
 }
 
@@ -237,6 +241,140 @@ function disableValidationGuard(code: string, errorNeedle: string): string {
 	assert.equal(changed, 1, errorNeedle);
 	return print(ast);
 }
+
+const WORKFLOW_SCOPE_DECOYS = `
+function configuredModelAliasLabel(model) { return "occupied:" + model; }
+function _configuredModelAliasLabel(model) { return "also-occupied:" + model; }
+
+function formatWorkflowModelDecoy(model, fallbackModel) {
+  let displayName = (candidate) => knownModelDisplayName(candidate) ?? candidate;
+  if (fallbackModel != null) {
+    return (
+      (model == null ? "" : displayName(model) + " ") +
+      workflowModelArrow +
+      " " +
+      displayName(fallbackModel)
+    );
+  }
+  return model != null ? displayName(model) : "";
+}
+
+function callShadowedWorkflowDecoy(agent) {
+  const formatWorkflowModelDecoy = (model, fallbackModel) =>
+    String(model) + String(fallbackModel);
+  return [
+    formatWorkflowModelDecoy(agent.model, agent.fallbackModel),
+    formatWorkflowModelDecoy(agent.model, agent.fallbackModel),
+  ];
+}
+`;
+
+const SECOND_WORKFLOW_FORMATTER = `
+function formatWorkflowModelSecond(model, fallbackModel) {
+  let displayName = (candidate) => knownModelDisplayName(candidate) ?? candidate;
+  if (fallbackModel != null) {
+    return (
+      (model == null ? "" : displayName(model) + " ") +
+      workflowModelArrow +
+      " " +
+      displayName(fallbackModel)
+    );
+  }
+  return model != null ? displayName(model) : "";
+}
+
+function renderSecondWorkflowAgent(agent) {
+  return formatWorkflowModelSecond(agent.model, agent.fallbackModel);
+}
+
+function renderSecondWorkflowCompact(agent) {
+  return formatWorkflowModelSecond(agent.model, agent.fallbackModel);
+}
+`;
+
+function weakenUsedWorkflowAliasHelper(code: string): string {
+	const ast = parse(code);
+	let weakened = 0;
+	traverse(ast, {
+		FunctionDeclaration(path) {
+			if (path.node.id?.name !== "_configuredModelAliasLabel2") return;
+			path.node.body.body = [];
+			weakened++;
+		},
+	});
+	assert.equal(weakened, 1);
+	return print(ast);
+}
+
+test("model-aliases public Patch preserves workflow-display selection and verification", async () => {
+	const fixture = MODEL_ROUTING_FIXTURE.replace(
+		"function formatWorkflowModel(model, fallbackModel)",
+		`${WORKFLOW_SCOPE_DECOYS}\nfunction formatWorkflowModel(model, fallbackModel)`,
+	);
+	assert.notEqual(fixture, MODEL_ROUTING_FIXTURE);
+	const ast = parse(fixture);
+	await runModelAliasesViaPasses(ast);
+	const firstOutput = print(ast);
+	const routedModel = "clodex:openai-oauth:gpt-5.6-sol";
+	const { collectWorkflowModel, renderWorkflowAgent } = loadWorkflowFunctions(
+		firstOutput,
+		{
+			CLAUDE_CODE_MODEL_ALIASES: JSON.stringify({ sol: routedModel }),
+		},
+	);
+
+	assert.equal(renderWorkflowAgent({ model: routedModel }), "Sol");
+	const canonical = collectWorkflowModel(routedModel, routedModel);
+	assert.deepEqual(canonical, {
+		type: "workflow_agent",
+		model: routedModel,
+		fallbackModel: undefined,
+	});
+	assert.equal(renderWorkflowAgent(canonical), "Sol");
+	assert.equal(
+		renderWorkflowAgent(collectWorkflowModel(routedModel, "gpt-5.6-other")),
+		"Sol → gpt-5.6-other",
+	);
+	assert.match(firstOutput, /function _configuredModelAliasLabel2\(/);
+	const decoyStart = firstOutput.indexOf("function formatWorkflowModelDecoy");
+	const decoyEnd = firstOutput.indexOf(
+		"function callShadowedWorkflowDecoy",
+		decoyStart,
+	);
+	assert.notEqual(decoyStart, -1);
+	assert.notEqual(decoyEnd, -1);
+	assert.equal(
+		firstOutput
+			.slice(decoyStart, decoyEnd)
+			.includes("_configuredModelAliasLabel2"),
+		false,
+	);
+	assert.equal(modelAliases.verify(firstOutput, ast), true);
+
+	await runModelAliasesViaPasses(ast);
+	const repeatedOutput = print(ast);
+	assert.equal(repeatedOutput, firstOutput);
+	assert.equal(modelAliases.verify(repeatedOutput, ast), true);
+
+	const weakenedHelper = weakenUsedWorkflowAliasHelper(firstOutput);
+	assert.equal(
+		modelAliases.verify(weakenedHelper),
+		"Workflow model formatter alias-label helper is missing or invalid",
+	);
+
+	const ambiguousFixture = `${MODEL_ROUTING_FIXTURE}\n${SECOND_WORKFLOW_FORMATTER}`;
+	const ambiguousOutput = await patchSource(ambiguousFixture);
+	assert.equal(
+		modelAliases.verify(ambiguousOutput),
+		"Workflow model formatter is ambiguous or missing (2 sites found)",
+	);
+	assert.equal(
+		loadWorkflowFunctions(ambiguousOutput, {
+			CLAUDE_CODE_MODEL_ALIASES: JSON.stringify({ sol: routedModel }),
+		}).renderWorkflowAgent({ model: routedModel }),
+		routedModel,
+	);
+});
 
 test("model-aliases resolves a case-insensitive configured alias before stock normalization", async () => {
 	const output = await patchSource(MODEL_ROUTING_FIXTURE);

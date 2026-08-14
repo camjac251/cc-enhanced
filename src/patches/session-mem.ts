@@ -1,6 +1,10 @@
 import * as t from "@babel/types";
 import { traverse, type Visitor } from "../babel.js";
-import type { Patch, PatchVerificationWithWitness } from "../types.js";
+import type {
+	Patch,
+	PatchOutcomeRecorder,
+	PatchVerificationResult,
+} from "../types.js";
 import { getMemberPropertyName, getVerifyAst } from "./ast-helpers.js";
 
 /**
@@ -59,7 +63,7 @@ function getAutoDreamEnabledMember(
 	return null;
 }
 
-function createSessionMemoryMutator(): Visitor {
+function createSessionMemoryMutator(recorder?: PatchOutcomeRecorder): Visitor {
 	let patchedAutoDream = false;
 	return {
 		IfStatement(path) {
@@ -73,6 +77,7 @@ function createSessionMemoryMutator(): Visitor {
 				const autoDreamMember = getAutoDreamEnabledMember(nextStatement);
 				if (autoDreamMember) {
 					if (nodeContainsProperty(test, "autoDreamEnabled")) {
+						recorder?.recordMatch("already-satisfied");
 						patchedAutoDream = true;
 						return;
 					}
@@ -85,6 +90,7 @@ function createSessionMemoryMutator(): Visitor {
 						),
 						test,
 					);
+					recorder?.recordMatch("mutated");
 					patchedAutoDream = true;
 					return;
 				}
@@ -105,11 +111,13 @@ function createSessionMemoryMutator(): Visitor {
 function verifySessionMemory(
 	code: string,
 	ast?: t.File,
-): PatchVerificationWithWitness {
+): PatchVerificationResult {
 	const verifyAst = getVerifyAst(code, ast);
 	if (!verifyAst) {
 		return {
-			result: "Unable to parse AST during session-memory verification",
+			passed: false,
+			issues: ["verification-failed"],
+			diagnostic: "Unable to parse AST during session-memory verification",
 		};
 	}
 
@@ -131,31 +139,38 @@ function verifySessionMemory(
 	const witness = { targetGateCount, patchedGateCount };
 	if (targetGateCount === 0) {
 		return {
-			result: "Missing autoDreamEnabled force-on gate",
+			passed: false,
+			issues: ["match-missing"],
+			diagnostic: "Missing autoDreamEnabled force-on gate",
 			witness,
 		};
 	}
 	if (patchedGateCount < targetGateCount) {
 		return {
-			result:
+			passed: false,
+			issues: ["mutation-missing"],
+			diagnostic:
 				"Auto-dream availability gate present but not force-on (missing `autoDreamEnabled !== true &&` prefix)",
 			witness,
 		};
 	}
-	return { result: true, witness };
+	return { passed: true, issues: [], witness };
 }
 
 export const sessionMemory: Patch = {
 	tag: "session-mem",
 
-	astPasses: () => [
+	astPasses: (_ast, recorder) => [
 		{
 			pass: "mutate",
-			visitor: createSessionMemoryMutator(),
+			visitor: createSessionMemoryMutator(recorder),
 		},
 	],
 
-	verify: (code, ast) => verifySessionMemory(code, ast).result,
+	verify: (code, ast) => {
+		const result = verifySessionMemory(code, ast);
+		return result.passed ? true : (result.diagnostic ?? "Verification failed");
+	},
 	verifyWithWitness: verifySessionMemory,
 };
 

@@ -6,6 +6,10 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { withHeavyOperationGuard } from "../src/heavy-operation-guard.js";
 import { registeredPatches } from "../src/patches/index.js";
+import type {
+	VerificationStageName,
+	VerificationStageOutcome,
+} from "../src/types.js";
 import { extractPatchEvidence } from "../src/verification/patch-evidence.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,6 +33,86 @@ interface PatchVerification {
 	tag?: unknown;
 	passed?: unknown;
 	reason?: unknown;
+}
+
+export interface VerificationStagePlan {
+	stage: VerificationStageName;
+	label: string;
+	run: () => void;
+	skipReason?: string;
+}
+
+function errorDiagnostic(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	return message.replaceAll(/\s+/g, " ").slice(0, 1_000);
+}
+
+function sanitizeStageLabel(label: string): string {
+	return (
+		label
+			.toLowerCase()
+			.replaceAll(/[^a-z0-9.-]+/g, "-")
+			.replaceAll(/^-+|-+$/g, "")
+			.slice(0, 64) || "unlabeled"
+	);
+}
+
+function runVerificationStage(
+	outcomes: VerificationStageOutcome[],
+	plan: VerificationStagePlan,
+): boolean {
+	const label = sanitizeStageLabel(plan.label);
+	if (plan.skipReason) {
+		outcomes.push({
+			stage: plan.stage,
+			label,
+			status: "skipped",
+			diagnostic: plan.skipReason,
+		});
+		return false;
+	}
+	try {
+		plan.run();
+		outcomes.push({ stage: plan.stage, label, status: "passed" });
+		return true;
+	} catch (error) {
+		outcomes.push({
+			stage: plan.stage,
+			label,
+			status: "failed",
+			diagnostic: errorDiagnostic(error),
+		});
+		return false;
+	}
+}
+
+export function runVerificationStages(
+	plans: readonly VerificationStagePlan[],
+): VerificationStageOutcome[] {
+	const outcomes: VerificationStageOutcome[] = [];
+	for (const plan of plans) runVerificationStage(outcomes, plan);
+	return outcomes;
+}
+
+export function formatVerificationFailures(
+	outcomes: readonly VerificationStageOutcome[],
+): string | undefined {
+	const failures = outcomes.filter((outcome) => outcome.status === "failed");
+	if (failures.length === 0) return undefined;
+	return [
+		`Verification failed in ${failures.length} stages:`,
+		...failures.map(
+			(outcome) =>
+				`  - [${outcome.stage}: ${outcome.label}] ${outcome.diagnostic ?? "unknown failure"}`,
+		),
+	].join("\n");
+}
+
+function assertVerificationStages(
+	outcomes: readonly VerificationStageOutcome[],
+): void {
+	const diagnostic = formatVerificationFailures(outcomes);
+	if (diagnostic) throw new Error(diagnostic);
 }
 
 interface VerifyPaths {
@@ -203,6 +287,15 @@ export function assertCleanSummary(
 	const parsed = JSON.parse(
 		fs.readFileSync(summaryPath, "utf8"),
 	) as DryRunSummary;
+	assertParsedSummary(parsed, summaryPath, label, expectedTags);
+}
+
+function assertParsedSummary(
+	parsed: DryRunSummary,
+	summaryPath: string,
+	label: string,
+	expectedTags?: readonly string[],
+): void {
 	// A failed patch run reports a top-level error and no result, so check that
 	// first to surface the real reason rather than a schema complaint.
 	if (parsed.error != null) {
@@ -272,11 +365,61 @@ export function persistEvidenceAndAssertCleanSummary(
 	label: string,
 	expectedTags: readonly string[],
 	evidenceOutput?: string,
+	readSummary: (summaryPath: string) => string = (filePath) =>
+		fs.readFileSync(filePath, "utf8"),
+): DryRunSummary {
+	let parsed: DryRunSummary | undefined;
+	const outcomes: VerificationStageOutcome[] = [];
+	recordSummaryAndEvidence(
+		outcomes,
+		summaryPath,
+		label,
+		expectedTags,
+		evidenceOutput,
+		readSummary,
+		(value) => {
+			parsed = value;
+		},
+	);
+	assertVerificationStages(outcomes);
+	if (!parsed) throw new Error(`Summary unavailable for ${label}`);
+	return parsed;
+}
+
+function recordSummaryAndEvidence(
+	outcomes: VerificationStageOutcome[],
+	summaryPath: string,
+	label: string,
+	expectedTags: readonly string[],
+	evidenceOutput: string | undefined,
+	readSummary: (summaryPath: string) => string,
+	onParsed: (summary: DryRunSummary) => void = () => {},
 ): void {
-	if (evidenceOutput) {
-		writePatchEvidence(summaryPath, evidenceOutput);
-	}
-	assertCleanSummary(summaryPath, label, expectedTags);
+	let parsed: DryRunSummary | undefined;
+	runVerificationStage(outcomes, {
+		stage: "summary",
+		label,
+		run: () => {
+			parsed = JSON.parse(readSummary(summaryPath)) as DryRunSummary;
+			onParsed(parsed);
+			assertParsedSummary(parsed, summaryPath, label, expectedTags);
+		},
+	});
+	runVerificationStage(outcomes, {
+		stage: "evidence",
+		label,
+		...(parsed ? {} : { skipReason: "summary unavailable" }),
+		run: () => {
+			const evidence = extractPatchEvidence(parsed);
+			if (!evidenceOutput) return;
+			fs.mkdirSync(path.dirname(evidenceOutput), { recursive: true });
+			fs.writeFileSync(
+				evidenceOutput,
+				`${JSON.stringify(evidence, null, 2)}\n`,
+				"utf8",
+			);
+		},
+	});
 }
 
 export function assertVerificationTarget(
@@ -316,49 +459,80 @@ function preparePromptExport(paths: VerifyPaths): void {
 	fs.mkdirSync(paths.nativePatchedJsDir, { recursive: true });
 }
 
-function verifyCliTarget(cliTarget: string, paths: VerifyPaths): void {
-	runBun([
-		"src/index.ts",
-		"--target",
-		cliTarget,
-		"--dry-run",
-		"--summary-path",
+function verifyCliTarget(
+	cliTarget: string,
+	paths: VerifyPaths,
+	outcomes: VerificationStageOutcome[],
+): void {
+	runVerificationStage(outcomes, {
+		stage: "patch",
+		label: "cli",
+		run: () =>
+			runBun([
+				"src/index.ts",
+				"--target",
+				cliTarget,
+				"--dry-run",
+				"--summary-path",
+				paths.cliSummary,
+			]),
+	});
+	recordSummaryAndEvidence(
+		outcomes,
 		paths.cliSummary,
-	]);
-	assertCleanSummary(paths.cliSummary, "cli.js", expectedPatchTags);
+		"cli.js",
+		expectedPatchTags,
+		undefined,
+		(filePath) => fs.readFileSync(filePath, "utf8"),
+	);
 }
 
 function runPromptExportAndVerify(
 	patchedBinary: string,
 	paths: VerifyPaths,
+	outcomes: VerificationStageOutcome[],
 ): void {
-	runBun([
-		"src/index.ts",
-		"--target",
-		patchedBinary,
-		"--unpack",
-		paths.nativePatchedJs,
-	]);
-	runBun([
-		"scripts/export-prompts.ts",
-		paths.nativePatchedJs,
-		"--label",
-		paths.nativePromptExportLabel,
-		"--output-dir",
-		paths.nativePromptExportDir,
-	]);
-	runBun([
-		"src/index.ts",
-		"--verify-prompt-surfaces",
-		paths.nativePromptExportDir,
-	]);
-	runBun([
-		"src/index.ts",
-		"--verify-prompt-drift",
-		paths.nativePromptExportDir,
-		"--prompt-drift-baseline",
-		promptDriftBaselinePath(),
-	]);
+	let exportReady = false;
+	runVerificationStage(outcomes, {
+		stage: "prompt-surface",
+		label: "native-prompts",
+		run: () => {
+			runBun([
+				"src/index.ts",
+				"--target",
+				patchedBinary,
+				"--unpack",
+				paths.nativePatchedJs,
+			]);
+			runBun([
+				"scripts/export-prompts.ts",
+				paths.nativePatchedJs,
+				"--label",
+				paths.nativePromptExportLabel,
+				"--output-dir",
+				paths.nativePromptExportDir,
+			]);
+			exportReady = true;
+			runBun([
+				"src/index.ts",
+				"--verify-prompt-surfaces",
+				paths.nativePromptExportDir,
+			]);
+		},
+	});
+	runVerificationStage(outcomes, {
+		stage: "prompt-drift",
+		label: "native-prompts",
+		...(exportReady ? {} : { skipReason: "prompt export unavailable" }),
+		run: () =>
+			runBun([
+				"src/index.ts",
+				"--verify-prompt-drift",
+				paths.nativePromptExportDir,
+				"--prompt-drift-baseline",
+				promptDriftBaselinePath(),
+			]),
+	});
 }
 
 function verifyNativeTarget(
@@ -366,6 +540,7 @@ function verifyNativeTarget(
 	paths: VerifyPaths,
 	promotedBinary?: string,
 	evidenceOutput?: string,
+	outcomes: VerificationStageOutcome[] = [],
 ): void {
 	if (promotedBinary) {
 		// Post-update: the patch step already produced this binary and gated the
@@ -373,44 +548,93 @@ function verifyNativeTarget(
 		// promoting. A dry-run patch (correctness) and an --output re-patch (only
 		// to feed the prompt export) would each repeat the full ~150s/13GB
 		// pipeline. Verify prompts against the promoted artifact itself instead.
-		runPromptExportAndVerify(promotedBinary, paths);
+		runVerificationStage(outcomes, {
+			stage: "patch",
+			label: "promoted-native",
+			run: () => {},
+		});
+		runVerificationStage(outcomes, {
+			stage: "summary",
+			label: "promoted-native",
+			skipReason: "promoted artifact reuses its completed patch summary",
+			run: () => {},
+		});
+		runVerificationStage(outcomes, {
+			stage: "evidence",
+			label: "promoted-native",
+			skipReason: "promoted artifact does not produce standalone evidence",
+			run: () => {},
+		});
+		runPromptExportAndVerify(promotedBinary, paths, outcomes);
 		return;
 	}
 
 	// Standalone verify:patches: no fresh promote to trust. A single patch run
 	// both writes the binary for the prompt export and emits the summary we assert
 	// failed-tags-clean on, instead of a separate dry-run plus re-patch.
-	runBun([
-		"src/index.ts",
-		"--target",
-		nativeTarget,
-		"--output",
-		paths.nativePatchedForPrompts,
-		"--summary-path",
-		paths.nativeSummary,
-		...structuralEvidenceCliArgs(evidenceOutput),
-	]);
-	persistEvidenceAndAssertCleanSummary(
+	runVerificationStage(outcomes, {
+		stage: "patch",
+		label: "native",
+		run: () =>
+			runBun([
+				"src/index.ts",
+				"--target",
+				nativeTarget,
+				"--output",
+				paths.nativePatchedForPrompts,
+				"--summary-path",
+				paths.nativeSummary,
+				...structuralEvidenceCliArgs(evidenceOutput),
+			]),
+	});
+	recordSummaryAndEvidence(
+		outcomes,
 		paths.nativeSummary,
 		"native",
 		expectedPatchTags,
 		evidenceOutput,
+		(filePath) => fs.readFileSync(filePath, "utf8"),
 	);
 	if (evidenceOutput) {
 		console.log(`Patch evidence written to ${evidenceOutput}`);
 	}
-	runPromptExportAndVerify(paths.nativePatchedForPrompts, paths);
+	if (fileExists(paths.nativePatchedForPrompts)) {
+		runPromptExportAndVerify(paths.nativePatchedForPrompts, paths, outcomes);
+	} else {
+		runVerificationStage(outcomes, {
+			stage: "prompt-surface",
+			label: "native-prompts",
+			skipReason: "patched native artifact unavailable",
+			run: () => {},
+		});
+		runVerificationStage(outcomes, {
+			stage: "prompt-drift",
+			label: "native-prompts",
+			skipReason: "prompt export unavailable",
+			run: () => {},
+		});
+	}
 }
 
-function verifyAnchors(cliTarget: string, paths: VerifyPaths): void {
-	fs.copyFileSync(cliTarget, paths.cliPatchedForAnchors);
-	runBun(["src/index.ts", "--target", paths.cliPatchedForAnchors]);
-	runBun([
-		"src/index.ts",
-		"--verify-anchors",
-		paths.cliPatchedForAnchors,
-		cliTarget,
-	]);
+function verifyAnchors(
+	cliTarget: string,
+	paths: VerifyPaths,
+	outcomes: VerificationStageOutcome[],
+): void {
+	runVerificationStage(outcomes, {
+		stage: "anchors",
+		label: "cli",
+		run: () => {
+			fs.copyFileSync(cliTarget, paths.cliPatchedForAnchors);
+			runBun(["src/index.ts", "--target", paths.cliPatchedForAnchors]);
+			runBun([
+				"src/index.ts",
+				"--verify-anchors",
+				paths.cliPatchedForAnchors,
+				cliTarget,
+			]);
+		},
+	});
 }
 
 function cleanup(paths: VerifyPaths): void {
@@ -505,7 +729,7 @@ function runPatchMatrix(): void {
 					],
 					env,
 				);
-				persistEvidenceAndAssertCleanSummary(
+				const parsed = persistEvidenceAndAssertCleanSummary(
 					summaryPath,
 					selectedVersion,
 					expectedPatchTags,
@@ -514,9 +738,6 @@ function runPatchMatrix(): void {
 				if (evidencePath) {
 					console.log(`  Evidence: ${evidencePath}`);
 				}
-				const parsed = JSON.parse(
-					fs.readFileSync(summaryPath, "utf8"),
-				) as DryRunSummary;
 				const appliedCount = Array.isArray(parsed.result?.appliedTags)
 					? parsed.result.appliedTags.length
 					: 0;
@@ -607,6 +828,7 @@ function runDefaultVerification(): void {
 	}
 
 	const paths = createVerifyPaths();
+	const outcomes: VerificationStageOutcome[] = [];
 
 	try {
 		fs.mkdirSync(paths.tmpDir, { recursive: true });
@@ -620,7 +842,7 @@ function runDefaultVerification(): void {
 		]);
 
 		if (fileExists(cliTarget)) {
-			verifyCliTarget(cliTarget, paths);
+			verifyCliTarget(cliTarget, paths, outcomes);
 		} else {
 			console.log("Skipping cli.js dry-run (set CLI_TARGET to enable)");
 		}
@@ -631,21 +853,42 @@ function runDefaultVerification(): void {
 				paths,
 				promotedBinary,
 				evidenceOutput,
+				outcomes,
 			);
 		} else {
 			console.log(
 				"Skipping native verification (--allow-missing-target was explicitly set)",
 			);
+			for (const [stage, diagnostic] of [
+				["summary", "native target unavailable"],
+				["evidence", "native summary unavailable"],
+				["prompt-surface", "patched native artifact unavailable"],
+				["prompt-drift", "prompt export unavailable"],
+			] as const) {
+				runVerificationStage(outcomes, {
+					stage,
+					label: "native",
+					skipReason: diagnostic,
+					run: () => {},
+				});
+			}
 		}
 
 		if (fileExists(cliTarget)) {
-			verifyAnchors(cliTarget, paths);
+			verifyAnchors(cliTarget, paths, outcomes);
 		} else {
 			console.log("Skipping anchor checks (set CLI_TARGET to enable)");
+			runVerificationStage(outcomes, {
+				stage: "anchors",
+				label: "cli",
+				skipReason: "cli.js target unavailable",
+				run: () => {},
+			});
 		}
 	} finally {
 		cleanup(paths);
 	}
+	assertVerificationStages(outcomes);
 }
 
 if (import.meta.main) {

@@ -10,6 +10,12 @@ import {
 	isSubagentModelEnvArray,
 	SUBAGENT_MODEL_ENV,
 } from "./ast-helpers.js";
+import {
+	buildWorkflowAliasHelper,
+	buildWorkflowDisplayResolverBody,
+	isWorkflowAliasDisplayHelper,
+	projectWorkflowModelFormatter,
+} from "./model-aliases-workflow-display.js";
 
 const MODEL_ALIASES_ENV = "CLAUDE_CODE_MODEL_ALIASES";
 const AUTO_MODE_MODEL_ENV = "CLAUDE_CODE_AUTO_MODE_MODEL";
@@ -977,59 +983,6 @@ function getMemberObjectName(
 	return getMemberPropertyName(node) === propertyName ? node.object.name : null;
 }
 
-function isNonNullComparison(
-	node: t.Node | null | undefined,
-	identifierName: string,
-): boolean {
-	if (
-		!t.isBinaryExpression(node) ||
-		(node.operator !== "!=" && node.operator !== "!==")
-	) {
-		return false;
-	}
-	return (
-		(t.isIdentifier(node.left, { name: identifierName }) &&
-			t.isNullLiteral(node.right)) ||
-		(t.isIdentifier(node.right, { name: identifierName }) &&
-			t.isNullLiteral(node.left))
-	);
-}
-
-function isCallWithIdentifierArgument(
-	node: t.Node | null | undefined,
-	calleeName: string,
-	argumentName: string,
-): boolean {
-	return (
-		t.isCallExpression(node) &&
-		t.isIdentifier(node.callee, { name: calleeName }) &&
-		node.arguments.length === 1 &&
-		t.isIdentifier(node.arguments[0], { name: argumentName })
-	);
-}
-
-function isStockDisplayResolverBody(
-	node: t.Node | null | undefined,
-	parameterName: string,
-): boolean {
-	if (!t.isExpression(node)) return false;
-	const operands = flattenNullish(node);
-	return (
-		operands.length === 2 &&
-		t.isCallExpression(operands[0]) &&
-		operands[0].arguments.length === 1 &&
-		t.isIdentifier(operands[0].arguments[0], { name: parameterName }) &&
-		t.isIdentifier(operands[1], { name: parameterName })
-	);
-}
-
-function flattenNullish(node: t.Expression): t.Expression[] {
-	if (t.isLogicalExpression(node, { operator: "??" })) {
-		return [...flattenNullish(node.left), ...flattenNullish(node.right)];
-	}
-	return [node];
-}
-
 function getWorkflowFormatterReferenceCount(
 	path: NodePath<t.FunctionDeclaration>,
 ): number {
@@ -1058,122 +1011,12 @@ function getWorkflowFormatterReferenceCount(
 function classifyWorkflowModelFormatter(
 	path: NodePath<t.FunctionDeclaration>,
 ): WorkflowModelFormatterCandidate | null {
-	if (
-		path.node.params.length !== 2 ||
-		!t.isIdentifier(path.node.params[0]) ||
-		!t.isIdentifier(path.node.params[1]) ||
-		getWorkflowFormatterReferenceCount(path) !== 2
-	) {
-		return null;
-	}
-	const modelParameter = path.node.params[0];
-	const fallbackParameter = path.node.params[1];
-	const statements = path.node.body.body;
-	if (statements.length !== 3) return null;
-	const [resolverStatement, fallbackStatement, defaultStatement] = statements;
-	if (
-		!t.isVariableDeclaration(resolverStatement) ||
-		resolverStatement.declarations.length !== 1 ||
-		!t.isIdentifier(resolverStatement.declarations[0].id) ||
-		!t.isArrowFunctionExpression(resolverStatement.declarations[0].init) ||
-		resolverStatement.declarations[0].init.params.length !== 1 ||
-		!t.isIdentifier(resolverStatement.declarations[0].init.params[0]) ||
-		!t.isIfStatement(fallbackStatement) ||
-		!t.isReturnStatement(defaultStatement)
-	) {
-		return null;
-	}
-	if (!isNonNullComparison(fallbackStatement.test, fallbackParameter.name)) {
-		return null;
-	}
-	const resolverName = resolverStatement.declarations[0].id.name;
-	const displayResolver = resolverStatement.declarations[0].init;
-	const displayParameter = displayResolver.params[0];
-	if (!t.isIdentifier(displayParameter)) return null;
-	const displayParameterName = displayParameter.name;
-	if (
-		!nodeContains(fallbackStatement.consequent, (child) =>
-			isCallWithIdentifierArgument(child, resolverName, modelParameter.name),
-		) ||
-		!nodeContains(fallbackStatement.consequent, (child) =>
-			isCallWithIdentifierArgument(child, resolverName, fallbackParameter.name),
-		) ||
-		!nodeContains(defaultStatement.argument, (child) =>
-			isCallWithIdentifierArgument(child, resolverName, modelParameter.name),
-		)
-	) {
-		return null;
-	}
-	const base = {
-		path,
-		displayResolver,
-		displayParameterName,
-	};
-	if (isStockDisplayResolverBody(displayResolver.body, displayParameterName)) {
-		return {
-			...base,
-			state: "unpatched",
-		};
-	}
-	const displayOperands = t.isExpression(displayResolver.body)
-		? flattenNullish(displayResolver.body)
-		: [];
-	if (
-		displayOperands.length === 3 &&
-		t.isCallExpression(displayOperands[0]) &&
-		t.isIdentifier(displayOperands[0].callee) &&
-		displayOperands[0].arguments.length === 1 &&
-		t.isIdentifier(displayOperands[0].arguments[0], {
-			name: displayParameterName,
-		}) &&
-		t.isCallExpression(displayOperands[1]) &&
-		displayOperands[1].arguments.length === 1 &&
-		t.isIdentifier(displayOperands[1].arguments[0], {
-			name: displayParameterName,
-		}) &&
-		t.isIdentifier(displayOperands[2], { name: displayParameterName })
-	) {
-		return {
-			...base,
-			displayHelperName: displayOperands[0].callee.name,
-			state: "patched",
-		};
-	}
-	return {
-		...base,
-		state: "other",
-	};
-}
-
-function buildWorkflowAliasHelper(
-	path: NodePath<t.FunctionDeclaration>,
-): t.FunctionDeclaration {
-	const displayHelperName = path.scope.generateUidIdentifier(
-		"configuredModelAliasLabel",
-	).name;
-	const source = parse(`
-function ${displayHelperName}(model) {
-  if (typeof model !== "string" || process.env.${MODEL_ALIASES_ENV} === void 0) return;
-  let aliases;
-  try {
-    aliases = JSON.parse(process.env.${MODEL_ALIASES_ENV});
-  } catch {
-    return;
-  }
-  if (aliases === null || Array.isArray(aliases) || typeof aliases !== "object") return;
-  for (const [rawAlias, rawTarget] of Object.entries(aliases)) {
-    if (typeof rawTarget !== "string" || rawTarget.trim() !== model.trim()) continue;
-    const alias = rawAlias.trim();
-    if (!alias) return;
-    return alias.charAt(0).toUpperCase() + alias.slice(1);
-  }
-}
-`);
-	const displayHelper = source.program.body[0];
-	if (!t.isFunctionDeclaration(displayHelper)) {
-		throw new Error("model-aliases: failed to build workflow model helper");
-	}
-	return displayHelper;
+	const projection = projectWorkflowModelFormatter(
+		path.node,
+		getWorkflowFormatterReferenceCount(path),
+		nodeContains,
+	);
+	return projection ? { path, ...projection } : null;
 }
 
 function patchWorkflowModelFormatter(
@@ -1183,11 +1026,9 @@ function patchWorkflowModelFormatter(
 	if (candidate.state === "patched") return true;
 	if (candidate.state !== "unpatched") return false;
 	if (!t.isExpression(candidate.displayResolver.body)) return false;
-	candidate.displayResolver.body = t.logicalExpression(
-		"??",
-		t.callExpression(t.identifier(displayHelperName), [
-			t.identifier(candidate.displayParameterName),
-		]),
+	candidate.displayResolver.body = buildWorkflowDisplayResolverBody(
+		displayHelperName,
+		candidate.displayParameterName,
 		candidate.displayResolver.body,
 	);
 	candidate.displayHelperName = displayHelperName;
@@ -1204,22 +1045,6 @@ function getFunctionBinding(
 	return binding && t.isFunctionDeclaration(binding.path.node)
 		? binding.path.node
 		: null;
-}
-
-function isAliasDisplayHelper(node: t.FunctionDeclaration | null): boolean {
-	if (node?.params.length !== 1 || !t.isIdentifier(node.params[0])) {
-		return false;
-	}
-	return (
-		nodeContains(node.body, (child) =>
-			isProcessEnvMember(child, MODEL_ALIASES_ENV),
-		) &&
-		nodeContains(node.body, (child) => isObjectEntriesCall(child, "aliases")) &&
-		nodeContains(
-			node.body,
-			(child) => getMemberCall(child, "toUpperCase") !== null,
-		)
-	);
 }
 
 function createModelAliasPasses(): PatchAstPass[] {
@@ -1356,10 +1181,16 @@ function createModelAliasPasses(): PatchAstPass[] {
 						if (workflowModelFormatters.length === 1) {
 							const formatter = workflowModelFormatters[0];
 							if (formatter.state === "unpatched") {
-								const displayHelper = buildWorkflowAliasHelper(normalizer.path);
+								const displayHelperName =
+									normalizer.path.scope.generateUidIdentifier(
+										"configuredModelAliasLabel",
+									).name;
+								const displayHelper = buildWorkflowAliasHelper(
+									displayHelperName,
+									MODEL_ALIASES_ENV,
+								);
 								normalizer.path.insertBefore(displayHelper);
-								const displayHelperName = displayHelper.id?.name;
-								if (displayHelperName) {
+								if (displayHelper.id?.name === displayHelperName) {
 									workflowModelFormatterPatched = patchWorkflowModelFormatter(
 										formatter,
 										displayHelperName,
@@ -1529,7 +1360,15 @@ export const modelAliases: Patch = {
 			workflowFormatter.path,
 			workflowFormatter.displayHelperName,
 		);
-		if (!isAliasDisplayHelper(displayHelper)) {
+		if (
+			!isWorkflowAliasDisplayHelper(
+				displayHelper,
+				nodeContains,
+				(child) => isProcessEnvMember(child, MODEL_ALIASES_ENV),
+				(child) => isObjectEntriesCall(child, "aliases"),
+				(child) => getMemberCall(child, "toUpperCase") !== null,
+			)
+		) {
 			return "Workflow model formatter alias-label helper is missing or invalid";
 		}
 		return true;

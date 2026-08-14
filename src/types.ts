@@ -36,6 +36,41 @@ export interface PatchVerificationWithWitness {
 	witness?: PatchSemanticWitness;
 }
 
+export type PatchIssueCode =
+	| "match-missing"
+	| "match-ambiguous"
+	| "mutation-missing"
+	| "verification-failed"
+	| "execution-failed";
+
+export interface PatchVerificationResult {
+	passed: boolean;
+	issues: PatchIssueCode[];
+	diagnostic?: string;
+	witness?: PatchSemanticWitness;
+}
+
+export interface PatchOutcomeEvidence {
+	matched: number;
+	mutated: number;
+	alreadySatisfied: number;
+	verified: 0 | 1;
+	issues: PatchIssueCode[];
+}
+
+export type PatchVerificationOutput =
+	| true
+	| string
+	| PatchVerificationWithWitness
+	| PatchVerificationResult;
+
+export interface PatchOutcomeRecorder {
+	recordMatch(outcome: "observed" | "mutated" | "already-satisfied"): void;
+	recordIssue(code: PatchIssueCode): void;
+	recordVerification(passed: boolean): void;
+	snapshot(): PatchOutcomeEvidence;
+}
+
 export interface PatchDriftEvidence {
 	tag: string;
 	passed: boolean;
@@ -51,6 +86,7 @@ export interface PatchDriftEvidence {
 		>
 	>;
 	witness?: PatchSemanticWitness;
+	outcomes?: PatchOutcomeEvidence;
 	overlaps: Array<{
 		pass: AstPassName;
 		nodeType: string;
@@ -66,6 +102,21 @@ export interface PatchEvidenceManifest {
 	patches: PatchDriftEvidence[];
 }
 
+export type VerificationStageName =
+	| "patch"
+	| "summary"
+	| "evidence"
+	| "prompt-surface"
+	| "prompt-drift"
+	| "anchors";
+
+export interface VerificationStageOutcome {
+	stage: VerificationStageName;
+	label: string;
+	status: "passed" | "failed" | "skipped";
+	diagnostic?: string;
+}
+
 /**
  * A self-contained patch with optional string/AST transformations and verification.
  */
@@ -77,7 +128,10 @@ export interface Patch {
 	string?: (code: string) => string;
 
 	/** Optional pass-based AST transforms for combined traversal mode */
-	astPasses?: (ast: t.File) => PatchAstPass[] | Promise<PatchAstPass[]>;
+	astPasses?: (
+		ast: t.File,
+		recorder?: PatchOutcomeRecorder,
+	) => PatchAstPass[] | Promise<PatchAstPass[]>;
 
 	/** Post-verification hook (receives applied tags). Used by signature patch. */
 	postApply?: (ast: t.File, appliedTags: string[]) => void | Promise<void>;
@@ -92,7 +146,7 @@ export interface Patch {
 	verifyWithWitness?: (
 		code: string,
 		ast?: t.File,
-	) => PatchVerificationWithWitness;
+	) => PatchVerificationWithWitness | PatchVerificationResult;
 }
 
 /**

@@ -302,3 +302,98 @@ test("failed verification persists evidence before returning failure", async () 
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}
 });
+
+test("summary and evidence validation parse the summary exactly once", async () => {
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "verify-once-"));
+	const summaryPath = path.join(tempDir, "summary.json");
+	const evidencePath = path.join(tempDir, "evidence.json");
+	let reads = 0;
+	const evidence: PatchEvidenceManifest = {
+		schemaVersion: 1,
+		sourceSha256: "a".repeat(64),
+		outputSha256: "b".repeat(64),
+		patches: [],
+	};
+	try {
+		await fs.writeFile(
+			summaryPath,
+			JSON.stringify({
+				result: {
+					failedTags: [],
+					appliedTags: [],
+					verifications: [],
+					evidence,
+				},
+			}),
+			"utf8",
+		);
+
+		persistEvidenceAndAssertCleanSummary(
+			summaryPath,
+			"synthetic",
+			[],
+			evidencePath,
+			() => {
+				reads += 1;
+				return JSON.stringify({
+					result: {
+						failedTags: [],
+						appliedTags: [],
+						verifications: [],
+						evidence,
+					},
+				});
+			},
+		);
+
+		assert.equal(reads, 1);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("summary failure does not suppress evidence persistence failure", async () => {
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "verify-failures-"));
+	const summaryPath = path.join(tempDir, "summary.json");
+	const evidence: PatchEvidenceManifest = {
+		schemaVersion: 1,
+		sourceSha256: "a".repeat(64),
+		outputSha256: "b".repeat(64),
+		patches: [],
+	};
+	try {
+		await fs.writeFile(
+			summaryPath,
+			JSON.stringify({
+				error: "patch verification failed",
+				result: {
+					failedTags: ["first"],
+					appliedTags: [],
+					verifications: [],
+					evidence,
+				},
+			}),
+			"utf8",
+		);
+
+		assert.throws(
+			() =>
+				persistEvidenceAndAssertCleanSummary(
+					summaryPath,
+					"synthetic",
+					["first"],
+					tempDir,
+				),
+			(error: Error) => {
+				assert.match(
+					error.message,
+					/\[summary: synthetic\].*patch verification failed/i,
+				);
+				assert.match(error.message, /\[evidence: synthetic\]/i);
+				return true;
+			},
+		);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});

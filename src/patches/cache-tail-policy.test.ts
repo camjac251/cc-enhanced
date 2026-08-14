@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runCombinedAstPasses } from "../ast-pass-engine.js";
+import {
+	createPatchOutcomeRecorder,
+	runCombinedAstPasses,
+} from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { cacheTailPolicy } from "./cache-tail-policy.js";
 
 async function runCacheTailViaPasses(
 	ast: any,
 	passIndexes?: number[],
+	recorder = undefined as
+		| ReturnType<typeof createPatchOutcomeRecorder>
+		| undefined,
 ): Promise<void> {
-	const passes = (await cacheTailPolicy.astPasses?.(ast)) ?? [];
+	const passes = (await cacheTailPolicy.astPasses?.(ast, recorder)) ?? [];
 	const selectedPasses =
 		passIndexes === undefined
 			? passes
@@ -626,12 +632,47 @@ test("cache-tail-policy reports semantic verifier coverage", async () => {
 
 	assert.ok(cacheTailPolicy.verifyWithWitness);
 	assert.deepEqual(cacheTailPolicy.verifyWithWitness(output, parse(output)), {
-		result: true,
+		passed: true,
+		issues: [],
 		witness: {
 			semanticChecksPassed: 6,
 			semanticChecksRequired: 6,
 		},
 	});
+});
+
+test("cache-tail-policy records real outcomes across its mutate visitors", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	const recorder = createPatchOutcomeRecorder();
+	await runCacheTailViaPasses(ast, undefined, recorder);
+	const first = recorder.snapshot();
+	assert.ok(first.matched >= 3);
+	assert.equal(first.mutated, first.matched);
+	assert.equal(first.alreadySatisfied, 0);
+
+	const secondRecorder = createPatchOutcomeRecorder();
+	await runCacheTailViaPasses(ast, undefined, secondRecorder);
+	const second = secondRecorder.snapshot();
+	assert.ok(second.alreadySatisfied >= 3);
+	assert.equal(
+		second.mutated + second.alreadySatisfied <= second.matched,
+		true,
+	);
+});
+
+test("cache-tail-policy classifies ambiguous semantic candidates", async () => {
+	const ast = parse(FULL_VERIFY_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast).replace(
+		"var cacheTailWindow = 2;",
+		"var cacheTailWindow = 2; var cacheTailWindow = 2;",
+	);
+	assert.ok(cacheTailPolicy.verifyWithWitness);
+	const result = cacheTailPolicy.verifyWithWitness(output, parse(output));
+	assert.equal("passed" in result, true);
+	if (!("passed" in result)) throw new Error("expected structured result");
+	assert.equal(result.passed, false);
+	assert.deepEqual(result.issues, ["match-ambiguous"]);
 });
 
 test("cache-tail-policy collects one ordered verification inventory", async () => {
@@ -728,7 +769,9 @@ test("cache-tail-policy preserves verifier failure order and witnesses", async (
 		assert.deepEqual(
 			cacheTailPolicy.verifyWithWitness(regressed, parse(regressed)),
 			{
-				result: scenario.result,
+				passed: false,
+				issues: ["mutation-missing"],
+				diagnostic: scenario.result,
 				witness: {
 					semanticChecksPassed: scenario.passed,
 					semanticChecksRequired: cases.length,
@@ -754,7 +797,9 @@ function unrelated(cp) {
 	assert.deepEqual(
 		cacheTailPolicy.verifyWithWitness(regressed, parse(regressed)),
 		{
-			result:
+			passed: false,
+			issues: ["mutation-missing"],
+			diagnostic:
 				"Request clamp helper missing delete cp.block.cache_control statement",
 			witness: {
 				semanticChecksPassed: 4,
@@ -778,7 +823,10 @@ test("cache-tail-policy rejects the wrong block-cap subtraction source", async (
 	assert.deepEqual(
 		cacheTailPolicy.verifyWithWitness(regressed, parse(regressed)),
 		{
-			result: "Request clamp helper missing fixed maxMsgCheckpoints block cap",
+			passed: false,
+			issues: ["mutation-missing"],
+			diagnostic:
+				"Request clamp helper missing fixed maxMsgCheckpoints block cap",
 			witness: {
 				semanticChecksPassed: 4,
 				semanticChecksRequired: 6,
@@ -801,7 +849,9 @@ test("cache-tail-policy rejects a same-function cache-control delete decoy", asy
 	assert.deepEqual(
 		cacheTailPolicy.verifyWithWitness(regressed, parse(regressed)),
 		{
-			result:
+			passed: false,
+			issues: ["mutation-missing"],
+			diagnostic:
 				"Request clamp helper missing delete cp.block.cache_control statement",
 			witness: {
 				semanticChecksPassed: 4,
