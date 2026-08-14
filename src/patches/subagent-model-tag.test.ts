@@ -78,7 +78,12 @@ async function resumeChild() {
   const metadata = await readAgentMetadata(agentId);
   const configuredAgent = getSelectedAgent(metadata);
   const isFork = metadata?.isFork === true;
-  const selectedAgent = configuredAgent ?? (isFork ? forkAgent : defaultAgent);
+  const selectedAgent =
+    metadata?.agentType === defaultAgent.agentType && metadata?.isBuiltIn !== true
+      ? configuredAgent
+      : metadata?.isBuiltIn === true
+        ? defaultAgent
+        : configuredAgent ?? (isFork ? forkAgent : defaultAgent);
   const parentModel = getParentModel(context);
   const resolvedModel = resolveAgentModel(getAgentModel(selectedAgent, parentModel), parentModel, metadata?.isObserver ? void 0 : metadata?.model, permissionMode);
   const childOptions = {
@@ -135,8 +140,8 @@ ${AGENT_LIFECYCLE_FIXTURE}
 // parent model. The added `effort` field is incidental: the matcher anchors on
 // the spread-of-the-alias identity, not on the property name.
 const SUBAGENT_FIXTURE_EFFORT_WRAPPED = SUBAGENT_FIXTURE.replace(
-	"const selectedAgent = configuredAgent ?? (isFork ? forkAgent : defaultAgent);",
-	"const selectedAgent = configuredAgent ?? (isFork ? forkAgent : defaultAgent);\n  const effortAgent = resumeOptions?.effort !== undefined ? { ...selectedAgent, effort: resumeOptions.effort } : selectedAgent;",
+	"        : configuredAgent ?? (isFork ? forkAgent : defaultAgent);",
+	"        : configuredAgent ?? (isFork ? forkAgent : defaultAgent);\n  const effortAgent = resumeOptions?.effort !== undefined ? { ...selectedAgent, effort: resumeOptions.effort } : selectedAgent;",
 ).replace(
 	"getAgentModel(selectedAgent, parentModel)",
 	"getAgentModel(effortAgent, parentModel)",

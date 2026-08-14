@@ -57,16 +57,18 @@ function nodeContainsText(
 }
 
 function isTaskSerializerObject(obj: t.ObjectExpression): boolean {
-	const hasTaskId = obj.properties.some(
-		(p) => t.isObjectProperty(p) && getObjectKeyName(p.key) === "task_id",
+	const type = findObjectProperty(obj, "type");
+	const subtype = findObjectProperty(obj, "subtype");
+	return (
+		!!type &&
+		t.isStringLiteral(type.value, { value: "system" }) &&
+		!!subtype &&
+		t.isStringLiteral(subtype.value, { value: "task_notification" }) &&
+		findObjectProperty(obj, "task_id") !== null &&
+		findObjectProperty(obj, "status") !== null &&
+		findObjectProperty(obj, "output_file") !== null &&
+		findObjectProperty(obj, "summary") !== null
 	);
-	const hasStatus = obj.properties.some(
-		(p) => t.isObjectProperty(p) && getObjectKeyName(p.key) === "status",
-	);
-	const hasOutput = obj.properties.some(
-		(p) => t.isObjectProperty(p) && getObjectKeyName(p.key) === "output",
-	);
-	return hasTaskId && hasStatus && hasOutput;
 }
 
 function findObjectProperty(
@@ -133,6 +135,37 @@ function findTaskOutputBlockDefault(
 	return block ? findDefaultCall(block.value) : null;
 }
 
+function findOutputFileMember(
+	node: t.Node,
+): t.MemberExpression | t.OptionalMemberExpression | null {
+	let result: t.MemberExpression | t.OptionalMemberExpression | null = null;
+	const visit = (value: unknown): void => {
+		if (result || !value) return;
+		if (Array.isArray(value)) {
+			for (const item of value) visit(item);
+			return;
+		}
+		if (typeof value !== "object") return;
+		const maybeNode = value as t.Node;
+		if (typeof (maybeNode as { type?: unknown }).type !== "string") return;
+		if (
+			(t.isMemberExpression(maybeNode) ||
+				t.isOptionalMemberExpression(maybeNode)) &&
+			isMemberPropertyName(maybeNode, "outputFile")
+		) {
+			result = maybeNode;
+			return;
+		}
+		for (const child of Object.values(
+			maybeNode as unknown as Record<string, unknown>,
+		)) {
+			visit(child);
+		}
+	};
+	visit(node);
+	return result;
+}
+
 function nodeContainsTaskErrorRef(
 	node: t.Node | null | undefined,
 	resultVar: string,
@@ -179,7 +212,7 @@ function createTaskOutputExtMutator(): Visitor {
 	let responsePatched = false;
 
 	return {
-		// 1. Add output_file / output_filename to task serializer
+		// 1. Add output_filename to the task notification serializer
 		ObjectExpression(path) {
 			if (!schemaPatched && isTaskOutputSchemaObject(path.node)) {
 				const defaultCall = findTaskOutputBlockDefault(path.node);
@@ -196,34 +229,19 @@ function createTaskOutputExtMutator(): Visitor {
 
 			if (serializerPatched) return;
 			if (!isTaskSerializerObject(path.node)) return;
-			if (path.node.properties.some((p) => hasObjectKeyName(p, "output_file")))
-				return;
-
-			// Find enclosing function's first param (the task object)
-			const enclosingFn = path.findParent(
-				(p) =>
-					p.isFunctionDeclaration() ||
-					p.isFunctionExpression() ||
-					p.isArrowFunctionExpression(),
-			);
 			if (
-				!enclosingFn ||
-				!("params" in enclosingFn.node) ||
-				!t.isIdentifier(enclosingFn.node.params[0])
-			)
+				path.node.properties.some((p) => hasObjectKeyName(p, "output_filename"))
+			) {
+				serializerPatched = true;
 				return;
-			const taskParam = enclosingFn.node.params[0].name;
+			}
 
-			const outputFileExpr = t.memberExpression(
-				t.identifier(taskParam),
-				t.identifier("outputFile"),
-			);
+			const outputFileProp = findObjectProperty(path.node, "output_file");
+			if (!outputFileProp) return;
+			const outputFileExpr = findOutputFileMember(outputFileProp.value);
+			if (!outputFileExpr) return;
 
 			path.node.properties.push(
-				t.objectProperty(
-					t.identifier("output_file"),
-					t.cloneNode(outputFileExpr),
-				),
 				t.objectProperty(
 					t.identifier("output_filename"),
 					buildBasenameExpr(outputFileExpr),
@@ -550,30 +568,31 @@ function verifyTaskSerializer(ast: t.File | t.Program): true | string {
 			return;
 		}
 
-		// output_file value must be a MemberExpression rooted at the enclosing
-		// function's first identifier param, reading .outputFile.
+		// output_file must contain a .outputFile read rooted at an identifier
+		// parameter of the enclosing serializer function.
 		const enclosingFn = path.findParent(
 			(p: any) =>
 				p.isFunctionDeclaration() ||
 				p.isFunctionExpression() ||
 				p.isArrowFunctionExpression(),
 		);
-		if (
-			!enclosingFn ||
-			!("params" in enclosingFn.node) ||
-			!t.isIdentifier(enclosingFn.node.params[0])
-		)
-			return;
+		if (!enclosingFn || !("params" in enclosingFn.node)) return;
 
-		const taskParam = (enclosingFn.node.params[0] as t.Identifier).name;
-		const value = outputFileProp.value;
+		const outputFileMember = findOutputFileMember(outputFileProp.value);
+		const outputFileObject = outputFileMember?.object;
+		if (!t.isIdentifier(outputFileObject)) {
+			serializerError =
+				"output_file does not reference an enclosing serializer param's .outputFile";
+			return;
+		}
+		const taskParam = outputFileObject.name;
 		if (
-			!t.isMemberExpression(value) ||
-			!t.isIdentifier(value.object, { name: taskParam }) ||
-			!isMemberPropertyName(value, "outputFile")
+			!enclosingFn.node.params.some((param: t.Node) =>
+				t.isIdentifier(param, { name: taskParam }),
+			)
 		) {
 			serializerError =
-				"output_file does not reference the enclosing task param's .outputFile";
+				"output_file does not reference an enclosing serializer param's .outputFile";
 			return;
 		}
 
@@ -584,7 +603,7 @@ function verifyTaskSerializer(ast: t.File | t.Program): true | string {
 		const filenameValue = outputFilenameProp.value;
 		const isOutputFileMember = (node: t.Node | null | undefined): boolean =>
 			!!node &&
-			t.isMemberExpression(node) &&
+			(t.isMemberExpression(node) || t.isOptionalMemberExpression(node)) &&
 			t.isIdentifier(node.object, { name: taskParam }) &&
 			isMemberPropertyName(node, "outputFile");
 		const isBasenameDerivation =

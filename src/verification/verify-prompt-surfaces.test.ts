@@ -148,6 +148,25 @@ test("verifyPromptSurfaces passes for patched live prompt surfaces", async () =>
 	}
 });
 
+test("verifyPromptSurfaces allows Bash to omit relocated PR guidance", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "verify-prompt-surfaces-bash-without-pr-"),
+	);
+	try {
+		await createValidSurfaceFixture(tempDir);
+		const bashRule = ruleFor("tools/builtin/bash.md");
+		const bashContent = validContentForRule(bashRule);
+		assert.equal(bashContent.includes('--body-file "$pr_body"'), false);
+		await writeSurface(tempDir, bashRule.file, bashContent);
+
+		const result = await verifyPromptSurfaces({ exportDir: tempDir });
+		assert.equal(result.ok, true);
+		assert.deepEqual(result.failures, []);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
 test("verifyPromptSurfaces allows intentionally disabled optional surfaces to be absent", async () => {
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "verify-prompt-surfaces-optional-absent-"),

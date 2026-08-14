@@ -62,6 +62,14 @@ export function isProcessEnvMember(expr: t.Expression, name: string): boolean {
 	);
 }
 
+function isRuntimeEnvMember(expr: t.Expression, name: string): boolean {
+	return (
+		t.isMemberExpression(expr) &&
+		t.isIdentifier(expr.object) &&
+		t.isIdentifier(expr.property, { name })
+	);
+}
+
 export function isFalseLiteralExpression(
 	expr: t.Expression | null | undefined,
 ): boolean {
@@ -124,7 +132,7 @@ export function patchEnvEffortResolverFunction(
 				t.isIdentifier(declaration.id) &&
 				declaration.init &&
 				t.isExpression(declaration.init) &&
-				isProcessEnvMember(declaration.init, envEffortLevel),
+				isRuntimeEnvMember(declaration.init, envEffortLevel),
 		);
 	});
 	if (!readsEffortEnv) return null;
@@ -154,25 +162,38 @@ export function hasPatchedEnvEffortResolverFunction(
 	);
 }
 
-function isZeroArgCallStatement(
+function isScopedCallStatement(
 	stmt: t.Statement,
+	scopeName: string,
 ): stmt is t.ExpressionStatement {
 	return (
 		t.isExpressionStatement(stmt) &&
 		t.isCallExpression(stmt.expression) &&
-		stmt.expression.arguments.length === 0
+		stmt.expression.arguments.length === 1 &&
+		t.isIdentifier(stmt.expression.arguments[0], { name: scopeName })
 	);
 }
 
 function findUnpinEffortStatement(fn: t.Function): t.Statement | null {
 	if (!t.isBlockStatement(fn.body)) return null;
+	const persistParam = fn.params[1];
+	const scopeParam = fn.params[2];
+	if (
+		!t.isAssignmentPattern(persistParam) ||
+		!t.isIdentifier(persistParam.left) ||
+		!t.isIdentifier(scopeParam)
+	) {
+		return null;
+	}
 	for (const stmt of fn.body.body) {
-		if (isZeroArgCallStatement(stmt)) return stmt;
 		if (!t.isIfStatement(stmt)) continue;
-		if (isZeroArgCallStatement(stmt.consequent)) return stmt;
+		if (!t.isIdentifier(stmt.test, { name: persistParam.left.name })) continue;
+		if (isScopedCallStatement(stmt.consequent, scopeParam.name)) return stmt;
 		if (
 			t.isBlockStatement(stmt.consequent) &&
-			stmt.consequent.body.some(isZeroArgCallStatement)
+			stmt.consequent.body.some((child) =>
+				isScopedCallStatement(child, scopeParam.name),
+			)
 		) {
 			return stmt;
 		}

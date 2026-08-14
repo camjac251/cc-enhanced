@@ -2,12 +2,9 @@ import * as fs from "node:fs";
 import {
 	BUN_TRAILER,
 	type BunOffsets,
-	countClaudeModules,
 	detectModuleStructSize,
 	getPointerContent,
-	isClaudeModule,
-	mapModules,
-	parseModule,
+	mapEntryPointModule,
 	parseOffsets,
 	SIZEOF_OFFSETS,
 	toWriteError,
@@ -223,24 +220,19 @@ export function extractClaudeJsFromNativeLinux(
 	const binary = fs.readFileSync(filePath);
 	const { bunBlob, bunOffsets, bunBlobStart, moduleStructSize, tailValue } =
 		parseLinuxBunBlob(binary);
-	const matchCount = countClaudeModules(bunBlob, bunOffsets, moduleStructSize);
-	if (matchCount > 1) {
-		throw new Error(
-			`Ambiguous Bun binary: ${matchCount} modules match isClaudeModule (expected exactly 1)`,
-		);
-	}
-	const claudeJs = mapModules(
+	const claudeJs = mapEntryPointModule(
 		bunBlob,
 		bunOffsets,
 		moduleStructSize,
-		(module, moduleName) => {
-			if (!isClaudeModule(moduleName)) return undefined;
+		(module) => {
 			const contents = getPointerContent(bunBlob, module.contents);
 			return contents.length > 0 ? contents : undefined;
 		},
 	);
 	if (!claudeJs) {
-		throw new Error("Could not locate embedded claude module in Bun binary");
+		throw new Error(
+			"Could not locate embedded entry-point module in Bun binary",
+		);
 	}
 	return {
 		binary,
@@ -265,7 +257,7 @@ export function repackNativeLinuxBinary(
 	// Rebuilding the overlay (appending data, changing byteCount) breaks this.
 	// Instead, patch in-place: write the new content over the bytecode area
 	// (which is zeroed anyway) and update the module's content pointer.
-	const claudeModule = findClaudeModuleEntry(
+	const claudeModule = findEntryPointModule(
 		extracted.bunBlob,
 		extracted.bunOffsets,
 		extracted.moduleStructSize,
@@ -316,33 +308,21 @@ export function repackNativeLinuxBinary(
 	}
 }
 
-function findClaudeModuleEntry(
+function findEntryPointModule(
 	bunBlob: Buffer,
 	bunOffsets: BunOffsets,
 	moduleStructSize: number,
 ): { index: number; bytecodeOff: number; bytecodeLen: number } {
-	const moduleCount = Math.floor(
-		bunOffsets.modulesPtr.length / moduleStructSize,
+	const entryPoint = mapEntryPointModule(
+		bunBlob,
+		bunOffsets,
+		moduleStructSize,
+		(module, moduleIndex) => ({
+			index: moduleIndex,
+			bytecodeOff: module.bytecode.offset,
+			bytecodeLen: module.bytecode.length,
+		}),
 	);
-	for (let i = 0; i < moduleCount; i++) {
-		const module = parseModule(
-			bunBlob.subarray(
-				bunOffsets.modulesPtr.offset,
-				bunOffsets.modulesPtr.offset + bunOffsets.modulesPtr.length,
-			),
-			i * moduleStructSize,
-			moduleStructSize,
-		);
-		const moduleName = getPointerContent(bunBlob, module.name).toString(
-			"utf-8",
-		);
-		if (isClaudeModule(moduleName)) {
-			return {
-				index: i,
-				bytecodeOff: module.bytecode.offset,
-				bytecodeLen: module.bytecode.length,
-			};
-		}
-	}
-	throw new Error("Could not locate claude module for in-place repack");
+	if (entryPoint) return entryPoint;
+	throw new Error("Could not locate entry-point module for in-place repack");
 }

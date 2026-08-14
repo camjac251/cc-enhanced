@@ -482,11 +482,6 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				needle: "known code ranges",
 				reason: "Bash prompt missing scoped Read guidance",
 			},
-			{
-				id: "bash-pr-body-file",
-				needle: '--body-file "$pr_body"',
-				reason: "Bash PR example missing body-file workflow",
-			},
 		],
 		forbidden: [
 			{

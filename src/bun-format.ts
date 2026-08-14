@@ -125,16 +125,6 @@ export function getPointerContent(buffer: Buffer, ptr: StringPointer): Buffer {
 	return buffer.subarray(ptr.offset, ptr.offset + ptr.length);
 }
 
-export function isClaudeModule(moduleName: string): boolean {
-	return (
-		moduleName.endsWith("/claude") ||
-		moduleName === "claude" ||
-		moduleName.endsWith("/claude.exe") ||
-		moduleName === "claude.exe" ||
-		moduleName.endsWith("/src/entrypoints/cli.js")
-	);
-}
-
 export function mapModules<T>(
 	bunBlob: Buffer,
 	bunOffsets: BunOffsets,
@@ -162,17 +152,22 @@ export function mapModules<T>(
 	return undefined;
 }
 
-export function countClaudeModules(
+export function mapEntryPointModule<T>(
 	bunBlob: Buffer,
 	bunOffsets: BunOffsets,
 	moduleStructSize: number,
-): number {
-	let count = 0;
-	mapModules(bunBlob, bunOffsets, moduleStructSize, (_module, moduleName) => {
-		if (isClaudeModule(moduleName)) count++;
-		return undefined;
-	});
-	return count;
+	visitor: (module: BunModule, index: number) => T | undefined,
+): T | undefined {
+	const modulesList = getPointerContent(bunBlob, bunOffsets.modulesPtr);
+	const moduleCount = Math.floor(modulesList.length / moduleStructSize);
+	const moduleIndex = bunOffsets.entryPointId;
+	if (moduleIndex >= moduleCount) return undefined;
+	const module = parseModule(
+		modulesList,
+		moduleIndex * moduleStructSize,
+		moduleStructSize,
+	);
+	return visitor(module, moduleIndex);
 }
 
 export function toWriteError(error: unknown, targetPath: string): Error {

@@ -144,6 +144,7 @@ function UP4({ toolUseConfirm: H, setStickyFooter: _ }) {
 function MainRepl({ initialMessage: l }) {
   let [D4, HW] = s$.useState([]),
     A1 = s$.useRef(D4),
+    B1 = { getSnapshot: () => A1.current },
     Y7 = [],
     ZH = "model",
     X$ = () => {},
@@ -204,7 +205,7 @@ function MainRepl({ initialMessage: l }) {
         helpers: i$,
         commands: Y7,
         getToolUseContext: CJ,
-        messages: A1.current,
+        messages: B1.getSnapshot(),
         mainLoopModel: Q6?.modelOverride ?? ZH,
         addNotification: X$,
         setMessages: y4,
@@ -394,17 +395,16 @@ test("plan-compact-execute verify rejects a compact split that duplicates the vi
 	assert.equal(String(result).includes("unreachable"), true);
 });
 
-test("plan-compact-execute handler reads messages ref via .current", async () => {
+test("plan-compact-execute handler reads the message store snapshot", async () => {
 	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
 	await runPlanCompactExecuteViaPasses(ast);
 	const output = print(ast);
-	// The injected compact command call passes `<messagesRef>.current` into the
-	// tool-use-context builder. If discovery ever stops requiring the `.current`
-	// member on the messages key, this dereference would be missing.
+	// The injected compact command call passes the exact snapshot expression from
+	// the interactive context into the tool-use-context builder.
 	assert.match(
 		output,
-		/\w+\.current,\s*\[\],\s*new AbortController\(\)/,
-		"handler must dereference the messages ref via .current",
+		/\w+\.getSnapshot\(\),\s*\[\],\s*new AbortController\(\)/,
+		"handler must read the message store snapshot",
 	);
 	assert.equal(planCompactExecute.verify(output), true);
 });

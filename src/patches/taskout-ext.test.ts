@@ -73,11 +73,14 @@ const TASK_PROMPT = \`- Retrieves output from a running or completed task (backg
 - Task IDs can be found using the /tasks command
 - Works with all task types: background shells, async agents, and remote sessions\`;
 
-function serializeTask(task) {
+function serializeTask(taskId, status, task) {
   return {
-    task_id: task.taskId,
-    status: task.status,
-    output: task.output,
+    type: "system",
+    subtype: "task_notification",
+    task_id: taskId,
+    status,
+    output_file: task.outputFile ?? "",
+    summary: task.summary ?? "",
   };
 }
 
@@ -130,14 +133,25 @@ test("taskout-ext patches serializer fields, XML tags, and prompt guidance", asy
 	assert.equal(output.includes('Read the tail first: range "-500:"'), false);
 });
 
+test("taskout-ext patches an optional outputFile serializer read", async () => {
+	const latestFixture = TASK_OUTPUT_FIXTURE.replace(
+		'output_file: task.outputFile ?? ""',
+		'output_file: task?.outputFile ?? ""',
+	);
+	assert.notEqual(latestFixture, TASK_OUTPUT_FIXTURE);
+
+	const output = await applyTaskOutputExtPatch(latestFixture);
+	assert.equal(output.includes('output_file: task?.outputFile ?? ""'), true);
+	assert.equal(output.includes("output_filename: task?.outputFile"), true);
+});
+
 test("taskout-ext runtime derives basename fallback and emits tags before task errors", async () => {
 	const { mod, cleanup } = await loadPatchedTaskOutputRuntimeModule();
 	try {
-		const serialized = mod.serializeTask({
-			taskId: "task-1",
-			status: "done",
+		const serialized = mod.serializeTask("task-1", "done", {
 			output: "stdout",
 			outputFile: "/tmp/logs/build.txt",
+			summary: "build complete",
 		});
 		assert.equal(serialized.output_file, "/tmp/logs/build.txt");
 		assert.equal(serialized.output_filename, "build.txt");
@@ -188,8 +202,8 @@ test("taskout-ext verify fails when prompt guidance is removed", async () => {
 test("taskout-ext patches a response method that nests tag pushes inside if(result.task)", async () => {
 	const nestedFixture = `
 ${TASK_OUTPUT_SCHEMA_FIXTURE}
-function serializeTask(task) {
-  return { task_id: task.taskId, status: task.status, output: task.output };
+function serializeTask(taskId, status, task) {
+  return { type: "system", subtype: "task_notification", task_id: taskId, status, output_file: task.outputFile ?? "", summary: task.summary ?? "" };
 }
 const TaskOutputTool = {
   name: "TaskOutput",
@@ -235,11 +249,10 @@ test("taskout-ext injects output_file exactly once per surface", async () => {
 test("taskout-ext runtime basename strips backslash path separators", async () => {
 	const { mod, cleanup } = await loadPatchedTaskOutputRuntimeModule();
 	try {
-		const serialized = mod.serializeTask({
-			taskId: "task-2",
-			status: "done",
+		const serialized = mod.serializeTask("task-2", "done", {
 			output: "out",
 			outputFile: "C:\\logs\\run.txt",
+			summary: "run complete",
 		});
 		assert.equal(serialized.output_filename, "run.txt");
 	} finally {
@@ -360,18 +373,14 @@ test("taskout-ext verify rejects weakened background execution guidance", async 
 	assert.equal(String(result).includes("background execution policy"), true);
 });
 
-test("taskout-ext ignores a task_id+status+output_file object that lacks a bare output key", async () => {
-	// emit() returns a task_id+status+output_file object with NO bare `output`
-	// key (the closest false-positive shape to the serializer). Only
-	// serializeTask() carries the bare `output` triad the patch targets, so the
-	// injection must land on it alone and leave emit() untouched.
+test("taskout-ext targets only the task notification serializer", async () => {
 	const notifFixture = `
 ${TASK_OUTPUT_SCHEMA_FIXTURE}
 function emit(n) {
-  return { type: "system", task_id: n.id, status: n.status, output_file: n.outputFile ?? "", summary: "" };
+  return { type: "system", subtype: "other", task_id: n.id, status: n.status, output_file: n.outputFile ?? "", summary: "" };
 }
-function serializeTask(task) {
-  return { task_id: task.taskId, status: task.status, output: task.output };
+function serializeTask(taskId, status, task) {
+  return { type: "system", subtype: "task_notification", task_id: taskId, status, output_file: task.outputFile ?? "", summary: task.summary ?? "" };
 }
 const TaskOutputTool = {
   name: "TaskOutput",
@@ -392,9 +401,7 @@ const TaskOutputTool = {
 `;
 	const output = await applyTaskOutputExtPatch(notifFixture);
 
-	// output_filename is injected only by the patch, only into the serializer.
-	// Exactly one serializer-key occurrence proves the notification object was
-	// not also latched onto.
+	// Exactly one key proves the subtype discriminator excludes the decoy event.
 	const filenameKeyCount = output.split("output_filename:").length - 1;
 	assert.equal(
 		filenameKeyCount,
@@ -402,7 +409,7 @@ const TaskOutputTool = {
 		"output_filename injected exactly once, into the serializer not the notification",
 	);
 
-	// The notification object keeps its original `output_file: n.outputFile`
+	// The decoy event keeps its original `output_file: n.outputFile`
 	// initializer and gains no output_filename of its own.
 	assert.equal(
 		output.includes('output_file: n.outputFile ?? ""'),
@@ -411,7 +418,7 @@ const TaskOutputTool = {
 	);
 });
 
-test("taskout-ext output_file value targets the serialized task param", async () => {
+test("taskout-ext output_filename targets the serialized task param", async () => {
 	const output = await applyTaskOutputExtPatch(TASK_OUTPUT_FIXTURE);
 	const ast = parse(output);
 	let sawTargetedMember = false;
@@ -419,14 +426,15 @@ test("taskout-ext output_file value targets the serialized task param", async ()
 		ObjectProperty(p) {
 			const k = p.node.key;
 			const isKey =
-				(k.type === "Identifier" && k.name === "output_file") ||
-				(k.type === "StringLiteral" && k.value === "output_file");
+				(k.type === "Identifier" && k.name === "output_filename") ||
+				(k.type === "StringLiteral" && k.value === "output_filename");
 			if (!isKey) return;
 			const v = p.node.value;
 			if (
-				v.type === "MemberExpression" &&
-				v.property.type === "Identifier" &&
-				v.property.name === "outputFile"
+				v.type === "LogicalExpression" &&
+				v.left.type === "MemberExpression" &&
+				v.left.property.type === "Identifier" &&
+				v.left.property.name === "outputFile"
 			)
 				sawTargetedMember = true;
 		},
@@ -434,6 +442,6 @@ test("taskout-ext output_file value targets the serialized task param", async ()
 	assert.equal(
 		sawTargetedMember,
 		true,
-		"output_file must read <param>.outputFile, matching the real task object field",
+		"output_filename must derive from <param>.outputFile",
 	);
 });

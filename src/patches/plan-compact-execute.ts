@@ -17,7 +17,7 @@ const COMPACT_FAILED_NOTIFICATION_KEY = "plan-compact-execute-failed";
 interface InteractiveContextIds {
 	commands: string;
 	getToolUseContext: string;
-	messagesRef: string;
+	messagesSnapshot: t.CallExpression;
 	setMessages: string;
 	mainLoopModel: string;
 	addNotification: string;
@@ -642,14 +642,15 @@ function getIdentifierNameFromExpression(
 	return null;
 }
 
-function getMessagesRefIdentifier(
+function getMessagesSnapshot(
 	objectExpr: t.ObjectExpression,
-): string | null {
+): t.CallExpression | null {
 	const prop = getObjectPropertyByName(objectExpr, "messages");
-	if (!prop || !t.isMemberExpression(prop.value)) return null;
-	if (getMemberPropertyName(prop.value) !== "current") return null;
-	if (!t.isIdentifier(prop.value.object)) return null;
-	return prop.value.object.name;
+	if (!prop || !t.isCallExpression(prop.value)) return null;
+	if (prop.value.arguments.length !== 0) return null;
+	if (!t.isMemberExpression(prop.value.callee)) return null;
+	if (getMemberPropertyName(prop.value.callee) !== "getSnapshot") return null;
+	return t.cloneNode(prop.value, true);
 }
 
 function discoverInteractiveContextIds(
@@ -667,7 +668,7 @@ function discoverInteractiveContextIds(
 				objectPath.node,
 				"getToolUseContext",
 			)?.name;
-			const messagesRef = getMessagesRefIdentifier(objectPath.node);
+			const messagesSnapshot = getMessagesSnapshot(objectPath.node);
 			const setMessages = objectHasIdentifierProperty(
 				objectPath.node,
 				"setMessages",
@@ -683,7 +684,7 @@ function discoverInteractiveContextIds(
 			if (
 				commands &&
 				getToolUseContext &&
-				messagesRef &&
+				messagesSnapshot &&
 				setMessages &&
 				mainLoopModel &&
 				addNotification
@@ -691,7 +692,7 @@ function discoverInteractiveContextIds(
 				ids = {
 					commands,
 					getToolUseContext,
-					messagesRef,
+					messagesSnapshot,
 					setMessages,
 					mainLoopModel,
 					addNotification,
@@ -816,7 +817,7 @@ function buildCompactInitialMessageBlock(
 											[
 												t.stringLiteral(""),
 												t.callExpression(t.identifier(ids.getToolUseContext), [
-													member(t.identifier(ids.messagesRef), "current"),
+													t.cloneNode(ids.messagesSnapshot, true),
 													t.arrayExpression([]),
 													t.newExpression(t.identifier("AbortController"), []),
 													t.identifier(ids.mainLoopModel),

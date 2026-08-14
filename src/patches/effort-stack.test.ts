@@ -23,9 +23,9 @@ function resolveEffortLevel(H) {
   return H.settings.effortLevel ?? "high";
 }
 
-function readUltracodeFlag(e) {
+function readUltracodeFlag(e, scope) {
   let enabled = settings().ultracode === !0 || parseEffortAlias(e) === "ultracode";
-  if (enabled) unpinLaunchEffort();
+  if (enabled) unpinLaunchEffort(scope);
   return enabled;
 }
 
@@ -38,7 +38,7 @@ function isUltracodeActive(model, effort, ultracode) {
 }
 
 function readEnvEffort() {
-  let raw = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  let raw = runtimeEnv.CLAUDE_CODE_EFFORT_LEVEL;
   return raw?.toLowerCase() === "unset" || raw?.toLowerCase() === "auto" ? null : parseEffort(raw);
 }
 
@@ -70,7 +70,7 @@ function storeEffortSetting(H, persist = true, scope) {
     let result = saveSettings("userSettings", { effortLevel: parsed }, void 0, scope);
     if (result.error) return result.error;
   }
-  if (persist) unpinLaunchEffort();
+  if (persist) unpinLaunchEffort(scope);
   return;
 }
 
@@ -167,7 +167,7 @@ async function runEffortCommand(H, setState, done) {
 
 const SESSION_OVERRIDE_CHARACTERIZATION_FIXTURE = `
 function readEnvEffort() {
-  let raw = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  let raw = runtimeEnv.CLAUDE_CODE_EFFORT_LEVEL;
   return parseEffort(raw);
 }
 
@@ -176,7 +176,7 @@ function storeEffortSetting(value, persist = true, scope) {
     let result = saveSettings("userSettings", { effortLevel: value });
     if (result.error) return result.error;
   }
-  if (persist) unpinLaunchEffort();
+  if (persist) unpinLaunchEffort(scope);
   return;
 }
 
@@ -192,7 +192,7 @@ function effortWouldChange(next, current, model) {
 }
 
 function nearMissEnvResolver(unused) {
-  let raw = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  let raw = runtimeEnv.CLAUDE_CODE_EFFORT_LEVEL;
   return parseEffort(raw);
 }
 
@@ -214,7 +214,7 @@ function nearMissEffectiveNoop(next, current, model) {
 
 const SESSION_OVERRIDE_CHARACTERIZATION_EXPECTED = `
 function readEnvEffort() {if (globalThis.__claudeCodeEffortSessionOverride === true) return;
-  let raw = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  let raw = runtimeEnv.CLAUDE_CODE_EFFORT_LEVEL;
   return parseEffort(raw);
 }
 
@@ -223,7 +223,7 @@ function storeEffortSetting(value, persist = true, scope) {if (process.env.CLAUD
 
 
 
-    if (persist) unpinLaunchEffort();return;}if (persist) {let result = saveSettings("userSettings", { effortLevel: value });if (result.error) return result.error;}if (persist) unpinLaunchEffort();
+    if (persist) unpinLaunchEffort(scope);return;}if (persist) {let result = saveSettings("userSettings", { effortLevel: value });if (result.error) return result.error;}if (persist) unpinLaunchEffort(scope);
   return;
 }
 
@@ -239,7 +239,7 @@ function effortWouldChange(next, current, model) {
 }
 
 function nearMissEnvResolver(unused) {
-  let raw = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  let raw = runtimeEnv.CLAUDE_CODE_EFFORT_LEVEL;
   return parseEffort(raw);
 }
 
@@ -312,7 +312,7 @@ test("effort-stack characterizes the public session-override subsystem", async (
 		},
 		{
 			code: fullOutput.replace(
-				/if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) \{\s+if \(persist\) unpinLaunchEffort\(\);\s*return;\s*\}/,
+				/if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) \{\s+if \(persist\) unpinLaunchEffort\(scope\);\s*return;\s*\}/,
 				"",
 			),
 			diagnostic: "Did not find env-scoped session-only effort settings guard",
@@ -343,7 +343,7 @@ test("effort-stack characterizes the public session-override subsystem", async (
 			"",
 		)
 		.replace(
-			/if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) \{\s+if \(persist\) unpinLaunchEffort\(\);\s*return;\s*\}/,
+			/if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) \{\s+if \(persist\) unpinLaunchEffort\(scope\);\s*return;\s*\}/,
 			"",
 		)
 		.replace(
@@ -555,7 +555,7 @@ test("effort-stack keeps env-backed effort changes session-only", async () => {
 		),
 		true,
 	);
-	assert.equal(output.includes("if (persist) unpinLaunchEffort();"), true);
+	assert.equal(output.includes("if (persist) unpinLaunchEffort(scope);"), true);
 });
 
 test("effort-stack full pipeline verifies clean", async () => {

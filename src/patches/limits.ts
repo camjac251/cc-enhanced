@@ -78,6 +78,28 @@ function isMathReference(node: t.Expression | t.Super): boolean {
 	);
 }
 
+function findTokenBudgetLiteral(
+	functionPath: any,
+	acceptedValues: readonly number[],
+): t.NumericLiteral | null {
+	const siblings = functionPath.getAllNextSiblings?.();
+	if (!Array.isArray(siblings)) return null;
+	for (const sibling of siblings) {
+		if (t.isFunctionDeclaration(sibling.node)) continue;
+		if (!t.isVariableDeclaration(sibling.node)) return null;
+		for (const declaration of sibling.node.declarations) {
+			if (
+				t.isNumericLiteral(declaration.init) &&
+				acceptedValues.includes(declaration.init.value)
+			) {
+				return declaration.init;
+			}
+		}
+		return null;
+	}
+	return null;
+}
+
 /** Resolve maxResultSizeChars value from NumericLiteral or BinaryExpression (1/0 = Infinity). */
 function resolveMaxResultSizeValue(node: t.Node): number | null {
 	if (t.isNumericLiteral(node)) return node.value;
@@ -234,8 +256,8 @@ function collectCurrentLimits(ast: t.File): {
 				}
 			}
 
-			// tokenBudget: function whose body references the env var, with
-			// the budget default declared as the next sibling variable.
+			// tokenBudget: function whose body references the env var, followed by
+			// helper declarations and the budget-default variable declaration.
 			if (
 				current.tokenBudget === undefined &&
 				t.isBlockStatement(path.node.body)
@@ -255,19 +277,11 @@ function collectCurrentLimits(ast: t.File): {
 					},
 				});
 				if (hasEnv) {
-					const nextSibling = path.getNextSibling?.();
-					if (nextSibling?.node && t.isVariableDeclaration(nextSibling.node)) {
-						for (const decl of nextSibling.node.declarations) {
-							if (
-								t.isNumericLiteral(decl.init) &&
-								(decl.init.value === 25000 ||
-									decl.init.value === NEW_TOKEN_BUDGET)
-							) {
-								current.tokenBudget = decl.init.value;
-								break;
-							}
-						}
-					}
+					const budget = findTokenBudgetLiteral(path, [
+						25000,
+						NEW_TOKEN_BUDGET,
+					]);
+					if (budget) current.tokenBudget = budget.value;
 				}
 			}
 
@@ -463,24 +477,17 @@ function runLimitsPatch(ast: t.File): void {
 				});
 				if (!hasEnv) return;
 
-				// The token budget default is stored as a sibling variable after the function.
-				const nextSibling = path.getNextSibling?.();
-				if (!nextSibling?.node || !t.isVariableDeclaration(nextSibling.node))
-					return;
-
-				for (const decl of nextSibling.node.declarations) {
-					if (t.isNumericLiteral(decl.init, { value: 25000 })) {
-						const oldValue = decl.init.value;
-						decl.init = t.numericLiteral(NEW_TOKEN_BUDGET);
-						limitsChanged.tokenBudget = [
-							String(oldValue),
-							String(NEW_TOKEN_BUDGET),
-						];
-						patched = true;
-						path.stop();
-						return;
-					}
-				}
+				const budget = findTokenBudgetLiteral(path, [25000]);
+				if (!budget) return;
+				const oldValue = budget.value;
+				budget.value = NEW_TOKEN_BUDGET;
+				budget.extra = undefined;
+				limitsChanged.tokenBudget = [
+					String(oldValue),
+					String(NEW_TOKEN_BUDGET),
+				];
+				patched = true;
+				path.stop();
 			},
 		});
 	}

@@ -454,7 +454,10 @@ function isSendMessageMethod(path: NodePath<t.ObjectMethod>): boolean {
 			"Observers report via ObserverReport, not SendMessage",
 		) &&
 		nodeContainsText(path.node, "Message queued for delivery to") &&
-		nodeContainsText(path.node, "had no active task; resumed from transcript")
+		nodeContainsText(
+			path.node,
+			"was not running; resumed it as an in-process teammate",
+		)
 	);
 }
 

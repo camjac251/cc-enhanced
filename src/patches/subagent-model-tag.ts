@@ -420,14 +420,23 @@ function getSelectedAgentForkName(
 	const binding = path.scope.getBinding(selectedAgentName);
 	if (!binding || !t.isVariableDeclarator(binding.path.node)) return null;
 	const initializer = unwrapSelectedAgentAlias(binding.path.node.init, path);
-	if (
-		!t.isLogicalExpression(initializer, { operator: "??" }) ||
-		!t.isConditionalExpression(initializer.right) ||
-		!t.isIdentifier(initializer.right.test)
-	) {
-		return null;
-	}
-	return initializer.right.test.name;
+	if (!initializer) return null;
+	const forkNames: string[] = [];
+	const collectForkFallback = (node: t.Node): void => {
+		if (
+			t.isLogicalExpression(node, { operator: "??" }) &&
+			t.isIdentifier(node.left) &&
+			t.isConditionalExpression(node.right) &&
+			t.isIdentifier(node.right.test) &&
+			t.isIdentifier(node.right.consequent) &&
+			t.isIdentifier(node.right.alternate)
+		) {
+			forkNames.push(node.right.test.name);
+		}
+	};
+	collectForkFallback(initializer);
+	t.traverseFast(initializer, collectForkFallback);
+	return forkNames.length === 1 ? forkNames[0] : null;
 }
 
 function getForkResumeCallShape(

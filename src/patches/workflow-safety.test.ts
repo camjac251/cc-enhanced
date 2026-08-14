@@ -64,7 +64,7 @@ const sendMessageTool = makeTool({
       case "agent-stopped":
         return resumeAgent(resolved.agentId, input.message);
       case "agent-evicted":
-        return { data: { success: true, message: "Agent had no active task; resumed from transcript with your message." } };
+        return { data: { success: true, message: "Agent was not running; resumed it as an in-process teammate with prior messages and your message as its next prompt." } };
     }
   },
 });

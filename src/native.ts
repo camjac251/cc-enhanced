@@ -4,10 +4,9 @@ import { createRequire } from "node:module";
 import {
 	BUN_TRAILER,
 	type BunOffsets,
-	countClaudeModules,
 	detectModuleStructSize,
 	getPointerContent,
-	isClaudeModule,
+	mapEntryPointModule,
 	mapModules,
 	parseOffsets,
 	SIZEOF_MODULE_NEW,
@@ -135,38 +134,44 @@ function rebuildBunBlob(
 		side: number;
 	}> = [];
 
-	mapModules(oldBunBlob, oldOffsets, moduleStructSize, (module, moduleName) => {
-		const nameBytes = getPointerContent(oldBunBlob, module.name);
-		const contentsBytes = isClaudeModule(moduleName)
-			? modifiedClaudeJs
-			: getPointerContent(oldBunBlob, module.contents);
-		const sourcemapBytes = getPointerContent(oldBunBlob, module.sourcemap);
-		const bytecodeBytes = getPointerContent(oldBunBlob, module.bytecode);
-		const moduleInfoBytes = module.moduleInfo
-			? getPointerContent(oldBunBlob, module.moduleInfo)
-			: Buffer.alloc(0);
-		const bytecodeOriginPathBytes = module.bytecodeOriginPath
-			? getPointerContent(oldBunBlob, module.bytecodeOriginPath)
-			: Buffer.alloc(0);
+	mapModules(
+		oldBunBlob,
+		oldOffsets,
+		moduleStructSize,
+		(module, _name, index) => {
+			const nameBytes = getPointerContent(oldBunBlob, module.name);
+			const contentsBytes =
+				index === oldOffsets.entryPointId
+					? modifiedClaudeJs
+					: getPointerContent(oldBunBlob, module.contents);
+			const sourcemapBytes = getPointerContent(oldBunBlob, module.sourcemap);
+			const bytecodeBytes = getPointerContent(oldBunBlob, module.bytecode);
+			const moduleInfoBytes = module.moduleInfo
+				? getPointerContent(oldBunBlob, module.moduleInfo)
+				: Buffer.alloc(0);
+			const bytecodeOriginPathBytes = module.bytecodeOriginPath
+				? getPointerContent(oldBunBlob, module.bytecodeOriginPath)
+				: Buffer.alloc(0);
 
-		modules.push({
-			name: nameBytes,
-			contents: contentsBytes,
-			sourcemap: sourcemapBytes,
-			bytecode: bytecodeBytes,
-			moduleInfo: moduleInfoBytes,
-			bytecodeOriginPath: bytecodeOriginPathBytes,
-			encoding: module.encoding,
-			loader: module.loader,
-			moduleFormat: module.moduleFormat,
-			side: module.side,
-		});
-		strings.push(nameBytes, contentsBytes, sourcemapBytes, bytecodeBytes);
-		if (isNewFormat) {
-			strings.push(moduleInfoBytes, bytecodeOriginPathBytes);
-		}
-		return undefined;
-	});
+			modules.push({
+				name: nameBytes,
+				contents: contentsBytes,
+				sourcemap: sourcemapBytes,
+				bytecode: bytecodeBytes,
+				moduleInfo: moduleInfoBytes,
+				bytecodeOriginPath: bytecodeOriginPathBytes,
+				encoding: module.encoding,
+				loader: module.loader,
+				moduleFormat: module.moduleFormat,
+				side: module.side,
+			});
+			strings.push(nameBytes, contentsBytes, sourcemapBytes, bytecodeBytes);
+			if (isNewFormat) {
+				strings.push(moduleInfoBytes, bytecodeOriginPathBytes);
+			}
+			return undefined;
+		},
+	);
 
 	let offset = 0;
 	const pointers: StringPointer[] = [];
@@ -358,24 +363,19 @@ function extractClaudeJsFromBunBlob(
 	bunOffsets: BunOffsets,
 	moduleStructSize: number,
 ): Buffer {
-	const matchCount = countClaudeModules(bunBlob, bunOffsets, moduleStructSize);
-	if (matchCount > 1) {
-		throw new Error(
-			`Ambiguous Bun binary: ${matchCount} modules match isClaudeModule (expected exactly 1)`,
-		);
-	}
-	const claudeJs = mapModules(
+	const claudeJs = mapEntryPointModule(
 		bunBlob,
 		bunOffsets,
 		moduleStructSize,
-		(module, moduleName) => {
-			if (!isClaudeModule(moduleName)) return undefined;
+		(module) => {
 			const contents = getPointerContent(bunBlob, module.contents);
 			return contents.length > 0 ? contents : undefined;
 		},
 	);
 	if (!claudeJs) {
-		throw new Error("Could not locate embedded claude module in Bun binary");
+		throw new Error(
+			"Could not locate embedded entry-point module in Bun binary",
+		);
 	}
 	return claudeJs;
 }

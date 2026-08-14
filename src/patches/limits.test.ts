@@ -143,6 +143,21 @@ test("limits patch modifies all six numeric targets via combined AST passes", as
 	);
 });
 
+test("limits finds the token budget after intervening helper declarations", async () => {
+	const fixture = LIMITS_FIXTURE.replace(
+		"var rTI = 25000;",
+		`function normalizeReadOptions() { return {}; }
+function buildReadResult() { return {}; }
+var rTI = 25000;`,
+	);
+	const ast = parse(fixture);
+	await runLimitsViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes("rTI = 50000"), true);
+	assert.equal(limits.verify(output, parse(output)), true);
+});
+
 test("limits verify returns true on patched AST", async () => {
 	const ast = parse(LIMITS_FIXTURE);
 	await runLimitsViaPasses(ast);
