@@ -121,7 +121,7 @@ export const claudeMdSystemPrompt: Patch = {
 		];
 	},
 
-	verify: (code, ast) => {
+	verify: (code, ast, context) => {
 		if (code.includes(WEAK_DISCLAIMER)) {
 			return "Weak CLAUDE.md disclaimer still present (replacement failed)";
 		}
@@ -138,9 +138,10 @@ export const claudeMdSystemPrompt: Patch = {
 			if (survivingGates > 0) {
 				return `Subagent CLAUDE.md omission gate is still present (${survivingGates} surviving)`;
 			}
-			// A run that neutralizes nothing means the gate moved or the matcher
-			// went stale; either way the omission behavior would ship live.
-			if (gatesNeutralized === 0) {
+			// Mutation verification must prove that the matcher ran. Serialized
+			// artifacts cannot carry this process-local counter, so their safety
+			// is established by the surviving-gate check above.
+			if (context?.phase !== "artifact" && gatesNeutralized === 0) {
 				return "No subagent CLAUDE.md omission gate was found to neutralize";
 			}
 		}

@@ -89,6 +89,34 @@ test("verifyCliAnchors can skip duplicate per-patch verifier pass", async () => 
 	}
 });
 
+test("verifyCliAnchors runs per-patch verifiers in artifact phase", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "anchor-verify-artifact-phase-"),
+	);
+	const patchedCliPath = path.join(tempDir, "patched-cli.js");
+	const cleanCliPath = path.join(tempDir, "clean-cli.js");
+	const probePatch = allPatches.find(
+		(patch) => patch.tag === "claudemd-strong",
+	);
+	assert.ok(probePatch);
+	const originalVerify = probePatch.verify;
+	let observedPhase: string | undefined;
+	probePatch.verify = (_code, _ast, context?: { phase?: string }) => {
+		observedPhase = context?.phase;
+		return true;
+	};
+
+	try {
+		await fs.writeFile(patchedCliPath, "const marker = 1;", "utf-8");
+		await fs.writeFile(cleanCliPath, "const marker = 2;", "utf-8");
+		await verifyCliAnchors({ patchedCliPath, cleanCliPath });
+		assert.equal(observedPhase, "artifact");
+	} finally {
+		probePatch.verify = originalVerify;
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
 test("verifyCliAnchors parses the patched bundle once", async () => {
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "anchor-verify-single-parse-"),

@@ -120,6 +120,14 @@ export interface VerificationStageOutcome {
 /**
  * A self-contained patch with optional string/AST transformations and verification.
  */
+export interface PatchVerificationContext {
+	/**
+	 * `mutation` verifies the patch operation that just ran. `artifact` verifies
+	 * only state that can be recovered from serialized output.
+	 */
+	phase: "mutation" | "artifact";
+}
+
 export interface Patch {
 	/** Signature tag name, e.g., "bash-prompt" */
 	tag: string;
@@ -140,7 +148,11 @@ export interface Patch {
 	 * Verify patch applied correctly.
 	 * Returns true if successful, or a string describing the failure.
 	 */
-	verify: (code: string, ast?: t.File) => true | string;
+	verify: (
+		code: string,
+		ast?: t.File,
+		context?: PatchVerificationContext,
+	) => true | string;
 
 	/** Verify and return structured, code-free semantic evidence in one pass. */
 	verifyWithWitness?: (

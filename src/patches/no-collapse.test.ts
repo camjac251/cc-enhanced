@@ -78,10 +78,68 @@ test("no-collapse patches guard while preserving classification isCollapsible", 
 
 	// Memory write flags flipped to false
 	assert.equal(output.includes("isCollapsible: !1"), true);
-	assert.equal(output.includes("isMemoryWrite: !1"), true);
+	assert.equal(output.includes("isMemoryWrite: !!0"), true);
 
 	// Verify passes on patched output
 	assert.equal(noCollapse.verify(output, ast), true);
+});
+
+test("no-collapse verifies an already-patched artifact without run-local mutation state", async () => {
+	const ast = parse(NO_COLLAPSE_FIXTURE);
+	await runNoCollapseViaPasses(ast);
+	const output = print(ast);
+	const artifactAst = parse(output);
+
+	// Reset the run-local counter without mutating the serialized artifact.
+	await noCollapse.astPasses?.(parse("const untouched = true;"));
+	const patchRunResult = noCollapse.verify(output, artifactAst);
+	assert.equal(
+		patchRunResult,
+		"Expected exactly one memory write mutation this run, found 0",
+	);
+	assert.equal(
+		noCollapse.verify(output, artifactAst, { phase: "artifact" }),
+		true,
+	);
+
+	const regressed = output.replace(
+		"A.isREPL || A.isMemoryWrite",
+		"A.isCollapsible || A.isREPL",
+	);
+	assert.notEqual(regressed, output);
+	const artifactRegressionResult = noCollapse.verify(
+		regressed,
+		parse(regressed),
+		{ phase: "artifact" },
+	);
+	assert.equal(
+		String(artifactRegressionResult).includes(
+			"Original collapse-metadata guard",
+		),
+		true,
+	);
+
+	for (const [field, regressedArtifact] of [
+		["isCollapsible", output.replace("isCollapsible: !1", "isCollapsible: !0")],
+		[
+			"isMemoryWrite",
+			output.replace("isMemoryWrite: !!0", "isMemoryWrite: !0"),
+		],
+	] as const) {
+		assert.notEqual(regressedArtifact, output);
+		const halfRegressionResult = noCollapse.verify(
+			regressedArtifact,
+			parse(regressedArtifact),
+			{ phase: "artifact" },
+		);
+		assert.equal(
+			String(halfRegressionResult)
+				.toLowerCase()
+				.includes("memory write result"),
+			true,
+			`Expected ${field} half-regression failure, got: ${halfRegressionResult}`,
+		);
+	}
 });
 
 test("no-collapse collects verification markers in one inventory", async () => {
@@ -89,23 +147,79 @@ test("no-collapse collects verification markers in one inventory", async () => {
 	await runNoCollapseViaPasses(ast);
 
 	assert.deepEqual(collectNoCollapseVerification(ast), {
-		foundMemoryWriteResult: true,
-		foundUnpatchedMemoryWriteResult: false,
+		patchedMemoryWriteResultCount: 1,
+		unpatchedMemoryWriteResultCount: 0,
 		foundOriginalGuard: false,
 		foundPatchedGuard: true,
 		foundClassificationTail: true,
 	});
 });
 
+test("no-collapse rejects duplicate memory-write targets and a partial artifact regression", async () => {
+	const duplicateTargetFixture = `${NO_COLLAPSE_FIXTURE}
+function renderSecondMemoryWriteResult(H, A) {
+  if (H.type !== "memory_write_duplicate") return null;
+  return {
+    filePath: A,
+    isCollapsible: !0,
+    isMemoryWrite: !0,
+    isSearch: !1,
+    isRead: !1,
+    isREPL: !1,
+  };
+}
+`;
+	const ast = parse(duplicateTargetFixture);
+	await runNoCollapseViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.split("isMemoryWrite: !!0").length - 1, 2);
+
+	const mutationResult = noCollapse.verify(output, ast);
+	assert.equal(
+		String(mutationResult).includes(
+			"Expected exactly one patched memory write result marker",
+		),
+		true,
+	);
+
+	await noCollapse.astPasses?.(parse("const untouched = true;"));
+	const artifactResult = noCollapse.verify(output, parse(output), {
+		phase: "artifact",
+	});
+	assert.equal(
+		String(artifactResult).includes(
+			"Expected exactly one patched memory write result marker",
+		),
+		true,
+	);
+
+	const partiallyRegressed = output.replace(
+		"isMemoryWrite: !!0",
+		"isMemoryWrite: !0",
+	);
+	assert.notEqual(partiallyRegressed, output);
+	const partialRegressionResult = noCollapse.verify(
+		partiallyRegressed,
+		parse(partiallyRegressed),
+		{ phase: "artifact" },
+	);
+	assert.equal(
+		String(partialRegressionResult).includes(
+			"Memory write result object is not fully patched",
+		),
+		true,
+	);
+});
+
 test("no-collapse verify rejects unpatched fixture", () => {
 	const ast = parse(NO_COLLAPSE_FIXTURE);
 	const result = noCollapse.verify(NO_COLLAPSE_FIXTURE, ast);
 	assert.equal(typeof result, "string");
-	// Should detect the original guard or unpatched memory write flags.
+	// Should detect the original guard or unpatched memory write result.
 	assert.equal(
 		typeof result === "string" &&
 			(result.includes("Original collapse-metadata guard") ||
-				result.includes("Unpatched memory write result object")),
+				result.includes("Memory write result object is not fully patched")),
 		true,
 		`Expected unpatched pattern failure, got: ${result}`,
 	);
@@ -149,7 +263,7 @@ test("no-collapse flips memory-write result flags to false", async () => {
 	const output = print(ast);
 
 	assert.equal(output.includes("isCollapsible: !1"), true);
-	assert.equal(output.includes("isMemoryWrite: !1"), true);
+	assert.equal(output.includes("isMemoryWrite: !!0"), true);
 	assert.equal(noCollapse.verify(output, ast), true);
 });
 
@@ -170,7 +284,7 @@ function getCollapseMetadata(H) {
 }
 
 function renderMemoryWriteResult(H, A) {
-  return { filePath: A, isCollapsible: !1, isMemoryWrite: !1, isSearch: !1, isRead: !1, isREPL: !1 };
+  return { filePath: A, isCollapsible: !1, isMemoryWrite: !!0, isSearch: !1, isRead: !1, isREPL: !1 };
 }
 `;
 	const ast = parse(fixtureNoClassification);
@@ -378,7 +492,7 @@ function getCollapseMetadata(H) {
   return null;
 }
 function renderMemoryWriteResult(H, A) {
-  return { filePath: A, isCollapsible: !1, isMemoryWrite: !1, isSearch: !1, isRead: !1, isREPL: !1 };
+  return { filePath: A, isCollapsible: !1, isMemoryWrite: !!0, isSearch: !1, isRead: !1, isREPL: !1 };
 }
 `;
 	const ast = parse(literalValueFixture);
