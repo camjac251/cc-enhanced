@@ -148,6 +148,11 @@ description = "Extract prompt artifacts from promoted binary or clean version"
 usage = 'arg "[args]..." help="Arguments passed to bun run prompts:export"'
 run = 'eval "set -- ${usage_args-}"; bun run prompts:export "$@"'
 
+[tasks."harness:map"]
+description = "Render an HTML map of the live harness from the newest prompt export and local config"
+usage = 'arg "[args]..." help="Arguments passed to bun run harness:map"'
+run = 'eval "set -- ${usage_args-}"; bun run harness:map "$@"'
+
 [tasks."prompts:bundle"]
 description = "Export prompts to a self-contained navigable bundle"
 usage = 'arg "[args]..." help="Arguments passed to bun run prompts:bundle"'

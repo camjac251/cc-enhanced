@@ -33,6 +33,7 @@
 		"workflow:fingerprint": "bun scripts/workflow-replay-fingerprint.ts",
 		"prompts:export": "bun scripts/export-prompts.ts",
 		"prompts:bundle": "bun scripts/export-prompts.ts --bundle",
+		"harness:map": "bun scripts/harness-map.ts",
 		"prompts:compare": "bun scripts/compare-prompts.ts",
 		"prompts:compare:matrix": "bun scripts/compare-prompt-matrix.ts",
 		"prompts:drift-baseline": "bun src/index.ts --write-prompt-drift-baseline",
