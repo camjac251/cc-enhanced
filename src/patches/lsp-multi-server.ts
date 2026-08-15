@@ -9,8 +9,14 @@ import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
  * didSave) to ALL servers registered for a file extension, not just the first.
  * Fixes anthropics/claude-code#32912.
  *
- * sendRequest continues to use the primary (first) server for type intelligence.
- * Diagnostics already iterate all servers.
+ * sendRequest fails over across the registered servers: it tries each server in
+ * registration order and skips ones that reject the method as unsupported
+ * (JSON-RPC -32601 / "Method not found"), rethrowing any other error. Without
+ * this, a diagnostics-only server (linter LSP) holding the primary slot for an
+ * extension makes every intelligence request fail even though a capable server
+ * is registered right behind it. The lifecycle fan-out above guarantees the
+ * failover target has already received didOpen. Diagnostics already iterate
+ * all servers.
  *
  * The tracking map is changed from Map<uri, serverName> to
  * Map<uri, Set<serverName>> for per-server open-file tracking. Existing
@@ -30,6 +36,7 @@ interface LspRefs {
 	changeFile: string;
 	saveFile: string;
 	getServerForFile: string;
+	sendRequestFn: string;
 	// Map variables (from first 3-Map VariableDeclaration)
 	serverMap: string; // server instances: name -> server
 	extMap: string; // extension -> serverName[]
@@ -77,7 +84,15 @@ function discoverRefs(ast: t.File): LspRefs | null {
 			const changeFile = propMap.get("changeFile");
 			const saveFile = propMap.get("saveFile");
 			const getServerForFile = propMap.get("getServerForFile");
-			if (!openFile || !changeFile || !saveFile || !getServerForFile) return;
+			const sendRequestFn = propMap.get("sendRequest");
+			if (
+				!openFile ||
+				!changeFile ||
+				!saveFile ||
+				!getServerForFile ||
+				!sendRequestFn
+			)
+				return;
 
 			// Walk up to enclosing FunctionDeclaration
 			let fp: NodePath | null = path.parentPath;
@@ -162,6 +177,7 @@ function discoverRefs(ast: t.File): LspRefs | null {
 				changeFile,
 				saveFile,
 				getServerForFile,
+				sendRequestFn,
 				serverMap,
 				extMap,
 				trackMap,
@@ -343,6 +359,51 @@ function buildGetServerForFile(r: LspRefs, params: string[]): t.Statement[] {
 }
 
 /**
+ * Failover request dispatch. The upstream body resolves the primary server and
+ * sends the request to it alone, so a server without the requested capability
+ * hard-fails the whole operation. This body walks every server registered for
+ * the file (extension map, then filename routing), starts stopped servers, and
+ * treats JSON-RPC -32601 / "Method not found" / "Unhandled method" as "try the
+ * next server"; any other error propagates unchanged. If every server lacks
+ * the method, the last unsupported-method error is rethrown so the tool still
+ * reports an accurate failure.
+ */
+function buildSendRequest(r: LspRefs, params: string[]): t.Statement[] | null {
+	if (params.length !== 3) return null;
+	const [file, method, requestParams] = params;
+	// prettier-ignore
+	return parseBody(
+		`async function _r(${file}, ${method}, ${requestParams}) {
+  var _ext = ${r.pathMod}.extname(${file}).toLowerCase();
+  var _ns = ${r.extMap}.get(_ext);
+  if (!_ns || _ns.length === 0) _ns = _lspByName(${file});
+  if (!_ns || _ns.length === 0) return;
+  var _last;
+  for (var _i = 0; _i < _ns.length; _i++) {
+    var _sv = ${r.serverMap}.get(_ns[_i]);
+    if (!_sv) continue;
+    if (_sv.state === "stopped") {
+      try { await _sv.start(); } catch (_e) {
+        ${r.errFn}(Error("Failed to start LSP server for file " + ${file} + ": " + _e.message));
+        continue;
+      }
+    }
+    try {
+      return await _sv.sendRequest(${method}, ${requestParams});
+    } catch (_e) {
+      var _msg = _e && _e.message ? String(_e.message) : String(_e);
+      var _unsupported = (_e && (_e.code === -32601 || _e.code === "-32601")) || _msg.indexOf("Method not found") >= 0 || _msg.indexOf("Unhandled method") >= 0;
+      if (!_unsupported) throw _e;
+      _last = _e;
+      ${r.logFn}("LSP: " + _ns[_i] + " does not support " + ${method} + ", trying next server for " + ${file});
+    }
+  }
+  if (_last) throw _last;
+}`,
+	);
+}
+
+/**
  * Filename-routing helpers injected once into the LSP factory body. They let a
  * server match by exact basename (`filenames`) or glob (`filenamePatterns`) when
  * the file extension yields no server, e.g. `Dockerfile` / `Dockerfile.dev`.
@@ -400,11 +461,12 @@ function buildFilenameHelpers(r: LspRefs): t.Statement[] {
 // === Mutation visitor ===
 
 function createMutateVisitor(refs: LspRefs): Visitor {
-	const builders = new Map<string, (params: string[]) => t.Statement[]>([
+	const builders = new Map<string, (params: string[]) => t.Statement[] | null>([
 		[refs.getServerForFile, (p) => buildGetServerForFile(refs, p)],
 		[refs.openFile, (p) => buildOpenFile(refs, p)],
 		[refs.changeFile, (p) => buildChangeFile(refs, p)],
 		[refs.saveFile, (p) => buildSaveFile(refs, p)],
+		[refs.sendRequestFn, (p) => buildSendRequest(refs, p)],
 	]);
 
 	let replaced = 0;
@@ -447,7 +509,14 @@ function createMutateVisitor(refs: LspRefs): Visitor {
 				.filter((p): p is t.Identifier => t.isIdentifier(p))
 				.map((p) => p.name);
 
-			path.node.body.body = builder(params);
+			const replacement = builder(params);
+			if (!replacement) {
+				console.warn(
+					`LSP multi-server: skipped ${path.node.id.name} (unexpected signature)`,
+				);
+				return;
+			}
+			path.node.body.body = replacement;
 			replaced++;
 		},
 		Program: {
@@ -646,6 +715,46 @@ function verifyMultiServer(code: string, ast?: t.File): true | string {
 		if (!referencesIdentifier(fn, "_lspLang")) {
 			return `${label} does not derive didOpen languageId from filename routing (_lspLang)`;
 		}
+	}
+
+	// Mirrors buildSendRequest: failover loop, unsupported-method discriminator,
+	// and filename-routing fallback, so a partial rewrite fails closed.
+	const sendFn = factoryFn(refs.sendRequestFn);
+	if (!sendFn) return "sendRequest function not found in factory";
+	let sendLoopWithRequest = false;
+	walkNode(sendFn, (node) => {
+		if (!t.isForStatement(node)) return;
+		let matched = false;
+		walkNode(node.body, (inner) => {
+			if (matched) return;
+			if (!t.isCallExpression(inner)) return;
+			const callee = inner.callee;
+			if (!t.isMemberExpression(callee)) return;
+			const propName =
+				(t.isIdentifier(callee.property) && callee.property.name) ||
+				(t.isStringLiteral(callee.property) && callee.property.value) ||
+				null;
+			if (propName === "sendRequest") matched = true;
+		});
+		if (matched) sendLoopWithRequest = true;
+	});
+	if (!sendLoopWithRequest) {
+		return "sendRequest missing per-server failover loop with a sendRequest call";
+	}
+	let hasUnsupportedDiscriminator = false;
+	walkNode(sendFn, (node) => {
+		if (t.isNumericLiteral(node, { value: 32601 })) {
+			hasUnsupportedDiscriminator = true;
+		}
+		if (t.isStringLiteral(node) && node.value.includes("Method not found")) {
+			hasUnsupportedDiscriminator = true;
+		}
+	});
+	if (!hasUnsupportedDiscriminator) {
+		return "sendRequest missing unsupported-method discriminator (-32601 / Method not found)";
+	}
+	if (!referencesIdentifier(sendFn, "_lspByName")) {
+		return "sendRequest does not fall back to filename routing (_lspByName)";
 	}
 
 	return true;

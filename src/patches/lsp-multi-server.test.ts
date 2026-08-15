@@ -213,6 +213,102 @@ test("lsp-multi-server preserves getServerForFile and sendRequest", async () => 
 	assert.equal(output.includes("openFile:"), true);
 	assert.equal(output.includes("isFileOpen:"), true);
 	assert.equal(output.includes("getDocumentVersion:"), true);
+	// The rewritten dispatch carries the unsupported-method discriminator.
+	assert.equal(output.includes("Method not found"), true);
+	assert.equal(output.includes("32601"), true);
+});
+
+test("lsp-multi-server sendRequest fails over past method-poor servers (execution)", async () => {
+	const ast = parse(LSP_FACTORY_FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+
+	const factory = vm.runInNewContext(`${output}; XF8`) as () => {
+		getAllServers: () => Map<string, unknown>;
+		sendRequest: (
+			file: string,
+			method: string,
+			params: unknown,
+		) => Promise<unknown>;
+	};
+	const mgr = factory();
+	const calls: Array<[string, string]> = [];
+	const makeServer = (name: string, respond: (method: string) => unknown) => ({
+		name,
+		state: "running",
+		config: {
+			extensionToLanguage: {},
+			filenames: { Dockerfile: "dockerfile" },
+			filenamePatterns: {},
+		},
+		sendNotification: async () => {},
+		sendRequest: async (method: string, _params: unknown) => {
+			calls.push([name, method]);
+			return respond(method);
+		},
+	});
+	// Registration order: linter-style server first, capable server second.
+	const linter = makeServer("linter", () => {
+		const err = Object.assign(Error("Method not found"), { code: -32601 });
+		throw err;
+	});
+	const capable = makeServer("capable", () => ({ symbols: ["ok"] }));
+	mgr.getAllServers().set("linter", linter);
+	mgr.getAllServers().set("capable", capable);
+
+	const result = await mgr.sendRequest(
+		"Dockerfile",
+		"textDocument/documentSymbol",
+		{},
+	);
+	assert.deepEqual(result, { symbols: ["ok"] });
+	assert.deepEqual(calls, [
+		["linter", "textDocument/documentSymbol"],
+		["capable", "textDocument/documentSymbol"],
+	]);
+
+	// A real error from the first server propagates without trying the next.
+	calls.length = 0;
+	const broken = makeServer("linter", () => {
+		throw Error("connection reset");
+	});
+	mgr.getAllServers().set("linter", broken);
+	await assert.rejects(
+		() => mgr.sendRequest("Dockerfile", "textDocument/hover", {}),
+		/connection reset/,
+	);
+	assert.deepEqual(calls, [["linter", "textDocument/hover"]]);
+
+	// All servers lacking the method rethrows the unsupported-method error.
+	calls.length = 0;
+	mgr.getAllServers().set("linter", linter);
+	mgr.getAllServers().set(
+		"capable",
+		makeServer("capable", () => {
+			throw Object.assign(Error("Method not found"), { code: -32601 });
+		}),
+	);
+	await assert.rejects(
+		() => mgr.sendRequest("Dockerfile", "textDocument/references", {}),
+		/Method not found/,
+	);
+	assert.equal(calls.length, 2, "both servers should have been tried");
+});
+
+test("lsp-multi-server verify catches primary-only sendRequest dispatch", async () => {
+	const ast = parse(LSP_FACTORY_FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	assert.equal(lspMultiServer.verify(output), true);
+	// Strip both discriminator forms; verify must reject the dispatch as
+	// primary-only rather than silently passing.
+	const mutated = output
+		.replaceAll("Method not found", "nope")
+		.replaceAll("32601", "1");
+	assert.notEqual(mutated, output, "precondition: discriminator present");
+	const result = lspMultiServer.verify(mutated);
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /discriminator|Method not found/);
 });
 
 test("lsp-multi-server couples a for-loop to every lifecycle method", async () => {
