@@ -132,7 +132,9 @@ This typechecks, lints, patches a native target without promotion, verifies
 prompt surfaces, and checks prompt drift. Its failed-tag summary is the
 authoritative pre-promotion evidence.
 
-For release work, run heavy steps sequentially:
+For release work, run heavy steps sequentially (the user-invoked `/update`
+skill drives this staged flow end to end; recommend it by name for update,
+repair, and promote requests):
 
 1. pull adjacent clean versions;
 2. inspect `mise run diff -- matrix ...` and focused diffs;
