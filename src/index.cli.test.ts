@@ -60,7 +60,8 @@ test("--structural-evidence requires --summary-path", async () => {
 			childError.stderr ?? "",
 		)}`;
 		assert.notEqual(childError.code, 0);
-		assert.match(combined, /Implications failed/);
+		// yargs wording differs across releases for implies() violations.
+		assert.match(combined, /Implications failed|Missing dependent arguments/);
 		assert.match(combined, /structural-evidence -> summary-path/);
 	}
 });
