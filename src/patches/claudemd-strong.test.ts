@@ -83,6 +83,40 @@ test("claudemd-strong disables subagent CLAUDE.md omission", async () => {
 	assert.equal(claudeMdSystemPrompt.verify(verifiedCode, ast), true);
 });
 
+test("claudemd-strong verifies an already-patched artifact without run-local mutation state", async () => {
+	const ast = parse(SUBAGENT_OMIT_FIXTURE);
+	await runClaudeMdStrongViaPasses(ast);
+	const output = print(ast);
+	const verifiedCode = `${STRONG_DISCLAIMER_LINES.join("\n")}\n${output}`;
+
+	// Reset the run-local counter without mutating the serialized artifact.
+	await claudeMdSystemPrompt.astPasses?.(parse("const untouched = true;"));
+	const patchRunResult = claudeMdSystemPrompt.verify(verifiedCode, ast);
+	assert.equal(
+		String(patchRunResult).includes(
+			"No subagent CLAUDE.md omission gate was found to neutralize",
+		),
+		true,
+	);
+	assert.equal(
+		claudeMdSystemPrompt.verify(verifiedCode, ast, { phase: "artifact" }),
+		true,
+	);
+
+	const unpatchedAst = parse(SUBAGENT_OMIT_FIXTURE);
+	const unpatchedArtifactResult = claudeMdSystemPrompt.verify(
+		`${STRONG_DISCLAIMER_LINES.join("\n")}\n${SUBAGENT_OMIT_FIXTURE}`,
+		unpatchedAst,
+		{ phase: "artifact" },
+	);
+	assert.equal(
+		String(unpatchedArtifactResult).includes(
+			"Subagent CLAUDE.md omission gate is still present",
+		),
+		true,
+	);
+});
+
 test("claudemd-strong verify rejects a surviving subagent CLAUDE.md omission gate", () => {
 	const ast = parse(SUBAGENT_OMIT_FIXTURE);
 	const result = claudeMdSystemPrompt.verify(

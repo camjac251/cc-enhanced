@@ -385,7 +385,7 @@ function runPatchVerifiers(
 		if (patch.tag === "signature") continue;
 		checksRun++;
 		try {
-			const result = patch.verify(patchedCode, ast);
+			const result = patch.verify(patchedCode, ast, { phase: "artifact" });
 			if (result !== true) {
 				pushFailure(
 					failures,

@@ -25,8 +25,9 @@ import {
  *
  * Memory write UI:
  *   - Tool result objects with isCollapsible: !0 + isMemoryWrite: !0 are patched
- *     to set both to !1 so memory writes render as normal file writes with
- *     path and diff visible.
+ *     to false so memory writes render as normal file writes with path and
+ *     diff visible. The isMemoryWrite flag uses a stable false-valued AST
+ *     marker so serialized artifacts remain independently verifiable.
  *
  * The central result-object factory and its `isCollapsible` property are LEFT INTACT,
  * so the cache tail scanner still sees `isCollapsible: true` for search/read
@@ -36,8 +37,8 @@ import {
 let memoryWritesPatched = 0;
 
 export interface NoCollapseVerificationInventory {
-	foundMemoryWriteResult: boolean;
-	foundUnpatchedMemoryWriteResult: boolean;
+	patchedMemoryWriteResultCount: number;
+	unpatchedMemoryWriteResultCount: number;
 	foundOriginalGuard: boolean;
 	foundPatchedGuard: boolean;
 	foundClassificationTail: boolean;
@@ -46,8 +47,8 @@ export interface NoCollapseVerificationInventory {
 export function collectNoCollapseVerification(
 	ast: t.File,
 ): NoCollapseVerificationInventory {
-	let foundMemoryWriteResult = false;
-	let foundUnpatchedMemoryWriteResult = false;
+	let patchedMemoryWriteResultCount = 0;
+	let unpatchedMemoryWriteResultCount = 0;
 	let foundOriginalGuard = false;
 	let foundPatchedGuard = false;
 	let foundClassificationTail = false;
@@ -68,13 +69,15 @@ export function collectNoCollapseVerification(
 			}
 
 			if (!collapsibleProp || !memoryWriteProp) return;
-			foundMemoryWriteResult = true;
-
-			if (
-				isTrueLike(collapsibleProp.value) &&
-				isTrueLike(memoryWriteProp.value)
-			) {
-				foundUnpatchedMemoryWriteResult = true;
+			if (isTrueLike(memoryWriteProp.value)) {
+				unpatchedMemoryWriteResultCount++;
+				return;
+			}
+			if (isPatchedMemoryWriteFalseFlag(memoryWriteProp.value)) {
+				patchedMemoryWriteResultCount++;
+				if (!isFalseLike(collapsibleProp.value)) {
+					unpatchedMemoryWriteResultCount++;
+				}
 			}
 		},
 
@@ -143,8 +146,8 @@ export function collectNoCollapseVerification(
 	});
 
 	return {
-		foundMemoryWriteResult,
-		foundUnpatchedMemoryWriteResult,
+		patchedMemoryWriteResultCount,
+		unpatchedMemoryWriteResultCount,
 		foundOriginalGuard,
 		foundPatchedGuard,
 		foundClassificationTail,
@@ -168,18 +171,18 @@ export const noCollapse: Patch = {
 		];
 	},
 
-	verify: (_code, ast) => {
+	verify: (_code, ast, context) => {
 		if (!ast) return "Missing AST for no-collapse verification";
 
 		const inventory = collectNoCollapseVerification(ast);
-		if (!inventory.foundMemoryWriteResult) {
-			return "Memory write result object (isCollapsible + isMemoryWrite) not found";
+		if (inventory.unpatchedMemoryWriteResultCount !== 0) {
+			return "Memory write result object is not fully patched";
 		}
-		if (inventory.foundUnpatchedMemoryWriteResult) {
-			return "Unpatched memory write result object still marks isCollapsible/isMemoryWrite as true";
+		if (inventory.patchedMemoryWriteResultCount !== 1) {
+			return `Expected exactly one patched memory write result marker, found ${inventory.patchedMemoryWriteResultCount}`;
 		}
-		if (memoryWritesPatched === 0) {
-			return "Memory write collapsibility was not repointed this run";
+		if (context?.phase !== "artifact" && memoryWritesPatched !== 1) {
+			return `Expected exactly one memory write mutation this run, found ${memoryWritesPatched}`;
 		}
 		if (inventory.foundOriginalGuard) {
 			return "Original collapse-metadata guard (isCollapsible || isREPL) still present";
@@ -218,7 +221,10 @@ function createMemoryWriteUiMutator(): Visitor {
 			if (!isTrueLike(collapsibleProp.value)) return;
 
 			collapsibleProp.value = t.unaryExpression("!", t.numericLiteral(1));
-			memoryWriteProp.value = t.unaryExpression("!", t.numericLiteral(1));
+			memoryWriteProp.value = t.unaryExpression(
+				"!",
+				t.unaryExpression("!", t.numericLiteral(0)),
+			);
 			patched = true;
 			memoryWritesPatched++;
 		},
@@ -232,6 +238,16 @@ function createMemoryWriteUiMutator(): Visitor {
 			},
 		},
 	};
+}
+
+function isPatchedMemoryWriteFalseFlag(
+	node: t.Node | null | undefined,
+): boolean {
+	return (
+		t.isUnaryExpression(node, { operator: "!" }) &&
+		t.isUnaryExpression(node.argument, { operator: "!" }) &&
+		t.isNumericLiteral(node.argument.argument, { value: 0 })
+	);
 }
 
 // ---------------------------------------------------------------------------

@@ -303,7 +303,7 @@ export class PatchRunner {
 				const verifyStart = performance.now();
 				const verificationOutput = patch.verifyWithWitness
 					? patch.verifyWithWitness(output, ast)
-					: patch.verify(output, ast);
+					: patch.verify(output, ast, { phase: "mutation" });
 				verifyTimings.set(patch.tag, performance.now() - verifyStart);
 				const meta = getPatchMetadata(patch.tag);
 				const outcome = normalizeVerificationOutcome(verificationOutput);
