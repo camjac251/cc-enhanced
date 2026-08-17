@@ -21,9 +21,11 @@ import {
  * fields lives in the `lsp-multi-server` patch (the `_lspByName` helper); this
  * patch only widens the accepted manifest shape.
  *
- * Both fields clone the sibling `extensionToLanguage` record factory and make
- * it optional. This preserves the release's own key/value validators without
- * relying on bundle-local identifiers.
+ * Both fields reuse the sibling `extensionToLanguage` record factory and its
+ * language-id value validator, but take their key validator from `command`
+ * instead. `extensionToLanguage` validates keys as file extensions, which
+ * requires a leading dot; reusing it would reject the extensionless basenames
+ * (`Dockerfile`, `Makefile`) and the glob patterns these fields exist to match.
  */
 
 const NEW_FIELDS = ["filenames", "filenamePatterns"] as const;
@@ -64,9 +66,39 @@ function getLspRecordBase(
 		: null;
 }
 
-function buildRecordOptional(recordBase: t.CallExpression): t.CallExpression {
+/**
+ * The base string schema behind `command`, with any `refine` and `describe`
+ * wrappers removed, so filename keys only have to be non-empty strings.
+ */
+function getCommandStringBase(
+	schemaObject: t.ObjectExpression,
+): t.Expression | null {
+	const command = getObjectPropertyByName(schemaObject, "command");
+	if (!command || !t.isExpression(command.value)) return null;
+	let current: t.Expression = command.value;
+	while (
+		t.isCallExpression(current) &&
+		t.isMemberExpression(current.callee) &&
+		["describe", "refine"].includes(
+			getMemberPropertyName(current.callee) ?? "",
+		) &&
+		t.isExpression(current.callee.object)
+	) {
+		current = current.callee.object;
+	}
+	return current;
+}
+
+function buildRecordOptional(
+	recordBase: t.CallExpression,
+	keyBase: t.Expression,
+): t.CallExpression {
+	const record = t.callExpression(t.cloneNode(recordBase.callee, true), [
+		t.cloneNode(keyBase, true),
+		t.cloneNode(recordBase.arguments[1] as t.Expression, true),
+	]);
 	return t.callExpression(
-		t.memberExpression(t.cloneNode(recordBase, true), t.identifier("optional")),
+		t.memberExpression(record, t.identifier("optional")),
 		[],
 	);
 }
@@ -74,13 +106,17 @@ function buildRecordOptional(recordBase: t.CallExpression): t.CallExpression {
 function isRecordOptional(
 	node: t.Node | null | undefined,
 	recordBase: t.CallExpression,
+	keyBase: t.Expression,
 ): boolean {
 	if (!node || !t.isCallExpression(node)) return false;
 	const optCallee = node.callee;
 	if (!t.isMemberExpression(optCallee)) return false;
 	if (getMemberPropertyName(optCallee) !== "optional") return false;
 	const inner = optCallee.object;
-	return t.isCallExpression(inner) && t.isNodesEquivalent(inner, recordBase);
+	if (!t.isCallExpression(inner) || inner.arguments.length !== 2) return false;
+	if (!t.isNodesEquivalent(inner.callee, recordBase.callee)) return false;
+	if (!t.isNodesEquivalent(inner.arguments[0], keyBase)) return false;
+	return t.isNodesEquivalent(inner.arguments[1], recordBase.arguments[1]);
 }
 
 function createMutateVisitor(): Visitor {
@@ -94,11 +130,13 @@ function createMutateVisitor(): Visitor {
 			if (arg.properties.some((p) => hasObjectKeyName(p, "filenames"))) return;
 			const recordBase = getLspRecordBase(arg);
 			if (!recordBase) return;
+			const keyBase = getCommandStringBase(arg);
+			if (!keyBase) return;
 			for (const field of NEW_FIELDS) {
 				arg.properties.push(
 					t.objectProperty(
 						t.identifier(field),
-						buildRecordOptional(recordBase),
+						buildRecordOptional(recordBase, keyBase),
 					),
 				);
 			}
@@ -128,13 +166,15 @@ function verifyFilenameSchema(code: string, ast?: t.File): true | string {
 			foundSchema = true;
 			const recordBase = getLspRecordBase(arg);
 			if (!recordBase) return;
+			const keyBase = getCommandStringBase(arg);
+			if (!keyBase) return;
 			const filenames = getObjectPropertyByName(arg, "filenames");
 			const patterns = getObjectPropertyByName(arg, "filenamePatterns");
 			if (
 				filenames &&
 				patterns &&
-				isRecordOptional(filenames.value, recordBase) &&
-				isRecordOptional(patterns.value, recordBase)
+				isRecordOptional(filenames.value, recordBase, keyBase) &&
+				isRecordOptional(patterns.value, recordBase, keyBase)
 			) {
 				ok = true;
 			}

@@ -88,15 +88,17 @@ test("lsp-filename-schema adds filenames + filenamePatterns to the LSP schema", 
 
 	assert.equal(output.includes("filenames:"), true);
 	assert.equal(output.includes("filenamePatterns:"), true);
-	// Emitted as record(...).optional(), mirroring extensionToLanguage.
+	// Keys come from `command`, not from the extension validator `v_u`, so a
+	// dotless basename or a glob is accepted.
 	assert.match(
 		output,
-		/filenames:\s*A\.record\(v_u\(\),\s*lms\(\)\)\.optional\(\)/s,
+		/filenames:\s*A\.record\(A\.string\(\)\.min\(1\),\s*lms\(\)\)\.optional\(\)/s,
 	);
 	assert.match(
 		output,
-		/filenamePatterns:\s*A\.record\(v_u\(\),\s*lms\(\)\)\.optional\(\)/s,
+		/filenamePatterns:\s*A\.record\(A\.string\(\)\.min\(1\),\s*lms\(\)\)\.optional\(\)/s,
 	);
+	assert.equal(output.includes("A.record(v_u(), lms()).optional()"), false);
 
 	assert.equal(lspFilenameSchema.verify(output, ast), true);
 	assert.equal(lspFilenameSchema.verify(output), true);
@@ -109,11 +111,11 @@ test("lsp-filename-schema extends the latest direct-factory schema", async () =>
 
 	assert.match(
 		output,
-		/filenames:\s*recordSchema\(keySchema\(\),\s*languageSchema\(\)\)\.optional\(\)/s,
+		/filenames:\s*recordSchema\(stringSchema\(\)\.min\(1\),\s*languageSchema\(\)\)\.optional\(\)/s,
 	);
 	assert.match(
 		output,
-		/filenamePatterns:\s*recordSchema\(keySchema\(\),\s*languageSchema\(\)\)\.optional\(\)/s,
+		/filenamePatterns:\s*recordSchema\(stringSchema\(\)\.min\(1\),\s*languageSchema\(\)\)\.optional\(\)/s,
 	);
 	assert.equal(lspFilenameSchema.verify(output, parse(output)), true);
 });
