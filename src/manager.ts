@@ -301,15 +301,31 @@ export class Manager {
 		});
 	}
 
+	/**
+	 * Format the extracted bundle in place.
+	 *
+	 * Every string patch and most AST matchers are written against formatted
+	 * bundle text, so an unformatted bundle is not a degraded input, it is the
+	 * wrong input: matchers silently no-op and the run reports unrelated patch
+	 * drift instead of a missing formatter. Fail here so the real cause is the
+	 * message the caller sees. Callers that genuinely want raw output pass
+	 * `normalize: false` rather than relying on a swallowed error.
+	 */
 	private async normalizeCliJs(cliPath: string) {
 		console.log(chalk.gray(`   Formatting ${path.basename(cliPath)}...`));
+		const raw = await fs.readFile(cliPath, "utf-8");
+		let formatted: string;
 		try {
-			const raw = await fs.readFile(cliPath, "utf-8");
-			const formatted = await normalize(raw, { filepath: cliPath });
-			await fs.writeFile(cliPath, formatted, "utf-8");
+			formatted = await normalize(raw, { filepath: cliPath });
 		} catch (e) {
-			console.error(chalk.yellow(`   Formatting failed: ${e}`));
+			const detail = e instanceof Error ? e.message : String(e);
+			throw new Error(
+				`Formatting ${path.basename(cliPath)} failed: ${detail}\n` +
+					"Patch matching targets formatted bundle text, so patching cannot continue. " +
+					"Run `bun install` to restore the bundled formatter for this platform.",
+			);
 		}
+		await fs.writeFile(cliPath, formatted, "utf-8");
 	}
 
 	private async patchCliPath(
