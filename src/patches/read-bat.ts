@@ -3714,9 +3714,7 @@ export const readWithBat: Patch = {
 								let filePathVar = "A";
 								let verboseVar = "G";
 								let pagesVar = "PAGES";
-								const extractBindingName = (
-									node: t.LVal | t.Expression,
-								): string | null => {
+								const extractBindingName = (node: t.Node): string | null => {
 									if (t.isIdentifier(node)) return node.name;
 									if (t.isAssignmentPattern(node) && t.isIdentifier(node.left))
 										return node.left.name;
@@ -3726,9 +3724,7 @@ export const readWithBat: Patch = {
 								for (const prop of firstParam.properties) {
 									if (!t.isObjectProperty(prop) || !t.isIdentifier(prop.key))
 										continue;
-									const bindingName = extractBindingName(
-										prop.value as t.LVal | t.Expression,
-									);
+									const bindingName = extractBindingName(prop.value);
 									if (!bindingName) continue;
 									const keyName = getObjectKeyName(prop.key);
 									if (keyName === "file_path") {
@@ -3741,9 +3737,7 @@ export const readWithBat: Patch = {
 								for (const prop of secondParam.properties) {
 									if (!t.isObjectProperty(prop)) continue;
 									if (!hasObjectKeyName(prop, "verbose")) continue;
-									const bindingName = extractBindingName(
-										prop.value as t.LVal | t.Expression,
-									);
+									const bindingName = extractBindingName(prop.value);
 									if (bindingName) verboseVar = bindingName;
 								}
 
@@ -3780,63 +3774,56 @@ export const readWithBat: Patch = {
 								let foundDisplay = false;
 								let foundCheck = false;
 
-								traverse(
-									path.node.body,
-									{
-										// Find: let Z = G ? A : j6(A)
-										VariableDeclarator(declPath) {
-											const init = declPath.node.init;
-											if (!t.isConditionalExpression(init)) return;
-											if (!t.isCallExpression(init.alternate)) return;
-											if (!t.isIdentifier(init.alternate.callee)) return;
-											if (t.isIdentifier(declPath.node.id)) {
-												displayVar = declPath.node.id.name;
-												abbrFunc = init.alternate.callee.name;
-												foundDisplay = true;
-											}
-										},
-										// Find: if (C51(A)) return ""
-										IfStatement(ifPath) {
-											const test = ifPath.node.test;
-											if (!t.isCallExpression(test)) return;
-											if (!t.isIdentifier(test.callee)) return;
-											const consequent = ifPath.node.consequent;
-											if (!t.isReturnStatement(consequent)) return;
-											if (
-												!t.isStringLiteral(consequent.argument, { value: "" })
-											)
-												return;
-											checkFunc = test.callee.name;
-											foundCheck = true;
-										},
-										// Find the file-path component render, runtime-agnostic:
-										// X.createElement(sk, { filePath: ... }) or X.jsx(sk, { filePath: ... }).
-										CallExpression(callPath) {
-											if (foundFactory) return;
-											const callee = callPath.node.callee;
-											if (!t.isMemberExpression(callee)) return;
-											if (!isElementCall(callPath.node)) return;
-											if (!t.isIdentifier(callee.object)) return;
-
-											const args = callPath.node.arguments;
-											if (args.length >= 2 && t.isIdentifier(args[0])) {
-												const objArg = args[1];
-												if (
-													t.isObjectExpression(objArg) &&
-													objArg.properties.some((p) =>
-														hasObjectKeyName(p, "filePath"),
-													)
-												) {
-													createElementId = callee.object.name;
-													filePathComp = args[0].name;
-													foundFactory = true;
-												}
-											}
-										},
+								path.get("body").traverse({
+									// Find: let Z = G ? A : j6(A)
+									VariableDeclarator(declPath) {
+										const init = declPath.node.init;
+										if (!t.isConditionalExpression(init)) return;
+										if (!t.isCallExpression(init.alternate)) return;
+										if (!t.isIdentifier(init.alternate.callee)) return;
+										if (t.isIdentifier(declPath.node.id)) {
+											displayVar = declPath.node.id.name;
+											abbrFunc = init.alternate.callee.name;
+											foundDisplay = true;
+										}
 									},
-									path.scope,
-									path,
-								);
+									// Find: if (C51(A)) return ""
+									IfStatement(ifPath) {
+										const test = ifPath.node.test;
+										if (!t.isCallExpression(test)) return;
+										if (!t.isIdentifier(test.callee)) return;
+										const consequent = ifPath.node.consequent;
+										if (!t.isReturnStatement(consequent)) return;
+										if (!t.isStringLiteral(consequent.argument, { value: "" }))
+											return;
+										checkFunc = test.callee.name;
+										foundCheck = true;
+									},
+									// Find the file-path component render, runtime-agnostic:
+									// X.createElement(sk, { filePath: ... }) or X.jsx(sk, { filePath: ... }).
+									CallExpression(callPath) {
+										if (foundFactory) return;
+										const callee = callPath.node.callee;
+										if (!t.isMemberExpression(callee)) return;
+										if (!isElementCall(callPath.node)) return;
+										if (!t.isIdentifier(callee.object)) return;
+
+										const args = callPath.node.arguments;
+										if (args.length >= 2 && t.isIdentifier(args[0])) {
+											const objArg = args[1];
+											if (
+												t.isObjectExpression(objArg) &&
+												objArg.properties.some((p) =>
+													hasObjectKeyName(p, "filePath"),
+												)
+											) {
+												createElementId = callee.object.name;
+												filePathComp = args[0].name;
+												foundFactory = true;
+											}
+										}
+									},
+								});
 
 								// Discovery must have resolved the real factory, component,
 								// abbreviation function, and empty-return guard. If any is missing

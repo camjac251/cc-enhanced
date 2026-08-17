@@ -73,6 +73,36 @@ function getToolObjectMethod(
 	);
 }
 
+/**
+ * Wrap a method body in a throwaway File so it can be inspected on its own.
+ *
+ * The body node is shared with the live tree, so this is read-only scaffolding.
+ * A function expression keeps the wrapper binding-free, matching the enclosing
+ * method it stands in for.
+ */
+function wrapMethodBodyForInspection(body: t.BlockStatement): t.File {
+	return t.file(
+		t.program([t.expressionStatement(t.functionExpression(null, [], body))]),
+	);
+}
+
+/**
+ * Resolve the NodePath of a tool object's method body.
+ *
+ * Sub-tree traversal has to start from a real NodePath: a bare node plus a
+ * borrowed scope leaves the traversal without a route back to the Program, so
+ * scope registration fails as soon as the body declares a binding.
+ */
+function getToolMethodBodyPath(objectPath: any, methodName: string): any {
+	const properties = objectPath.get("properties") as any[];
+	const methodPath = properties.find(
+		(candidate: any) =>
+			candidate.isObjectMethod() &&
+			getObjectPropertyName(candidate.node) === methodName,
+	);
+	return methodPath ? methodPath.get("body") : null;
+}
+
 function inspectValidateExtendedFlow(validateMethod: t.ObjectMethod | null): {
 	hasCanonicalization: boolean;
 	hasEarlyReturnTrue: boolean;
@@ -83,9 +113,7 @@ function inspectValidateExtendedFlow(validateMethod: t.ObjectMethod | null): {
 		return { hasCanonicalization, hasEarlyReturnTrue };
 	}
 
-	const validateWrapper = t.file(
-		t.program([t.functionDeclaration(null, [], validateMethod.body)]),
-	);
+	const validateWrapper = wrapMethodBodyForInspection(validateMethod.body);
 
 	traverse(validateWrapper, {
 		IfStatement(ifPath) {
@@ -110,38 +138,33 @@ function inspectValidateExtendedFlow(validateMethod: t.ObjectMethod | null): {
 			let sawCanonicalizeCall = false;
 			let sawReturnTrue = false;
 
-			traverse(
-				ifPath.node.consequent,
-				{
-					CallExpression(callPath) {
-						if (
-							t.isIdentifier(callPath.node.callee, {
-								name: "_claudeEditNormalizeEdits",
-							})
-						) {
-							sawNormalizeCall = true;
-						}
-						if (
-							t.isIdentifier(callPath.node.callee, {
-								name: "_claudeEditCanonicalizeInput",
-							})
-						) {
-							sawCanonicalizeCall = true;
-						}
-					},
-					ReturnStatement(returnPath) {
-						const arg = returnPath.node.argument;
-						if (!arg || !t.isObjectExpression(arg)) return;
-						const resultProp = getObjectPropertyByName(arg, "result");
-						if (!resultProp) return;
-						if (t.isBooleanLiteral(resultProp.value, { value: true })) {
-							sawReturnTrue = true;
-						}
-					},
+			ifPath.get("consequent").traverse({
+				CallExpression(callPath) {
+					if (
+						t.isIdentifier(callPath.node.callee, {
+							name: "_claudeEditNormalizeEdits",
+						})
+					) {
+						sawNormalizeCall = true;
+					}
+					if (
+						t.isIdentifier(callPath.node.callee, {
+							name: "_claudeEditCanonicalizeInput",
+						})
+					) {
+						sawCanonicalizeCall = true;
+					}
 				},
-				ifPath.scope,
-				ifPath,
-			);
+				ReturnStatement(returnPath) {
+					const arg = returnPath.node.argument;
+					if (!arg || !t.isObjectExpression(arg)) return;
+					const resultProp = getObjectPropertyByName(arg, "result");
+					if (!resultProp) return;
+					if (t.isBooleanLiteral(resultProp.value, { value: true })) {
+						sawReturnTrue = true;
+					}
+				},
+			});
 
 			if (sawNormalizeCall && sawCanonicalizeCall) {
 				hasCanonicalization = true;
@@ -328,34 +351,21 @@ function patchReadStateGuards(ast: any): { wrappedCount: number } {
 			if (toolName !== "Edit") return;
 
 			for (const methodName of ["validateInput", "call"] as const) {
-				const method = path.node.properties.find(
-					(p: any): p is t.ObjectMethod =>
-						t.isObjectMethod(p) && getObjectPropertyName(p) === methodName,
-				);
-				if (!method) continue;
+				const bodyPath = getToolMethodBodyPath(path, methodName);
+				if (!bodyPath) continue;
 
-				traverse(
-					method.body,
-					{
-						IfStatement(ifPath: any) {
-							if (tryWrapMtimeGuard(ifPath)) wrappedCount++;
-						},
+				bodyPath.traverse({
+					IfStatement(ifPath: any) {
+						if (tryWrapMtimeGuard(ifPath)) wrappedCount++;
 					},
-					path.scope,
-					path,
-				);
+				});
 
-				traverse(
-					method.body,
-					{
-						IfStatement(ifPath: any) {
-							if (tryBypassValidateNullStateGuard(ifPath)) wrappedCount++;
-							if (tryBypassCallNullStateGuard(ifPath)) wrappedCount++;
-						},
+				bodyPath.traverse({
+					IfStatement(ifPath: any) {
+						if (tryBypassValidateNullStateGuard(ifPath)) wrappedCount++;
+						if (tryBypassCallNullStateGuard(ifPath)) wrappedCount++;
 					},
-					path.scope,
-					path,
-				);
+				});
 			}
 		},
 	});
@@ -728,23 +738,15 @@ function patchWriteReadStateGuards(ast: any): void {
 			if (toolName !== "Write") return;
 
 			for (const methodName of ["validateInput", "call"] as const) {
-				const method = path.node.properties.find(
-					(p: any): p is t.ObjectMethod =>
-						t.isObjectMethod(p) && getObjectPropertyName(p) === methodName,
-				);
-				if (!method) continue;
+				const bodyPath = getToolMethodBodyPath(path, methodName);
+				if (!bodyPath) continue;
 
-				traverse(
-					method.body,
-					{
-						IfStatement(ifPath: any) {
-							if (tryBypassWriteValidateNullStateGuard(ifPath)) return;
-							tryBypassWriteCallNullStateGuard(ifPath);
-						},
+				bodyPath.traverse({
+					IfStatement(ifPath: any) {
+						if (tryBypassWriteValidateNullStateGuard(ifPath)) return;
+						tryBypassWriteCallNullStateGuard(ifPath);
 					},
-					path.scope,
-					path,
-				);
+				});
 			}
 		},
 	});
@@ -1792,9 +1794,7 @@ function methodCallsHelper(
 ): boolean {
 	if (!method) return false;
 	let found = false;
-	const wrapper = t.file(
-		t.program([t.functionDeclaration(null, [], method.body)]),
-	);
+	const wrapper = wrapMethodBodyForInspection(method.body);
 	traverse(wrapper, {
 		CallExpression(path) {
 			if (t.isIdentifier(path.node.callee, { name: helperName })) {
@@ -1858,9 +1858,7 @@ function verifyReadStateGuards(ctx: EditVerifyContext): string | null {
 
 	for (const method of [validateMethod, callMethod]) {
 		if (!method) continue;
-		const wrapper = t.file(
-			t.program([t.functionDeclaration(null, [], method.body)]),
-		);
+		const wrapper = wrapMethodBodyForInspection(method.body);
 		let unwrappedFound: string | null = null;
 
 		traverse(wrapper, {
@@ -2019,9 +2017,7 @@ function isStateGuardedTimestampTest(
 function verifyWriteReadStateGuards(ctx: EditVerifyContext): string | null {
 	for (const method of [ctx.writeValidateMethod, ctx.writeCallMethod]) {
 		if (!method) continue;
-		const wrapper = t.file(
-			t.program([t.functionDeclaration(null, [], method.body)]),
-		);
+		const wrapper = wrapMethodBodyForInspection(method.body);
 		let unwrappedFound: string | null = null;
 
 		traverse(wrapper, {

@@ -1,5 +1,5 @@
 import * as t from "@babel/types";
-import { traverse } from "../babel.js";
+import { type NodePath, traverse } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getObjectKeyName, getVerifyAst } from "./ast-helpers.js";
 import {
@@ -28,7 +28,7 @@ function nodeContains(
 	traverse(
 		node,
 		{
-			enter(path) {
+			enter(path: NodePath) {
 				if (predicate(path.node)) {
 					found = true;
 					path.stop();

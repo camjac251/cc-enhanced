@@ -831,7 +831,8 @@ function renderPromptExpression(
 				expression.arguments.length === 0 &&
 				t.isMemberExpression(expression.callee) &&
 				!expression.callee.computed &&
-				t.isIdentifier(expression.callee.property)
+				t.isIdentifier(expression.callee.property) &&
+				t.isExpression(expression.callee.object)
 			) {
 				const method = expression.callee.property.name;
 				if (

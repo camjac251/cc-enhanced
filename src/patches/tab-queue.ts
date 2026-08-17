@@ -107,7 +107,7 @@ function nodeContains(
 	traverse(
 		node,
 		{
-			enter(path) {
+			enter(path: NodePath) {
 				if (predicate(path.node)) {
 					found = true;
 					path.stop();

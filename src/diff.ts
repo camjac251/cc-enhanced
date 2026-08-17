@@ -823,15 +823,13 @@ function isRouteRegistrationCallContext(nodePath: any): boolean {
 }
 
 function isRouteRegistrationCallee(
-	callee: t.Expression | t.V8IntrinsicIdentifier,
+	callee: t.CallExpression["callee"],
 ): boolean {
 	const name = calleeName(callee);
 	return name ? ROUTE_METHOD_NAMES.has(name) : false;
 }
 
-function calleeName(
-	callee: t.Expression | t.V8IntrinsicIdentifier,
-): string | null {
+function calleeName(callee: t.CallExpression["callee"]): string | null {
 	if (t.isIdentifier(callee)) return callee.name;
 	if (!t.isMemberExpression(callee)) return null;
 	const property = callee.property;
@@ -2553,11 +2551,11 @@ function isPatchDiagnosticLiteral(nodePath: any): boolean {
 	const callee = callPath.node.callee;
 	if (!t.isMemberExpression(callee) || callee.computed) return false;
 	if (!t.isIdentifier(callee.object, { name: "console" })) return false;
+	// A non-computed member property is an Identifier or a PrivateName, never a
+	// string literal.
 	const propertyName = t.isIdentifier(callee.property)
 		? callee.property.name
-		: t.isStringLiteral(callee.property)
-			? callee.property.value
-			: null;
+		: null;
 	return propertyName === "warn" || propertyName === "error";
 }
 

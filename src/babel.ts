@@ -1,30 +1,11 @@
-// @babel/{traverse,generator,template} ship as CommonJS. Under tsconfig
-// module=NodeNext + esModuleInterop, the default import binding is typed as
-// the entire module namespace (not the function), so the original code worked
-// around that with `traverse.default(...)` at every call site. That workaround
-// only runs under Node ESM though: Bun unwraps the CJS export down to the
-// function itself and `traverse.default` is undefined at runtime.
-//
-// This adapter normalizes both runtimes (default ?? self) and re-types the
-// exports as the callable so call sites can stay short.
-import _generator from "@babel/generator";
-import _template from "@babel/template";
-import _traverse from "@babel/traverse";
+// @babel/{traverse,generator,template} expose their entry point as the default
+// export. Re-exporting them here keeps call sites short and gives the whole
+// codebase a single place to adapt if those entry points move again.
+import generator from "@babel/generator";
+import template from "@babel/template";
+import traverse from "@babel/traverse";
 
-type TraverseFn = (typeof _traverse)["default"];
-type GeneratorFn = (typeof _generator)["default"];
-type TemplateFn = (typeof _template)["default"];
-
-function unwrap(mod: unknown): unknown {
-	if (mod && typeof mod === "object" && "default" in mod) {
-		return (mod as { default: unknown }).default ?? mod;
-	}
-	return mod;
-}
-
-export const traverse = unwrap(_traverse) as TraverseFn;
-export const generator = unwrap(_generator) as GeneratorFn;
-export const template = unwrap(_template) as TemplateFn;
+export { generator, template, traverse };
 
 /**
  * Drop @babel/traverse's global path/scope cache.
@@ -33,9 +14,20 @@ export const template = unwrap(_template) as TemplateFn;
  * stays resident for as long as the parsed AST is reachable. On the large
  * bundle this graph outweighs the AST itself, so a long-lived process must
  * clear it after a run or the wrappers persist into later memory-heavy work.
+ *
+ * A missing clear entry point is fatal rather than ignored: silently skipping
+ * the release reintroduces update-time memory exhaustion, and nothing upstream
+ * of here can tell a skipped release from a completed one.
  */
 export function clearTraverseCache(): void {
-	(traverse as unknown as { cache?: { clear?: () => void } }).cache?.clear?.();
+	const clear = (traverse as unknown as { cache?: { clear?: () => void } })
+		.cache?.clear;
+	if (typeof clear !== "function") {
+		throw new Error(
+			"@babel/traverse no longer exposes cache.clear(); the traverse path/scope cache cannot be released.",
+		);
+	}
+	clear();
 }
 
 export type { GeneratorOptions } from "@babel/generator";

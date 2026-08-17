@@ -180,6 +180,7 @@ function tryPatchActivationLoop(node: t.ForOfStatement): boolean {
 		const callee = d.init.callee;
 		if (!t.isMemberExpression(callee) || !isMemberPropertyName(callee, "add"))
 			continue;
+		if (!t.isExpression(callee.object)) continue;
 		const arg0 = d.init.arguments[0];
 		if (!t.isCallExpression(arg0)) continue;
 		const pathsArg = arg0.arguments[0];

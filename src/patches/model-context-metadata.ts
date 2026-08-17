@@ -158,11 +158,12 @@ function isOptionalMaxInputRead(
 	node: t.Node | null | undefined,
 	capabilityName: string,
 ): boolean {
+	// Only OptionalMemberExpression carries optional-chain semantics; a plain
+	// MemberExpression is never an optional read.
 	return (
-		(t.isOptionalMemberExpression(node) || t.isMemberExpression(node)) &&
+		t.isOptionalMemberExpression(node) &&
 		t.isIdentifier(node.object, { name: capabilityName }) &&
-		getMemberPropertyName(node) === "max_input_tokens" &&
-		(node.optional === true || t.isOptionalMemberExpression(node))
+		getMemberPropertyName(node) === "max_input_tokens"
 	);
 }
 

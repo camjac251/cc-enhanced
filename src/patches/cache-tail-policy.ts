@@ -261,7 +261,10 @@ function createCacheTailWindowStatements(
 						t.memberExpression(t.identifier("Math"), t.identifier("max")),
 						[t.spreadElement(t.cloneNode(setId))],
 					),
-					t.numericLiteral(-1),
+					// A NumericLiteral node must hold a non-negative value; the sign is
+					// its own unary node. Babel 7 tolerates a negative literal, Babel 8
+					// rejects it, and both print the same `-1`.
+					t.unaryExpression("-", t.numericLiteral(1)),
 				),
 			),
 		]),

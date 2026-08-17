@@ -627,11 +627,12 @@ function isMetadataPropertyExpression(
 	metadataName: string,
 	propertyName: string,
 ): boolean {
+	// Only OptionalMemberExpression carries optional-chain semantics; a plain
+	// MemberExpression is never an optional read.
 	return (
-		(t.isOptionalMemberExpression(node) || t.isMemberExpression(node)) &&
+		t.isOptionalMemberExpression(node) &&
 		t.isIdentifier(node.object, { name: metadataName }) &&
-		getMemberPropertyName(node) === propertyName &&
-		(node.optional === true || t.isOptionalMemberExpression(node))
+		getMemberPropertyName(node) === propertyName
 	);
 }
 
@@ -739,7 +740,7 @@ function getOptionalMemberBase(
 	node: t.Node | null | undefined,
 	propertyName: string,
 ): string | null {
-	if (!t.isOptionalMemberExpression(node) && !t.isMemberExpression(node)) {
+	if (!t.isOptionalMemberExpression(node)) {
 		return null;
 	}
 	if (getMemberPropertyName(node) !== propertyName || node.optional !== true) {

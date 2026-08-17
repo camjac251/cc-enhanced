@@ -138,7 +138,7 @@ When orienting in this repo, reach for these by purpose:
 | Mach-O / PE unpack/repack (via node-lief) | `src/native.ts` |
 | Auto-detect installed `claude` binary on PATH | `src/installation-detection.ts` |
 | Default symlink + cache paths | `src/version-paths.ts` |
-| Babel module-shape adapter (CJS/ESM normalization) | `src/babel.ts` |
+| Babel entry-point re-exports and traverse-cache release | `src/babel.ts` |
 | Parse + print wrappers | `src/loader.ts` |
 | Prompt-surface required/forbidden needles + drift list | `src/verification/prompt-surface-rules.ts` |
 | Prompt-policy contract (drift-resistant required/forbidden needles) | `src/verification/prompt-policy-contract.ts` |
