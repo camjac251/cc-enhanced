@@ -801,15 +801,41 @@ function getSubmitForwardFunction(
 	return findFunctionBinding(target.handler, target.submit.name);
 }
 
+/**
+ * Decide whether an expression carries the submit handler's input value.
+ *
+ * The handler may bind that value to a local before forwarding it, so following
+ * single-identifier initializers matches the value rather than one spelling of
+ * it. The hop budget bounds the walk, since a binding chain can cycle.
+ */
+function resolvesToInputParam(
+	node: t.Node,
+	inputParam: t.Identifier,
+	scopePath: NodePath<t.Node>,
+): boolean {
+	let current: t.Node = node;
+	for (let hop = 0; hop < 4; hop++) {
+		if (!t.isIdentifier(current)) return false;
+		if (current.name === inputParam.name) return true;
+		const bindingPath = scopePath.scope.getBinding(current.name)?.path;
+		if (!bindingPath?.isVariableDeclarator()) return false;
+		const init = bindingPath.node.init;
+		if (!init) return false;
+		current = init;
+	}
+	return false;
+}
+
 function isPromptSubmitForwardCall(
 	node: t.CallExpression,
 	inputParam: t.Identifier,
+	scopePath: NodePath<t.Node>,
 ): boolean {
 	if (node.arguments.length < 2) return false;
 	const [inputArg, helpersArg] = node.arguments;
 	return (
 		t.isExpression(inputArg) &&
-		expressionMatches(inputArg, inputParam) &&
+		resolvesToInputParam(inputArg, inputParam, scopePath) &&
 		t.isObjectExpression(helpersArg) &&
 		hasObjectProperty(helpersArg, "setCursorOffset") &&
 		hasObjectProperty(helpersArg, "clearBuffer") &&
@@ -829,7 +855,10 @@ function hasSubmitForwardDeferOption(target: DraftQueueTarget): boolean {
 			if (path.node !== submitFunction.node) path.skip();
 		},
 		CallExpression(path) {
-			if (found || !isPromptSubmitForwardCall(path.node, inputParam)) return;
+			if (found) return;
+			if (!isPromptSubmitForwardCall(path.node, inputParam, submitFunction)) {
+				return;
+			}
 			if (
 				expressionHasBooleanProp(path.node, DEFER_UNTIL_TURN_END_OPTION, true)
 			) {
@@ -854,7 +883,10 @@ function patchSubmitForward(target: DraftQueueTarget): boolean {
 			if (path.node !== submitFunction.node) path.skip();
 		},
 		CallExpression(path) {
-			if (patched || !isPromptSubmitForwardCall(path.node, inputParam)) return;
+			if (patched) return;
+			if (!isPromptSubmitForwardCall(path.node, inputParam, submitFunction)) {
+				return;
+			}
 			// The receiver reads its defer signal from the third positional
 			// argument (input, helpers, options). Merge the flag into that options
 			// argument so the injected receiver guard sees it; spreading the
@@ -1838,7 +1870,8 @@ function createTabQueuePasses(): PatchAstPass[] {
 							!patchedPromptBar
 						) {
 							console.warn(
-								`Tab queue: expected one draft key handler target, found ${uniqueDraftTargets.length}`,
+								`Tab queue: draft key handler targets found ${uniqueDraftTargets.length} (expected 1), ` +
+									`queue guard ${patchedDraft}, submit forward ${patchedSubmitForward}, prompt bar preview ${patchedPromptBar}`,
 							);
 						}
 						if (uniqueReceiverTargets.length !== 1 || !patchedReceiver) {

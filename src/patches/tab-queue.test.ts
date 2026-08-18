@@ -329,6 +329,29 @@ test("tab-queue merges the defer flag into the forward options argument", async 
 	assert.equal(tabQueue.verify(output, ast), true);
 });
 
+test("tab-queue merges the defer flag when the forward goes through a local alias", async () => {
+	// The submit handler can bind its input to a local before forwarding, so a
+	// branch can substitute a different prompt. Matching only the parameter
+	// identifier misses that forward and silently drops the queue flag.
+	const aliased = TAB_QUEUE_FIXTURE.replace(
+		`    let forwardOptions = value.startsWith("/") ? { fromSlash: true } : void 0;
+    return submitPrompt(value, {`,
+		`    let forwarded = value;
+    if (forwarded.trim() === "") forwarded = resumeStaleDraft();
+    let forwardOptions = forwarded.startsWith("/") ? { fromSlash: true } : void 0;
+    return submitPrompt(forwarded, {`,
+	);
+	assert.notEqual(aliased, TAB_QUEUE_FIXTURE);
+	const ast = parse(aliased);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+	assert.match(
+		output,
+		/isSubmittingSlashCommand === "__cc_enhanced_tab_queue" \? \{ \.\.\.forwardOptions, deferUntilTurnEnd: true \} : forwardOptions/,
+	);
+	assert.equal(tabQueue.verify(output, ast), true);
+});
+
 test("tab-queue verify fails when the submit receiver has no options param", async () => {
 	const noOptions = TAB_QUEUE_FIXTURE.replace(
 		"async function replSubmit(input, helpers, options) {",
