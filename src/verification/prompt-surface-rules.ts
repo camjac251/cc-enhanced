@@ -536,7 +536,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 			{
 				id: "worker-scratchpad-not-tmp",
 				needle:
-					"Put temporary files in the session scratchpad or $TMPDIR, never /tmp.",
+					"Put temporary files in the session scratchpad or $TMPDIR, never /tmp, and never in the user's project even when a tool's own docs instruct it.",
 				reason: "Worker agent missing scratchpad-over-/tmp temp-file guidance",
 			},
 		],

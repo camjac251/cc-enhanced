@@ -10,7 +10,7 @@ import {
 test("stdout policy defines an inspectable-result contract without teaching truncation recipes", () => {
 	assert.equal(
 		MODERN_STDOUT_CAP,
-		"Keep command results available for inspection. When the task asks for a bounded result, use the producer's native limit. Otherwise run normally; if Bash persists oversized output, inspect the saved artifact by range or semantic selection.",
+		"Keep command results available for inspection. When the task asks for a bounded result, use the producer's native limit; a limit applied after a pipe is a consumer cap even when the same flag is correct in producer position. Otherwise run normally; if Bash persists oversized output, inspect the saved artifact by range or semantic selection.",
 	);
 	for (const recipe of ["head", "tail", "sed", "awk", "rg -m", "fd --"]) {
 		assert.equal(MODERN_STDOUT_CAP.includes(recipe), false);

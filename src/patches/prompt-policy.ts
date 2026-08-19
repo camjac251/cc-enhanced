@@ -49,7 +49,7 @@ export const MODERN_BASH_SEARCH_GUIDANCE = MODERN_CODE_SEARCH_DECISION_TREE;
 
 /** Stdout tool contract expressed without copyable truncation recipes. */
 export const MODERN_STDOUT_CAP =
-	"Keep command results available for inspection. When the task asks for a bounded result, use the producer's native limit. Otherwise run normally; if Bash persists oversized output, inspect the saved artifact by range or semantic selection.";
+	"Keep command results available for inspection. When the task asks for a bounded result, use the producer's native limit; a limit applied after a pipe is a consumer cap even when the same flag is correct in producer position. Otherwise run normally; if Bash persists oversized output, inspect the saved artifact by range or semantic selection.";
 
 /** Shared stdout-cap text export. */
 export const MODERN_OUTPUT_LIMIT_WARNING = MODERN_STDOUT_CAP;
@@ -87,7 +87,7 @@ export const MODERN_SUBAGENT_CODE_ROUTING = [
 	"Use Read or Edit directly for a known file and site. Use bat -r START:END for shell file ranges, fd to find files, eza to list directories, and Write or Edit to change files. For GitHub URLs, file content, and metadata use gh api.",
 	BACKGROUND_TASK_POLICY,
 	MODERN_STDOUT_CAP,
-	"Put temporary files in the session scratchpad or $TMPDIR, never /tmp.",
+	"Put temporary files in the session scratchpad or $TMPDIR, never /tmp, and never in the user's project even when a tool's own docs instruct it.",
 ].join("\n");
 
 export const STRONG_CLAUDEMD_DISCLAIMER_LINES = [
