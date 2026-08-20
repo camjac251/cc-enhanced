@@ -530,8 +530,10 @@ function _claudeEditApplyString(content, edit) {
 			matchCount: parts.length - 1,
 		};
 	}
+	// The replacer stays a function: a string second argument would let $&, $`,
+	// $', $$ and $1-$99 in the replacement splice other parts of the file in.
 	return {
-		content: content.replace(searchStr, replacementString),
+		content: content.replace(searchStr, () => replacementString),
 		oldString: searchStr,
 		newString: replacementString,
 	};
