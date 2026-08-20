@@ -1,13 +1,13 @@
 {
-  "version": "2.1.233",
+  "version": "2.1.237",
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
     "agents/claude.md": "91490ee33df6577f0e81d752d0bc05a333a13570222c169e1d3d7f4d250117f0",
-    "agents/explore.md": "819b31adb6b1d07bc1de890bfc017ae3193ed79b38a3c3e8083ebdc341120ef3",
-    "agents/plan.md": "ce13b642a13b24a7b4d6974e2fa5982fa6ac16f9f8e7b94518a1ce9a23956599",
-    "agents/worker.md": "97804c9592a29c4aa11874a2cc24e3e3f293e2cfc402c9832943403c3f254e4f",
-    "agents/workflow-subagent.md": "14a1903b04bdcaae638011baf399590639089ed6310c1663027aca61ea5fa01d",
+    "agents/explore.md": "7681db43396ea2a0509c8de2e94837e6cf12450fb721233833d60dee0f57f658",
+    "agents/plan.md": "6ab8ca239ed87d3d7913ca1f601f69622200430c3e7a1686b8c252eb1ff7cef1",
+    "agents/worker.md": "34661d1d6f4373ee51b5df2821fdea97cdae4e20d2078db864735229e2fa4552",
+    "agents/workflow-subagent.md": "37993dc85dc1eeac7bd29b40f215cc98be769bbb60abe1242e94d5c60c0204ba",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge-2.md": "8d24296a1459ba9472328887c294278e8be614df3168e70b1134b7ae13dd2ff9",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge.md": "ca6cf36e2d06d7db385d9b760fb409f7969299b56c91d185a35605259c40fd6f",
     "system/sections/dream-memory-consolidation.md": "2c1f842b2911603b38825858d98f31285cfea96278adb9a3ad3081b46baba84b",
