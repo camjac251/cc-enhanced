@@ -25,7 +25,7 @@ async function runNoCollapseViaPasses(ast: any): Promise<void> {
 // 2. central classification function: returns an object with
 //    `isCollapsible: obj.isSearch || obj.isRead` alongside isSearch, isRead,
 //    isREPL, isMemoryWrite properties. This must be PRESERVED (not patched).
-const NO_COLLAPSE_FIXTURE = `
+const NO_COLLAPSE_GUARD_FIXTURE = `
 function classifyToolResult(H, $, A) {
   var obj = { type: H.type, name: H.name };
   return {
@@ -59,7 +59,41 @@ function renderMemoryWriteResult(H, A) {
     isREPL: !1,
   };
 }
+
 `;
+
+// The display-path collapse gate: an export map naming two path predicates, the
+// predicates themselves, and the write renderer that consults them.
+const DISPLAY_PREDICATE_FIXTURE = `
+registerExports(renderExports, {
+  isScratchpadDisplayPath: () => isScratchpadPathImpl,
+  isWorkshopDisplayPath: () => isWorkshopPathImpl,
+});
+
+function isScratchpadPathImpl(p) {
+  var s = resolveScratchpadDir(p);
+  return s !== null && s.comparePath.startsWith(s.prefix);
+}
+
+function isWorkshopPathImpl(p) {
+  return isWorkshopFile(p) && !isExcluded(p);
+}
+
+function renderFileEditResult({ filePath: f, structuredPatch: sp, originalFile: g }, _ctx, { style: st, verbose: vb }) {
+  var planPreview = f.startsWith(planDir());
+  return React.jsx(StructuredDiffRow, {
+    filePath: f,
+    structuredPatch: sp,
+    firstLine: g ? firstLine(g) : null,
+    style: st,
+    verbose: vb,
+    previewHint: planPreview ? "/plan to preview" : void 0,
+    collapsed: !planPreview && (isScratchpadPathImpl(f) || isWorkshopPathImpl(f)),
+  });
+}
+`;
+
+const NO_COLLAPSE_FIXTURE = `${NO_COLLAPSE_GUARD_FIXTURE}${DISPLAY_PREDICATE_FIXTURE}`;
 
 test("no-collapse patches guard while preserving classification isCollapsible", async () => {
 	const ast = parse(NO_COLLAPSE_FIXTURE);
@@ -152,6 +186,12 @@ test("no-collapse collects verification markers in one inventory", async () => {
 		foundOriginalGuard: false,
 		foundPatchedGuard: true,
 		foundClassificationTail: true,
+		displayPredicateNames: ["isScratchpadPathImpl", "isWorkshopPathImpl"],
+		neutralizedDisplayPredicates: [
+			"isScratchpadPathImpl",
+			"isWorkshopPathImpl",
+		],
+		displayPredicateCallSites: 2,
 	});
 });
 
@@ -372,7 +412,7 @@ function renderMemoryWriteResult(H, A) {
   return { filePath: A, isCollapsible: !0, isMemoryWrite: !0, isSearch: !1, isRead: !1, isREPL: !1 };
 }
 `;
-	const ast = parse(conditionalValueFixture);
+	const ast = parse(`${conditionalValueFixture}${DISPLAY_PREDICATE_FIXTURE}`);
 	await runNoCollapseViaPasses(ast);
 	const output = print(ast);
 	// Conditional-valued isCollapsible is preserved verbatim (not mutated).
@@ -411,7 +451,7 @@ function renderMemoryWriteResult(H, A) {
   return { filePath: A, isCollapsible: !0, isMemoryWrite: !0, isSearch: !1, isRead: !1, isREPL: !1 };
 }
 `;
-	const ast = parse(negatedIdentFixture);
+	const ast = parse(`${negatedIdentFixture}${DISPLAY_PREDICATE_FIXTURE}`);
 	await runNoCollapseViaPasses(ast);
 	const output = print(ast);
 	// Negated-identifier isCollapsible is preserved verbatim (not mutated).
@@ -459,7 +499,7 @@ function renderMemoryWriteResult(H, A) {
   return { filePath: A, isCollapsible: !0, isMemoryWrite: !0, isSearch: !1, isRead: !1, isREPL: !1 };
 }
 `;
-	const ast = parse(twoFactoryFixture);
+	const ast = parse(`${twoFactoryFixture}${DISPLAY_PREDICATE_FIXTURE}`);
 	await runNoCollapseViaPasses(ast);
 	const output = print(ast);
 	// Both non-literal factory values survive (neither is mutated).
@@ -502,5 +542,92 @@ function renderMemoryWriteResult(H, A) {
 		String(result).includes("Result-object factory isCollapsible"),
 		true,
 		`Expected factory-preservation failure for literal value, got: ${result}`,
+	);
+});
+
+test("no-collapse neutralizes both display-path collapse predicates", async () => {
+	const ast = parse(NO_COLLAPSE_FIXTURE);
+	await runNoCollapseViaPasses(ast);
+	const output = print(ast);
+
+	// Both predicate bodies are replaced outright, so no scratchpad or workshop
+	// path can reach the summary-only render.
+	assert.match(
+		output,
+		/function isScratchpadPathImpl\(p\) \{\s*return !1;\s*\}/,
+	);
+	assert.match(output, /function isWorkshopPathImpl\(p\) \{\s*return !1;\s*\}/);
+
+	// The call sites and the export anchors stay, so a moved collapse gate is
+	// still detectable rather than silently unpatched.
+	assert.equal(
+		output.includes("isScratchpadDisplayPath: () => isScratchpadPathImpl"),
+		true,
+	);
+	assert.equal(
+		output.includes(
+			"collapsed: !planPreview && (isScratchpadPathImpl(f) || isWorkshopPathImpl(f))",
+		),
+		true,
+	);
+
+	const inventory = collectNoCollapseVerification(ast);
+	assert.deepEqual(inventory.displayPredicateNames, [
+		"isScratchpadPathImpl",
+		"isWorkshopPathImpl",
+	]);
+	assert.deepEqual(inventory.neutralizedDisplayPredicates, [
+		"isScratchpadPathImpl",
+		"isWorkshopPathImpl",
+	]);
+	assert.equal(inventory.displayPredicateCallSites, 2);
+});
+
+test("no-collapse verify rejects a live display-path collapse predicate", async () => {
+	const ast = parse(NO_COLLAPSE_FIXTURE);
+	await runNoCollapseViaPasses(ast);
+	const output = print(ast);
+
+	const regressed = output.replace(
+		/function isWorkshopPathImpl\(p\) \{\s*return !1;\s*\}/,
+		"function isWorkshopPathImpl(p) {\n  return isWorkshopFile(p);\n}",
+	);
+	assert.notEqual(regressed, output);
+	assert.equal(
+		noCollapse.verify(regressed, parse(regressed), { phase: "artifact" }),
+		"Display-path collapse predicate still reports paths as collapsible; scratchpad and workshop writes would render without a diff",
+	);
+});
+
+test("no-collapse verify rejects a neutralized predicate nothing calls", async () => {
+	const ast = parse(NO_COLLAPSE_FIXTURE);
+	await runNoCollapseViaPasses(ast);
+	const output = print(ast);
+
+	// An upstream rewrite that stops consulting the predicates leaves this patch
+	// applied but inert. That has to read as a failure, not a pass.
+	const orphaned = output.replace(
+		"collapsed: !planPreview && (isScratchpadPathImpl(f) || isWorkshopPathImpl(f))",
+		"collapsed: !planPreview && isSomeNewInlineCheck(f)",
+	);
+	assert.notEqual(orphaned, output);
+	assert.equal(
+		noCollapse.verify(orphaned, parse(orphaned), { phase: "artifact" }),
+		"Display-path collapse predicates are no longer consulted; the collapsed write render moved",
+	);
+});
+
+test("no-collapse verify rejects a bundle with no display-path predicate exports", async () => {
+	const ast = parse(NO_COLLAPSE_FIXTURE);
+	await runNoCollapseViaPasses(ast);
+	const output = print(ast);
+
+	const renamed = output
+		.replace("isScratchpadDisplayPath:", "isSomeRenamedPath:")
+		.replace("isWorkshopDisplayPath:", "isOtherRenamedPath:");
+	assert.notEqual(renamed, output);
+	assert.equal(
+		noCollapse.verify(renamed, parse(renamed), { phase: "artifact" }),
+		"Expected 2 display-path collapse predicate exports, found 0",
 	);
 });

@@ -59,6 +59,7 @@ const MUTATE_SHARED_KINDS: { row: string; keys: string[]; tags: string[] }[] = [
 			"effort-stack",
 			"no-autoupdate",
 			"agents-off",
+			"no-collapse",
 			"skill-paths-invoke",
 			"skill-activation-notice",
 			"plan-compact-execute",
