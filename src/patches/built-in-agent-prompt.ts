@@ -301,19 +301,26 @@ const AGENT_TOOL_SYMBOL_LOOKUP_SOURCE = "`grep` via the Bash tool";
 const AGENT_TOOL_SYMBOL_LOOKUP_REPLACEMENT =
 	"Serena or Probe search_code (exact: true)";
 
+// The trailing clause branches on general-purpose availability, so the rewrite
+// re-emits the conditional. Flattening it would promise a general-purpose
+// fallback on installs that do not have one.
 const AGENT_TOOL_FORK_SELECTION_RE =
-	/When using the (\$\{[^}]+\}) tool, specify a subagent_type to select an agent: \\`"fork"\\` forks yourself \(the fork inherits your full conversation context and always runs on your model \\u2014 a \\`model\\` override is ignored\); any other type \\u2014 or omitting it \\u2014 starts a fresh agent \(general-purpose by default\)\./g;
+	/When using the (\$\{[^}]+\}) tool, specify a subagent_type to select an agent: \\`"fork"\\` forks yourself \(the fork inherits your full conversation context and always runs on your model \\u2014 a \\`model\\` override is ignored\); \$\{([\w$]+) \? "any other type \\u2014 or omitting it \\u2014 starts a fresh agent \(general-purpose by default\)\." : `any other type starts a fresh agent\. (\$\{[^}]+\})`\}/g;
 
 const AGENT_TOOL_FORK_SELECTION_PATCHED_RE =
-	/When using the \$\{[^}]+\} tool, pass \\`subagent_type: "fork"\\` to fork yourself\. A fork inherits your full conversation context, always runs on your model, and ignores any \\`model\\` override\. Pass any other subagent_type, or omit subagent_type, to start a fresh agent \(general-purpose by default\)\./;
+	/When using the \$\{[^}]+\} tool, pass \\`subagent_type: "fork"\\` to fork yourself\. A fork inherits your full conversation context, always runs on your model, and ignores any \\`model\\` override\. \$\{[\w$]+ \? "Pass any other subagent_type, or omit subagent_type, to start a fresh agent \(general-purpose by default\)\." : `Pass any other subagent_type to start a fresh agent\. \$\{[^}]+\}`\}/;
 
-function agentToolForkSelectionReplacement(toolExpr: string): string {
+function agentToolForkSelectionReplacement(
+	toolExpr: string,
+	generalPurposeFlag: string,
+	listedTypesClause: string,
+): string {
 	return [
 		`When using the ${toolExpr} tool, pass `,
 		'\\`subagent_type: "fork"\\`',
 		" to fork yourself. A fork inherits your full conversation context, always runs on your model, and ignores any ",
 		"\\`model\\`",
-		" override. Pass any other subagent_type, or omit subagent_type, to start a fresh agent (general-purpose by default).",
+		` override. \${${generalPurposeFlag} ? "Pass any other subagent_type, or omit subagent_type, to start a fresh agent (general-purpose by default)." : \`Pass any other subagent_type to start a fresh agent. ${listedTypesClause}\`}`,
 	].join("");
 }
 
@@ -549,7 +556,17 @@ export const builtInAgentPrompt: Patch = {
 		);
 		result = result.replace(
 			AGENT_TOOL_FORK_SELECTION_RE,
-			(_match, toolExpr: string) => agentToolForkSelectionReplacement(toolExpr),
+			(
+				_match,
+				toolExpr: string,
+				generalPurposeFlag: string,
+				listedTypesClause: string,
+			) =>
+				agentToolForkSelectionReplacement(
+					toolExpr,
+					generalPurposeFlag,
+					listedTypesClause,
+				),
 		);
 		result = result.replace(
 			CLAUDE_NOISY_INVESTIGATION_RE,

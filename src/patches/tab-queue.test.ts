@@ -141,8 +141,8 @@ async function replSubmit(input, helpers, options) {
   await submitPromptRuntime({
     input,
     helpers,
-    queryGuard: turnGate,
-    isExternalLoading: externalBusy,
+    turn: turnController,
+    queue: promptQueue,
     mode: inputMode,
     commands,
     onInputChange: setInputValue,

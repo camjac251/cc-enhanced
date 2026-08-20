@@ -1085,8 +1085,8 @@ function isDeferredSubmitReceiverConfig(object: t.ObjectExpression): boolean {
 	return (
 		hasObjectProperty(object, "input") &&
 		hasObjectProperty(object, "helpers") &&
-		hasObjectProperty(object, "queryGuard") &&
-		hasObjectProperty(object, "isExternalLoading") &&
+		hasObjectProperty(object, "turn") &&
+		hasObjectProperty(object, "queue") &&
 		hasObjectProperty(object, "mode") &&
 		hasObjectProperty(object, "onInputChange") &&
 		hasObjectProperty(object, "setPastedContents") &&
