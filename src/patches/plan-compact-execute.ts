@@ -13,6 +13,7 @@ const COMPACT_AUTO_VALUE = "yes-compact-auto";
 const COMPACT_ACCEPT_EDITS_VALUE = "yes-compact-accept-edits";
 const PLAN_IMPLEMENT_PREFIX = "Implement the following plan:";
 const COMPACT_FAILED_NOTIFICATION_KEY = "plan-compact-execute-failed";
+const COMPACT_RUNNING_NOTIFICATION_KEY = "plan-compact-execute-running";
 
 interface InteractiveContextIds {
 	commands: string;
@@ -758,6 +759,34 @@ function buildCommandPredicate(candidateName: string): t.Expression {
 	);
 }
 
+/**
+ * Announce the compaction before it starts.
+ *
+ * This runs between turns, where no spinner is mounted and the compact command's
+ * own progress events therefore have nothing to render into, so the plan looks
+ * frozen for as long as the summarizing request takes.
+ */
+function buildCompactRunningNotification(
+	ids: InteractiveContextIds,
+): t.ExpressionStatement {
+	return t.expressionStatement(
+		t.callExpression(t.identifier(ids.addNotification), [
+			t.objectExpression([
+				t.objectProperty(
+					t.identifier("key"),
+					t.stringLiteral(COMPACT_RUNNING_NOTIFICATION_KEY),
+				),
+				t.objectProperty(
+					t.identifier("text"),
+					t.stringLiteral("Compacting context before executing the plan"),
+				),
+				t.objectProperty(t.identifier("priority"), t.stringLiteral("high")),
+				t.objectProperty(t.identifier("timeoutMs"), t.numericLiteral(30000)),
+			]),
+		]),
+	);
+}
+
 function buildCompactionResultExpansion(
 	summaryName: string,
 ): t.ArrayExpression {
@@ -801,6 +830,7 @@ function buildCompactInitialMessageBlock(
 			t.ifStatement(
 				command,
 				t.blockStatement([
+					buildCompactRunningNotification(ids),
 					t.tryStatement(
 						t.blockStatement([
 							t.variableDeclaration("const", [
@@ -988,6 +1018,7 @@ export const planCompactExecute: Patch = {
 		let initialMessageClearContextStaticTrue = false;
 		let compactInitialMessageHandler = false;
 		let compactInitialMessageHandlerUsesMessagesToKeepFallback = false;
+		let compactInitialMessageAnnouncesRun = false;
 		let planSelectorCount = 0;
 		let patchedPlanSelectorCount = 0;
 		let planGateRestrictedWithoutCompact = false;
@@ -1134,6 +1165,14 @@ export const planCompactExecute: Patch = {
 					)
 				) {
 					compactInitialMessageHandler = true;
+					if (
+						nodeContainsText(
+							path.node.consequent,
+							COMPACT_RUNNING_NOTIFICATION_KEY,
+						)
+					) {
+						compactInitialMessageAnnouncesRun = true;
+					}
 					if (nodeContainsMessagesToKeepArrayFallback(path.node.consequent)) {
 						compactInitialMessageHandlerUsesMessagesToKeepFallback = true;
 					}
@@ -1187,6 +1226,9 @@ export const planCompactExecute: Patch = {
 		}
 		if (!compactInitialMessageHandlerUsesMessagesToKeepFallback) {
 			return "Initial message handler does not guard optional compact messagesToKeep with [] fallback";
+		}
+		if (!compactInitialMessageAnnouncesRun) {
+			return "Initial message handler runs compaction without announcing it; the plan would appear frozen";
 		}
 		if (planSelectorCount === 0) {
 			return "Plan approval selector props not found";

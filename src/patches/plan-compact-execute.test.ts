@@ -501,3 +501,28 @@ test("plan-compact-execute inserts compact handler before reading message conten
 		"compact handler must be spliced before the message content read",
 	);
 });
+
+test("plan-compact-execute announces the compaction before awaiting it", async () => {
+	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes("plan-compact-execute-running"), true);
+	assert.equal(
+		output.includes("Compacting context before executing the plan"),
+		true,
+	);
+
+	// The notice has to precede the await, or it lands after the wait it exists
+	// to explain.
+	const noticeAt = output.indexOf("plan-compact-execute-running");
+	const awaitAt = output.indexOf("__ccEnhancedPlanCompactResult");
+	assert.equal(noticeAt !== -1 && awaitAt !== -1 && noticeAt < awaitAt, true);
+
+	const regressed = output.replace("plan-compact-execute-running", "unrelated");
+	assert.notEqual(regressed, output);
+	assert.equal(
+		planCompactExecute.verify(regressed),
+		"Initial message handler runs compaction without announcing it; the plan would appear frozen",
+	);
+});
