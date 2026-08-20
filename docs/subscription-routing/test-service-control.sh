@@ -36,6 +36,12 @@ exit "${READY_EXIT:-0}"
 SH
 tee "$clodex_bin" >/dev/null <<'SH'
 #!/bin/sh
+for arg; do
+	if [ "$arg" = '--export-cc-catalog' ]; then
+		printf '%s\n' '[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"stub route","maxInputTokens":258400,"maxOutputTokens":128000}]'
+		exit 0
+	fi
+done
 printf '%s' "$0" >>"$CONTROL_LOG"
 if [ "$#" -gt 0 ]; then
 	printf ' %s' "$*" >>"$CONTROL_LOG"
@@ -128,6 +134,7 @@ sed \
 	-e "s|@CLODEX_CLAUDE_BIN@|$process_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
 	-e "s|@CLAUDEX_PROMPT_COMPOSER@|$prompt_composer|g" \
+	-e "s|@CLODEX_BIN@|$clodex_bin|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
 	"$setup_dir/templates/claudex" >"$launcher"
 chmod 700 "$launcher"

@@ -50,7 +50,7 @@ prompt_composer="$HOME/.local/libexec/claudex-compose-system-prompt"
 node_bin=$(mise which node)
 mise_data_dir=${MISE_DATA_DIR:-"$HOME/.local/share/mise"}
 mise_shims_dir="$mise_data_dir/shims"
-clodex_bin="$mise_shims_dir/clodex"
+clodex_bin=${CLODEX_BIN_PATH:-"$mise_shims_dir/clodex"}
 clodex_wrapper="$mise_shims_dir/clodex-claude"
 case "$credential_helper" in
 /*) ;;
@@ -112,6 +112,7 @@ sed \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
 	-e "s|@CLAUDEX_PROMPT_COMPOSER@|$prompt_composer|g" \
+	-e "s|@CLODEX_BIN@|$clodex_bin|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
 	"$setup_dir/templates/claudex" | cmp -s - "$claudex_bin" ||
 	fail "installed routed launcher does not match the reviewed template"

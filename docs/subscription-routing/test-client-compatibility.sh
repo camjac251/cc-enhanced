@@ -29,6 +29,12 @@ done
 SH
 tee "$clodex_cli" >/dev/null <<'SH'
 #!/bin/sh
+for arg; do
+	if [ "$arg" = '--export-cc-catalog' ]; then
+		printf '%s\n' '[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"stub route","maxInputTokens":258400,"maxOutputTokens":128000}]'
+		exit 0
+	fi
+done
 printf '%s' "$0" >>"$ADMIN_LOG"
 for arg; do
 	printf ' %s' "$arg" >>"$ADMIN_LOG"
@@ -125,6 +131,7 @@ sed \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
 	-e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
 	-e "s|@CLAUDEX_PROMPT_COMPOSER@|$prompt_composer|g" \
+	-e "s|@CLODEX_BIN@|$clodex_cli|g" \
 	-e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
 	"$launcher_template" >"$launcher"
 chmod 700 "$launcher"

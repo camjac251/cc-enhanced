@@ -5,6 +5,7 @@ set -eu
 clodex_home="$HOME/.local/share/claudex-clodex"
 credential_helper='@CLODEX_CREDENTIAL_HELPER@'
 process_wrapper='@CLODEX_CLAUDE_BIN@'
+clodex_bin='@CLODEX_BIN@'
 launcher_process_wrapper='@CLAUDEX_PROCESS_WRAPPER@'
 session_lock="$clodex_home/routed-sessions.lock"
 claude_path='@CLAUDE_BIN@'
@@ -30,6 +31,15 @@ sol)
 	shift
 	;;
 esac
+
+# Sol's larger window is opt-in per launch and never saved. GPT-5.6 prices the
+# full request at a higher rate above 272,000 input tokens, so the default stop
+# stays under that line and this shortcut is the deliberate way across it.
+context_stop=''
+if [ "${1:-}" = '--1m' ]; then
+	context_stop='clodex:openai-oauth:gpt-5.6-sol=max'
+	shift
+fi
 
 has_model=0
 for arg; do
@@ -61,6 +71,7 @@ fi
 for required_file in \
 	"$credential_helper" \
 	"$process_wrapper" \
+	"$clodex_bin" \
 	"$launcher_process_wrapper" \
 	"$claude_path" \
 	"$node_bin" \
@@ -155,7 +166,25 @@ export CLAUDE_CODE_MODEL_ALIASES='{"sol":"clodex:openai-oauth:gpt-5.6-sol"}'
 if [ -n "$auto_mode_model" ]; then
 	export CLAUDE_CODE_AUTO_MODE_MODEL="$auto_mode_model"
 fi
-export CLAUDE_CODE_CONFIGURED_MODEL_CATALOG='[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":258400,"maxOutputTokens":32000,"effortLevels":["low","medium","high","xhigh","max"],"defaultEffort":"medium"}]'
+# Generated from the saved clodex context stop so one place owns these numbers.
+# The fallback below is the standard stop: 272,000 raw x 95% headroom = 258,400,
+# which keeps a session under the 272,000 pricing boundary. Output is the model's
+# real 128,000 ceiling; Claude Code still defaults to 32,000 within it.
+# stderr is deliberately not suppressed: the pricing-boundary warning for a
+# larger stop is printed there and is the whole point of asking for one.
+if [ -n "$context_stop" ]; then
+	clodex_catalog=$("$clodex_bin" models --export-cc-catalog --context "$context_stop") || clodex_catalog=''
+else
+	clodex_catalog=$("$clodex_bin" models --export-cc-catalog) || clodex_catalog=''
+fi
+case "$clodex_catalog" in
+'['*']') ;;
+*)
+	printf '%s\n' 'claudex: catalog export unavailable; using the standard-stop fallback' >&2
+	clodex_catalog='[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":258400,"maxOutputTokens":128000,"effortLevels":["low","medium","high","xhigh","max"],"defaultEffort":"medium"}]'
+	;;
+esac
+export CLAUDE_CODE_CONFIGURED_MODEL_CATALOG="$clodex_catalog"
 export CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY=1
 export ENABLE_TOOL_SEARCH=true
 

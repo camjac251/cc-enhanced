@@ -164,7 +164,7 @@ PATH="$mise_shims_dir:$PATH"
 export PATH
 
 node_bin=$(mise which node)
-clodex_bin=$(command -v clodex)
+clodex_bin=${CLODEX_BIN_PATH:-$(command -v clodex)}
 clodex_wrapper=$(command -v clodex-claude)
 claude_bin=$(command -v claude)
 client_profile=${CLAUDEX_CLIENT_PROFILE:-enhanced}
@@ -226,6 +226,7 @@ sed \
   -e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
   -e "s|@CLAUDEX_PROCESS_WRAPPER@|$launcher_process_wrapper|g" \
   -e "s|@CLAUDEX_PROMPT_COMPOSER@|$prompt_composer|g" \
+  -e "s|@CLODEX_BIN@|$clodex_bin|g" \
   -e "s|@CLODEX_CREDENTIAL_HELPER@|$credential_helper|g" \
   templates/claudex >"$rendered_dir/claudex"
 
@@ -371,6 +372,51 @@ Do not put the route, alias, base URL, or credentials in
 `~/.claude/settings.json`. The launcher injects these values only into routed
 processes.
 
+### Context window and the 272K pricing boundary
+
+Sol's context window is a cost dial, not just a capacity number. OpenAI prices
+prompts above **272,000 input tokens at 2x input and 1.5x output for the full
+request**, not just the overage. That is why the Codex catalog reports a 272,000
+default rather than the model's published ceiling, and why the launcher's
+standard stop stays under the line.
+
+The launcher generates `CLAUDE_CODE_CONFIGURED_MODEL_CATALOG` from Clodex, so
+the numbers live in one place:
+
+| Stop | Raw window | Reported (95% headroom) | Auto-compaction |
+|---|---|---|---|
+| `standard` (default) | 272,000 | 258,400 | model window |
+| `max` (`claudex sol --1m`) | account ceiling | 95% of it | 90% of reported |
+
+The 95% headroom mirrors the Codex catalog's own `effective_context_window`
+convention. The ceiling is account-scoped and read from the Codex catalog at
+model-refresh time, so it is not a fixed number; a plan with a smaller ceiling
+gets a smaller `max` stop rather than a value that would be clamped upstream.
+
+The launcher calls `clodex models --export-cc-catalog`, so it needs a Clodex build
+that has that flag. Point `CLODEX_BIN_PATH` at one when the packaged Clodex on
+`PATH` predates it; both the install recipe and `verify-static.sh` honour it, so
+verification checks the same binary the launcher uses. When the export is
+unavailable the launcher falls back to the standard stop and says so on stderr,
+which is safe but leaves `--1m` inert.
+
+`--1m` applies to that launch only and is never saved. To change the default:
+
+```sh
+clodex models --context sol=max --save
+clodex models --context sol=standard --save
+```
+
+Clodex also warns once per session, from the provider's own returned token
+count, when a request actually crosses the boundary. Claude Code counts tokens
+in Anthropic shape and the provider counts them after translation, so window
+math alone cannot see a crossing that the reported usage can.
+
+Whether the higher rate reaches ChatGPT-plan credits is not documented on the
+Codex rate card; it is documented for API pricing. Treat the boundary as real
+either way: the larger stop carries roughly 3x the input tokens per turn
+regardless of any multiplier.
+
 ## 7. Verify
 
 ```sh
@@ -407,6 +453,7 @@ claudex                # routed session, preserve the saved native parent
 claudex fable          # Fable parent through native passthrough
 claudex opus           # Opus parent through native passthrough
 claudex sol            # Sol parent and, when enabled, Sol auto classifier
+claudex sol --1m       # same, with Sol's larger window for this launch only
 claudex sol --permission-mode auto # enter the same routed auto mode immediately
 clodex providers list  # isolated provider administration
 clodex models          # isolated favorites and aliases
