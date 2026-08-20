@@ -42,7 +42,6 @@ const WORKFLOW_TOOL_NAMES = new Set([
 	"TaskCreate",
 	"TaskGet",
 	"TaskList",
-	"TaskOutput",
 	"TaskStop",
 	"TaskUpdate",
 	"TeamCreate",

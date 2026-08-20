@@ -54,21 +54,21 @@ export const MODERN_STDOUT_CAP =
 /** Shared stdout-cap text export. */
 export const MODERN_OUTPUT_LIMIT_WARNING = MODERN_STDOUT_CAP;
 
-/** Background execution policy shared by Bash, Read, and TaskOutput surfaces. */
+/** Background execution policy shared by Bash, Read, and subagent surfaces. */
 export const BACKGROUND_TASK_POLICY_LINES = [
 	"Choose execution mode by intent:",
 	"- Immediate result: run Bash in the foreground with an appropriate timeout.",
 	"- Streaming output or a condition watch: use Monitor.",
 	"- Real concurrency: start Bash with run_in_background=true only when useful independent work will continue, then rely on the completion notification.",
-	"- TaskOutput: use block=false for one deliberate status check. Use block=true only for an already-running task after useful independent work or when a later user request requires its result.",
-	"- Never start Bash with run_in_background=true and immediately call TaskOutput with block=true; that creates no concurrency.",
+	"- Background results: the tool result and the completion notification both carry the output file path. Read that file by explicit non-overlapping ranges rather than re-reading a tail you already have.",
+	"- A subagent's output file is its full conversation transcript in JSONL, not a report. Use the result the completion notification delivers, and select entries with jq if you must open the transcript at all.",
 ] as const;
 
 export const BACKGROUND_TASK_POLICY = BACKGROUND_TASK_POLICY_LINES.join("\n");
 
-/** Compact TaskOutput routing used inside file-output guidance. */
+/** Compact background-output routing used inside file-output guidance. */
 export const BACKGROUND_TASK_READ_GUIDANCE =
-	"Use TaskOutput with block=false for one deliberate status check, not to rediscover the path or poll logs. Never start Bash with run_in_background=true and immediately call TaskOutput with block=true. For an immediate result, run Bash in the foreground; for streaming output or a condition watch, use Monitor; for real concurrency, continue useful independent work and rely on the completion notification.";
+	"The background-task result and its completion notification both carry the output file path, so read that file by explicit non-overlapping ranges instead of rediscovering the path or re-reading a tail you already have. For an immediate result, run Bash in the foreground; for streaming output or a condition watch, use Monitor; for real concurrency, continue useful independent work and rely on the completion notification.";
 
 /** Prohibited operations line shared across prompts. */
 export const PROHIBITED_BASH_OPS =

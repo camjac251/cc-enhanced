@@ -42,7 +42,6 @@ export { subagentModelTag } from "./subagent-model-tag.js";
 export { subagentSystemPrompt } from "./subagent-system-prompt.js";
 export { systemPromptFile } from "./sys-prompt-file.js";
 export { tabQueue } from "./tab-queue.js";
-export { taskOutputExt } from "./taskout-ext.js";
 export { todo } from "./todo-use.js";
 export { disableTools } from "./tools-off.js";
 export { workflowSafety } from "./workflow-safety.js";
@@ -91,7 +90,6 @@ import { subagentModelTag } from "./subagent-model-tag.js";
 import { subagentSystemPrompt } from "./subagent-system-prompt.js";
 import { systemPromptFile } from "./sys-prompt-file.js";
 import { tabQueue } from "./tab-queue.js";
-import { taskOutputExt } from "./taskout-ext.js";
 import { todo } from "./todo-use.js";
 import { disableTools } from "./tools-off.js";
 import { workflowSafety } from "./workflow-safety.js";
@@ -118,7 +116,6 @@ export const registeredPatches: Patch[] = [
 	sessionGuidance,
 	todo,
 	// AST-based patches
-	taskOutputExt,
 	cacheTailPolicy,
 	childNetworkEnv,
 	editTool,

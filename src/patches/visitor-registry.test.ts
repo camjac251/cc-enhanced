@@ -73,7 +73,6 @@ const MUTATE_SHARED_KINDS: { row: string; keys: string[]; tags: string[] }[] = [
 			"commands-off",
 			"image-limits",
 			"plan-compact-execute",
-			"taskout-ext",
 			"effort-stack",
 			"skill-global-paths",
 		],

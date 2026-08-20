@@ -810,7 +810,7 @@ test("read-bat migrates schema and prompt from offset/limit to range/show_whites
 	);
 	assert.equal(
 		output.includes(
-			"Never start Bash with run_in_background=true and immediately call TaskOutput with block=true",
+			"read that file by explicit non-overlapping ranges instead of rediscovering the path",
 		),
 		true,
 	);
@@ -818,6 +818,7 @@ test("read-bat migrates schema and prompt from offset/limit to range/show_whites
 		output.includes("Use TaskOutput only for an explicit wait"),
 		false,
 	);
+	assert.equal(output.includes("TaskOutput"), false);
 });
 
 test("read-bat resolves the direct boolean schema factory from current tool schemas", async () => {
@@ -833,9 +834,9 @@ test("read-bat verify rejects weakened background task routing", async () => {
 	const output = await getPatchedDelegationOutput();
 	const weakened = output
 		.split(
-			"Never start Bash with run_in_background=true and immediately call TaskOutput with block=true",
+			"read that file by explicit non-overlapping ranges instead of rediscovering the path or re-reading a tail you already have",
 		)
-		.join("Choose any wait mechanism after starting background Bash");
+		.join("read it however you like");
 	assert.notEqual(weakened, output);
 
 	const result = readWithBat.verify(weakened);

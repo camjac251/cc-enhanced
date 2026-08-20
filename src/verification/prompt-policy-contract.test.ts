@@ -48,8 +48,8 @@ test("prompt policy contract covers background execution routing and legacy bloc
 		"prompt-policy-background-foreground",
 		"prompt-policy-background-monitor",
 		"prompt-policy-background-concurrency",
-		"prompt-policy-taskoutput-status",
-		"prompt-policy-no-immediate-blocking-wait",
+		"prompt-policy-background-output-file",
+		"prompt-policy-subagent-transcript",
 	]) {
 		assert.equal(
 			REQUIRED_PROMPT_POLICY_NEEDLES.some((rule) => rule.id === id),
@@ -58,13 +58,26 @@ test("prompt policy contract covers background execution routing and legacy bloc
 		);
 	}
 	for (const id of [
-		"legacy-taskoutput-default-blocking",
-		"legacy-taskoutput-deliberate-blocking",
+		"legacy-bash-token-warning-posix",
+		"legacy-bash-token-warning-powershell",
 	]) {
 		assert.equal(
 			FORBIDDEN_LEGACY_PROMPT_NEEDLES.some((rule) => rule.id === id),
 			true,
 			`missing forbidden contract rule ${id}`,
+		);
+	}
+
+	// The retired task-output needles scanned bundle text, not the export, so
+	// they would now fire on the disabled tool's unreachable prompt.
+	for (const id of [
+		"legacy-taskoutput-default-blocking",
+		"legacy-taskoutput-deliberate-blocking",
+	]) {
+		assert.equal(
+			FORBIDDEN_LEGACY_PROMPT_NEEDLES.some((rule) => rule.id === id),
+			false,
+			`retired contract rule ${id} is back`,
 		);
 	}
 });

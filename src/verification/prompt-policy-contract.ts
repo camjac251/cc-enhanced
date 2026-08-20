@@ -98,29 +98,23 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 		reason: "Missing useful-overlap requirement for background Bash",
 	},
 	{
-		id: "prompt-policy-taskoutput-status",
-		needle: "TaskOutput: use block=false for one deliberate status check.",
-		reason: "Missing one-time nonblocking TaskOutput status route",
+		id: "prompt-policy-background-output-file",
+		needle:
+			"Background results: the tool result and the completion notification both carry the output file path.",
+		reason: "Missing output-file route for background task results",
 	},
 	{
-		id: "prompt-policy-no-immediate-blocking-wait",
+		id: "prompt-policy-subagent-transcript",
 		needle:
-			"Never start Bash with run_in_background=true and immediately call TaskOutput with block=true",
-		reason: "Missing redundant immediate blocking-wait prohibition",
+			"A subagent's output file is its full conversation transcript in JSONL, not a report.",
+		reason: "Missing warning that a subagent output file is a raw transcript",
 	},
 ];
 
 export const FORBIDDEN_LEGACY_PROMPT_NEEDLES: readonly PromptPolicyNeedle[] = [
-	{
-		id: "legacy-taskoutput-default-blocking",
-		needle: "Use block=true (default) to wait for task completion",
-		reason: "TaskOutput still defaults model guidance to a blocking wait",
-	},
-	{
-		id: "legacy-taskoutput-deliberate-blocking",
-		needle: "Use block=true only when deliberately waiting for task completion",
-		reason: "TaskOutput still licenses ambiguous deliberate blocking waits",
-	},
+	// The task-output tool's own blocking-wait guidance is no longer listed here.
+	// It is disabled rather than rewritten, so its prompt survives in the bundle
+	// as unreachable text; `tools-off` owns proving it stays disabled.
 	{
 		id: "legacy-bash-token-warning-posix",
 		needle: "Pipe output through head, tail, or grep",

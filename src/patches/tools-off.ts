@@ -29,7 +29,19 @@ const TARGET_TOOLS = new Set([
 	"WebSearch",
 	"WebFetch",
 	"NotebookEdit",
+	"TaskOutput",
 ]);
+
+// Two task-status strings name the task-output tool through an interpolated
+// constant, so a literal patch cannot reach them.
+const TASK_STATUS_PROGRESS_LEAD = "You can check its progress with the ";
+const TASK_STATUS_PROGRESS_MID = " tool or send it a message with ";
+const TASK_STATUS_PROGRESS_HEAD = "Send it a message with ";
+const TASK_STATUS_PROGRESS_TAIL = " to check on it.";
+const TASK_STATUS_OUTPUT_LEAD = "You can check its output using the ";
+const TASK_STATUS_OUTPUT_TAIL = " tool.";
+const TASK_STATUS_OUTPUT_REPLACEMENT =
+	"Its result arrives with the completion notification.";
 
 // Regex patterns for current prompt rewrites (handles whitespace/minor changes)
 const REGEX_REPLACEMENTS: Array<{ pattern: RegExp; replacement: string }> = [
@@ -309,6 +321,16 @@ const DISABLED_TOOL_PROMPT_LEAKS = [
 		needle: "Explore the codebase directly with Glob, Grep, and Read.",
 		reason:
 			"Remote planning prompt still routes exploration through disabled Glob/Grep",
+	},
+	{
+		needle: TASK_STATUS_PROGRESS_LEAD,
+		reason:
+			"Running-task guidance still routes progress checks through the disabled task-output tool",
+	},
+	{
+		needle: TASK_STATUS_OUTPUT_LEAD,
+		reason:
+			"Finished-task guidance still routes result retrieval through the disabled task-output tool",
 	},
 ] as const;
 
@@ -664,6 +686,10 @@ export const disableTools: Patch = {
 			pass: "mutate",
 			visitor: createSkillAllowedToolsMutator(),
 		},
+		{
+			pass: "mutate",
+			visitor: createTaskStatusReferenceMutator(),
+		},
 	],
 
 	verify: (code, ast) => {
@@ -721,6 +747,14 @@ export const disableTools: Patch = {
 			if (fragment.test(code)) {
 				return `Still contains disabled-tool prompt guidance: ${fragment.source}`;
 			}
+		}
+
+		// Wording checks alone would pass vacuously if upstream reworded these
+		// strings, so the real invariant is structural: no surviving prompt text
+		// may interpolate the disabled tool's name.
+		const taskOutputLeak = findInterpolatedToolNameLeak(ast, "TaskOutput");
+		if (taskOutputLeak) {
+			return `Prompt text still interpolates the disabled task-output tool name (${taskOutputLeak})`;
 		}
 
 		for (const { trigger, required } of CONDITIONAL_REWRITE_MARKERS) {
@@ -994,6 +1028,102 @@ function createSkillAllowedToolsMutator(): Visitor {
 						return true;
 					},
 				);
+			}
+		},
+	};
+}
+
+/**
+ * Find prompt text that still names a disabled tool through an interpolated
+ * binding, returning a short description of the first offending string.
+ *
+ * The bundle refers to tool names through module-level constants, so a literal
+ * scan cannot see these references at all.
+ */
+function findInterpolatedToolNameLeak(
+	ast: t.File | t.Program,
+	toolName: string,
+): string | null {
+	const bindings = new Set<string>();
+	traverse(ast, {
+		VariableDeclarator(path) {
+			if (!t.isIdentifier(path.node.id)) return;
+			if (!t.isStringLiteral(path.node.init, { value: toolName })) return;
+			bindings.add(path.node.id.name);
+		},
+		noScope: true,
+	});
+	if (bindings.size === 0) return null;
+
+	let leak: string | null = null;
+	traverse(ast, {
+		TemplateLiteral(path) {
+			if (leak) return;
+			const names = path.node.expressions.filter(
+				(expression): expression is t.Identifier =>
+					t.isIdentifier(expression) && bindings.has(expression.name),
+			);
+			if (names.length === 0) return;
+			const preview = templateCookedParts(path.node)
+				.join(" ")
+				.replace(/\s+/g, " ")
+				.trim()
+				.slice(0, 80);
+			leak = preview;
+		},
+		noScope: true,
+	});
+	return leak;
+}
+
+function templateCookedParts(node: t.TemplateLiteral): string[] {
+	return node.quasis.map((quasi) => quasi.value.cooked ?? quasi.value.raw);
+}
+
+function templateElementFor(value: string, tail: boolean): t.TemplateElement {
+	return t.templateElement({ raw: value, cooked: value }, tail);
+}
+
+/**
+ * Rewrite the two task-status strings that name the disabled task-output tool.
+ * Edited in place so the shared traversal does not re-enter a fresh node.
+ */
+function createTaskStatusReferenceMutator(): Visitor {
+	return {
+		TemplateLiteral(path) {
+			const parts = templateCookedParts(path.node);
+			const expressions = path.node.expressions;
+
+			if (
+				parts.length === 3 &&
+				expressions.length === 2 &&
+				parts[0].endsWith(TASK_STATUS_PROGRESS_LEAD) &&
+				parts[1] === TASK_STATUS_PROGRESS_MID
+			) {
+				const head = `${parts[0].slice(
+					0,
+					parts[0].length - TASK_STATUS_PROGRESS_LEAD.length,
+				)}${TASK_STATUS_PROGRESS_HEAD}`;
+				path.node.quasis = [
+					templateElementFor(head, false),
+					templateElementFor(TASK_STATUS_PROGRESS_TAIL, true),
+				];
+				path.node.expressions = [expressions[1] as t.Expression];
+				return;
+			}
+
+			if (
+				parts.length === 2 &&
+				expressions.length === 1 &&
+				parts[0].endsWith(TASK_STATUS_OUTPUT_LEAD) &&
+				parts[1] === TASK_STATUS_OUTPUT_TAIL
+			) {
+				const only = `${parts[0].slice(
+					0,
+					parts[0].length - TASK_STATUS_OUTPUT_LEAD.length,
+				)}${TASK_STATUS_OUTPUT_REPLACEMENT}`;
+				path.node.quasis = [templateElementFor(only, true)];
+				path.node.expressions = [];
 			}
 		},
 	};

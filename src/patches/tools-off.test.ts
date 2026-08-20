@@ -18,6 +18,7 @@ async function runToolsOffViaPasses(ast: any): Promise<void> {
 }
 
 const TOOL_FIXTURE = `
+const taskOutputName = "TaskOutput";
 const builtinTools = [
   {
     name: "Grep",
@@ -65,7 +66,23 @@ const builtinTools = [
     },
     call() {},
   },
+  {
+    name: taskOutputName,
+    description: "Read output from a background task",
+    inputSchema: {},
+    prompt: "Retrieves output from a running or completed task",
+    isEnabled() {
+      return true;
+    },
+    call() {},
+  },
 ];
+function describeTask(task, sendMessage) {
+  if (task.running) {
+    return \`Do NOT spawn a duplicate. You will be notified when it completes. You can check its progress with the \${taskOutputName} tool or send it a message with \${sendMessage}.\`;
+  }
+  return \`You can check its output using the \${taskOutputName} tool.\`;
+}
 const skillConfig = {
   filePatternTools: ["Read", "Bash"]
 };
@@ -411,12 +428,14 @@ var TOOL_GLOB = "Glob";
 var TOOL_WS = "WebSearch";
 var TOOL_WF = "WebFetch";
 var TOOL_NB = "NotebookEdit";
+var TOOL_TO = "TaskOutput";
 const builtinTools = [
   { name: TOOL_GREP, description: "d", inputSchema: {}, prompt: "p", call() {} },
   { name: TOOL_GLOB, description: "d", inputSchema: {}, prompt: "p", call() {} },
   { name: TOOL_WS, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return true; }, call() {} },
   { name: TOOL_WF, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return true; }, call() {} },
   { name: TOOL_NB, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return true; }, call() {} },
+  { name: TOOL_TO, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return true; }, call() {} },
 ];
 const skillConfig = { filePatternTools: ["Read", "Bash"] };
 `;
@@ -550,7 +569,7 @@ const notATool = { name: TOOL_GREP, label: "Searching" };
 test("tools-off fully overwrites a gated isEnabled body with return false (replace path)", async () => {
 	// WebFetch carries a runtime-gated isEnabled in the live bundle, so the
 	// mutator must REPLACE the whole body with `return false`, leaving no
-	// original gate identifiers. All five target tools are present so verify()
+	// original gate identifiers. Every target tool is present so verify()
 	// (which requires every target tool to be registered) can stay green.
 	const input = `
 var TOOL_WF = "WebFetch";
@@ -560,6 +579,7 @@ const builtinTools = [
   { name: "Glob", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
   { name: "WebSearch", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
   { name: "NotebookEdit", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
+  { name: "TaskOutput", description: "d", inputSchema: {}, prompt: "p", isEnabled() { return false; }, call() {} },
 ];
 const skillConfig = { filePatternTools: ["Read", "Bash"] };
 `;
@@ -661,4 +681,33 @@ const cfg = { filePatternTools: ["Read", "Write", "Edit", "Glob", "NotebookRead"
 	assert.match(output, /filePatternTools:[^\]]*"NotebookEdit"/);
 	assert.match(output, /filePatternTools:[^\]]*"NotebookRead"/);
 	assert.equal(disableTools.verify(output, ast), true);
+});
+
+test("tools-off rewrites task-status guidance off the disabled task-output tool", async () => {
+	const { output, ast } = await applyFullPatch(TOOL_FIXTURE);
+
+	assert.equal(output.includes("You can check its progress with the"), false);
+	assert.equal(output.includes("You can check its output using the"), false);
+	assert.match(
+		output,
+		/Do NOT spawn a duplicate\. You will be notified when it completes\. Send it a message with \$\{sendMessage\} to check on it\./,
+	);
+	assert.equal(
+		output.includes("Its result arrives with the completion notification."),
+		true,
+	);
+	assert.equal(disableTools.verify(output, ast), true);
+});
+
+test("tools-off verify catches prompt text that still interpolates the tool name", async () => {
+	// The bundle names tools through constants, so a reworded string that still
+	// interpolates the binding must fail even though no known wording matches.
+	const reworded = `${TOOL_FIXTURE}
+const note = \`Reworded upstream copy naming the \${taskOutputName} tool.\`;
+`;
+	const { output, ast } = await applyFullPatch(reworded);
+	const result = disableTools.verify(output, ast);
+
+	assert.notEqual(result, true);
+	assert.match(String(result), /still interpolates the disabled task-output/);
 });

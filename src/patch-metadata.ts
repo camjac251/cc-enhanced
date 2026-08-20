@@ -221,11 +221,6 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "System prompt file",
 		group: "System",
 	},
-	"taskout-ext": {
-		tag: "taskout-ext",
-		label: "Task output metadata",
-		group: "Tooling",
-	},
 	"lsp-multi-server": {
 		tag: "lsp-multi-server",
 		label: "LSP multi-server",

@@ -3,17 +3,16 @@
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
-    "agents/claude.md": "91490ee33df6577f0e81d752d0bc05a333a13570222c169e1d3d7f4d250117f0",
+    "agents/claude.md": "f129b018e907ca76980c8b65f2a615916de241b327f61891fcb7a027b7832348",
     "agents/explore.md": "7681db43396ea2a0509c8de2e94837e6cf12450fb721233833d60dee0f57f658",
     "agents/plan.md": "6ab8ca239ed87d3d7913ca1f601f69622200430c3e7a1686b8c252eb1ff7cef1",
-    "agents/worker.md": "34661d1d6f4373ee51b5df2821fdea97cdae4e20d2078db864735229e2fa4552",
-    "agents/workflow-subagent.md": "37993dc85dc1eeac7bd29b40f215cc98be769bbb60abe1242e94d5c60c0204ba",
+    "agents/worker.md": "6aab1480076dbaa735a7ed4617af1c55963bb9dfea1de7010c59ba61e14ff364",
+    "agents/workflow-subagent.md": "4d42d7653bf4878a61943b50c54e4c95a62e6cb47f004c5aa0b2227c01932d91",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge-2.md": "8d24296a1459ba9472328887c294278e8be614df3168e70b1134b7ae13dd2ff9",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge.md": "ca6cf36e2d06d7db385d9b760fb409f7969299b56c91d185a35605259c40fd6f",
     "system/sections/dream-memory-consolidation.md": "2c1f842b2911603b38825858d98f31285cfea96278adb9a3ad3081b46baba84b",
     "system/sections/session-specific-guidance.md": "f2cfef1db00c1af26fc7976d3877975569ce25fb151315662cba935070ca1eee",
     "system/sections/using-your-tools.md": "9f7e7a7321436c63b1a06629cfb11caefa722e8ab81b87ad744c8598b375ea7c",
-    "tools/builtin/agent.md": "3a4e517f45aec455586b60f201cdec5b673ab085a9156e2a8bf78790eb27b7d3",
-    "tools/builtin/taskoutput.md": "75253a34674c17b87f7ef20b592814ff65b9f4f6c97ef7fb7d794dbdc5ad94a5"
+    "tools/builtin/agent.md": "3a4e517f45aec455586b60f201cdec5b673ab085a9156e2a8bf78790eb27b7d3"
   }
 }

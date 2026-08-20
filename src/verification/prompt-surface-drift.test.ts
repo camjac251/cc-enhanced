@@ -194,9 +194,13 @@ test("default drift paths exclude optional surfaces that review reports still tr
 	assert.ok(PROMPT_SURFACE_DRIFT_PATHS.includes("agents/explore.md"));
 });
 
-test("TaskOutput is a required review and drift surface", () => {
+test("TaskOutput is not a tracked surface while the tool is disabled", () => {
+	// The tool is disabled, so its prompt should never reach an export. If it
+	// reappears here, the disable regressed and the guidance came back with it.
 	assert.ok(
-		PROMPT_SURFACE_REVIEW_PATHS.includes("tools/builtin/taskoutput.md"),
+		!PROMPT_SURFACE_REVIEW_PATHS.includes("tools/builtin/taskoutput.md"),
 	);
-	assert.ok(PROMPT_SURFACE_DRIFT_PATHS.includes("tools/builtin/taskoutput.md"));
+	assert.ok(
+		!PROMPT_SURFACE_DRIFT_PATHS.includes("tools/builtin/taskoutput.md"),
+	);
 });

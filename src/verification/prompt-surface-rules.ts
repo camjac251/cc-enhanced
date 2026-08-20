@@ -51,28 +51,6 @@ const REMOTE_PLANNING_REMINDER_FILES = [
 
 export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 	{
-		file: "tools/builtin/taskoutput.md",
-		required: BACKGROUND_TASK_POLICY_LINES.map((needle, index) => ({
-			id: `taskoutput-background-policy-${index + 1}`,
-			needle,
-			reason: "TaskOutput surface missing shared background execution policy",
-		})),
-		forbidden: [
-			{
-				id: "taskoutput-default-blocking",
-				needle: "Use block=true (default) to wait for task completion",
-				reason: "TaskOutput surface still defaults guidance to a blocking wait",
-			},
-			{
-				id: "taskoutput-deliberate-blocking",
-				needle:
-					"Use block=true only when deliberately waiting for task completion",
-				reason:
-					"TaskOutput surface still licenses ambiguous deliberate blocking waits",
-			},
-		],
-	},
-	{
 		file: "tools/builtin/read.md",
 		presence: "optional",
 		required: [
