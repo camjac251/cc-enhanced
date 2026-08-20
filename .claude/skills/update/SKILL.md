@@ -177,8 +177,11 @@ The process is evidence-first: inspect the live registry and clean bundle before
    Refresh `prompt-surface-baseline.json` only after the new patched export is reviewed as known-good:
 
    ```bash
-   mise run prompts:drift-baseline -- prompt-surface-baseline.json <scratch>/export --prompt-drift-version <target>
+   mise run prompts:drift-baseline -- --prompt-drift-baseline prompt-surface-baseline.json <scratch>/export --prompt-drift-version <target>
    ```
+
+   The export directory is the only positional argument; the baseline path
+   rides on `--prompt-drift-baseline`.
 
    Do not call drift corrected until a fresh `verify:prompt-drift` run passes.
 
