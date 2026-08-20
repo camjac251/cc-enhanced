@@ -114,11 +114,13 @@ function isCatalogHelper(node: t.FunctionDeclaration): boolean {
 		"description",
 		"maxInputTokens",
 		"maxOutputTokens",
+		"autoCompactWindow",
 		"effortLevels",
 		"defaultEffort",
 		"display_name",
 		"max_input_tokens",
 		"max_tokens",
+		"auto_compact_window",
 		"capabilities",
 		"default_effort",
 	];
@@ -406,6 +408,13 @@ function ${helperName}() {
     if (maxOutputTokens !== void 0 && (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 4096 || maxOutputTokens > 1000000)) {
       throw new Error("${CATALOG_ENV} entry " + index + " has an invalid maxOutputTokens.");
     }
+    const autoCompactWindow = value.autoCompactWindow;
+    if (autoCompactWindow !== void 0 && (!Number.isSafeInteger(autoCompactWindow) || autoCompactWindow < 100000 || autoCompactWindow > 1000000)) {
+      throw new Error("${CATALOG_ENV} entry " + index + " has an invalid autoCompactWindow.");
+    }
+    if (autoCompactWindow !== void 0 && maxInputTokens !== void 0 && autoCompactWindow >= maxInputTokens) {
+      throw new Error("${CATALOG_ENV} entry " + index + " has an autoCompactWindow at or above its maxInputTokens.");
+    }
     const effortLevels = value.effortLevels;
     const validEffortLevels = ["low", "medium", "high", "xhigh", "max"];
     const baseEffortLevels = ["low", "medium", "high"];
@@ -429,6 +438,7 @@ function ${helperName}() {
       description: description === void 0 ? "Configured model" : description.trim(),
       ...(maxInputTokens === void 0 ? {} : { max_input_tokens: maxInputTokens }),
       ...(maxOutputTokens === void 0 ? {} : { max_tokens: maxOutputTokens }),
+      ...(autoCompactWindow === void 0 ? {} : { auto_compact_window: autoCompactWindow }),
       ...(capabilities === void 0 ? {} : { capabilities }),
       ...(defaultEffort === void 0 ? {} : { default_effort: defaultEffort }),
     };

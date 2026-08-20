@@ -141,6 +141,7 @@ function evaluatePatched(code: string): {
 	setUnknownModelEnforcementDisabled: (disabled: boolean) => void;
 	contextWindow: (model: string, betas?: string[]) => number;
 	autoCompactSource: (model: string, configured?: number) => string;
+	autoCompactWindow: (model: string, configured?: number) => number;
 	hasConfiguredAutoCompactWindow: (
 		model: string,
 		configured?: number,
@@ -157,6 +158,7 @@ return {
   setUnknownModelEnforcementDisabled(disabled) { env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT = disabled; },
   contextWindow,
   autoCompactSource(model, configured) { return autoCompactConfig(model, configured).source; },
+  autoCompactWindow(model, configured) { return autoCompactConfig(model, configured).window; },
   hasConfiguredAutoCompactWindow,
   outputLimit,
 };`,
@@ -194,6 +196,72 @@ test("uses discovered model context before the global custom-model fallback", as
 	assert.equal(runtime.contextWindow("provider/unknown"), 333000);
 	assert.equal(runtime.outputLimit("provider/worker-258k"), 128000);
 	assert.equal(modelContextMetadata.verify(output, ast), true);
+});
+
+test("uses a per-model auto-compact window without disturbing other models", async () => {
+	const ast = parse(MODEL_CONTEXT_FIXTURE);
+	await runModelContextMetadataViaPasses(ast);
+	const runtime = evaluatePatched(print(ast));
+	runtime.setModels([
+		{
+			id: "provider/big",
+			max_input_tokens: 828400,
+			auto_compact_window: 745560,
+		},
+		{ id: "provider/plain", max_input_tokens: 258400 },
+	]);
+
+	assert.equal(runtime.autoCompactWindow("provider/big"), 745560);
+	assert.equal(runtime.autoCompactSource("provider/big"), "model-default");
+
+	// A catalog entry without the field keeps whatever the stock resolver decided.
+	assert.notEqual(runtime.autoCompactSource("provider/plain"), "model-default");
+	assert.equal(runtime.autoCompactWindow("provider/plain"), 258400);
+});
+
+test("per-model auto-compact window yields to an explicit setting", async () => {
+	const ast = parse(MODEL_CONTEXT_FIXTURE);
+	await runModelContextMetadataViaPasses(ast);
+	const runtime = evaluatePatched(print(ast));
+	runtime.setModels([
+		{
+			id: "provider/big",
+			max_input_tokens: 828400,
+			auto_compact_window: 745560,
+		},
+	]);
+
+	assert.equal(runtime.autoCompactSource("provider/big", 400000), "settings");
+	assert.equal(runtime.autoCompactWindow("provider/big", 400000), 400000);
+});
+
+test("per-model auto-compact window is clamped to the model window", async () => {
+	const ast = parse(MODEL_CONTEXT_FIXTURE);
+	await runModelContextMetadataViaPasses(ast);
+	const runtime = evaluatePatched(print(ast));
+	runtime.setModels([
+		{
+			id: "provider/small",
+			max_input_tokens: 200000,
+			auto_compact_window: 900000,
+		},
+	]);
+
+	assert.equal(runtime.autoCompactWindow("provider/small"), 200000);
+});
+
+test("ignores an unusable per-model auto-compact window", async () => {
+	const ast = parse(MODEL_CONTEXT_FIXTURE);
+	await runModelContextMetadataViaPasses(ast);
+	const runtime = evaluatePatched(print(ast));
+
+	for (const auto_compact_window of [0, -1, 1.5, "745560", null]) {
+		runtime.setModels([
+			{ id: "provider/big", max_input_tokens: 828400, auto_compact_window },
+		]);
+		assert.notEqual(runtime.autoCompactSource("provider/big"), "model-default");
+		assert.equal(runtime.autoCompactWindow("provider/big"), 828400);
+	}
 });
 
 test("treats discovered context metadata as configured for auto compaction", async () => {

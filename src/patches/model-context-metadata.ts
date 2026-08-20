@@ -40,6 +40,17 @@ interface UnknownModelEnforcementCandidate {
 	state: SiteState;
 }
 
+interface AutoCompactWindowCandidate {
+	path: NodePath<t.Function>;
+	modelName: string;
+	configuredName: string;
+	/** Identifier holding the model's maximum window, for the Math.min clamp. */
+	ceilingName: string;
+	/** Index of the explicit-setting return this is inserted after. */
+	settingsIndex: number;
+	state: SiteState;
+}
+
 interface PatchAnalysis {
 	lookup: CapabilityLookupCandidate;
 	gate: t.FunctionDeclaration;
@@ -47,6 +58,7 @@ interface PatchAnalysis {
 	context: ContextResolverCandidate;
 	eligibility: AutoCompactEligibilityCandidate;
 	recognition: UnknownModelEnforcementCandidate;
+	autoCompactWindow: AutoCompactWindowCandidate | null;
 }
 
 function nodeHasMemberProperty(node: t.Node, propertyName: string): boolean {
@@ -356,6 +368,222 @@ function classifyUnknownModelEnforcement(
 	};
 }
 
+/** `x !== void 0`, and the `x !== undefined` spelling it minifies from. */
+function isVoidComparison(
+	node: t.Node | null | undefined,
+	name: string,
+): boolean {
+	if (
+		!t.isBinaryExpression(node, { operator: "!==" }) ||
+		!t.isIdentifier(node.left, { name })
+	) {
+		return false;
+	}
+	if (t.isIdentifier(node.right, { name: "undefined" })) return true;
+	return (
+		t.isUnaryExpression(node.right, { operator: "void" }) &&
+		t.isNumericLiteral(node.right.argument, { value: 0 })
+	);
+}
+
+function isOptionalAutoCompactRead(
+	node: t.Node | null | undefined,
+	capabilityName: string,
+): boolean {
+	return (
+		t.isOptionalMemberExpression(node) &&
+		t.isIdentifier(node.object, { name: capabilityName }) &&
+		getMemberPropertyName(node) === "auto_compact_window"
+	);
+}
+
+/**
+ * Read the clamp identifier out of an explicit-setting return, i.e. the
+ * `Math.min(<ceiling>, <configured>)` that a `source: "settings"` result builds.
+ */
+function getSettingsWindowCeiling(
+	statement: t.Statement,
+	configuredName: string,
+): string | null {
+	if (!t.isIfStatement(statement)) return null;
+	if (!isVoidComparison(statement.test, configuredName)) return null;
+	const returned = getConsequentReturn(statement);
+	if (!returned || getReturnSource(returned) !== "settings") return null;
+	if (!t.isObjectExpression(returned.argument)) return null;
+	for (const property of returned.argument.properties) {
+		if (
+			!t.isObjectProperty(property) ||
+			getObjectKeyName(property.key) !== "window" ||
+			!t.isCallExpression(property.value)
+		) {
+			continue;
+		}
+		const call = property.value;
+		if (
+			t.isMemberExpression(call.callee) &&
+			t.isIdentifier(call.callee.object, { name: "Math" }) &&
+			getMemberPropertyName(call.callee) === "min" &&
+			call.arguments.length === 2 &&
+			t.isIdentifier(call.arguments[0]) &&
+			t.isIdentifier(call.arguments[1], { name: configuredName })
+		) {
+			return call.arguments[0].name;
+		}
+	}
+	return null;
+}
+
+function hasMetadataAutoCompactBlock(
+	statements: t.Statement[],
+	settingsIndex: number,
+	lookupName: string,
+	modelName: string,
+): boolean {
+	const declaration = statements[settingsIndex + 1];
+	const guard = statements[settingsIndex + 2];
+	if (
+		!t.isVariableDeclaration(declaration) ||
+		declaration.declarations.length !== 2 ||
+		!guard
+	) {
+		return false;
+	}
+	const capability = declaration.declarations[0];
+	const window = declaration.declarations[1];
+	if (
+		!t.isIdentifier(capability.id) ||
+		!t.isCallExpression(capability.init) ||
+		!t.isIdentifier(capability.init.callee, { name: lookupName }) ||
+		capability.init.arguments.length !== 1 ||
+		!t.isIdentifier(capability.init.arguments[0], { name: modelName })
+	) {
+		return false;
+	}
+	if (!t.isIdentifier(window.id)) return false;
+	if (!isOptionalAutoCompactRead(window.init, capability.id.name)) return false;
+	if (!t.isIfStatement(guard)) return false;
+	const returned = getConsequentReturn(guard);
+	return returned !== null && getReturnSource(returned) === "model-default";
+}
+
+/**
+ * The auto-compact window resolver, identified by the same unknown-model site. The
+ * per-model value is inserted after the explicit-setting return so `/auto-compact`
+ * and the process-wide variable both keep priority over it.
+ */
+function classifyAutoCompactWindow(
+	path: NodePath<t.Function>,
+	lookupName: string,
+): AutoCompactWindowCandidate | null {
+	if (!t.isBlockStatement(path.node.body)) return null;
+	const modelParameter = path.node.params[0];
+	const configuredParameter = path.node.params[1];
+	if (!t.isIdentifier(modelParameter) || !t.isIdentifier(configuredParameter)) {
+		return null;
+	}
+	const statements = path.node.body.body;
+	const matches = statements
+		.map((statement, index) => ({
+			index,
+			ceiling: getSettingsWindowCeiling(statement, configuredParameter.name),
+		}))
+		.filter(
+			(entry): entry is { index: number; ceiling: string } =>
+				entry.ceiling !== null,
+		);
+	if (matches.length !== 1) return null;
+	const match = matches[0];
+	const patched = hasMetadataAutoCompactBlock(
+		statements,
+		match.index,
+		lookupName,
+		modelParameter.name,
+	);
+	return {
+		path,
+		modelName: modelParameter.name,
+		configuredName: configuredParameter.name,
+		ceilingName: match.ceiling,
+		settingsIndex: match.index,
+		state: patched
+			? "patched"
+			: nodeHasMemberProperty(path.node, "auto_compact_window")
+				? "other"
+				: "stock",
+	};
+}
+
+function patchMetadataAutoCompactWindow(
+	candidate: AutoCompactWindowCandidate,
+	lookupName: string,
+): boolean {
+	if (candidate.state === "patched") return true;
+	if (
+		candidate.state !== "stock" ||
+		!t.isBlockStatement(candidate.path.node.body)
+	) {
+		return false;
+	}
+	const capability =
+		candidate.path.scope.generateUidIdentifier("modelCapabilities");
+	const window = candidate.path.scope.generateUidIdentifier(
+		"modelAutoCompactWindow",
+	);
+	const declaration = t.variableDeclaration("let", [
+		t.variableDeclarator(
+			capability,
+			t.callExpression(t.identifier(lookupName), [
+				t.identifier(candidate.modelName),
+			]),
+		),
+		t.variableDeclarator(
+			window,
+			t.optionalMemberExpression(
+				t.cloneNode(capability),
+				t.identifier("auto_compact_window"),
+				false,
+				true,
+			),
+		),
+	]);
+	const guard = t.ifStatement(
+		t.logicalExpression(
+			"&&",
+			t.callExpression(
+				t.memberExpression(
+					t.identifier("Number"),
+					t.identifier("isSafeInteger"),
+				),
+				[t.cloneNode(window)],
+			),
+			t.binaryExpression(">", t.cloneNode(window), t.numericLiteral(0)),
+		),
+		t.returnStatement(
+			t.objectExpression([
+				t.objectProperty(
+					t.identifier("window"),
+					t.callExpression(
+						t.memberExpression(t.identifier("Math"), t.identifier("min")),
+						[t.identifier(candidate.ceilingName), t.cloneNode(window)],
+					),
+				),
+				t.objectProperty(t.identifier("configured"), t.cloneNode(window)),
+				t.objectProperty(
+					t.identifier("source"),
+					t.stringLiteral("model-default"),
+				),
+			]),
+		),
+	);
+	candidate.path.node.body.body.splice(
+		candidate.settingsIndex + 1,
+		0,
+		declaration,
+		guard,
+	);
+	return true;
+}
+
 function hasMetadataEligibilityBlock(
 	statements: t.Statement[],
 	returnIndex: number,
@@ -622,6 +850,13 @@ function analyzePatchSites(
 	if (recognitionSites.length !== 1) {
 		return `Unknown-model enforcement is ambiguous or missing (${recognitionSites.length} sites found)`;
 	}
+	// Scoped to the resolver already identified by the unknown-model site, so the
+	// explicit-setting shape cannot match a same-shaped function elsewhere.
+	const recognition = recognitionSites[0];
+	const autoCompactWindow = classifyAutoCompactWindow(
+		recognition.path,
+		lookup.functionName,
+	);
 	const binding = lookup.path.scope.getBinding(lookup.gateName);
 	if (!binding || !t.isFunctionDeclaration(binding.path.node)) {
 		return "Model capability feature gate binding was not found";
@@ -633,7 +868,8 @@ function analyzePatchSites(
 		gateState: classifyGate(gate, context.environmentName),
 		context,
 		eligibility: eligibilitySites[0],
-		recognition: recognitionSites[0],
+		recognition,
+		autoCompactWindow,
 	};
 }
 
@@ -867,7 +1103,17 @@ function createModelContextMetadataPasses(): PatchAstPass[] {
 							analysis.recognition,
 							analysis.lookup.functionName,
 						);
-						patched = eligibilityPatched && recognitionPatched;
+						// Runs after recognition, not before: both splice into one body at
+						// indices measured before either ran, and recognition's site is the
+						// later of the two, so inserting here first would displace it.
+						const autoCompactPatched =
+							analysis.autoCompactWindow === null ||
+							patchMetadataAutoCompactWindow(
+								analysis.autoCompactWindow,
+								analysis.lookup.functionName,
+							);
+						patched =
+							eligibilityPatched && recognitionPatched && autoCompactPatched;
 					},
 				},
 			},
@@ -920,6 +1166,12 @@ export const modelContextMetadata: Patch = {
 		}
 		if (analysis.recognition.state !== "patched") {
 			return "Unknown-model enforcement does not recognize validated max_input_tokens metadata";
+		}
+		if (analysis.autoCompactWindow === null) {
+			return "Auto-compact window resolver explicit-setting site was not found";
+		}
+		if (analysis.autoCompactWindow.state !== "patched") {
+			return "Auto-compact window does not use validated per-model auto_compact_window metadata";
 		}
 		return true;
 	},

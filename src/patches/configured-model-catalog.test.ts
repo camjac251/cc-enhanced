@@ -198,8 +198,9 @@ test("adds configured models to capabilities and the model picker", async () => 
 			id: "clodex:openai-oauth:gpt-5.6-sol",
 			displayName: "GPT-5.6 Sol",
 			description: "ChatGPT subscription via Clodex",
-			maxInputTokens: 258400,
+			maxInputTokens: 828400,
 			maxOutputTokens: 128000,
+			autoCompactWindow: 745560,
 		},
 	]);
 
@@ -209,8 +210,9 @@ test("adds configured models to capabilities and the model picker", async () => 
 			id: "clodex:openai-oauth:gpt-5.6-sol",
 			display_name: "GPT-5.6 Sol",
 			description: "ChatGPT subscription via Clodex",
-			max_input_tokens: 258400,
+			max_input_tokens: 828400,
 			max_tokens: 128000,
+			auto_compact_window: 745560,
 		},
 	);
 	assert.deepEqual(runtime.buildModelOptions(), [
@@ -429,6 +431,25 @@ test("rejects malformed, duplicate, reserved, and unsafe catalog entries", async
 	assert.throws(() => runtime.buildModelOptions(), /invalid maxOutputTokens/);
 	runtime.setCatalog([{ id: "provider/model", maxOutputTokens: 4095 }]);
 	assert.throws(() => runtime.buildModelOptions(), /invalid maxOutputTokens/);
+	runtime.setCatalog([{ id: "provider/model", autoCompactWindow: 99_999 }]);
+	assert.throws(() => runtime.buildModelOptions(), /invalid autoCompactWindow/);
+	runtime.setCatalog([{ id: "provider/model", autoCompactWindow: 1_000_001 }]);
+	assert.throws(() => runtime.buildModelOptions(), /invalid autoCompactWindow/);
+	runtime.setCatalog([{ id: "provider/model", autoCompactWindow: 745_560.5 }]);
+	assert.throws(() => runtime.buildModelOptions(), /invalid autoCompactWindow/);
+	// A compaction target at or above the window compacts never, which is the
+	// opposite of what setting it asks for.
+	runtime.setCatalog([
+		{
+			id: "provider/model",
+			maxInputTokens: 258_400,
+			autoCompactWindow: 258_400,
+		},
+	]);
+	assert.throws(
+		() => runtime.buildModelOptions(),
+		/at or above its maxInputTokens/,
+	);
 	runtime.setCatalog([{ id: "provider/model", effortLevels: [] }]);
 	assert.throws(() => runtime.buildModelOptions(), /invalid effortLevels/);
 	for (const effortLevels of [
