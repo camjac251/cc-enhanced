@@ -5,8 +5,11 @@ import { getVerifyAst } from "./ast-helpers.js";
 import {
 	BACKGROUND_TASK_POLICY,
 	MODERN_BASH_SEARCH_GUIDANCE,
+	MODERN_CODE_SEARCH_POLICY,
+	MODERN_DEDICATED_TOOLS_NUDGE_PARTS,
 	MODERN_FINDING_TOOLS,
 	MODERN_OUTPUT_LIMIT_WARNING,
+	MODERN_TOOL_PREFERENCE,
 } from "./prompt-policy.js";
 
 const LEGACY_TOKEN_WARNING_RE =
@@ -66,6 +69,25 @@ const MODERN_BASH_IMPORTANT_LINE =
 	"IMPORTANT: Prefer dedicated symbol/semantic tools and modern CLI utilities whenever possible. Recommended defaults:";
 
 const MODERN_GUIDE_FINDING_TOOLS = MODERN_FINDING_TOOLS;
+
+const LEAN_BASH_PROMPT_SURFACE =
+	"Executes a bash command and returns its output.";
+
+/** Routing block for the current lean Bash builder. */
+const MODERN_LEAN_BASH_GUIDANCE = [
+	`- ${MODERN_BASH_IMPORTANT_LINE}`,
+	`- ${MODERN_TOOL_PREFERENCE}`,
+	"- For changes: Edit for one known site; ast-grep run -r for a repeated shape (preview, then -U); comby for malformed or mixed syntax; sd only for non-code text",
+	`- ${MODERN_CODE_SEARCH_POLICY}`,
+].join("\n");
+
+const LEGACY_BASH_FIRST_NUDGE_PATTERN =
+	"Do your work through the ${} tool wherever it can accomplish the job: read files with cat, head, or sed -n, search with grep and find, and make file changes with sed, heredocs, or short scripts, rather than using the dedicated ${}, ${}, or ${} tools. Fall back to a dedicated tool only when ${} genuinely cannot do the job.";
+const LEGACY_BASH_FIRST_NUDGE_SIGNAL =
+	"read files with cat, head, or sed -n, search with grep and find";
+const BASH_FIRST_NUDGE_SURFACE_ANCHOR = "While auto mode is active:";
+const MODERN_DEDICATED_TOOLS_NUDGE_PATTERN =
+	MODERN_DEDICATED_TOOLS_NUDGE_PARTS.join("${}");
 
 function templatePattern(node: t.TemplateLiteral): string {
 	return node.quasis
@@ -537,15 +559,27 @@ function patchGateInFunction(path: NodePath<t.Function>): boolean {
 	return false;
 }
 
+const isNegatedIdentifier = (node: t.Node | null | undefined): boolean =>
+	t.isUnaryExpression(node, { operator: "!" }) && t.isIdentifier(node.argument);
+
+/** Force the current lean builder's single guidance guard. */
+function forceLeanGuidanceGate(path: NodePath<t.Node>): boolean {
+	const guard = path.findParent((parent) => parent.isIfStatement());
+	if (!guard?.isIfStatement()) return false;
+	const test = guard.node.test;
+	if (!isNegatedIdentifier(test)) return false;
+	guard.node.test = t.unaryExpression("!", t.numericLiteral(0));
+	return true;
+}
+
 function patchPromptTextInFunction(path: NodePath<t.Function>): void {
 	path.traverse({
 		TemplateLiteral(templatePath) {
 			const pattern = templatePattern(templatePath.node);
 			switch (pattern) {
 				case "- IMPORTANT: Avoid using this tool to run ${} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.":
-					templatePath.replaceWith(
-						t.stringLiteral(`- ${MODERN_BASH_IMPORTANT_LINE}`),
-					);
+					if (!forceLeanGuidanceGate(templatePath)) return;
+					templatePath.replaceWith(t.stringLiteral(MODERN_LEAN_BASH_GUIDANCE));
 					return;
 				case "IMPORTANT: Avoid using this tool to run ${} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:":
 					templatePath.replaceWith(t.stringLiteral(MODERN_BASH_IMPORTANT_LINE));
@@ -713,6 +747,60 @@ function sourceIncludesPromptText(code: string, text: string): boolean {
 	);
 }
 
+/** Rewrite the auto-mode and bypass-mode bash-first nudge so it names the shell tools that beat the built-ins; the upstream Bash, Read, Edit, Write, Bash expressions are reused in place. */
+function rewriteBashFirstNudge(path: NodePath<t.TemplateLiteral>): boolean {
+	if (templatePattern(path.node) !== LEGACY_BASH_FIRST_NUDGE_PATTERN) {
+		return false;
+	}
+	const expressions = path.node.expressions;
+	if (expressions.length !== MODERN_DEDICATED_TOOLS_NUDGE_PARTS.length - 1) {
+		return false;
+	}
+	const quasis = MODERN_DEDICATED_TOOLS_NUDGE_PARTS.map((part, index) =>
+		t.templateElement(
+			{ raw: escapeTemplateRaw(part), cooked: part },
+			index === MODERN_DEDICATED_TOOLS_NUDGE_PARTS.length - 1,
+		),
+	);
+	path.replaceWith(t.templateLiteral(quasis, [...expressions]));
+	return true;
+}
+
+function inspectBashFirstNudge(ast: t.File): {
+	legacy: number;
+	modern: number;
+} {
+	let legacy = 0;
+	let modern = 0;
+	traverse(ast, {
+		TemplateLiteral(path) {
+			const pattern = templatePattern(path.node);
+			if (pattern === LEGACY_BASH_FIRST_NUDGE_PATTERN) legacy += 1;
+			else if (pattern === MODERN_DEDICATED_TOOLS_NUDGE_PATTERN) modern += 1;
+		},
+	});
+	return { legacy, modern };
+}
+
+function inspectLeanBuilderGuidance(ast: t.File): {
+	guidance: number;
+	forced: number;
+} {
+	let guidance = 0;
+	let forced = 0;
+	traverse(ast, {
+		StringLiteral(path) {
+			if (path.node.value !== MODERN_LEAN_BASH_GUIDANCE) return;
+			guidance += 1;
+			const guard = path.findParent((parent) => parent.isIfStatement());
+			if (!guard?.isIfStatement() || isForcedTrue(guard.node.test)) {
+				forced += 1;
+			}
+		},
+	});
+	return { guidance, forced };
+}
+
 export const bashPrompt: Patch = {
 	tag: "bash-prompt",
 	string: (code) =>
@@ -739,6 +827,9 @@ export const bashPrompt: Patch = {
 					patchPromptTextInFunction(path);
 					forceRuntimeNeutralWorkingDirectory(path);
 					path.skip();
+				},
+				TemplateLiteral(path: NodePath<t.TemplateLiteral>) {
+					rewriteBashFirstNudge(path);
 				},
 			},
 		},
@@ -794,6 +885,25 @@ export const bashPrompt: Patch = {
 			!sourceIncludesPromptText(code, MODERN_BASH_SEARCH_GUIDANCE)
 		) {
 			return "Expected modern CLI Bash guidance missing";
+		}
+		const nudge = inspectBashFirstNudge(verifyAst);
+		if (nudge.legacy > 0 || code.includes(LEGACY_BASH_FIRST_NUDGE_SIGNAL)) {
+			return "Legacy bash-first auto-mode guidance still present";
+		}
+		if (code.includes(BASH_FIRST_NUDGE_SURFACE_ANCHOR) && nudge.modern === 0) {
+			return "Expected dedicated-tools auto-mode guidance missing";
+		}
+		if (nudge.modern > 1) {
+			return `Expected one dedicated-tools auto-mode guidance template, found ${nudge.modern}`;
+		}
+		if (code.includes(LEAN_BASH_PROMPT_SURFACE)) {
+			const lean = inspectLeanBuilderGuidance(verifyAst);
+			if (lean.guidance !== 1) {
+				return `Expected one lean Bash builder routing block, found ${lean.guidance}`;
+			}
+			if (lean.forced !== 1) {
+				return "Lean Bash builder routing gate not forced";
+			}
 		}
 		// AST check: verify the embedded-search gate in each anchored function
 		// has been forced. Mutation may have forced any of these locations:

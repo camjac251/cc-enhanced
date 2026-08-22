@@ -3,9 +3,35 @@ import { test } from "node:test";
 import {
 	BACKGROUND_TASK_POLICY,
 	MODERN_CODE_SEARCH_DECISION_TREE,
+	MODERN_DEDICATED_TOOLS_NUDGE_PARTS,
 	MODERN_STDOUT_CAP,
 	MODERN_SUBAGENT_CODE_ROUTING,
 } from "./prompt-policy.js";
+
+test("dedicated-tools nudge interleaves five tool-name expressions and names no legacy shell readers", () => {
+	assert.equal(MODERN_DEDICATED_TOOLS_NUDGE_PARTS.length, 6);
+	const joined = MODERN_DEDICATED_TOOLS_NUDGE_PARTS.join("");
+	for (const legacy of [
+		"read files with cat",
+		"sed -n",
+		"grep and find",
+		"heredocs",
+		"${",
+	]) {
+		assert.equal(joined.includes(legacy), false, legacy);
+	}
+	for (const modern of [
+		"fd",
+		"eza",
+		"bat -r",
+		"rg",
+		"ast-grep run",
+		"comby",
+		"sd for non-code text",
+	]) {
+		assert.equal(joined.includes(modern), true, modern);
+	}
+});
 
 test("stdout policy defines an inspectable-result contract without teaching truncation recipes", () => {
 	assert.equal(

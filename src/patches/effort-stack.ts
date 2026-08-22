@@ -535,21 +535,6 @@ function hasPatchedRawUltracodeFlagFunction(fn: t.Function): boolean {
 	return false;
 }
 
-function expressionContainsUserSettingsEffortWrite(
-	expr: t.Expression,
-): boolean {
-	let found = false;
-	traverse(t.file(t.program([t.expressionStatement(t.cloneNode(expr))])), {
-		CallExpression(path) {
-			const [scopeArg, settingsArg] = path.node.arguments;
-			if (!t.isStringLiteral(scopeArg, { value: "userSettings" })) return;
-			if (!t.isObjectExpression(settingsArg)) return;
-			if (getObjectProp(settingsArg, "effortLevel")) found = true;
-		},
-	});
-	return found;
-}
-
 function quasiCookedAt(tmpl: t.TemplateLiteral, index: number): string | null {
 	const q = tmpl.quasis[index];
 	if (!q) return null;
@@ -1034,9 +1019,8 @@ function createEffortStackMutator(): Visitor {
 			);
 			if (envResolverPatched) patchedEnvResolver += 1;
 			const settingsWriterPatched = patchEffortSettingsWriterFunction(
-				path.node,
+				path,
 				ENV_EFFORT_LEVEL,
-				expressionContainsUserSettingsEffortWrite,
 			);
 			if (settingsWriterPatched) patchedSettingsWriter += 1;
 			const resultOverridePatched = patchEffortUpdateResultOverride(
@@ -1287,9 +1271,7 @@ export const effortStack: Patch = {
 				) {
 					hasPatchedEnvResolver = true;
 				}
-				if (
-					hasPatchedEffortSettingsWriterFunction(path.node, ENV_EFFORT_LEVEL)
-				) {
+				if (hasPatchedEffortSettingsWriterFunction(path, ENV_EFFORT_LEVEL)) {
 					hasPatchedSettingsWriter = true;
 				}
 				if (

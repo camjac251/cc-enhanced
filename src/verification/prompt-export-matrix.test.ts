@@ -264,18 +264,18 @@ test("dependency parity distinguishes expressions with the same display token", 
 	}
 });
 
-test("legacy exports without expression hashes report unknown dependency parity", async () => {
+test("prompt export comparison rejects corpora without expression hashes", async () => {
 	const tempDir = await fs.mkdtemp(
-		path.join(os.tmpdir(), "prompt-matrix-legacy-hashes-"),
+		path.join(os.tmpdir(), "prompt-matrix-hashless-corpus-"),
 	);
 	const previousClean = path.join(tempDir, "previous-clean");
 	const previousPatched = path.join(tempDir, "previous-patched");
 	const currentClean = path.join(tempDir, "current-clean");
 	const currentPatched = path.join(tempDir, "current-patched");
 	const etcClaudeDir = path.join(tempDir, "etc-claude");
-	const legacyDependency = [
+	const hashlessDependency = [
 		{
-			id: "prompt-legacy",
+			id: "prompt-hashless",
 			identifiers: [0],
 			identifierMap: { "0": "ALPHA_BETA" },
 		},
@@ -293,13 +293,13 @@ test("legacy exports without expression hashes report unknown dependency parity"
 			previousClean,
 			"1.0.0",
 			"stable surface",
-			legacyDependency,
+			hashlessDependency,
 		);
 		await writeExport(
 			previousPatched,
 			"1.0.0",
 			"stable surface",
-			legacyDependency,
+			hashlessDependency,
 		);
 		await writeExport(
 			currentClean,
@@ -315,23 +315,18 @@ test("legacy exports without expression hashes report unknown dependency parity"
 		);
 		await fs.mkdir(etcClaudeDir, { recursive: true });
 
-		const result = await comparePromptExportMatrix({
-			previousCleanExportDir: previousClean,
-			previousPatchedExportDir: previousPatched,
-			currentCleanExportDir: currentClean,
-			currentPatchedExportDir: currentPatched,
-			etcClaudeDir,
-			watchPaths: ["surface.md"],
-		});
-
-		assert.equal(result.dependencies.previousClean.hashCoverageComplete, false);
-		assert.equal(result.dependencies.currentClean.hashCoverageComplete, true);
-		assert.equal(result.dependencyParity.cleanRelease.coverageComplete, false);
-		assert.equal(
-			result.dependencyParity.cleanRelease.exactMultisetParity,
-			false,
+		await assert.rejects(
+			() =>
+				comparePromptExportMatrix({
+					previousCleanExportDir: previousClean,
+					previousPatchedExportDir: previousPatched,
+					currentCleanExportDir: currentClean,
+					currentPatchedExportDir: currentPatched,
+					etcClaudeDir,
+					watchPaths: ["surface.md"],
+				}),
+			/missing expressionHashMap/,
 		);
-		assert.match(formatPromptExportMatrixMarkdown(result), /\| unknown \|/);
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}

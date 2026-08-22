@@ -109,9 +109,21 @@ export const REQUIRED_PROMPT_POLICY_NEEDLES: readonly PromptPolicyNeedle[] = [
 			"A subagent's output file is its full conversation transcript in JSONL, not a report.",
 		reason: "Missing warning that a subagent output file is a raw transcript",
 	},
+	{
+		id: "prompt-policy-auto-mode-dedicated-tools",
+		needle:
+			" wherever the shell has the better tool: fd for file discovery, eza for directory listings, bat -r for ranged reads, rg for exact lexical text, ast-grep run for syntax shapes and repeated rewrites (preview, then -U), comby for malformed or mixed syntax, sd for non-code text",
+		reason: "Missing shell-tool routing in the auto-mode attachment",
+	},
 ];
 
 export const FORBIDDEN_LEGACY_PROMPT_NEEDLES: readonly PromptPolicyNeedle[] = [
+	{
+		id: "legacy-auto-mode-bash-first-nudge",
+		needle: "read files with cat, head, or sed -n, search with grep and find",
+		reason:
+			"Auto-mode attachment still tells the model to read with cat/sed and search with grep/find",
+	},
 	// The task-output tool's own blocking-wait guidance is no longer listed here.
 	// It is disabled rather than rewritten, so its prompt survives in the bundle
 	// as unreachable text; `tools-off` owns proving it stays disabled.

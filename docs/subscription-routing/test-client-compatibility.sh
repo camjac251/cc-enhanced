@@ -29,12 +29,36 @@ done
 SH
 tee "$clodex_cli" >/dev/null <<'SH'
 #!/bin/sh
-for arg; do
-	if [ "$arg" = '--export-cc-catalog' ]; then
-		printf '%s\n' '[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"stub route","maxInputTokens":258400,"maxOutputTokens":128000}]'
+if [ "${1:-}" = 'models' ]; then
+	case " $* " in
+	*' --help '*)
+		if [ "${CLODEX_MODELS_METADATA_SUPPORT:-1}" -eq 1 ]; then
+			printf '%s\n' 'Usage: clodex models [--json] [--context model=stop]'
+		else
+			printf '%s\n' 'Usage: clodex models --list'
+		fi
 		exit 0
-	fi
-done
+		;;
+	*' --json '*)
+		if [ "${CLODEX_MODELS_METADATA_SUPPORT:-1}" -ne 1 ]; then
+			printf '%s\n' 'Unknown models option: --json' >&2
+			exit 2
+		fi
+		if [ "${CLODEX_MODELS_METADATA_MODE:-valid}" = 'invalid' ]; then
+			printf '%s\n' '[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":{}}]'
+		elif [ "${CLODEX_MODELS_METADATA_MODE:-valid}" = 'multiple' ]; then
+			printf '%s\n' '[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","context":{"stop":"standard","effective":258400},"maxOutputTokens":128000,"effort":{"levels":["low","medium","high"],"default":"medium"}},{"id":"clodex:example:extra-model","displayName":"Extra Model","context":{"stop":"standard","effective":200000},"maxOutputTokens":64000,"effort":{"levels":["low","medium","high"],"default":"medium"}}]'
+		elif [ "${CLODEX_MODELS_METADATA_MODE:-valid}" = 'incomplete-max' ]; then
+			printf '%s\n' '[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","context":{"stop":"max"},"maxOutputTokens":128000,"effort":{"levels":["low","medium","high"],"default":"medium"}}]'
+		elif case " $* " in *' clodex:openai-oauth:gpt-5.6-sol=max '*) true ;; *) false ;; esac; then
+			printf '%s\n' '[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","context":{"stop":"max","raw":1000000,"effective":950000,"effectivePercent":95,"max":1000000},"maxOutputTokens":128000,"pricingBoundary":272000,"effort":{"levels":["none","low","medium","high","xhigh","max","high"],"default":"medium"}}]'
+		else
+			printf '%s\n' '[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","context":{"stop":"standard","raw":272000,"effective":258400,"effectivePercent":95},"maxOutputTokens":128000,"effort":{"levels":["none","low","medium","high","xhigh","max","high"],"default":"medium"}}]'
+		fi
+		exit 0
+		;;
+	esac
+fi
 printf '%s' "$0" >>"$ADMIN_LOG"
 for arg; do
 	printf ' %s' "$arg" >>"$ADMIN_LOG"
@@ -107,6 +131,7 @@ tee "$launcher_process_wrapper" >/dev/null <<'SH'
 #!/bin/sh
 printf 'auto-model=%s\n' "${CLAUDE_CODE_AUTO_MODE_MODEL-unset}"
 printf 'network-snapshot=%s\n' "${CLODEX_ORIGINAL_NETWORK_ENV-unset}"
+printf 'catalog=%s\n' "${CLAUDE_CODE_CONFIGURED_MODEL_CATALOG-unset}"
 shift
 for arg; do
 	printf 'arg=%s\n' "$arg"
@@ -152,6 +177,100 @@ grep -Fx 'arg=sol' "$test_root/launcher-sol.out" >/dev/null ||
 grep -Fx 'network-snapshot={"HTTPS_PROXY":"http://corp-proxy.example:8080","NO_PROXY":".internal.example"}' \
 	"$test_root/launcher-sol.out" >/dev/null ||
 	fail "the routed launcher did not preserve the original network environment"
+grep -Fx 'catalog=[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":258400,"maxOutputTokens":128000,"effortLevels":["low","medium","high","xhigh","max"],"defaultEffort":"medium"}]' \
+	"$test_root/launcher-sol.out" >/dev/null ||
+	fail "the routed launcher did not map bounded Clodex metadata"
+
+HOME="$test_home" PATH="$test_bin:$PATH" \
+	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	"$launcher" sol --1m >"$test_root/launcher-sol-1m.out"
+grep -Fx 'catalog=[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":950000,"maxOutputTokens":128000,"autoCompactWindow":855000,"effortLevels":["low","medium","high","xhigh","max"],"defaultEffort":"medium"}]' \
+	"$test_root/launcher-sol-1m.out" >/dev/null ||
+	fail "the 1m shortcut did not map its maximum and compaction target"
+
+HOME="$test_home" PATH="$test_bin:$PATH" \
+	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	CLODEX_MODELS_METADATA_MODE=multiple \
+	"$launcher" sol >"$test_root/launcher-multiple.out"
+grep -Fx 'catalog=[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":258400,"maxOutputTokens":128000,"effortLevels":["low","medium","high"],"defaultEffort":"medium"}]' \
+	"$test_root/launcher-multiple.out" >/dev/null ||
+	fail "the routed catalog exposed unrelated saved favorites"
+
+for invalid_1m_shortcut in fable opus; do
+	if HOME="$test_home" PATH="$test_bin:$PATH" \
+		CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+		"$launcher" "$invalid_1m_shortcut" --1m \
+		>"$test_root/launcher-$invalid_1m_shortcut-1m.out" \
+		2>"$test_root/launcher-$invalid_1m_shortcut-1m.err"; then
+		fail "the 1m shortcut accepted $invalid_1m_shortcut"
+	fi
+	grep -Fx 'claudex: --1m is only valid after the sol shortcut' \
+		"$test_root/launcher-$invalid_1m_shortcut-1m.err" >/dev/null ||
+		fail "the rejected $invalid_1m_shortcut 1m launch lacked its usage error"
+done
+if HOME="$test_home" PATH="$test_bin:$PATH" \
+	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	"$launcher" --1m >"$test_root/launcher-bare-1m.out" \
+	2>"$test_root/launcher-bare-1m.err"; then
+	fail "the 1m shortcut accepted a model-less launch"
+fi
+grep -Fx 'claudex: --1m is only valid after the sol shortcut' \
+	"$test_root/launcher-bare-1m.err" >/dev/null ||
+	fail "the rejected model-less 1m launch lacked its usage error"
+
+HOME="$test_home" PATH="$test_bin:$PATH" \
+	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	CLODEX_MODELS_METADATA_SUPPORT=0 \
+	"$launcher" sol >"$test_root/launcher-fallback.out" 2>"$test_root/launcher-fallback.err"
+grep -Fx 'catalog=[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":258400,"maxOutputTokens":128000,"effortLevels":["low","medium","high","xhigh","max"],"defaultEffort":"medium"}]' \
+	"$test_root/launcher-fallback.out" >/dev/null ||
+	fail "a stable Clodex build did not receive the bounded fallback catalog"
+grep -Fx 'claudex: model metadata unavailable; using the standard-stop fallback' \
+	"$test_root/launcher-fallback.err" >/dev/null ||
+	fail "the stable-build fallback did not report its bounded mode"
+if grep -F 'Unknown models option' "$test_root/launcher-fallback.err" >/dev/null; then
+	fail "the capability probe invoked an unsupported metadata option"
+fi
+
+if HOME="$test_home" PATH="$test_bin:$PATH" \
+	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	CLODEX_MODELS_METADATA_SUPPORT=0 \
+	"$launcher" sol --1m >"$test_root/launcher-unsupported-1m.out" \
+	2>"$test_root/launcher-unsupported-1m.err"; then
+	fail "the 1m shortcut silently fell back on an unsupported Clodex build"
+else
+	unsupported_1m_exit=$?
+fi
+[ "$unsupported_1m_exit" -eq 1 ] ||
+	fail "the unsupported 1m shortcut did not exit 1"
+grep -Fx \
+	'claudex: --1m requires a Clodex build with models --json and --context support' \
+	"$test_root/launcher-unsupported-1m.err" >/dev/null ||
+	fail "the unsupported 1m shortcut did not explain its required contract"
+
+if HOME="$test_home" PATH="$test_bin:$PATH" \
+	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	CLODEX_MODELS_METADATA_MODE=incomplete-max \
+	"$launcher" sol --1m >"$test_root/launcher-incomplete-1m.out" \
+	2>"$test_root/launcher-incomplete-1m.err"; then
+	fail "the 1m shortcut accepted metadata without an effective context bound"
+else
+	incomplete_1m_exit=$?
+fi
+[ "$incomplete_1m_exit" -eq 1 ] ||
+	fail "the incomplete 1m response did not exit 1"
+grep -Fx 'claudex: --1m could not resolve bounded Clodex model metadata' \
+	"$test_root/launcher-incomplete-1m.err" >/dev/null ||
+	fail "the incomplete 1m response did not explain its missing bound"
+
+HOME="$test_home" PATH="$test_bin:$PATH" \
+	CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt" \
+	CLODEX_MODELS_METADATA_MODE=invalid \
+	"$launcher" sol >"$test_root/launcher-invalid-metadata.out" \
+	2>"$test_root/launcher-invalid-metadata.err"
+grep -Fx 'catalog=[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":258400,"maxOutputTokens":128000,"effortLevels":["low","medium","high","xhigh","max"],"defaultEffort":"medium"}]' \
+	"$test_root/launcher-invalid-metadata.out" >/dev/null ||
+	fail "invalid model metadata escaped the fallback boundary"
 
 original_snapshot='{"HTTPS_PROXY":"http://corp-proxy.example:8080"}'
 HOME="$test_home" PATH="$test_bin:$PATH" \

@@ -7,4 +7,5 @@ archive/
 dist/
 .tmp-src-build/
 exported-prompts/
+docs/goals/
 *-dryrun-summary.json

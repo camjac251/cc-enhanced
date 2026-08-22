@@ -126,6 +126,11 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Disable tools",
 		group: "Tooling",
 	},
+	"tools-off-desktop": {
+		tag: "tools-off-desktop",
+		label: "Disable tools for Desktop",
+		group: "Tooling",
+	},
 	"no-autoupdate": {
 		tag: "no-autoupdate",
 		label: "Disable autoupdater",

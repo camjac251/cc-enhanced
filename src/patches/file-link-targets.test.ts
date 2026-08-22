@@ -64,6 +64,9 @@ async function openGeneric(value) {
 function warn(message, options) {
   calls.push({ command: "log", args: [message, options], extra: [] });
 }
+function rejectFilePath() {
+  return false;
+}
 async function dispatchClickedLink(value) {
   let parsed;
   try {
@@ -75,7 +78,9 @@ async function dispatchClickedLink(value) {
   if (protocol === "file:") {
     if (parsed.host !== "") return false;
     try {
-      return await revealFile(pathApi.fileURLToPath(value));
+      const filePath = pathApi.fileURLToPath(value);
+      if (rejectFilePath(filePath)) return false;
+      return await revealFile(filePath);
     } catch {
       return false;
     }
@@ -100,7 +105,9 @@ async function dispatchClickedLinkCopy(value) {
   if (protocol === "file:") {
     if (parsed.host !== "") return false;
     try {
-      return await revealFile(pathApi.fileURLToPath(value));
+      const filePath = pathApi.fileURLToPath(value);
+      if (rejectFilePath(filePath)) return false;
+      return await revealFile(filePath);
     } catch {
       return false;
     }
@@ -112,6 +119,33 @@ async function dispatchClickedLinkCopy(value) {
   return (await openGeneric(value)).ok;
 }
 `;
+
+const WINDOWS_FILE_DISPATCH_FIXTURE = FILE_DISPATCH_FIXTURE.replace(
+	`async function revealFile(filePath) {
+  try {
+    const { code } = await runProcess("dbus-send", [
+      "--session",
+      "--print-reply",
+      "--dest=org.freedesktop.FileManager1",
+      "--type=method_call",
+      "/org/freedesktop/FileManager1",
+      "org.freedesktop.FileManager1.ShowItems",
+      \`array:string:\${pathApi.pathToFileURL(filePath).href.replaceAll(",", "%2C")}\`,
+      "string:",
+    ]);
+    return code === 0;
+  } catch {
+    return false;
+  }
+}`,
+	`async function revealFile(filePath) {
+  try {
+    return await runProcess("explorer", [\`/select,\${filePath}\`]), true;
+  } catch {
+    return false;
+  }
+}`,
+);
 
 type RuntimeCall = {
 	command: string;
@@ -164,7 +198,7 @@ test("verify rejects an unpatched stock file dispatcher", () => {
 	assert.equal(typeof result, "string");
 });
 
-test("file-link-targets patches the stock file dispatcher", async () => {
+test("file-link-targets patches the current guarded file dispatcher", async () => {
 	const { ast, output } = await patchFixture();
 
 	assert.match(
@@ -173,10 +207,70 @@ test("file-link-targets patches the stock file dispatcher", async () => {
 	);
 	assert.match(
 		output,
-		/return await _ccEnhancedOpenFileTarget\(pathApi\.fileURLToPath\(value\), revealFile, runProcess, warn\)/,
+		/return await _ccEnhancedOpenFileTarget\(filePath, revealFile, runProcess, warn\)/,
 	);
 	assert.equal(fileLinkTargets.verify(output, ast), true);
 	assert.equal(fileLinkTargets.verify(output), true);
+});
+
+test("file-link-targets preserves the Windows Explorer reveal fallback", async () => {
+	const ast = parse(WINDOWS_FILE_DISPATCH_FIXTURE);
+	await runFileLinkTargetsViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(
+		output,
+		/return await _ccEnhancedOpenFileTarget\(filePath, revealFile, runProcess, warn\)/,
+	);
+	assert.equal(fileLinkTargets.verify(output, ast), true);
+
+	const runtime = loadPatchedRuntime(output, {}, "win32");
+	assert.equal(
+		await runtime.dispatchClickedLink("file:///tmp/report%20draft.pdf"),
+		true,
+	);
+	assert.deepEqual(snapshotRuntimeCalls(runtime.calls), [
+		{
+			command: "explorer",
+			args: ["/select,/tmp/report draft.pdf"],
+			extra: [],
+		},
+	]);
+
+	const vscodeRuntime = loadPatchedRuntime(
+		output,
+		{ CLAUDE_CODE_FILE_OPEN_MODE: "vscode" },
+		"win32",
+	);
+	assert.equal(
+		await vscodeRuntime.dispatchClickedLink("file:///tmp/report%20draft.pdf"),
+		true,
+	);
+	assert.deepEqual(snapshotRuntimeCalls(vscodeRuntime.calls), [
+		{
+			command: "code",
+			args: ["--reuse-window", "/tmp/report draft.pdf"],
+			extra: [],
+		},
+	]);
+});
+
+test("Windows Explorer selector drift fails closed without mutation", async () => {
+	const ast = parse(WINDOWS_FILE_DISPATCH_FIXTURE.replace("/select,", ""));
+	await runFileLinkTargetsViaPasses(ast);
+	const output = print(ast);
+
+	assert.doesNotMatch(output, /function _ccEnhancedOpenFileTarget/);
+	assert.notEqual(fileLinkTargets.verify(output, ast), true);
+});
+
+test("Windows stock success-contract drift fails closed without mutation", async () => {
+	const ast = parse(WINDOWS_FILE_DISPATCH_FIXTURE.replace("]), true;", "]);"));
+	await runFileLinkTargetsViaPasses(ast);
+	const output = print(ast);
+
+	assert.doesNotMatch(output, /function _ccEnhancedOpenFileTarget/);
+	assert.notEqual(fileLinkTargets.verify(output, ast), true);
 });
 
 test("file-link-targets accepts minified false returns", async () => {
@@ -288,27 +382,18 @@ test("explicit modes override automatic WSL routing", async () => {
 	assert.equal(forcedWslviewWins.calls[0]?.command, "wslview");
 });
 
-test("legacy explicit disable values preserve stock behavior", async () => {
+test("deprecated file-link mode values do not override current automatic routing", async () => {
 	const { output } = await patchFixture();
 	const fileUrl = "file:///tmp/report.pdf";
 
-	for (const legacyMode of ["off", "none", "default", "vanilla"]) {
+	for (const deprecatedMode of ["off", "none", "default", "vanilla"]) {
 		const runtime = loadPatchedRuntime(output, {
-			CLAUDE_CODE_FILE_LINK_MODE: legacyMode,
-			CLAUDE_CODE_FILE_OPENER: "/opt/bin/ignored",
+			CLAUDE_CODE_FILE_LINK_MODE: deprecatedMode,
 			WSL_DISTRO_NAME: "Ubuntu",
 		});
 		assert.equal(await runtime.dispatchClickedLink(fileUrl), true);
-		assert.equal(runtime.calls[0]?.command, "dbus-send");
+		assert.equal(runtime.calls[0]?.command, "wslview");
 	}
-
-	const currentModeWins = loadPatchedRuntime(output, {
-		CLAUDE_CODE_FILE_OPEN_MODE: "auto",
-		CLAUDE_CODE_FILE_LINK_MODE: "off",
-		WSL_DISTRO_NAME: "Ubuntu",
-	});
-	assert.equal(await currentModeWins.dispatchClickedLink(fileUrl), true);
-	assert.equal(currentModeWins.calls[0]?.command, "wslview");
 });
 
 test("a nonzero enhanced opener logs safely without a second launch", async () => {
@@ -354,8 +439,8 @@ test("a thrown enhanced opener logs only the error class", async () => {
 test("verifier rejects a helper declaration without dispatcher integration", async () => {
 	const { output } = await patchFixture();
 	const tampered = output.replace(
-		/return await _ccEnhancedOpenFileTarget\(pathApi\.fileURLToPath\(value\), revealFile, runProcess, warn\);/,
-		"return await revealFile(pathApi.fileURLToPath(value));",
+		/return await _ccEnhancedOpenFileTarget\(filePath, revealFile, runProcess, warn\);/,
+		"return await revealFile(filePath);",
 	);
 	assert.notEqual(tampered, output);
 
@@ -367,7 +452,7 @@ test("verifier rejects a helper declaration without dispatcher integration", asy
 test("verifier rejects duplicate dispatcher integration", async () => {
 	const { output } = await patchFixture();
 	const integration =
-		"_ccEnhancedOpenFileTarget(pathApi.fileURLToPath(value), revealFile, runProcess, warn)";
+		"_ccEnhancedOpenFileTarget(filePath, revealFile, runProcess, warn)";
 	const duplicated = output.replace(
 		`return await ${integration};`,
 		`return (await ${integration}) && (await ${integration});`,

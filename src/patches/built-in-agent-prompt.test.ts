@@ -183,6 +183,13 @@ test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
 		true,
 	);
 	assert.equal(output.includes(MODERN_CODE_SEARCH_POLICY), true);
+	assert.equal(output.split(MODERN_CODE_SEARCH_POLICY).length - 1, 1);
+	assert.equal(
+		output.includes(
+			"Route each lookup by the intent list in Guidelines above; do not fall back to broad text search for code",
+		),
+		true,
+	);
 	assert.equal(
 		output.includes(
 			"Entry points: exact file:line references where the relevant functionality starts",

@@ -132,6 +132,12 @@ export interface Patch {
 	/** Signature tag name, e.g., "bash-prompt" */
 	tag: string;
 
+	/** Other patch tags that must be selected with this patch. */
+	requires?: readonly string[];
+
+	/** Patch tags that cannot be selected with this patch. */
+	conflicts?: readonly string[];
+
 	/** String-based transformation (runs before AST parsing) */
 	string?: (code: string) => string;
 

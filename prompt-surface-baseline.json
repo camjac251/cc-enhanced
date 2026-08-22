@@ -1,10 +1,10 @@
 {
-  "version": "2.1.237",
+  "version": "2.1.238",
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
     "agents/claude.md": "f129b018e907ca76980c8b65f2a615916de241b327f61891fcb7a027b7832348",
-    "agents/explore.md": "7681db43396ea2a0509c8de2e94837e6cf12450fb721233833d60dee0f57f658",
+    "agents/explore.md": "f52e7c49ad9570b112513e12dbbd714636d80a321a049121498c2e0c45557a2e",
     "agents/plan.md": "6ab8ca239ed87d3d7913ca1f601f69622200430c3e7a1686b8c252eb1ff7cef1",
     "agents/worker.md": "6aab1480076dbaa735a7ed4617af1c55963bb9dfea1de7010c59ba61e14ff364",
     "agents/workflow-subagent.md": "4d42d7653bf4878a61943b50c54e4c95a62e6cb47f004c5aa0b2227c01932d91",

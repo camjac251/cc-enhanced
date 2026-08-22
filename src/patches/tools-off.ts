@@ -8,13 +8,10 @@ import {
 	resolveStringValue,
 } from "./ast-helpers.js";
 
-// Coupling: agents-off.ts blocks NotebookEdit from claude-code-guide agent;
-// this patch disables NotebookEdit globally via isEnabled.
-
 /**
  * Disable tools and clean up all prompt references to them.
  *
- * 1. AST: Disable Glob, Grep, WebSearch, WebFetch, NotebookEdit tools (isEnabled)
+ * 1. AST: Disable the tools selected by an immutable surface policy
  * 2. AST: Strip disabled tools from skill filePatternTools arrays
  * 3. String: Clean up all prompt references to disabled tools (neutral wording)
  * 4. String: Strip disabled tools from skill allowed-tools headers and doc tables
@@ -23,14 +20,65 @@ import {
  * 7. String: Rename "Task tool" -> "Agent tool" in subagent descriptions
  */
 
-const TARGET_TOOLS = new Set([
-	"Grep",
-	"Glob",
-	"WebSearch",
-	"WebFetch",
-	"NotebookEdit",
-	"TaskOutput",
-]);
+export interface ToolDisablePolicy {
+	readonly tag: string;
+	readonly disabledTools: readonly string[];
+	readonly retainedTools: readonly string[];
+	readonly conflicts: readonly string[];
+}
+
+function defineToolDisablePolicy(
+	options: ToolDisablePolicy,
+): ToolDisablePolicy {
+	const disabledTools = Object.freeze([...options.disabledTools]);
+	const retainedTools = Object.freeze([...options.retainedTools]);
+	const conflicts = Object.freeze([...options.conflicts]);
+	const disabledSet = new Set(disabledTools);
+	if (disabledSet.size !== disabledTools.length) {
+		throw new Error(
+			`Tool-disable policy ${options.tag} has duplicate disabled tools`,
+		);
+	}
+	if (new Set(retainedTools).size !== retainedTools.length) {
+		throw new Error(
+			`Tool-disable policy ${options.tag} has duplicate retained tools`,
+		);
+	}
+	for (const tool of retainedTools) {
+		if (disabledSet.has(tool)) {
+			throw new Error(
+				`Tool-disable policy ${options.tag} both disables and retains ${tool}`,
+			);
+		}
+	}
+	return Object.freeze({
+		tag: options.tag,
+		disabledTools,
+		retainedTools,
+		conflicts,
+	});
+}
+
+export const CLI_FULL_TOOL_DISABLE_POLICY = defineToolDisablePolicy({
+	tag: "tools-off",
+	disabledTools: [
+		"Grep",
+		"Glob",
+		"WebSearch",
+		"WebFetch",
+		"NotebookEdit",
+		"TaskOutput",
+	],
+	retainedTools: [],
+	conflicts: [],
+});
+
+export const DESKTOP_TOOL_DISABLE_POLICY = defineToolDisablePolicy({
+	tag: "tools-off-desktop",
+	disabledTools: ["Grep", "Glob", "WebSearch", "WebFetch", "TaskOutput"],
+	retainedTools: ["NotebookEdit"],
+	conflicts: ["tools-off"],
+});
 
 // Two task-status strings name the task-output tool through an interpolated
 // constant, so a literal patch cannot reach them.
@@ -599,181 +647,212 @@ function isIsEnabledDisabled(
 	return isFalseLike(firstStmt.argument);
 }
 
-export const disableTools: Patch = {
-	tag: "tools-off",
+function createDisableToolsPatch(policy: ToolDisablePolicy): Patch {
+	const disabledTools = new Set(policy.disabledTools);
+	const retainedTools = new Set(policy.retainedTools);
 
-	string: (code) => {
-		let result = code;
+	return {
+		tag: policy.tag,
+		...(policy.conflicts.length > 0 ? { conflicts: policy.conflicts } : {}),
 
-		// --- Core tools-off prompt cleanup ---
-		const hasTrigger = TRIGGER_PHRASES.some((phrase) =>
-			result.includes(phrase),
-		);
-		if (hasTrigger) {
-			for (const { pattern, replacement } of REGEX_REPLACEMENTS) {
-				result = result.replace(pattern, replacement);
-			}
-		}
+		string: (code) => {
+			let result = code;
 
-		// --- Neutral prompt rewrites (agent/plan/guide/debug) ---
-		for (const [pattern, replacement] of PROMPT_REWRITE_REPLACEMENTS) {
-			result = result.replace(pattern, replacement);
-		}
-		for (const { pattern, replacement } of PLAN_REWRITES) {
-			result = result.replace(pattern, replacement);
-		}
-		for (const { pattern, replacement } of DEBUG_CMD_REWRITES) {
-			result = result.replace(pattern, replacement);
-		}
-		for (const { pattern, replacement } of AGENT_TOOL_TEXT_REWRITES) {
-			result = result.replace(pattern, replacement);
-		}
-		result = rewriteReplPromptReferences(result);
-		for (const { pattern, replacement } of TOOLSEARCH_PROMPT_REWRITES) {
-			result = result.replace(pattern, replacement);
-		}
-		for (const { pattern, replacement } of REMOTE_PLANNING_PROMPT_REWRITES) {
-			result = result.replace(pattern, replacement);
-		}
-		for (const { pattern, replacement } of GUIDE_REWRITES) {
-			result = result.replace(pattern, replacement);
-		}
-		for (const { pattern, replacement } of ACTIONABLE_PROMPT_REWRITES) {
-			result = result.replace(pattern, replacement);
-		}
-		result = rewriteGhPrCreateCatHeredocs(result);
-
-		// --- Skill allowed-tools and doc table cleanup ---
-		const hasSkillMarkers =
-			result.includes("allowed-tools:") ||
-			result.includes("allowedTools:") ||
-			result.includes("allowed_tools") ||
-			/\btools\b\s*[:=]\s*\[/.test(result) ||
-			result.includes("**Common tool matchers:**") ||
-			result.includes("When to Use WebFetch") ||
-			result.includes("<h2>When to Use WebFetch</h2>") ||
-			result.includes("<tr><td>Glob</td>") ||
-			result.includes("<tr><td>Grep</td>");
-		if (hasSkillMarkers) {
-			const allowedToolsPattern =
-				/(allowed-tools:[^"'\n]*)(, Glob| Glob,|, Grep| Grep,|, WebFetch| WebFetch,|, WebSearch| WebSearch,)/g;
-			let prev = "";
-			while (prev !== result) {
-				prev = result;
-				result = result.replace(allowedToolsPattern, "$1");
-			}
-			result = stripForbiddenAllowedToolsBullets(result);
-			result = normalizePlainAllowedToolsArrays(result);
-			result = normalizeEscapedAllowedToolsArrays(result);
-			result = normalizeEscapedToolsArrays(result);
-			// Skill doc text cleanup (HTML/markdown tables, WebFetch refs)
-			result = result.replace(FORBIDDEN_TOOL_ROW_PATTERN, "");
-			result = result.replace(FORBIDDEN_TOOL_MARKDOWN_ROW_PATTERN, "");
-			for (const [pattern, replacement] of SKILL_DOC_TEXT_REPLACEMENTS) {
-				result = result.replace(pattern, replacement);
-			}
-		}
-
-		return result;
-	},
-
-	astPasses: () => [
-		{
-			pass: "mutate",
-			visitor: createDisableToolsMutator(),
-		},
-		{
-			pass: "mutate",
-			visitor: createSkillAllowedToolsMutator(),
-		},
-		{
-			pass: "mutate",
-			visitor: createTaskStatusReferenceMutator(),
-		},
-	],
-
-	verify: (code, ast) => {
-		if (!ast) return "Missing AST for tools-off verification";
-
-		// Track disablement per tool-object, not just per name. A name-keyed Set
-		// would pass if any single registration of a tool is disabled, masking a
-		// second still-enabled registration of the same tool. Require that every
-		// tool-shaped object carrying a target name is disabled.
-		const toolObjectTotals = new Map<string, number>();
-		const toolObjectDisabled = new Map<string, number>();
-		traverse(ast, {
-			ObjectExpression(path: any) {
-				const nameProp = path.node.properties.find(
-					(p: any) => t.isObjectProperty(p) && hasObjectKeyName(p, "name"),
-				) as t.ObjectProperty | undefined;
-				if (!nameProp) return;
-
-				const toolName = resolveStringValue(path, nameProp.value as any);
-				if (!toolName || !TARGET_TOOLS.has(toolName)) return;
-				if (!isLikelyToolObject(path.node)) return;
-
-				toolObjectTotals.set(
-					toolName,
-					(toolObjectTotals.get(toolName) ?? 0) + 1,
-				);
-
-				const isEnabledProp = path.node.properties.find(
-					(p: any) =>
-						(t.isObjectProperty(p) || t.isObjectMethod(p)) &&
-						hasObjectKeyName(p, "isEnabled"),
-				) as t.ObjectProperty | t.ObjectMethod | undefined;
-
-				if (isIsEnabledDisabled(isEnabledProp)) {
-					toolObjectDisabled.set(
-						toolName,
-						(toolObjectDisabled.get(toolName) ?? 0) + 1,
-					);
+			// --- Core tools-off prompt cleanup ---
+			const hasTrigger = TRIGGER_PHRASES.some((phrase) =>
+				result.includes(phrase),
+			);
+			if (hasTrigger) {
+				for (const { pattern, replacement } of REGEX_REPLACEMENTS) {
+					result = result.replace(pattern, replacement);
 				}
+			}
+
+			// --- Neutral prompt rewrites (agent/plan/guide/debug) ---
+			for (const [pattern, replacement] of PROMPT_REWRITE_REPLACEMENTS) {
+				result = result.replace(pattern, replacement);
+			}
+			for (const { pattern, replacement } of PLAN_REWRITES) {
+				result = result.replace(pattern, replacement);
+			}
+			for (const { pattern, replacement } of DEBUG_CMD_REWRITES) {
+				result = result.replace(pattern, replacement);
+			}
+			for (const { pattern, replacement } of AGENT_TOOL_TEXT_REWRITES) {
+				result = result.replace(pattern, replacement);
+			}
+			result = rewriteReplPromptReferences(result);
+			for (const { pattern, replacement } of TOOLSEARCH_PROMPT_REWRITES) {
+				result = result.replace(pattern, replacement);
+			}
+			for (const { pattern, replacement } of REMOTE_PLANNING_PROMPT_REWRITES) {
+				result = result.replace(pattern, replacement);
+			}
+			for (const { pattern, replacement } of GUIDE_REWRITES) {
+				result = result.replace(pattern, replacement);
+			}
+			for (const { pattern, replacement } of ACTIONABLE_PROMPT_REWRITES) {
+				result = result.replace(pattern, replacement);
+			}
+			result = rewriteGhPrCreateCatHeredocs(result);
+
+			// --- Skill allowed-tools and doc table cleanup ---
+			const hasSkillMarkers =
+				result.includes("allowed-tools:") ||
+				result.includes("allowedTools:") ||
+				result.includes("allowed_tools") ||
+				/\btools\b\s*[:=]\s*\[/.test(result) ||
+				result.includes("**Common tool matchers:**") ||
+				result.includes("When to Use WebFetch") ||
+				result.includes("<h2>When to Use WebFetch</h2>") ||
+				result.includes("<tr><td>Glob</td>") ||
+				result.includes("<tr><td>Grep</td>");
+			if (hasSkillMarkers) {
+				const allowedToolsPattern =
+					/(allowed-tools:[^"'\n]*)(, Glob| Glob,|, Grep| Grep,|, WebFetch| WebFetch,|, WebSearch| WebSearch,)/g;
+				let prev = "";
+				while (prev !== result) {
+					prev = result;
+					result = result.replace(allowedToolsPattern, "$1");
+				}
+				result = stripForbiddenAllowedToolsBullets(result);
+				result = normalizePlainAllowedToolsArrays(result);
+				result = normalizeEscapedAllowedToolsArrays(result);
+				result = normalizeEscapedToolsArrays(result);
+				// Skill doc text cleanup (HTML/markdown tables, WebFetch refs)
+				result = result.replace(FORBIDDEN_TOOL_ROW_PATTERN, "");
+				result = result.replace(FORBIDDEN_TOOL_MARKDOWN_ROW_PATTERN, "");
+				for (const [pattern, replacement] of SKILL_DOC_TEXT_REPLACEMENTS) {
+					result = result.replace(pattern, replacement);
+				}
+			}
+
+			return result;
+		},
+
+		astPasses: () => [
+			{
+				pass: "mutate",
+				visitor: createDisableToolsMutator(disabledTools),
 			},
-		});
-		for (const tool of TARGET_TOOLS) {
-			const total = toolObjectTotals.get(tool) ?? 0;
-			if (total === 0) {
-				return `Tool ${tool} is not disabled via isEnabled`;
+			{
+				pass: "mutate",
+				visitor: createSkillAllowedToolsMutator(),
+			},
+			{
+				pass: "mutate",
+				visitor: createTaskStatusReferenceMutator(),
+			},
+		],
+
+		verify: (code, ast) => {
+			if (!ast) return "Missing AST for tools-off verification";
+
+			// Track disablement per tool-object, not just per name. A name-keyed Set
+			// would pass if any single registration of a tool is disabled, masking a
+			// second still-enabled registration of the same tool. Require that every
+			// tool-shaped object carrying a target name is disabled.
+			const toolObjectTotals = new Map<string, number>();
+			const toolObjectDisabled = new Map<string, number>();
+			traverse(ast, {
+				ObjectExpression(path: any) {
+					const nameProp = path.node.properties.find(
+						(p: any) => t.isObjectProperty(p) && hasObjectKeyName(p, "name"),
+					) as t.ObjectProperty | undefined;
+					if (!nameProp) return;
+
+					const toolName = resolveStringValue(path, nameProp.value as any);
+					if (
+						!toolName ||
+						(!disabledTools.has(toolName) && !retainedTools.has(toolName))
+					) {
+						return;
+					}
+					if (!isLikelyToolObject(path.node)) return;
+
+					toolObjectTotals.set(
+						toolName,
+						(toolObjectTotals.get(toolName) ?? 0) + 1,
+					);
+
+					const isEnabledProp = path.node.properties.find(
+						(p: any) =>
+							(t.isObjectProperty(p) || t.isObjectMethod(p)) &&
+							hasObjectKeyName(p, "isEnabled"),
+					) as t.ObjectProperty | t.ObjectMethod | undefined;
+
+					if (isIsEnabledDisabled(isEnabledProp)) {
+						toolObjectDisabled.set(
+							toolName,
+							(toolObjectDisabled.get(toolName) ?? 0) + 1,
+						);
+					}
+				},
+			});
+			for (const tool of disabledTools) {
+				const total = toolObjectTotals.get(tool) ?? 0;
+				if (total === 0) {
+					return `Tool ${tool} is not disabled via isEnabled`;
+				}
+				const disabled = toolObjectDisabled.get(tool) ?? 0;
+				if (disabled < total) {
+					return `Tool ${tool} has an enabled registration (${total - disabled} of ${total} not disabled via isEnabled)`;
+				}
 			}
-			const disabled = toolObjectDisabled.get(tool) ?? 0;
-			if (disabled < total) {
-				return `Tool ${tool} has an enabled registration (${total - disabled} of ${total} not disabled via isEnabled)`;
+			for (const tool of retainedTools) {
+				const total = toolObjectTotals.get(tool) ?? 0;
+				if (total === 0) {
+					return `Tool ${tool} is not retained in the tool registry`;
+				}
+				const disabled = toolObjectDisabled.get(tool) ?? 0;
+				if (disabled > 0) {
+					return `Tool ${tool} has a disabled registration (${disabled} of ${total} disabled via isEnabled)`;
+				}
 			}
-		}
 
-		// Verify prompt cleanup: current unpatched strings must be gone
-		for (const fragment of FORBIDDEN_PROMPT_FRAGMENTS) {
-			if (fragment.test(code)) {
-				return `Still contains disabled-tool prompt guidance: ${fragment.source}`;
+			// Verify prompt cleanup: current unpatched strings must be gone
+			for (const fragment of FORBIDDEN_PROMPT_FRAGMENTS) {
+				if (fragment.test(code)) {
+					return `Still contains disabled-tool prompt guidance: ${fragment.source}`;
+				}
 			}
-		}
 
-		// Wording checks alone would pass vacuously if upstream reworded these
-		// strings, so the real invariant is structural: no surviving prompt text
-		// may interpolate the disabled tool's name.
-		const taskOutputLeak = findInterpolatedToolNameLeak(ast, "TaskOutput");
-		if (taskOutputLeak) {
-			return `Prompt text still interpolates the disabled task-output tool name (${taskOutputLeak})`;
-		}
-
-		for (const { trigger, required } of CONDITIONAL_REWRITE_MARKERS) {
-			if (code.includes(trigger) && !code.includes(required)) {
-				return `Legacy disabled-tool guidance remains without neutral rewrite: ${trigger}`;
+			// Wording checks alone would pass vacuously if upstream reworded these
+			// strings, so the real invariant is structural: no surviving prompt text
+			// may interpolate the disabled tool's name.
+			const taskOutputLeak = disabledTools.has("TaskOutput")
+				? findInterpolatedToolNameLeak(ast, "TaskOutput")
+				: null;
+			if (taskOutputLeak) {
+				return `Prompt text still interpolates the disabled task-output tool name (${taskOutputLeak})`;
 			}
-		}
 
-		// --- Prompt rewrite verification ---
-		const promptResult = verifyPromptRewrite(code);
-		if (promptResult !== true) return promptResult;
+			for (const { trigger, required } of CONDITIONAL_REWRITE_MARKERS) {
+				if (code.includes(trigger) && !code.includes(required)) {
+					return `Legacy disabled-tool guidance remains without neutral rewrite: ${trigger}`;
+				}
+			}
 
-		// --- Skill tools verification ---
-		const skillResult = verifySkillTools(code, ast);
-		if (skillResult !== true) return skillResult;
+			// --- Prompt rewrite verification ---
+			const promptResult = verifyPromptRewrite(code);
+			if (promptResult !== true) return promptResult;
 
-		return true;
-	},
-};
+			// --- Skill tools verification ---
+			const skillResult = verifySkillTools(code, ast);
+			if (skillResult !== true) return skillResult;
+
+			return true;
+		},
+	};
+}
+
+export const disableTools = createDisableToolsPatch(
+	CLI_FULL_TOOL_DISABLE_POLICY,
+);
+
+export const disableToolsDesktop = createDisableToolsPatch(
+	DESKTOP_TOOL_DISABLE_POLICY,
+);
 
 // ---------------------------------------------------------------------------
 // Prompt rewrite verification
@@ -1129,7 +1208,9 @@ function createTaskStatusReferenceMutator(): Visitor {
 	};
 }
 
-function createDisableToolsMutator(): Visitor {
+function createDisableToolsMutator(
+	disabledTools: ReadonlySet<string>,
+): Visitor {
 	return {
 		ObjectExpression(path: any) {
 			const nameProp = path.node.properties.find(
@@ -1141,7 +1222,7 @@ function createDisableToolsMutator(): Visitor {
 			if (!toolName) return;
 			if (!isLikelyToolObject(path.node)) return;
 
-			if (TARGET_TOOLS.has(toolName)) {
+			if (disabledTools.has(toolName)) {
 				console.log(`Disabling tool: ${toolName}`);
 				disableIsEnabled(path.node);
 			}

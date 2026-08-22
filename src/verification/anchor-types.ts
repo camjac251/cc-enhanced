@@ -1,8 +1,11 @@
+import type { Patch } from "../types.js";
+
 export type SignatureExpectation = "selected" | "allow-forced";
 
 export interface VerifyCliAnchorsInput {
 	patchedCliPath: string;
 	cleanCliPath: string;
+	selectedPatches?: readonly Patch[];
 	skipPatchVerifiers?: boolean;
 	signatureExpectation?: SignatureExpectation;
 }

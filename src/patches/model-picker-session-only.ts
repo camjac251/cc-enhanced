@@ -28,10 +28,8 @@ const PICKER_PROPERTIES = [
 
 interface PickerComponentCandidate {
 	path: NodePath<t.FunctionDeclaration>;
-	declarationIndex: number;
 	onSetDefaultName: string;
-	headerName: string;
-	headerDeclarator: t.VariableDeclarator;
+	headerFallback: t.LogicalExpression;
 }
 
 function getStaticString(node: t.Node | null | undefined): string | null {
@@ -113,28 +111,29 @@ function patternHasProperties(pattern: t.ObjectPattern): boolean {
 	return PICKER_PROPERTIES.every((key) => keys.has(key));
 }
 
-function getHeaderDeclarator(
-	statements: readonly t.Statement[],
+function getHeaderFallback(
+	path: NodePath<t.FunctionDeclaration>,
 	headerName: string,
-): t.VariableDeclarator | null {
-	const matches: t.VariableDeclarator[] = [];
-	for (const statement of statements) {
-		if (!t.isVariableDeclaration(statement)) continue;
-		for (const declaration of statement.declarations) {
-			const initializer = declaration.init;
+): t.LogicalExpression | null {
+	const matches: t.LogicalExpression[] = [];
+	path.traverse({
+		LogicalExpression(fallbackPath) {
+			if (fallbackPath.getFunctionParent() !== path) return;
+			const fallback = fallbackPath.node;
 			if (
-				!t.isLogicalExpression(initializer, { operator: "??" }) ||
-				!t.isIdentifier(initializer.left, { name: headerName })
+				fallback.operator !== "??" ||
+				!t.isIdentifier(fallback.left, { name: headerName })
 			) {
-				continue;
+				return;
 			}
-			const fallback = t.isConditionalExpression(initializer.right)
-				? initializer.right.alternate
-				: initializer.right;
-			if (getStaticString(fallback) === DEFAULT_HEADER)
-				matches.push(declaration);
-		}
-	}
+			const defaultValue = t.isConditionalExpression(fallback.right)
+				? fallback.right.alternate
+				: fallback.right;
+			if (getStaticString(defaultValue) === DEFAULT_HEADER) {
+				matches.push(fallback);
+			}
+		},
+	});
 	return matches.length === 1 ? matches[0] : null;
 }
 
@@ -142,35 +141,15 @@ function classifyPickerComponent(
 	path: NodePath<t.FunctionDeclaration>,
 ): PickerComponentCandidate | null {
 	if (!path.node.id || path.node.params.length !== 1) return null;
-	const statements = path.node.body.body;
-	for (const [index, statement] of statements.entries()) {
-		if (!t.isVariableDeclaration(statement) || statement.kind !== "let") {
-			continue;
-		}
-		const pattern = statement.declarations.find(
-			(
-				declaration,
-			): declaration is t.VariableDeclarator & {
-				id: t.ObjectPattern;
-			} =>
-				t.isObjectPattern(declaration.id) &&
-				patternHasProperties(declaration.id),
-		)?.id;
-		if (!pattern) continue;
-		const onSetDefaultName = getPatternBinding(pattern, "onSetDefault");
-		const headerName = getPatternBinding(pattern, "headerText");
-		if (!onSetDefaultName || !headerName) return null;
-		const headerDeclarator = getHeaderDeclarator(statements, headerName);
-		if (!headerDeclarator) return null;
-		return {
-			path,
-			declarationIndex: index,
-			onSetDefaultName,
-			headerName,
-			headerDeclarator,
-		};
-	}
-	return null;
+	const [pattern] = path.node.params;
+	if (!t.isObjectPattern(pattern) || !patternHasProperties(pattern))
+		return null;
+	const onSetDefaultName = getPatternBinding(pattern, "onSetDefault");
+	const headerName = getPatternBinding(pattern, "headerText");
+	if (!onSetDefaultName || !headerName) return null;
+	const headerFallback = getHeaderFallback(path, headerName);
+	if (!headerFallback) return null;
+	return { path, onSetDefaultName, headerFallback };
 }
 
 function isSessionOnlyGuardStatement(
@@ -204,9 +183,7 @@ function hasSessionOnlyGuard(candidate: PickerComponentCandidate): boolean {
 }
 
 function hasSessionOnlyHeader(candidate: PickerComponentCandidate): boolean {
-	const initializer = candidate.headerDeclarator.init;
-	if (!t.isLogicalExpression(initializer, { operator: "??" })) return false;
-	const fallback = initializer.right;
+	const fallback = candidate.headerFallback.right;
 	return (
 		t.isConditionalExpression(fallback) &&
 		isSessionOnlyPresence(fallback.test) &&
@@ -218,7 +195,7 @@ function hasSessionOnlyHeader(candidate: PickerComponentCandidate): boolean {
 function patchPickerComponent(candidate: PickerComponentCandidate): boolean {
 	if (!hasSessionOnlyGuard(candidate)) {
 		candidate.path.node.body.body.splice(
-			candidate.declarationIndex + 1,
+			0,
 			0,
 			t.ifStatement(
 				t.binaryExpression(
@@ -237,14 +214,11 @@ function patchPickerComponent(candidate: PickerComponentCandidate): boolean {
 		);
 	}
 	if (!hasSessionOnlyHeader(candidate)) {
-		const initializer = candidate.headerDeclarator.init;
-		if (
-			!t.isLogicalExpression(initializer, { operator: "??" }) ||
-			getStaticString(initializer.right) !== DEFAULT_HEADER
-		) {
+		const fallback = candidate.headerFallback;
+		if (getStaticString(fallback.right) !== DEFAULT_HEADER) {
 			return false;
 		}
-		initializer.right = t.conditionalExpression(
+		fallback.right = t.conditionalExpression(
 			t.binaryExpression(
 				"!==",
 				processEnvMember(SESSION_ONLY_ENV),

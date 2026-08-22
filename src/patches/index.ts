@@ -43,7 +43,7 @@ export { subagentSystemPrompt } from "./subagent-system-prompt.js";
 export { systemPromptFile } from "./sys-prompt-file.js";
 export { tabQueue } from "./tab-queue.js";
 export { todo } from "./todo-use.js";
-export { disableTools } from "./tools-off.js";
+export { disableTools, disableToolsDesktop } from "./tools-off.js";
 export { workflowSafety } from "./workflow-safety.js";
 
 import type { Patch } from "../types.js";
@@ -91,17 +91,8 @@ import { subagentSystemPrompt } from "./subagent-system-prompt.js";
 import { systemPromptFile } from "./sys-prompt-file.js";
 import { tabQueue } from "./tab-queue.js";
 import { todo } from "./todo-use.js";
-import { disableTools } from "./tools-off.js";
+import { disableTools, disableToolsDesktop } from "./tools-off.js";
 import { workflowSafety } from "./workflow-safety.js";
-
-function parsePatchTagList(value: string | undefined): Set<string> | null {
-	if (!value) return null;
-	const tags = value
-		.split(",")
-		.map((tag) => tag.trim())
-		.filter(Boolean);
-	return tags.length > 0 ? new Set(tags) : null;
-}
 
 // Order matters: string patches run first, then AST, signature last.
 export const registeredPatches: Patch[] = [
@@ -156,21 +147,22 @@ export const registeredPatches: Patch[] = [
 	signature,
 ];
 
-const includeTags = parsePatchTagList(process.env.CLAUDE_PATCHER_INCLUDE_TAGS);
-const excludeTags = parsePatchTagList(process.env.CLAUDE_PATCHER_EXCLUDE_TAGS);
+export const profilePatchCatalog: Patch[] = registeredPatches.flatMap(
+	(patch) =>
+		patch.tag === disableTools.tag ? [patch, disableToolsDesktop] : [patch],
+);
 
-export const allPatches: Patch[] = registeredPatches.filter((patch) => {
-	if (includeTags && !includeTags.has(patch.tag)) return false;
-	if (excludeTags?.has(patch.tag)) return false;
-	return true;
-});
+export const allPatches: Patch[] = [...registeredPatches];
 
 // Safety: ensure no duplicate patch tags (would cause confusing overlaps)
-{
+for (const [label, catalog] of [
+	["registered patch", registeredPatches],
+	["profile patch", profilePatchCatalog],
+] as const) {
 	const seen = new Set<string>();
-	for (const patch of allPatches) {
+	for (const patch of catalog) {
 		if (seen.has(patch.tag)) {
-			throw new Error(`Duplicate patch tag detected: ${patch.tag}`);
+			throw new Error(`Duplicate ${label} tag detected: ${patch.tag}`);
 		}
 		seen.add(patch.tag);
 	}

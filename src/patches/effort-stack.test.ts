@@ -64,14 +64,15 @@ function effortWouldChange(next, current, model, cacheToken, hasConversationMess
   return !0;
 }
 
-function storeEffortSetting(H, persist = true, scope) {
-  let parsed = H !== void 0 ? parsePersistedEffort(H) : void 0;
-  if (persist && (H === void 0 || parsed !== void 0) && !remoteActive()) {
-    let result = saveSettings("userSettings", { effortLevel: parsed }, void 0, scope);
-    if (result.error) return result.error;
-  }
-  if (persist) unpinLaunchEffort(scope);
-  return;
+function buildEffortSettings(model, value) {
+  let modelKey = normalizeModel(model);
+  return useGlobalEffortSetting() ?
+  { effortLevel: value } :
+  { modelSettings: { [modelKey]: { effortLevel: value } } };
+}
+
+async function storeEffortSetting(value, model, scope) {
+  return saveSettings("userSettings", buildEffortSettings(model, value), void 0, scope);
 }
 
 function notify(EL) {
@@ -171,13 +172,15 @@ function readEnvEffort() {
   return parseEffort(raw);
 }
 
-function storeEffortSetting(value, persist = true, scope) {
-  if (persist) {
-    let result = saveSettings("userSettings", { effortLevel: value });
-    if (result.error) return result.error;
-  }
-  if (persist) unpinLaunchEffort(scope);
-  return;
+function buildEffortSettings(model, value) {
+  let modelKey = normalizeModel(model);
+  return useGlobalEffortSetting()
+    ? { effortLevel: value }
+    : { modelSettings: { [modelKey]: { effortLevel: value } } };
+}
+
+async function storeEffortSetting(value, model, scope) {
+  return saveSettings("userSettings", buildEffortSettings(model, value), void 0, scope);
 }
 
 async function runEffortCommand(input, setState) {
@@ -218,13 +221,15 @@ function readEnvEffort() {if (globalThis.__claudeCodeEffortSessionOverride === t
   return parseEffort(raw);
 }
 
-function storeEffortSetting(value, persist = true, scope) {if (process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0) {
+function buildEffortSettings(model, value) {
+  let modelKey = normalizeModel(model);
+  return useGlobalEffortSetting() ?
+  { effortLevel: value } :
+  { modelSettings: { [modelKey]: { effortLevel: value } } };
+}
 
-
-
-
-    if (persist) unpinLaunchEffort(scope);return;}if (persist) {let result = saveSettings("userSettings", { effortLevel: value });if (result.error) return result.error;}if (persist) unpinLaunchEffort(scope);
-  return;
+async function storeEffortSetting(value, model, scope) {if (process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0) return;
+  return saveSettings("userSettings", buildEffortSettings(model, value), void 0, scope);
 }
 
 async function runEffortCommand(input, setState) {
@@ -312,7 +317,7 @@ test("effort-stack characterizes the public session-override subsystem", async (
 		},
 		{
 			code: fullOutput.replace(
-				/if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) \{\s+if \(persist\) unpinLaunchEffort\(scope\);\s*return;\s*\}/,
+				"if (process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0) return;",
 				"",
 			),
 			diagnostic: "Did not find env-scoped session-only effort settings guard",
@@ -549,13 +554,10 @@ test("effort-stack keeps env-backed effort changes session-only", async () => {
 		output.includes("process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0"),
 		true,
 	);
-	assert.equal(
-		output.includes(
-			'saveSettings("userSettings", { effortLevel: parsed }, void 0, scope)',
-		),
-		true,
+	assert.match(
+		output,
+		/async function storeEffortSetting\(value, model, scope\) \{if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) return;\s+return saveSettings\("userSettings", buildEffortSettings\(model, value\), void 0, scope\);/,
 	);
-	assert.equal(output.includes("if (persist) unpinLaunchEffort(scope);"), true);
 });
 
 test("effort-stack full pipeline verifies clean", async () => {
@@ -717,7 +719,7 @@ test("effort-stack injects the session-override assignment at the result boundar
 	assert.equal(occurrences, 1);
 });
 
-test("effort-stack guards the current three-parameter settings writer", async () => {
+test("effort-stack guards the model-aware settings writer in the full fixture", async () => {
 	const ast = parse(EFFORT_STACK_FIXTURE);
 	await runEffortStackViaPasses(ast);
 	const output = print(ast);
@@ -728,7 +730,30 @@ test("effort-stack guards the current three-parameter settings writer", async ()
 	);
 });
 
-test("effort-stack does not inject the session-only guard into a writer without a top-level unpin call", async () => {
+test("effort-stack guards the latest model-aware settings writer", async () => {
+	const fixture = `
+function buildEffortSettings(model, value) {
+  let modelKey = normalizeModel(model);
+  return useGlobalEffortSetting()
+    ? { effortLevel: value }
+    : { modelSettings: { [modelKey]: { effortLevel: value } } };
+}
+
+async function storeEffortSetting(value, model, scope) {
+  return saveSettings("userSettings", buildEffortSettings(model, value), void 0, scope);
+}
+`;
+	const ast = parse(fixture);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(
+		output,
+		/async function storeEffortSetting\(value, model, scope\) \{if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) return;/,
+	);
+});
+
+test("effort-stack does not guard an incomplete direct settings writer", async () => {
 	const NESTED_WRITER_FIXTURE = `
 function nestedWriter(H) {
   if (H !== void 0) {
@@ -744,6 +769,6 @@ function nestedWriter(H) {
 	assert.equal(
 		output.includes("process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0"),
 		false,
-		"writer without a top-level unpin call must not receive the env-scoped session-only guard",
+		"an incomplete direct writer must not receive the env-scoped session-only guard",
 	);
 });

@@ -37,6 +37,10 @@ esac
 # stays under that line and this shortcut is the deliberate way across it.
 context_stop=''
 if [ "${1:-}" = '--1m' ]; then
+	if [ "$requested_model" != 'sol' ]; then
+		printf '%s\n' 'claudex: --1m is only valid after the sol shortcut' >&2
+		exit 2
+	fi
 	context_stop='clodex:openai-oauth:gpt-5.6-sol=max'
 	shift
 fi
@@ -166,21 +170,127 @@ export CLAUDE_CODE_MODEL_ALIASES='{"sol":"clodex:openai-oauth:gpt-5.6-sol"}'
 if [ -n "$auto_mode_model" ]; then
 	export CLAUDE_CODE_AUTO_MODE_MODEL="$auto_mode_model"
 fi
-# Generated from the saved clodex context stop so one place owns these numbers.
-# The fallback below is the standard stop: 272,000 raw x 95% headroom = 258,400,
-# which keeps a session under the 272,000 pricing boundary. Output is the model's
-# real 128,000 ceiling; Claude Code still defaults to 32,000 within it.
-# stderr is deliberately not suppressed: the pricing-boundary warning for a
-# larger stop is printed there and is the whole point of asking for one.
-if [ -n "$context_stop" ]; then
-	clodex_catalog=$("$clodex_bin" models --export-cc-catalog --context "$context_stop") || clodex_catalog=''
-else
-	clodex_catalog=$("$clodex_bin" models --export-cc-catalog) || clodex_catalog=''
+# Clodex reports resolved model metadata; the mapping to Claude Code's catalog
+# schema lives here, because that schema is this patcher's, not Clodex's. Probe
+# the command contract first so stable Clodex releases without the metadata
+# surface use the fallback without printing an unrelated unknown-option error.
+clodex_models_help=$("$clodex_bin" models --help 2>&1) || clodex_models_help=''
+clodex_json_supported=0
+clodex_context_supported=0
+case "$clodex_models_help" in
+*'--json'*) clodex_json_supported=1 ;;
+esac
+case "$clodex_models_help" in
+*'--context'*) clodex_context_supported=1 ;;
+esac
+
+if [ -n "$context_stop" ] && {
+	[ "$clodex_json_supported" -ne 1 ] || [ "$clodex_context_supported" -ne 1 ]
+}; then
+	printf '%s\n' \
+		'claudex: --1m requires a Clodex build with models --json and --context support' >&2
+	exit 1
+fi
+
+clodex_metadata=''
+if [ "$clodex_json_supported" -eq 1 ]; then
+	if [ -n "$context_stop" ]; then
+		clodex_metadata=$("$clodex_bin" models --json --context "$context_stop") || clodex_metadata=''
+	else
+		clodex_metadata=$("$clodex_bin" models --json) || clodex_metadata=''
+	fi
+fi
+clodex_catalog=''
+if [ -n "$clodex_metadata" ]; then
+	required_max_model=${context_stop%=*}
+	clodex_catalog=$(
+		CLODEX_MODEL_METADATA="$clodex_metadata" \
+			CLAUDEX_REQUIRED_MAX_MODEL="$required_max_model" "$node_bin" <<'NODE'
+// Every bound below is Claude Code's own. It refuses to start on a violation, so
+// an out-of-range optional value is dropped rather than passed through. A max
+// request must still resolve one exact model with a bounded effective context.
+const VALID_EFFORT = ['low', 'medium', 'high', 'xhigh', 'max'];
+const BASE_EFFORT = ['low', 'medium', 'high'];
+const ROUTED_MODEL_ID = 'clodex:openai-oauth:gpt-5.6-sol';
+const requiredMaxModel = process.env.CLAUDEX_REQUIRED_MAX_MODEL ?? '';
+let models;
+try {
+  const raw = process.env.CLODEX_MODEL_METADATA ?? '';
+  if (raw.length > 1_000_000) process.exit(1);
+  models = JSON.parse(raw);
+} catch {
+  process.exit(1);
+}
+if (!Array.isArray(models) || models.length === 0 || models.length > 64) process.exit(1);
+const bounded = (value, min, max) =>
+  Number.isSafeInteger(value) && value >= min && value <= max ? value : undefined;
+const entries = [];
+const seen = new Set();
+let requiredMaxResolved = requiredMaxModel === '';
+for (const model of models) {
+  if (model === null || Array.isArray(model) || typeof model !== 'object') process.exit(1);
+  const id = typeof model?.id === 'string' ? model.id.trim() : '';
+  if (!id || id.length > 512 || /[\u0000-\u001f\u007f]/.test(id)) process.exit(1);
+  if (id !== ROUTED_MODEL_ID) continue;
+  const normalizedId = id.toLowerCase();
+  if (seen.has(normalizedId)) process.exit(1);
+  seen.add(normalizedId);
+  const displayName = model.displayName === undefined
+    ? id
+    : typeof model.displayName === 'string'
+      ? model.displayName.trim()
+      : '';
+  if (!displayName || displayName.length > 512 || /[\u0000-\u001f\u007f]/.test(displayName)) {
+    process.exit(1);
+  }
+  const maxInputTokens = bounded(model.context?.effective, 1, 1000000);
+  const maxOutputTokens = bounded(model.maxOutputTokens, 4096, 1000000);
+  const autoCompactWindow = model.context?.stop === 'max' && maxInputTokens !== undefined
+    ? bounded(Math.floor(maxInputTokens * 0.9), 100000, 1000000)
+    : undefined;
+  if (
+    id === requiredMaxModel
+    && model.context?.stop === 'max'
+    && maxInputTokens !== undefined
+    && autoCompactWindow !== undefined
+  ) {
+    requiredMaxResolved = true;
+  }
+  // Providers advertise levels Claude Code rejects outright, such as `none`.
+  const levels = Array.isArray(model.effort?.levels)
+    ? [...new Set(model.effort.levels.filter(level => VALID_EFFORT.includes(level)))]
+    : [];
+  const usable = BASE_EFFORT.every(level => levels.includes(level));
+  const defaultEffort =
+    usable && typeof model.effort?.default === 'string' && levels.includes(model.effort.default)
+      ? model.effort.default
+      : undefined;
+  entries.push({
+    id,
+    displayName,
+    description: 'ChatGPT Pro subscription route',
+    ...(maxInputTokens === undefined ? {} : { maxInputTokens }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+    ...(autoCompactWindow === undefined ? {} : { autoCompactWindow }),
+    ...(usable ? { effortLevels: levels } : {}),
+    ...(defaultEffort === undefined ? {} : { defaultEffort }),
+  });
+}
+if (entries.length === 0 || !requiredMaxResolved) process.exit(1);
+process.stdout.write(JSON.stringify(entries));
+NODE
+	) || clodex_catalog=''
 fi
 case "$clodex_catalog" in
 '['*']') ;;
 *)
-	printf '%s\n' 'claudex: catalog export unavailable; using the standard-stop fallback' >&2
+	if [ -n "$context_stop" ]; then
+		printf '%s\n' 'claudex: --1m could not resolve bounded Clodex model metadata' >&2
+		exit 1
+	fi
+	# The standard stop is 272,000 raw x 95% headroom = 258,400, keeping a
+	# session under the pricing boundary even when metadata export is unavailable.
+	printf '%s\n' 'claudex: model metadata unavailable; using the standard-stop fallback' >&2
 	clodex_catalog='[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":258400,"maxOutputTokens":128000,"effortLevels":["low","medium","high","xhigh","max"],"defaultEffort":"medium"}]'
 	;;
 esac

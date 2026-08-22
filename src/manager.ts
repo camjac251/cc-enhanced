@@ -6,6 +6,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import {
+	createStructuralArtifactReceipt,
+	verifyNativeArtifactStructure,
+	verifyNativeManifestEntry,
+} from "./artifacts/native-evidence.js";
 import type { AstPassTelemetryLevel } from "./ast-pass-engine.js";
 import {
 	copyBunCjsEnvelope,
@@ -21,9 +26,21 @@ import {
 	type NativeFetchResult,
 } from "./native-release.js";
 import { normalize } from "./normalizer.js";
+import type {
+	NativeBuildOptions,
+	NativeBuildResult,
+	NativeUpdateOptions,
+	NativeUpdateResult,
+} from "./operations/contract.js";
 import { getPatchMetadata } from "./patch-metadata.js";
 import { PatchRunner } from "./patch-runner.js";
-import { allPatches } from "./patches/index.js";
+import { registeredPatches } from "./patches/index.js";
+import {
+	patchSelectionOverridesFromEnv,
+	type ResolvedPatchSelection,
+	resolvePatchSelection,
+} from "./patching/selection.js";
+import { cliFullProfile } from "./profiles/cli-full.js";
 import { emitMemoryCheckpoint, forceGarbageCollection } from "./profiling.js";
 import {
 	status as getStatus,
@@ -36,13 +53,18 @@ import {
 	type StatusInfo,
 	type StatusOptions,
 } from "./promote.js";
+import {
+	isNativeArtifactPlatform,
+	type NativeArtifactPlatform,
+} from "./targets/contract.js";
 import type { PatchResult } from "./types.js";
 import { verifyCliAnchors } from "./verification/verify-cli-anchors.js";
 
-interface ManagerOptions {
+export interface ManagerOptions {
 	target?: string;
 	outputPath?: string;
 	backupDir?: string;
+	patchSelection?: ResolvedPatchSelection;
 
 	patch?: boolean;
 	dryRun?: boolean;
@@ -64,7 +86,7 @@ export function selectPatchTelemetryLevel(
 interface PatchedBuildMetadata {
 	cacheKey: string;
 	version: string;
-	platform: string;
+	platform: NativeArtifactPlatform;
 	cleanSha256: string;
 	selectedTags: string[];
 	patcherRevision: string;
@@ -105,8 +127,38 @@ export function computeSourceTreeFingerprint(sourceDir: string): string {
 	return hash.digest("hex").slice(0, 12);
 }
 
+export function getNativeBuildFileName(
+	platform: NativeArtifactPlatform,
+	timestamp: string,
+): string {
+	const suffix = platform.startsWith("win32-") ? ".exe" : "";
+	return `${timestamp}-claude${suffix}`;
+}
+
+export function getNativeBuildOutputPath(
+	binaryPath: string,
+	platform: NativeArtifactPlatform,
+	timestamp: string,
+): string {
+	return path.join(
+		path.dirname(binaryPath),
+		"builds",
+		getNativeBuildFileName(platform, timestamp),
+	);
+}
+
 export class Manager {
-	constructor(private options: ManagerOptions) {}
+	private patchSelection: ResolvedPatchSelection;
+
+	constructor(private options: ManagerOptions) {
+		this.patchSelection =
+			options.patchSelection ??
+			resolvePatchSelection({
+				catalog: registeredPatches,
+				profile: cliFullProfile,
+				overrides: patchSelectionOverridesFromEnv(),
+			});
+	}
 
 	private async ensureOutputDir(filePath: string) {
 		await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -185,7 +237,7 @@ export class Manager {
 	}
 
 	private getSelectedPatchTags(): string[] {
-		return allPatches.map((patch) => patch.tag).sort();
+		return this.patchSelection.patches.map((patch) => patch.tag).sort();
 	}
 
 	private buildPatchedBuildMetaPath(buildPath: string): string {
@@ -225,6 +277,7 @@ export class Manager {
 				typeof parsed.cacheKey !== "string" ||
 				typeof parsed.version !== "string" ||
 				typeof parsed.platform !== "string" ||
+				!isNativeArtifactPlatform(parsed.platform) ||
 				typeof parsed.cleanSha256 !== "string" ||
 				!Array.isArray(parsed.selectedTags) ||
 				typeof parsed.patcherRevision !== "string" ||
@@ -289,12 +342,14 @@ export class Manager {
 	private buildRunner(nativeMode = false): PatchRunner {
 		const telemetryLevel = selectPatchTelemetryLevel(this.options);
 		if (!nativeMode) {
-			return new PatchRunner(undefined, {
+			return new PatchRunner(this.patchSelection.patches, {
 				signaturePolicy: "auto",
 				telemetryLevel,
 			});
 		}
-		const patches = allPatches.filter((p) => p.tag !== "signature");
+		const patches = this.patchSelection.patches.filter(
+			(patch) => patch.tag !== "signature",
+		);
 		return new PatchRunner(patches, {
 			signaturePolicy: "force",
 			telemetryLevel,
@@ -489,7 +544,7 @@ export class Manager {
 	async fetchNativeTarget(
 		spec: string,
 		options?: {
-			platform?: string;
+			platform?: NativeArtifactPlatform;
 			forceDownload?: boolean;
 		},
 	): Promise<NativeFetchResult> {
@@ -504,7 +559,7 @@ export class Manager {
 	async pullNativeCleanJs(
 		spec: string,
 		options: {
-			platform?: string;
+			platform?: NativeArtifactPlatform;
 			forceDownload?: boolean;
 			outputRoot?: string;
 		} = {},
@@ -662,22 +717,12 @@ export class Manager {
 		return getStatus(options);
 	}
 
-	// ── Combined update flow ────────────────────────────────────────────────
+	// ── Native build and update flow ───────────────────────────────────────
 
-	async updateNative(
+	async buildNative(
 		spec: string,
-		options: {
-			platform?: string;
-			forceDownload?: boolean;
-			promoteOptions?: PromoteOptions;
-		} = {},
-	): Promise<{
-		fetchResult: NativeFetchResult;
-		patchOutputPath: string;
-		patchResult?: PatchResult;
-		promoteResult?: PromoteResult;
-		dryRun: boolean;
-	}> {
+		options: NativeBuildOptions = {},
+	): Promise<NativeBuildResult> {
 		// Step 1: Fetch
 		const fetchResult = await this.fetchNativeTarget(spec, {
 			platform: options.platform,
@@ -689,9 +734,14 @@ export class Manager {
 			.toISOString()
 			.replace(/[-:]/g, "")
 			.replace(/\.\d+Z$/, "");
-		const buildsDir = path.join(path.dirname(fetchResult.binaryPath), "builds");
-		let patchOutputPath = path.join(buildsDir, `${ts}-claude`);
+		let patchOutputPath = getNativeBuildOutputPath(
+			fetchResult.binaryPath,
+			fetchResult.platform,
+			ts,
+		);
+		const buildsDir = path.dirname(patchOutputPath);
 		let patchResult: PatchResult | undefined;
+		let artifactReceipt = null;
 		const shouldUsePatchedBuildCache =
 			this.options.patch !== false && !this.options.force;
 		let patchCacheMeta:
@@ -725,6 +775,7 @@ export class Manager {
 				...this.options,
 				target: fetchResult.binaryPath,
 				outputPath: patchOutputPath,
+				patchSelection: this.patchSelection,
 			});
 			const report = await patchManager.processTarget();
 			if (report?.error) {
@@ -756,17 +807,17 @@ export class Manager {
 			const cleanCliPath = path.join(tempDir, "clean-cli.js");
 			const patchedCliPath = path.join(tempDir, "patched-cli.js");
 			try {
-				await Promise.all([
-					this.unpackNativeTarget(fetchResult.binaryPath, cleanCliPath, {
-						normalize: false,
-					}),
-					this.unpackNativeTarget(patchOutputPath, patchedCliPath, {
-						normalize: false,
-					}),
-				]);
+				await this.unpackNativeTarget(fetchResult.binaryPath, cleanCliPath, {
+					normalize: false,
+				});
+				forceGarbageCollection();
+				await this.unpackNativeTarget(patchOutputPath, patchedCliPath, {
+					normalize: false,
+				});
 				const anchorResult = await verifyCliAnchors({
 					patchedCliPath,
 					cleanCliPath,
+					selectedPatches: this.patchSelection.patches,
 					skipPatchVerifiers: this.options.fastVerify === true,
 					signatureExpectation: "allow-forced",
 				});
@@ -791,22 +842,68 @@ export class Manager {
 				fetchResult,
 				patchOutputPath,
 				patchResult,
+				artifactReceipt,
 				dryRun: true,
 			};
 		}
 
-		// Step 4: Promote
-		const promoteResult = promoteTarget(
-			patchOutputPath,
-			options.promoteOptions,
-		);
+		if (this.options.patch !== false) {
+			const receiptMeta =
+				patchCacheMeta ?? (await this.computePatchedBuildCacheKey(fetchResult));
+			const manifestEvidence = await verifyNativeManifestEntry({
+				manifestPath: fetchResult.manifestPath,
+				version: fetchResult.version,
+				platform: fetchResult.platform,
+				checksum: fetchResult.checksum,
+			});
+			if (
+				manifestEvidence.size !== fsSync.statSync(fetchResult.binaryPath).size
+			) {
+				throw new Error(
+					`${fetchResult.platform} artifact size does not match its manifest entry`,
+				);
+			}
+			const structuralEvidence = await verifyNativeArtifactStructure({
+				platform: fetchResult.platform,
+				cleanPath: fetchResult.binaryPath,
+				patchedPath: patchOutputPath,
+			});
+			artifactReceipt = createStructuralArtifactReceipt({
+				version: fetchResult.version,
+				platform: fetchResult.platform,
+				upstreamChecksum: fetchResult.checksum,
+				cleanSha256: structuralEvidence.cleanSha256,
+				patchedSha256: structuralEvidence.patchedSha256,
+				profile: this.patchSelection.receipt,
+				patcherRevision: receiptMeta.revision,
+				createdAt: new Date().toISOString(),
+			});
+		}
 
 		return {
 			fetchResult,
 			patchOutputPath,
 			patchResult,
-			promoteResult,
+			artifactReceipt,
 			dryRun: false,
+		};
+	}
+
+	async updateNative(
+		spec: string,
+		options: NativeUpdateOptions = {},
+	): Promise<NativeUpdateResult> {
+		const buildResult = await this.buildNative(spec, options);
+		if (buildResult.dryRun) return buildResult;
+
+		const promoteResult = promoteTarget(
+			buildResult.patchOutputPath,
+			options.promoteOptions,
+		);
+
+		return {
+			...buildResult,
+			promoteResult,
 		};
 	}
 

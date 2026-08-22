@@ -1,0 +1,15 @@
+title = "cc-enhanced secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic Sol routing selector"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+paths = [
+  '''^docs/subscription-routing/templates/claudex$''',
+  '''^docs/subscription-routing/test-client-compatibility\.sh$''',
+]
+regexes = ['''clodex:openai-oauth:gpt-5\.6-sol(?:=max)?''']

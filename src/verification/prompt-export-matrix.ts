@@ -121,7 +121,6 @@ async function collectPromptDependencies(
 	let slotCount = 0;
 	let invalidReferenceCount = 0;
 	let unusedMappingCount = 0;
-	let hashCoverageComplete = true;
 	const signatureCounts = new Map<string, number>();
 	for (const [index, rawPrompt] of parsed.prompts.entries()) {
 		if (!isRecord(rawPrompt)) {
@@ -139,14 +138,17 @@ async function collectPromptDependencies(
 			);
 		}
 		const rawExpressionHashMap = rawPrompt.expressionHashMap;
-		if (rawExpressionHashMap !== undefined && !isRecord(rawExpressionHashMap)) {
+		if (rawExpressionHashMap === undefined) {
+			throw new Error(
+				`Prompt corpus entry ${index} is missing expressionHashMap at ${corpusPath}`,
+			);
+		}
+		if (!isRecord(rawExpressionHashMap)) {
 			throw new Error(
 				`Prompt corpus entry ${index} has an invalid expressionHashMap at ${corpusPath}`,
 			);
 		}
-		const expressionHashMap = isRecord(rawExpressionHashMap)
-			? rawExpressionHashMap
-			: undefined;
+		const expressionHashMap = rawExpressionHashMap;
 		const identifiers = rawPrompt.identifiers.map((identifier) => {
 			if (!Number.isSafeInteger(identifier) || Number(identifier) < 0) {
 				throw new Error(
@@ -172,31 +174,29 @@ async function collectPromptDependencies(
 				);
 			}
 		}
-		if (expressionHashMap) {
-			const hashKeys = Object.keys(expressionHashMap).sort(
-				(left, right) =>
-					Number(left) - Number(right) || left.localeCompare(right),
+		const hashKeys = Object.keys(expressionHashMap).sort(
+			(left, right) =>
+				Number(left) - Number(right) || left.localeCompare(right),
+		);
+		if (
+			mappingKeys.length !== hashKeys.length ||
+			mappingKeys.some((key, keyIndex) => key !== hashKeys[keyIndex])
+		) {
+			throw new Error(
+				`Prompt corpus entry ${index} identifier and expression hash mappings differ at ${corpusPath}`,
 			);
+		}
+		for (const key of mappingKeys) {
+			const expressionHash = expressionHashMap[key];
 			if (
-				mappingKeys.length !== hashKeys.length ||
-				mappingKeys.some((key, keyIndex) => key !== hashKeys[keyIndex])
+				typeof expressionHash !== "string" ||
+				!SHA256_RE.test(expressionHash)
 			) {
 				throw new Error(
-					`Prompt corpus entry ${index} identifier and expression hash mappings differ at ${corpusPath}`,
+					`Prompt corpus entry ${index} has an invalid expression hash at ${corpusPath}`,
 				);
 			}
-			for (const key of mappingKeys) {
-				const expressionHash = expressionHashMap[key];
-				if (
-					typeof expressionHash !== "string" ||
-					!SHA256_RE.test(expressionHash)
-				) {
-					throw new Error(
-						`Prompt corpus entry ${index} has an invalid expression hash at ${corpusPath}`,
-					);
-				}
-				expressionHashes[key] = expressionHash;
-			}
+			expressionHashes[key] = expressionHash;
 		}
 		const referencedKeys = new Set(identifiers.map(String));
 		invalidReferenceCount += [...referencedKeys].filter(
@@ -208,10 +208,6 @@ async function collectPromptDependencies(
 		slotCount += identifiers.length;
 		if (identifiers.length === 0 && mappingKeys.length === 0) continue;
 		templatedPromptCount += 1;
-		if (!expressionHashMap) {
-			hashCoverageComplete = false;
-			continue;
-		}
 		const signature = sha256(
 			JSON.stringify({
 				identifiers,
@@ -234,7 +230,7 @@ async function collectPromptDependencies(
 		uniqueSignatureCount: signatureCounts.size,
 		invalidReferenceCount,
 		unusedMappingCount,
-		hashCoverageComplete,
+		hashCoverageComplete: true,
 		signatureCounts: sortedSignatureCounts,
 	};
 }

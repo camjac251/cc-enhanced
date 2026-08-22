@@ -98,7 +98,6 @@ export class PatchRunner {
 		patches?: Patch[],
 		options?: {
 			signaturePolicy?: SignatureInjectionPolicy;
-			injectSignature?: boolean;
 			telemetryLevel?: AstPassTelemetryLevel;
 			runtime?: Partial<PatchRunnerRuntime>;
 		},
@@ -107,13 +106,7 @@ export class PatchRunner {
 		const hasSignatureSelected = selectedPatches.some(
 			(p) => p === signature || p.tag === signature.tag,
 		);
-		const signaturePolicy =
-			options?.signaturePolicy ??
-			(options?.injectSignature === undefined
-				? "auto"
-				: options.injectSignature
-					? "force"
-					: "off");
+		const signaturePolicy = options?.signaturePolicy ?? "auto";
 		this.patches = selectedPatches.filter(
 			(p) => p !== signature && p.tag !== signature.tag,
 		);

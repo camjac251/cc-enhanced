@@ -16,20 +16,7 @@ const HELPER_SOURCE = `
 async function ${HELPER_NAME}(filePath, stockOpen, runProcess, logWarning) {
   var env = typeof process !== "undefined" && process.env ? process.env : {};
   var configuredMode = env.CLAUDE_CODE_FILE_OPEN_MODE;
-  var legacyMode =
-    typeof env.CLAUDE_CODE_FILE_LINK_MODE === "string"
-      ? env.CLAUDE_CODE_FILE_LINK_MODE.trim().toLowerCase()
-      : "";
   var mode = String(configuredMode || "auto").trim().toLowerCase();
-  if (
-    !configuredMode &&
-    (legacyMode === "off" ||
-      legacyMode === "none" ||
-      legacyMode === "default" ||
-      legacyMode === "vanilla")
-  ) {
-    mode = "stock";
-  }
   if (mode === "stock" || mode === "off") return await stockOpen(filePath);
 
   var isWsl =
@@ -85,7 +72,7 @@ async function ${HELPER_NAME}(filePath, stockOpen, runProcess, logWarning) {
 }
 `;
 
-interface FileManagerBindings {
+interface StockRevealBindings {
 	revealName: string;
 	revealBindingNode: t.Node;
 	runnerName: string;
@@ -95,7 +82,7 @@ interface FileManagerBindings {
 interface StockDispatchCall {
 	awaitNode: t.AwaitExpression;
 	callNode: t.CallExpression;
-	filePathExpression: t.CallExpression;
+	filePathExpression: t.Identifier;
 	stockBindingNode: t.Node | null;
 	stockOpenName: string;
 }
@@ -103,7 +90,7 @@ interface StockDispatchCall {
 interface HelperDispatchCall {
 	awaitNode: t.AwaitExpression;
 	callNode: t.CallExpression;
-	filePathExpression: t.CallExpression | null;
+	filePathExpression: t.Identifier | null;
 	loggerBindingNode: t.Node | null;
 	loggerName: string | null;
 	runnerBindingNode: t.Node | null;
@@ -126,8 +113,8 @@ interface AllowlistLoggerCall {
 }
 
 interface FileLinkPassState {
-	bindingCandidates: FileManagerBindings[];
-	bindings?: FileManagerBindings;
+	bindingCandidates: StockRevealBindings[];
+	bindings?: StockRevealBindings;
 	dispatcherCandidates: DispatcherAnalysis[];
 	dispatcherCount: number;
 	helperCount: number;
@@ -249,9 +236,9 @@ function hasStockRunnerSuccessContract(
 	);
 }
 
-function getFileManagerBindings(
+function getDbusRevealBindings(
 	path: NodePath<t.CallExpression>,
-): FileManagerBindings | null {
+): StockRevealBindings | null {
 	const { node } = path;
 	if (!t.isIdentifier(node.callee)) return null;
 	if (node.arguments.length !== 2) return null;
@@ -288,9 +275,128 @@ function getFileManagerBindings(
 	};
 }
 
-function addFileManagerBinding(
-	bindings: FileManagerBindings[],
-	candidate: FileManagerBindings,
+function isTrueValue(node: t.Node | null | undefined): boolean {
+	return (
+		t.isBooleanLiteral(node, { value: true }) ||
+		(t.isUnaryExpression(node, { operator: "!" }) &&
+			t.isNumericLiteral(node.argument, { value: 0 }))
+	);
+}
+
+function hasStockRunnerNoThrowSuccessContract(
+	callPath: NodePath<t.CallExpression>,
+): boolean {
+	const awaitPath = callPath.parentPath;
+	if (
+		!awaitPath?.isAwaitExpression() ||
+		awaitPath.node.argument !== callPath.node
+	) {
+		return false;
+	}
+	const sequencePath = awaitPath.parentPath;
+	if (
+		!sequencePath?.isSequenceExpression() ||
+		sequencePath.node.expressions.length !== 2 ||
+		sequencePath.node.expressions[0] !== awaitPath.node ||
+		!isTrueValue(sequencePath.node.expressions[1])
+	) {
+		return false;
+	}
+	const returnPath = sequencePath.parentPath;
+	if (
+		!returnPath?.isReturnStatement() ||
+		returnPath.node.argument !== sequencePath.node
+	) {
+		return false;
+	}
+	const blockPath = returnPath.parentPath;
+	if (
+		!blockPath?.isBlockStatement() ||
+		blockPath.node.body.length !== 1 ||
+		blockPath.node.body[0] !== returnPath.node
+	) {
+		return false;
+	}
+	const tryPath = blockPath.parentPath;
+	if (
+		!tryPath?.isTryStatement() ||
+		tryPath.node.block !== blockPath.node ||
+		tryPath.node.finalizer ||
+		tryPath.node.handler?.body.body.length !== 1
+	) {
+		return false;
+	}
+	return isFalseReturn(tryPath.node.handler.body.body[0]);
+}
+
+function isExplorerSelectArguments(
+	node: t.Node | null | undefined,
+	filePathName: string,
+): boolean {
+	if (!t.isArrayExpression(node) || node.elements.length !== 1) return false;
+	const argument = node.elements[0];
+	if (
+		!t.isTemplateLiteral(argument) ||
+		argument.expressions.length !== 1 ||
+		argument.quasis.length !== 2 ||
+		argument.quasis[0]?.value.raw !== "/select," ||
+		argument.quasis[1]?.value.raw !== ""
+	) {
+		return false;
+	}
+	return t.isIdentifier(argument.expressions[0], { name: filePathName });
+}
+
+function getWindowsExplorerRevealBindings(
+	path: NodePath<t.CallExpression>,
+): StockRevealBindings | null {
+	const { node } = path;
+	if (!t.isIdentifier(node.callee)) return null;
+	if (node.arguments.length !== 2) return null;
+	if (!isStringLiteral(node.arguments[0] as t.Node, "explorer")) return null;
+
+	const functionPath = path.getFunctionParent();
+	if (
+		!functionPath?.isFunctionDeclaration() ||
+		!functionPath.parentPath?.isProgram() ||
+		functionPath.node.params.length !== 1
+	) {
+		return null;
+	}
+	const filePathParam = functionPath.node.params[0];
+	if (
+		!t.isIdentifier(filePathParam) ||
+		!isExplorerSelectArguments(
+			node.arguments[1] as t.Node,
+			filePathParam.name,
+		) ||
+		!hasStockRunnerNoThrowSuccessContract(path)
+	) {
+		return null;
+	}
+
+	const revealName = getCallableName(functionPath);
+	if (!revealName) return null;
+	const revealBindingNode = path.scope.getBinding(revealName)?.path.node;
+	const runnerBindingNode = path.scope.getBinding(node.callee.name)?.path.node;
+	if (!revealBindingNode || !runnerBindingNode) return null;
+	return {
+		revealName,
+		revealBindingNode,
+		runnerName: node.callee.name,
+		runnerBindingNode,
+	};
+}
+
+function getStockRevealBindings(
+	path: NodePath<t.CallExpression>,
+): StockRevealBindings | null {
+	return getDbusRevealBindings(path) ?? getWindowsExplorerRevealBindings(path);
+}
+
+function addStockRevealBinding(
+	bindings: StockRevealBindings[],
+	candidate: StockRevealBindings,
 ): void {
 	if (
 		bindings.some(
@@ -326,6 +432,97 @@ function isFileUrlToPathCall(
 	if (!t.isMemberExpression(node.callee)) return false;
 	if (getMemberPropertyName(node.callee) !== "fileURLToPath") return false;
 	return t.isIdentifier(node.arguments[0], { name: inputName });
+}
+
+interface GuardedFileDispatchFlow {
+	awaitNode: t.AwaitExpression;
+	callNode: t.CallExpression;
+	callPath: NodePath<t.CallExpression>;
+	filePathExpression: t.Identifier;
+}
+
+function getGuardedFileDispatchFlow(
+	statement: t.Statement,
+	inputName: string,
+	callPaths: Map<t.CallExpression, NodePath<t.CallExpression>>,
+): GuardedFileDispatchFlow | null {
+	if (
+		!t.isTryStatement(statement) ||
+		statement.finalizer ||
+		statement.block.body.length !== 3 ||
+		statement.handler?.body.body.length !== 1 ||
+		!isFalseReturn(statement.handler.body.body[0])
+	) {
+		return null;
+	}
+
+	const [decodeStatement, rejectStatement, dispatchStatement] =
+		statement.block.body;
+	if (
+		!t.isVariableDeclaration(decodeStatement) ||
+		decodeStatement.declarations.length !== 1
+	) {
+		return null;
+	}
+	const [decodeDeclaration] = decodeStatement.declarations;
+	if (
+		!t.isIdentifier(decodeDeclaration.id) ||
+		!isFileUrlToPathCall(decodeDeclaration.init, inputName)
+	) {
+		return null;
+	}
+	const decodeCallPath = callPaths.get(decodeDeclaration.init);
+	const decodedPathBinding = decodeCallPath?.scope.getBinding(
+		decodeDeclaration.id.name,
+	);
+	if (
+		!decodedPathBinding?.constant ||
+		decodedPathBinding.constantViolations.length !== 0 ||
+		decodedPathBinding.path.node !== decodeDeclaration
+	) {
+		return null;
+	}
+
+	if (
+		!t.isIfStatement(rejectStatement) ||
+		rejectStatement.alternate ||
+		!t.isCallExpression(rejectStatement.test) ||
+		!t.isIdentifier(rejectStatement.test.callee) ||
+		rejectStatement.test.arguments.length !== 1 ||
+		!t.isIdentifier(rejectStatement.test.arguments[0]) ||
+		!isFalseReturn(rejectStatement.consequent)
+	) {
+		return null;
+	}
+	const rejectCallPath = callPaths.get(rejectStatement.test);
+	if (
+		!rejectCallPath ||
+		rejectCallPath.scope.getBinding(rejectStatement.test.arguments[0].name) !==
+			decodedPathBinding
+	) {
+		return null;
+	}
+
+	if (
+		!t.isReturnStatement(dispatchStatement) ||
+		!t.isAwaitExpression(dispatchStatement.argument) ||
+		!t.isCallExpression(dispatchStatement.argument.argument)
+	) {
+		return null;
+	}
+	const awaitNode = dispatchStatement.argument as t.AwaitExpression;
+	const callNode = awaitNode.argument as t.CallExpression;
+	const callPath = callPaths.get(callNode);
+	const filePathExpression = callNode.arguments[0];
+	if (
+		!callPath ||
+		!t.isIdentifier(filePathExpression) ||
+		callPath.scope.getBinding(filePathExpression.name) !== decodedPathBinding
+	) {
+		return null;
+	}
+
+	return { awaitNode, callNode, callPath, filePathExpression };
 }
 
 function isNewUrlExpression(
@@ -516,21 +713,12 @@ function analyzeDispatcher(
 	);
 	if (hostGuardIndexes.length !== 1) return null;
 
-	const dispatchTryIndexes = fileBody.flatMap((statement, index) => {
-		if (index <= hostGuardIndexes[0] || !t.isTryStatement(statement)) return [];
-		if (!statement.handler?.body.body.some(isFalseReturn)) return [];
-		if (statement.block.body.length !== 1) return [];
-		const returnStatement = statement.block.body[0];
-		if (
-			!t.isReturnStatement(returnStatement) ||
-			!t.isAwaitExpression(returnStatement.argument) ||
-			!t.isCallExpression(returnStatement.argument.argument)
-		) {
-			return [];
-		}
-		return [index];
+	const dispatchFlows = fileBody.flatMap((statement, index) => {
+		if (index <= hostGuardIndexes[0]) return [];
+		const flow = getGuardedFileDispatchFlow(statement, inputName, callPaths);
+		return flow ? [flow] : [];
 	});
-	if (dispatchTryIndexes.length !== 1) return null;
+	if (dispatchFlows.length !== 1) return null;
 	const loggerCalls = body.slice(fileBranchIndex + 1).flatMap((statement) => {
 		const loggerCall = getAllowlistLoggerCall(statement, protocolName);
 		return loggerCall ? [loggerCall] : [];
@@ -544,17 +732,9 @@ function analyzeDispatcher(
 
 	const helperCalls: HelperDispatchCall[] = [];
 	const stockCalls: StockDispatchCall[] = [];
-	const dispatchTry = fileBody[dispatchTryIndexes[0]] as t.TryStatement;
-	const returnStatement = dispatchTry.block.body[0] as t.ReturnStatement & {
-		argument: t.AwaitExpression;
-	};
-	const awaitNode = returnStatement.argument;
-	const callNode = awaitNode.argument as t.CallExpression;
-	const callPath = callPaths.get(callNode);
-	if (
-		!callPath ||
-		callPath.scope.getBinding(loggerName)?.path.node !== loggerBindingNode
-	) {
+	const { awaitNode, callNode, callPath, filePathExpression } =
+		dispatchFlows[0];
+	if (callPath.scope.getBinding(loggerName)?.path.node !== loggerBindingNode) {
 		return null;
 	}
 
@@ -571,12 +751,7 @@ function analyzeDispatcher(
 		helperCalls.push({
 			awaitNode,
 			callNode,
-			filePathExpression: isFileUrlToPathCall(
-				callNode.arguments[0] as t.Node,
-				inputName,
-			)
-				? (callNode.arguments[0] as t.CallExpression)
-				: null,
+			filePathExpression,
 			stockOpenName,
 			stockBindingNode: stockOpenName
 				? (callPath.scope.getBinding(stockOpenName)?.path.node ?? null)
@@ -592,13 +767,12 @@ function analyzeDispatcher(
 		});
 	} else if (
 		t.isIdentifier(callNode.callee) &&
-		callNode.arguments.length === 1 &&
-		isFileUrlToPathCall(callNode.arguments[0] as t.Node, inputName)
+		callNode.arguments.length === 1
 	) {
 		stockCalls.push({
 			awaitNode,
 			callNode,
-			filePathExpression: callNode.arguments[0] as t.CallExpression,
+			filePathExpression,
 			stockOpenName: callNode.callee.name,
 			stockBindingNode:
 				callPath.scope.getBinding(callNode.callee.name)?.path.node ?? null,
@@ -641,7 +815,7 @@ function buildHelperStatement(): t.FunctionDeclaration {
 
 function buildHelperCall(
 	stockCall: StockDispatchCall,
-	bindings: FileManagerBindings,
+	bindings: StockRevealBindings,
 	dispatcher: DispatcherAnalysis,
 ): t.CallExpression {
 	return t.callExpression(t.identifier(HELPER_NAME), [
@@ -668,9 +842,9 @@ function createFileLinkPasses(): PatchAstPass[] {
 			pass: "discover",
 			visitor: {
 				CallExpression(path) {
-					const candidate = getFileManagerBindings(path);
+					const candidate = getStockRevealBindings(path);
 					if (!candidate) return;
-					addFileManagerBinding(state.bindingCandidates, candidate);
+					addStockRevealBinding(state.bindingCandidates, candidate);
 				},
 				FunctionDeclaration(path) {
 					if (
@@ -793,7 +967,7 @@ function createFileLinkPasses(): PatchAstPass[] {
 }
 
 interface VerificationEvidence {
-	bindings: FileManagerBindings[];
+	bindings: StockRevealBindings[];
 	dispatchers: DispatcherAnalysis[];
 	helpers: t.FunctionDeclaration[];
 }
@@ -807,8 +981,8 @@ function collectVerificationEvidence(ast: t.File): VerificationEvidence {
 	};
 	traverse(ast, {
 		CallExpression(path) {
-			const candidate = getFileManagerBindings(path);
-			if (candidate) addFileManagerBinding(evidence.bindings, candidate);
+			const candidate = getStockRevealBindings(path);
+			if (candidate) addStockRevealBinding(evidence.bindings, candidate);
 		},
 		FunctionDeclaration(path) {
 			if (path.parentPath?.isProgram() && path.node.id?.name === HELPER_NAME) {

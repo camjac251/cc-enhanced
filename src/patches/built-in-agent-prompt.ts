@@ -111,7 +111,7 @@ Analysis methodology:
 4. Implementation details: note edge cases, performance considerations, and technical debt.
 
 Efficiency rules:
-- ${MODERN_CODE_SEARCH_POLICY}
+- Route each lookup by the intent list in Guidelines above; do not fall back to broad text search for code
 - Make efficient use of the tools that you have at your disposal: search broadly only when needed, then read selectively
 - Wherever possible you should try to spawn multiple parallel tool calls for searching and reading files`,
 	],

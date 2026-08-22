@@ -6,6 +6,7 @@ import {
 	getPointerContent,
 	mapEntryPointModule,
 	parseOffsets,
+	replaceEntryPointModuleInPlace,
 	SIZEOF_OFFSETS,
 	toWriteError,
 } from "./bun-format.js";
@@ -253,46 +254,19 @@ export function repackNativeLinuxBinary(
 	const extracted = extractClaudeJsFromNativeLinux(filePath);
 	emitMemoryCheckpoint("linux-repack.extracted");
 
-	// Bun 1.3+ validates overlay integrity via memory-mapped PT_LOAD segments.
-	// Rebuilding the overlay (appending data, changing byteCount) breaks this.
-	// Instead, patch in-place: write the new content over the bytecode area
-	// (which is zeroed anyway) and update the module's content pointer.
-	const claudeModule = findEntryPointModule(
-		extracted.bunBlob,
-		extracted.bunOffsets,
-		extracted.moduleStructSize,
-	);
-
-	if (modifiedClaudeJs.length > claudeModule.bytecodeLen) {
-		throw new Error(
-			`Modified JS (${modifiedClaudeJs.length} bytes) exceeds bytecode area (${claudeModule.bytecodeLen} bytes)`,
-		);
-	}
-
-	// Copy the full binary (we patch in-place)
 	const patchedBinary = Buffer.from(extracted.binary);
 	emitMemoryCheckpoint("linux-repack.binary-copied");
 	const dataStart = extracted.bunBlobStart;
-
-	// Write new content over the bytecode region
-	const newContentOff = claudeModule.bytecodeOff;
-	modifiedClaudeJs.copy(patchedBinary, dataStart + newContentOff);
-	// Null-terminate
-	if (modifiedClaudeJs.length < claudeModule.bytecodeLen) {
-		patchedBinary[dataStart + newContentOff + modifiedClaudeJs.length] = 0;
-	}
-
-	// Update content pointer to the new location
-	const moduleEntryBase =
-		dataStart +
-		extracted.bunOffsets.modulesPtr.offset +
-		claudeModule.index * extracted.moduleStructSize;
-	patchedBinary.writeUInt32LE(newContentOff, moduleEntryBase + 8); // contents.offset
-	patchedBinary.writeUInt32LE(modifiedClaudeJs.length, moduleEntryBase + 12); // contents.length
-
-	// Zero out bytecode pointer
-	patchedBinary.writeUInt32LE(0, moduleEntryBase + 24);
-	patchedBinary.writeUInt32LE(0, moduleEntryBase + 28);
+	const patchedBunBlob = patchedBinary.subarray(
+		dataStart,
+		dataStart + extracted.bunBlob.length,
+	);
+	replaceEntryPointModuleInPlace(
+		patchedBunBlob,
+		extracted.bunOffsets,
+		extracted.moduleStructSize,
+		modifiedClaudeJs,
+	);
 
 	if (outputPath === filePath) {
 		writeBinaryAtomically(filePath, patchedBinary);
@@ -306,23 +280,4 @@ export function repackNativeLinuxBinary(
 	} catch (error) {
 		throw toWriteError(error, outputPath);
 	}
-}
-
-function findEntryPointModule(
-	bunBlob: Buffer,
-	bunOffsets: BunOffsets,
-	moduleStructSize: number,
-): { index: number; bytecodeOff: number; bytecodeLen: number } {
-	const entryPoint = mapEntryPointModule(
-		bunBlob,
-		bunOffsets,
-		moduleStructSize,
-		(module, moduleIndex) => ({
-			index: moduleIndex,
-			bytecodeOff: module.bytecode.offset,
-			bytecodeLen: module.bytecode.length,
-		}),
-	);
-	if (entryPoint) return entryPoint;
-	throw new Error("Could not locate entry-point module for in-place repack");
 }

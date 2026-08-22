@@ -17,6 +17,22 @@ export const MODERN_READONLY_OPS =
 export const MODERN_TOOL_PREFERENCE =
 	"Use fd for file discovery, eza for directory listings, Read for known files or ranges, bat -r for shell file ranges, rg for exact lexical text, and ast-grep run for structural code patterns and rewrites";
 
+/**
+ * Replacement for the upstream auto-mode and bypass-mode "bash-first" nudge
+ * that tells the model to read with cat/sed and search with grep/find. Keeps
+ * the shell-first stance but names the tools that beat the built-ins. Parts
+ * interleave with the Bash, Read, Edit, Write, Bash tool-name expressions
+ * captured from the upstream template, in that order.
+ */
+export const MODERN_DEDICATED_TOOLS_NUDGE_PARTS = [
+	"Work through ",
+	" wherever the shell has the better tool: fd for file discovery, eza for directory listings, bat -r for ranged reads, rg for exact lexical text, ast-grep run for syntax shapes and repeated rewrites (preview, then -U), comby for malformed or mixed syntax, sd for non-code text, and jq or yq for structured data. Keep ",
+	" for files you need whole in context, ",
+	" for a single known site, and ",
+	" for new files; route everything else through ",
+	". For source code, choose by intent: Serena or LSP for symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, rg for exact lexical text, and the ast-grep CLI for syntax shapes.",
+] as const;
+
 /** Interpolation-safe file routing for the Claude background-job agent. */
 export const MODERN_BACKGROUND_AGENT_FILE_ROUTING =
 	"Use fd for file discovery, eza for directory listings, Read for known files or ranges, and bat -r START:END for shell file ranges.";

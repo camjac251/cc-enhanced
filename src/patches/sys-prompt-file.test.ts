@@ -24,7 +24,7 @@ async function handleAppend(M) {
     if (M.appendSystemPrompt) throw new Error("conflict");
     try {
       let V$ = path.resolve(M.appendSystemPromptFile);
-      GH = await fs.readFile(V$, "utf8");
+      GH = decodePrompt(await fs.readFile(V$));
     } catch (V$) {
       throw V$;
     }
@@ -36,7 +36,7 @@ async function handleAppend(M) {
 function countAutoAppendReadAssignments(output: string): number {
 	return (
 		output.match(
-			/GH\s*=\s*await\s*fs\.readFile\(\s*resolvedSystemPromptFile\s*,\s*"utf8"\s*\)/g,
+			/GH\s*=\s*decodePrompt\(await\s*fs\.readFile\(\s*resolvedSystemPromptFile\s*\)\)/g,
 		)?.length ?? 0
 	);
 }
@@ -74,7 +74,7 @@ async function unrelated(M) {
     let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";
     try {
       let resolvedSystemPromptFile = path.resolve(configuredSystemPromptFilePath);
-      GH = await fs.readFile(resolvedSystemPromptFile, "utf8");
+      GH = decodePrompt(await fs.readFile(resolvedSystemPromptFile));
     } catch (err) {}
   }
 }
@@ -138,8 +138,8 @@ test("sys-prompt-file verify rejects an auto-read callee that differs from the a
 	await runSystemPromptFileViaPasses(ast);
 	const output = print(ast);
 	const mismatched = output.replace(
-		/fs\.readFile\(\s*resolvedSystemPromptFile,\s*"utf8"\s*\)/,
-		'other.readFile(resolvedSystemPromptFile, "utf8")',
+		/fs\.readFile\(\s*resolvedSystemPromptFile\s*\)/,
+		"other.readFile(resolvedSystemPromptFile)",
 	);
 	assert.notEqual(mismatched, output);
 
@@ -201,7 +201,7 @@ async function handleAppend(M) {
     if (M.appendSystemPrompt) throw new Error("conflict");
     try {
       let V$ = path.resolve(M.appendSystemPromptFile);
-      GH = await fs.readFile(V$, "utf8");
+      GH = decodePrompt(await fs.readFile(V$));
     } catch (V$) {
       throw V$;
     }
@@ -233,7 +233,7 @@ async function handleAppend(M) {
     let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";
     try {
       let resolvedSystemPromptFile = path.resolve(configuredSystemPromptFilePath);
-      GH = await fs.readFile(resolvedSystemPromptFile, "utf8");
+      GH = decodePrompt(await fs.readFile(resolvedSystemPromptFile));
     } catch (err) {
       if (!err || err.code !== "ENOENT") throw err;
     }
@@ -242,7 +242,7 @@ async function handleAppend(M) {
     if (M.appendSystemPrompt) throw new Error("conflict");
     try {
       let V$ = path.resolve(M.appendSystemPromptFile);
-      GH = await fs.readFile(V$, "utf8");
+      GH = decodePrompt(await fs.readFile(V$));
     } catch (V$) {
       throw V$;
     }

@@ -9,6 +9,7 @@ import {
 	BACKGROUND_TASK_POLICY_LINES,
 	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
 	MODERN_CODE_TOOL_SELF_CHECK,
+	MODERN_DEDICATED_TOOLS_NUDGE_PARTS,
 	MODERN_STDOUT_CAP,
 	MODERN_TOOL_PREFERENCE,
 	STRONG_CLAUDEMD_DISCLAIMER_LINES,
@@ -117,6 +118,72 @@ test("verifyCliAnchors runs per-patch verifiers in artifact phase", async () => 
 	}
 });
 
+test("verifyCliAnchors scopes patch verification and signature parity to the supplied selection", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "anchor-verify-selected-patches-"),
+	);
+	const patchedCliPath = path.join(tempDir, "patched-cli.js");
+	const cleanCliPath = path.join(tempDir, "clean-cli.js");
+	const selectedPatch = allPatches.find(
+		(patch) => patch.tag === "claudemd-strong",
+	);
+	const excludedPatch = allPatches.find(
+		(patch) => patch.tag === "effort-stack",
+	);
+	const signaturePatch = allPatches.find((patch) => patch.tag === "signature");
+	assert.ok(selectedPatch);
+	assert.ok(excludedPatch);
+	assert.ok(signaturePatch);
+	const selectedVerify = selectedPatch.verify;
+	const excludedVerify = excludedPatch.verify;
+	let selectedCalls = 0;
+	let excludedCalls = 0;
+	selectedPatch.verify = () => {
+		selectedCalls += 1;
+		return true;
+	};
+	excludedPatch.verify = () => {
+		excludedCalls += 1;
+		return true;
+	};
+
+	try {
+		await fs.writeFile(
+			patchedCliPath,
+			'const marker = "(Claude Code; patched: claudemd-strong)";',
+			"utf-8",
+		);
+		await fs.writeFile(cleanCliPath, "const marker = 2;", "utf-8");
+		const result = await verifyCliAnchors({
+			patchedCliPath,
+			cleanCliPath,
+			selectedPatches: [selectedPatch, signaturePatch],
+			signatureExpectation: "selected",
+		});
+
+		assert.equal(selectedCalls, 1);
+		assert.equal(excludedCalls, 0);
+		assert.deepEqual(result.expectedPatchTags, ["claudemd-strong"]);
+		assert.deepEqual(result.actualSignatureTags, ["claudemd-strong"]);
+		assert.equal(
+			result.failures.some((failure) => failure.scope === "patch-verify"),
+			false,
+		);
+		assert.equal(
+			result.failures.some(
+				(failure) =>
+					failure.id === "signature-missing-tags" ||
+					failure.id === "signature-extra-tags",
+			),
+			false,
+		);
+	} finally {
+		selectedPatch.verify = selectedVerify;
+		excludedPatch.verify = excludedVerify;
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
 test("verifyCliAnchors parses the patched bundle once", async () => {
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "anchor-verify-single-parse-"),
@@ -217,6 +284,7 @@ test("verifyCliAnchors passes when patched fixture satisfies required anchors", 
 }`,
 		MODERN_TOOL_PREFERENCE,
 		MODERN_STDOUT_CAP,
+		MODERN_DEDICATED_TOOLS_NUDGE_PARTS.join(""),
 		'return "patched";',
 		"if (A.offset !== void 0 || A.limit !== void 0 || A.range !== void 0) return null;",
 		signature,

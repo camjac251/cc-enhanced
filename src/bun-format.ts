@@ -170,6 +170,116 @@ export function mapEntryPointModule<T>(
 	return visitor(module, moduleIndex);
 }
 
+export interface BunEntryPointReplacement {
+	moduleIndex: number;
+	moduleEntryOffset: number;
+	bytecodeOffset: number;
+	bytecodeCapacity: number;
+}
+
+function assertBoundedRange(
+	label: string,
+	offset: number,
+	length: number,
+	bufferLength: number,
+): void {
+	if (
+		!Number.isSafeInteger(offset) ||
+		!Number.isSafeInteger(length) ||
+		offset < 0 ||
+		length < 0 ||
+		offset + length > bufferLength
+	) {
+		throw new Error(
+			`${label} range (${offset}+${length}) exceeds Bun blob (${bufferLength} bytes)`,
+		);
+	}
+}
+
+export function replaceEntryPointModuleInPlace(
+	bunBlob: Buffer,
+	bunOffsets: BunOffsets,
+	moduleStructSize: number,
+	modifiedClaudeJs: Buffer,
+): BunEntryPointReplacement {
+	assertBoundedRange(
+		"Module table",
+		bunOffsets.modulesPtr.offset,
+		bunOffsets.modulesPtr.length,
+		bunBlob.length,
+	);
+	if (
+		moduleStructSize !== SIZEOF_MODULE_OLD &&
+		moduleStructSize !== SIZEOF_MODULE_NEW
+	) {
+		throw new Error(`Unsupported Bun module struct size: ${moduleStructSize}`);
+	}
+	if (bunOffsets.modulesPtr.length % moduleStructSize !== 0) {
+		throw new Error(
+			`Bun module table length (${bunOffsets.modulesPtr.length}) is not divisible by module struct size (${moduleStructSize})`,
+		);
+	}
+
+	const moduleCount = bunOffsets.modulesPtr.length / moduleStructSize;
+	const moduleIndex = bunOffsets.entryPointId;
+	if (moduleIndex >= moduleCount) {
+		throw new Error(
+			`Bun entry-point module index (${moduleIndex}) exceeds module count (${moduleCount})`,
+		);
+	}
+	const moduleEntryOffset =
+		bunOffsets.modulesPtr.offset + moduleIndex * moduleStructSize;
+	assertBoundedRange(
+		"Entry-point module",
+		moduleEntryOffset,
+		moduleStructSize,
+		bunBlob.length,
+	);
+	const module = parseModule(bunBlob, moduleEntryOffset, moduleStructSize);
+	assertBoundedRange(
+		"Entry-point bytecode",
+		module.bytecode.offset,
+		module.bytecode.length,
+		bunBlob.length,
+	);
+
+	if (modifiedClaudeJs.length > module.bytecode.length) {
+		throw new Error(
+			`Modified JS (${modifiedClaudeJs.length} bytes) exceeds bytecode area (${module.bytecode.length} bytes)`,
+		);
+	}
+	if (modifiedClaudeJs.length > 0xffff_ffff) {
+		throw new Error(
+			`Modified JS (${modifiedClaudeJs.length} bytes) exceeds Bun pointer capacity`,
+		);
+	}
+
+	const moduleEntryEnd = moduleEntryOffset + moduleStructSize;
+	const bytecodeEnd = module.bytecode.offset + module.bytecode.length;
+	if (
+		module.bytecode.offset < moduleEntryEnd &&
+		bytecodeEnd > moduleEntryOffset
+	) {
+		throw new Error("Entry-point bytecode overlaps its module metadata");
+	}
+
+	modifiedClaudeJs.copy(bunBlob, module.bytecode.offset);
+	if (modifiedClaudeJs.length < module.bytecode.length) {
+		bunBlob[module.bytecode.offset + modifiedClaudeJs.length] = 0;
+	}
+	bunBlob.writeUInt32LE(module.bytecode.offset, moduleEntryOffset + 8);
+	bunBlob.writeUInt32LE(modifiedClaudeJs.length, moduleEntryOffset + 12);
+	bunBlob.writeUInt32LE(0, moduleEntryOffset + 24);
+	bunBlob.writeUInt32LE(0, moduleEntryOffset + 28);
+
+	return {
+		moduleIndex,
+		moduleEntryOffset,
+		bytecodeOffset: module.bytecode.offset,
+		bytecodeCapacity: module.bytecode.length,
+	};
+}
+
 export function toWriteError(error: unknown, targetPath: string): Error {
 	const fallback =
 		error instanceof Error ? error.message : String(error ?? "Unknown error");

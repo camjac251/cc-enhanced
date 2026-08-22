@@ -2,19 +2,29 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
-import { disableTools } from "./tools-off.js";
+import type { Patch } from "../types.js";
+import {
+	CLI_FULL_TOOL_DISABLE_POLICY,
+	DESKTOP_TOOL_DISABLE_POLICY,
+	disableTools,
+	disableToolsDesktop,
+} from "./tools-off.js";
 
-async function runToolsOffViaPasses(ast: any): Promise<void> {
-	const passes = (await disableTools.astPasses?.(ast)) ?? [];
+async function runPatchViaPasses(patch: Patch, ast: any): Promise<void> {
+	const passes = (await patch.astPasses?.(ast)) ?? [];
 	await runCombinedAstPasses(
 		ast,
-		passes.map((pass) => ({ tag: disableTools.tag, pass })),
+		passes.map((pass) => ({ tag: patch.tag, pass })),
 		() => {},
 		() => {},
 		(_tag, error) => {
 			throw error;
 		},
 	);
+}
+
+async function runToolsOffViaPasses(ast: any): Promise<void> {
+	await runPatchViaPasses(disableTools, ast);
 }
 
 const TOOL_FIXTURE = `
@@ -87,6 +97,104 @@ const skillConfig = {
   filePatternTools: ["Read", "Bash"]
 };
 `;
+
+const DESKTOP_TOOL_FIXTURE = `
+const builtinTools = [
+  { name: "Grep", description: "core grep", inputSchema: {}, prompt: "p", isEnabled() { return grepGate(); }, call() {} },
+  { name: "Glob", description: "core glob", inputSchema: {}, prompt: "p", isEnabled() { return globGate(); }, call() {} },
+  { name: "WebSearch", description: "core search", inputSchema: {}, prompt: "p", isEnabled() { return searchGate(); }, call() {} },
+  { name: "WebFetch", description: "core fetch", inputSchema: {}, prompt: "p", isEnabled() { return fetchGate(); }, call() {} },
+  { name: "TaskOutput", description: "core output", inputSchema: {}, prompt: "p", isEnabled() { return outputGate(); }, call() {} },
+  { name: "NotebookEdit", description: "desktop notebook one", inputSchema: {}, prompt: "p", isEnabled() { return notebookGateOne(); }, call() {} },
+  { name: "NotebookEdit", description: "desktop notebook two", inputSchema: {}, prompt: "p", isEnabled() { return notebookGateTwo(); }, call() {} },
+];
+const skillConfig = { filePatternTools: ["Read", "Bash"] };
+`;
+
+test("tool-disable policies are deeply immutable and preserve the CLI contract", () => {
+	assert.equal(Object.isFrozen(CLI_FULL_TOOL_DISABLE_POLICY), true);
+	assert.equal(
+		Object.isFrozen(CLI_FULL_TOOL_DISABLE_POLICY.disabledTools),
+		true,
+	);
+	assert.equal(
+		Object.isFrozen(CLI_FULL_TOOL_DISABLE_POLICY.retainedTools),
+		true,
+	);
+	assert.deepEqual(CLI_FULL_TOOL_DISABLE_POLICY.disabledTools, [
+		"Grep",
+		"Glob",
+		"WebSearch",
+		"WebFetch",
+		"NotebookEdit",
+		"TaskOutput",
+	]);
+	assert.deepEqual(CLI_FULL_TOOL_DISABLE_POLICY.retainedTools, []);
+
+	assert.equal(Object.isFrozen(DESKTOP_TOOL_DISABLE_POLICY), true);
+	assert.equal(
+		Object.isFrozen(DESKTOP_TOOL_DISABLE_POLICY.disabledTools),
+		true,
+	);
+	assert.equal(
+		Object.isFrozen(DESKTOP_TOOL_DISABLE_POLICY.retainedTools),
+		true,
+	);
+	assert.deepEqual(DESKTOP_TOOL_DISABLE_POLICY.disabledTools, [
+		"Grep",
+		"Glob",
+		"WebSearch",
+		"WebFetch",
+		"TaskOutput",
+	]);
+	assert.deepEqual(DESKTOP_TOOL_DISABLE_POLICY.retainedTools, ["NotebookEdit"]);
+});
+
+test("tools-off-desktop disables core tools while retaining every NotebookEdit registration", async () => {
+	const stringPatched =
+		disableToolsDesktop.string?.(DESKTOP_TOOL_FIXTURE) ?? DESKTOP_TOOL_FIXTURE;
+	const ast = parse(stringPatched);
+	await runPatchViaPasses(disableToolsDesktop, ast);
+	const output = print(ast);
+
+	for (const removedGate of [
+		"grepGate",
+		"globGate",
+		"searchGate",
+		"fetchGate",
+		"outputGate",
+	]) {
+		assert.doesNotMatch(output, new RegExp(`${removedGate}\\(`));
+	}
+	assert.match(output, /notebookGateOne\(\)/);
+	assert.match(output, /notebookGateTwo\(\)/);
+	assert.equal((output.match(/name: "NotebookEdit"/g) ?? []).length, 2);
+	assert.equal(disableToolsDesktop.verify(output, ast), true);
+});
+
+test("tools-off-desktop verification rejects a missing or hard-disabled NotebookEdit", async () => {
+	const missing = DESKTOP_TOOL_FIXTURE.replace(
+		/^.*name: "NotebookEdit".*\n/gm,
+		"",
+	);
+	const missingAst = parse(missing);
+	await runPatchViaPasses(disableToolsDesktop, missingAst);
+	assert.match(
+		String(disableToolsDesktop.verify(print(missingAst), missingAst)),
+		/NotebookEdit.*not retained/i,
+	);
+
+	const disabled = DESKTOP_TOOL_FIXTURE.replace(
+		/return notebookGateOne\(\);/,
+		"return false;",
+	);
+	const disabledAst = parse(disabled);
+	await runPatchViaPasses(disableToolsDesktop, disabledAst);
+	assert.match(
+		String(disableToolsDesktop.verify(print(disabledAst), disabledAst)),
+		/NotebookEdit.*disabled registration/i,
+	);
+});
 
 test("tools-off verify accepts prompt cleanup when tools are still disabled", async () => {
 	const stringPatched = disableTools.string?.(TOOL_FIXTURE) ?? TOOL_FIXTURE;

@@ -393,12 +393,20 @@ convention. The ceiling is account-scoped and read from the Codex catalog at
 model-refresh time, so it is not a fixed number; a plan with a smaller ceiling
 gets a smaller `max` stop rather than a value that would be clamped upstream.
 
-The launcher calls `clodex models --export-cc-catalog`, so it needs a Clodex build
-that has that flag. Point `CLODEX_BIN_PATH` at one when the packaged Clodex on
-`PATH` predates it; both the install recipe and `verify-static.sh` honour it, so
-verification checks the same binary the launcher uses. When the export is
-unavailable the launcher falls back to the standard stop and says so on stderr,
-which is safe but leaves `--1m` inert.
+The launcher calls `clodex models --json` and maps the result to Claude Code's
+catalog schema itself, so that schema stays this patcher's concern rather than
+Clodex's. The launcher probes `clodex models --help` before using the metadata
+surface. A build without `--json` quietly uses the bounded standard-stop
+catalog and emits one launcher warning rather than an unrelated unknown-option
+error. Point `CLODEX_BIN_PATH` at a build with `--json` and `--context` support
+when the packaged Clodex on `PATH` predates those flags; both the install recipe
+and `verify-static.sh` honour it, so verification checks the same binary the
+launcher uses.
+
+The ordinary Sol shortcut can safely use the bounded fallback. `--1m` cannot:
+it exits before launching when either metadata flag is unavailable or the
+resolved metadata fails validation, so a requested maximum window is never
+silently downgraded to the standard stop.
 
 `--1m` applies to that launch only and is never saved. To change the default:
 

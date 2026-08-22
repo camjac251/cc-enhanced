@@ -36,12 +36,18 @@ exit "${READY_EXIT:-0}"
 SH
 tee "$clodex_bin" >/dev/null <<'SH'
 #!/bin/sh
-for arg; do
-	if [ "$arg" = '--export-cc-catalog' ]; then
-		printf '%s\n' '[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"stub route","maxInputTokens":258400,"maxOutputTokens":128000}]'
+if [ "${1:-}" = 'models' ]; then
+	case " $* " in
+	*' --help '*)
+		printf '%s\n' 'Usage: clodex models [--json] [--context model=stop]'
 		exit 0
-	fi
-done
+		;;
+	*' --json '*)
+		printf '%s\n' '[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","context":{"stop":"standard","raw":272000,"effective":258400,"effectivePercent":95},"maxOutputTokens":128000,"effort":{"levels":["low","medium","high","xhigh","max"],"default":"medium"}}]'
+		exit 0
+		;;
+	esac
+fi
 printf '%s' "$0" >>"$CONTROL_LOG"
 if [ "$#" -gt 0 ]; then
 	printf ' %s' "$*" >>"$CONTROL_LOG"

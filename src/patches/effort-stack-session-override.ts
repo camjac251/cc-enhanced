@@ -1,6 +1,5 @@
+import type { NodePath } from "@babel/traverse";
 import * as t from "@babel/types";
-
-export type ExpressionContainsEffortWrite = (expr: t.Expression) => boolean;
 
 export function buildProcessEnvMember(name: string): t.MemberExpression {
 	return t.memberExpression(
@@ -162,43 +161,124 @@ export function hasPatchedEnvEffortResolverFunction(
 	);
 }
 
-function isScopedCallStatement(
-	stmt: t.Statement,
-	scopeName: string,
-): stmt is t.ExpressionStatement {
+function getObjectKeyName(node: t.Expression | t.PrivateName): string | null {
+	if (t.isIdentifier(node)) return node.name;
+	if (t.isStringLiteral(node)) return node.value;
+	return null;
+}
+
+function isEffortLevelObject(
+	node: t.Node | null | undefined,
+	valueParamName: string,
+): node is t.ObjectExpression {
+	if (!t.isObjectExpression(node) || node.properties.length !== 1) return false;
+	const [property] = node.properties;
 	return (
-		t.isExpressionStatement(stmt) &&
-		t.isCallExpression(stmt.expression) &&
-		stmt.expression.arguments.length === 1 &&
-		t.isIdentifier(stmt.expression.arguments[0], { name: scopeName })
+		t.isObjectProperty(property) &&
+		getObjectKeyName(property.key) === "effortLevel" &&
+		t.isIdentifier(property.value, { name: valueParamName })
 	);
 }
 
-function findUnpinEffortStatement(fn: t.Function): t.Statement | null {
-	if (!t.isBlockStatement(fn.body)) return null;
-	const persistParam = fn.params[1];
-	const scopeParam = fn.params[2];
+function isModelScopedEffortObject(
+	node: t.Node | null | undefined,
+	valueParamName: string,
+): node is t.ObjectExpression {
+	if (!t.isObjectExpression(node) || node.properties.length !== 1) return false;
+	const [modelSettingsProperty] = node.properties;
 	if (
-		!t.isAssignmentPattern(persistParam) ||
-		!t.isIdentifier(persistParam.left) ||
+		!t.isObjectProperty(modelSettingsProperty) ||
+		getObjectKeyName(modelSettingsProperty.key) !== "modelSettings" ||
+		!t.isObjectExpression(modelSettingsProperty.value) ||
+		modelSettingsProperty.value.properties.length !== 1
+	) {
+		return false;
+	}
+	const [modelProperty] = modelSettingsProperty.value.properties;
+	return (
+		t.isObjectProperty(modelProperty) &&
+		modelProperty.computed &&
+		isEffortLevelObject(modelProperty.value, valueParamName)
+	);
+}
+
+function isCurrentEffortSettingsBuilderCall(
+	writerPath: NodePath<t.Function>,
+	expr: t.Expression,
+	modelParamName: string,
+	valueParamName: string,
+): boolean {
+	if (
+		!t.isCallExpression(expr) ||
+		!t.isIdentifier(expr.callee) ||
+		expr.arguments.length !== 2 ||
+		!t.isIdentifier(expr.arguments[0], { name: modelParamName }) ||
+		!t.isIdentifier(expr.arguments[1], { name: valueParamName })
+	) {
+		return false;
+	}
+	const binding = writerPath.scope.getBinding(expr.callee.name);
+	if (!binding || !t.isFunctionDeclaration(binding.path.node)) return false;
+	const helper = binding.path.node;
+	if (
+		helper.params.length !== 2 ||
+		!t.isIdentifier(helper.params[0]) ||
+		!t.isIdentifier(helper.params[1]) ||
+		!t.isBlockStatement(helper.body)
+	) {
+		return false;
+	}
+	const helperValueParamName = helper.params[1].name;
+	const returns = helper.body.body.filter(
+		(statement): statement is t.ReturnStatement =>
+			t.isReturnStatement(statement) && statement.argument !== null,
+	);
+	if (returns.length !== 1) return false;
+	const result = returns[0].argument;
+	return (
+		t.isConditionalExpression(result) &&
+		isEffortLevelObject(result.consequent, helperValueParamName) &&
+		isModelScopedEffortObject(result.alternate, helperValueParamName)
+	);
+}
+
+function isCurrentEffortSettingsWrite(
+	path: NodePath<t.Function>,
+	stmt: t.Statement,
+): stmt is t.ReturnStatement {
+	if (!t.isReturnStatement(stmt) || !t.isCallExpression(stmt.argument)) {
+		return false;
+	}
+	if (path.node.params.length !== 3 || !path.node.async) return false;
+	const [valueParam, modelParam, scopeParam] = path.node.params;
+	if (
+		!t.isIdentifier(valueParam) ||
+		!t.isIdentifier(modelParam) ||
 		!t.isIdentifier(scopeParam)
 	) {
-		return null;
+		return false;
 	}
-	for (const stmt of fn.body.body) {
-		if (!t.isIfStatement(stmt)) continue;
-		if (!t.isIdentifier(stmt.test, { name: persistParam.left.name })) continue;
-		if (isScopedCallStatement(stmt.consequent, scopeParam.name)) return stmt;
-		if (
-			t.isBlockStatement(stmt.consequent) &&
-			stmt.consequent.body.some((child) =>
-				isScopedCallStatement(child, scopeParam.name),
-			)
-		) {
-			return stmt;
-		}
+	const call = stmt.argument;
+	if (call.arguments.length !== 4) return false;
+	const [settingsScope, settings, updateMode, targetScope] = call.arguments;
+	if (!t.isStringLiteral(settingsScope, { value: "userSettings" })) {
+		return false;
 	}
-	return null;
+	if (
+		!t.isExpression(settings) ||
+		!isCurrentEffortSettingsBuilderCall(
+			path,
+			settings,
+			modelParam.name,
+			valueParam.name,
+		) ||
+		!t.isExpression(updateMode) ||
+		!isVoidZeroExpression(updateMode) ||
+		!t.isIdentifier(targetScope, { name: scopeParam.name })
+	) {
+		return false;
+	}
+	return true;
 }
 
 function isSessionOnlySettingsGuard(
@@ -213,64 +293,48 @@ function isSessionOnlySettingsGuard(
 	) {
 		return false;
 	}
-	const consequent = stmt.consequent;
-	if (!t.isBlockStatement(consequent)) return false;
-	return consequent.body.some((child) => t.isReturnStatement(child));
+	return (
+		t.isReturnStatement(stmt.consequent) && stmt.consequent.argument === null
+	);
 }
 
 export function patchEffortSettingsWriterFunction(
-	fn: t.Function,
+	path: NodePath<t.Function>,
 	envEffortLevel: string,
-	expressionContainsEffortWrite: ExpressionContainsEffortWrite,
 ): boolean | null {
-	if (fn.params.length !== 3 || !t.isBlockStatement(fn.body)) return null;
+	const fn = path.node;
+	if (!t.isBlockStatement(fn.body)) return null;
 	if (
 		fn.body.body.some((stmt) =>
 			isSessionOnlySettingsGuard(stmt, envEffortLevel),
 		)
 	) {
-		return true;
+		return fn.body.body.some((stmt) =>
+			isCurrentEffortSettingsWrite(path, stmt),
+		);
 	}
-	let hasEffortSettingsWrite = false;
-	for (const stmt of fn.body.body) {
-		if (t.isExpressionStatement(stmt)) {
-			hasEffortSettingsWrite ||= expressionContainsEffortWrite(stmt.expression);
-		}
-		if (t.isIfStatement(stmt) && t.isBlockStatement(stmt.consequent)) {
-			for (const child of stmt.consequent.body) {
-				if (t.isVariableDeclaration(child)) {
-					hasEffortSettingsWrite ||= child.declarations.some(
-						(declaration) =>
-							declaration.init &&
-							t.isExpression(declaration.init) &&
-							expressionContainsEffortWrite(declaration.init),
-					);
-				}
-			}
-		}
+	if (
+		fn.body.body.length !== 1 ||
+		!isCurrentEffortSettingsWrite(path, fn.body.body[0])
+	) {
+		return null;
 	}
-	if (!hasEffortSettingsWrite) return null;
-	const unpinStatement = findUnpinEffortStatement(fn);
-	if (!unpinStatement) return null;
 	fn.body.body.unshift(
-		t.ifStatement(
-			buildRawEnvIsSetCheck(envEffortLevel),
-			t.blockStatement([t.cloneNode(unpinStatement), t.returnStatement()]),
-		),
+		t.ifStatement(buildRawEnvIsSetCheck(envEffortLevel), t.returnStatement()),
 	);
 	return true;
 }
 
 export function hasPatchedEffortSettingsWriterFunction(
-	fn: t.Function,
+	path: NodePath<t.Function>,
 	envEffortLevel: string,
 ): boolean {
+	const fn = path.node;
+	if (!t.isBlockStatement(fn.body)) return false;
 	return (
-		fn.params.length === 3 &&
-		t.isBlockStatement(fn.body) &&
-		fn.body.body.some((stmt) =>
-			isSessionOnlySettingsGuard(stmt, envEffortLevel),
-		)
+		fn.body.body.length === 2 &&
+		isSessionOnlySettingsGuard(fn.body.body[0], envEffortLevel) &&
+		isCurrentEffortSettingsWrite(path, fn.body.body[1])
 	);
 }
 

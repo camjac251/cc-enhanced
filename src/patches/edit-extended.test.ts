@@ -494,6 +494,18 @@ test("edit-extended bypasses ideDiffSupport.getConfig for structured edit confir
 	);
 });
 
+test("edit-extended verify rejects the pre-decoder IDE diff guard", async () => {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+	const obsolete = output.replace(
+		"_claudeEditHasExtendedFields(_claudeDecodeExtendedEditTransport(parsed))",
+		"_claudeEditHasExtendedFields(parsed)",
+	);
+	assert.notEqual(obsolete, output);
+	assert.notEqual(editTool.verify(obsolete, parse(obsolete)), true);
+});
+
 test("edit-extended neutralizes the relocated read-state helper's not-read throw", async () => {
 	const ast = parse(EDIT_FIXTURE);
 	await runEditToolViaPasses(ast);
@@ -692,7 +704,7 @@ test("edit-extended runtime preserves notebook rejection via batch edits", async
 	}
 });
 
-test("edit-extended runtime keeps structured batch validation on the legacy read-state path", async () => {
+test("edit-extended runtime keeps structured batch validation on the stock read-state path", async () => {
 	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
 	try {
 		const validateWithoutContext = mod.EditTool.validateInput(

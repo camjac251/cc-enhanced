@@ -687,8 +687,7 @@ function buildModelOptions(includeLongContext, pickerState) {
 `;
 
 const PICKER_SURFACE = `
-function renderModelPicker(props) {
-  let {
+function renderModelPicker({
     initial,
     sessionModel,
     onSelect,
@@ -699,15 +698,25 @@ function renderModelPicker(props) {
     headerText,
     options,
     skipSettingsWrite,
-  } = props,
-    state = initial;
+  }) {
+  let state = initial;
   function select(value) {
     if (onSetDefault) onSetDefault(value);
     onSelect(value);
     state = value;
   }
-  const header = headerText ?? "Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.";
-  return { select, header, canSetDefault: Boolean(onSetDefault), state };
+  return {
+    select,
+    header: headerText ?? "Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.",
+    canSetDefault: Boolean(onSetDefault),
+    state,
+    sessionModel,
+    onCancel,
+    isStandaloneCommand,
+    showFastModeNotice,
+    options,
+    skipSettingsWrite,
+  };
 }
 `;
 

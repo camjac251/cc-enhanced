@@ -1024,7 +1024,7 @@ function buildHasExtendedFieldsCall(inputName: string): t.CallExpression {
 	]);
 }
 
-function getLegacyParsedEditArrayInputName(
+function getStockSingleEditArrayInputName(
 	node: t.Expression,
 ): { inputName: string } | null {
 	if (!t.isArrayExpression(node) || node.elements.length !== 1) return null;
@@ -1100,17 +1100,17 @@ function patchStructuredEditInputNormalization(
 					t.isObjectProperty(prop) &&
 					hasObjectKeyName(prop, "edits") &&
 					t.isExpression(prop.value) &&
-					!!getLegacyParsedEditArrayInputName(prop.value),
+					!!getStockSingleEditArrayInputName(prop.value),
 			);
 			if (!normalizedEditsProperty) return;
 
 			if (!t.isExpression(normalizedEditsProperty.value)) return;
-			const legacyParsedEditArray = getLegacyParsedEditArrayInputName(
+			const stockSingleEditArray = getStockSingleEditArrayInputName(
 				normalizedEditsProperty.value,
 			);
-			if (!legacyParsedEditArray) return;
+			if (!stockSingleEditArray) return;
 
-			const parsedInputName = legacyParsedEditArray.inputName;
+			const parsedInputName = stockSingleEditArray.inputName;
 
 			let foundReturnObject: t.ObjectExpression | null = null;
 			switchCase.traverse({
@@ -1134,7 +1134,7 @@ function patchStructuredEditInputNormalization(
 			}
 
 			const hasExtendedFieldsCall = buildHasExtendedFieldsCall(parsedInputName);
-			const legacyEdits = t.cloneNode(
+			const stockSingleEdits = t.cloneNode(
 				normalizedEditsProperty.value,
 				true,
 			) as t.Expression;
@@ -1145,7 +1145,7 @@ function patchStructuredEditInputNormalization(
 					t.identifier(parsedInputName),
 					t.identifier("edits"),
 				),
-				legacyEdits,
+				stockSingleEdits,
 			);
 
 			const alreadyReturnsEdits = returnObject.properties.some(
@@ -1578,10 +1578,10 @@ function verifyEditValidateAndCallFlow(ctx: EditVerifyContext): string | null {
 
 	const validateFlow = inspectValidateExtendedFlow(validateMethod);
 	if (!validateFlow.hasCanonicalization) {
-		return "validateInput does not canonicalize extended edits before legacy validation";
+		return "validateInput does not canonicalize extended edits before stock validation";
 	}
 	if (validateFlow.hasEarlyReturnTrue) {
-		return "validateInput still bypasses legacy string-mode checks for extended edit modes";
+		return "validateInput still bypasses stock string-mode checks for extended edit modes";
 	}
 	// The canonicalization helper preserves notebook rejection by guarding on
 	// an .ipynb path suffix and returning the notebook-tool redirect. Requiring
@@ -1600,7 +1600,7 @@ function verifyEditValidateAndCallFlow(ctx: EditVerifyContext): string | null {
 		return "Extended call path does not canonicalize old_string from current file";
 	}
 	if (!code.includes("_input.new_string = _canonical.newString;")) {
-		return "Extended validate path does not feed canonicalized new_string into legacy validation";
+		return "Extended validate path does not feed canonicalized new_string into stock validation";
 	}
 	if (!code.includes("_input.old_string = L.oldString;")) {
 		return "Extended call path does not canonicalize old_string from current file";
@@ -1638,7 +1638,7 @@ function hasFunctionDeclaration(ast: t.File, name: string): boolean {
 	return found;
 }
 
-function hasLegacyIdeDiffConfigCall(ast: t.File): boolean {
+function hasUnprotectedIdeDiffConfigCall(ast: t.File): boolean {
 	let found = false;
 
 	traverse(ast, {
@@ -1672,12 +1672,14 @@ function hasLegacyIdeDiffConfigCall(ast: t.File): boolean {
 	return found;
 }
 
-function hasLegacyIdeDiffConfigGuard(ast: t.File): boolean {
-	let found = false;
+function inspectIdeDiffConfigGuard(
+	ast: t.File,
+): "current" | "pre-decoder" | null {
+	let found: "current" | "pre-decoder" | null = null;
 
 	traverse(ast, {
 		ConditionalExpression(path) {
-			if (found) {
+			if (found !== null) {
 				path.stop();
 				return;
 			}
@@ -1695,20 +1697,17 @@ function hasLegacyIdeDiffConfigGuard(ast: t.File): boolean {
 			}
 			if (nested.test.arguments.length !== 1) return;
 			const [guardArg] = nested.test.arguments;
-			// Guard arg must wrap DECODE (or be a direct identifier for legacy)
-			let hasDecodeWrapper = false;
-			if (t.isIdentifier(guardArg)) {
-				hasDecodeWrapper = true;
-			} else if (
+			const guardStatus =
 				t.isCallExpression(guardArg) &&
 				t.isIdentifier(guardArg.callee, {
 					name: EXTENDED_EDIT_TRANSPORT_DECODE,
 				}) &&
 				guardArg.arguments.length === 1
-			) {
-				hasDecodeWrapper = true;
-			}
-			if (!hasDecodeWrapper) return;
+					? "current"
+					: t.isIdentifier(guardArg)
+						? "pre-decoder"
+						: null;
+			if (!guardStatus) return;
 			if (!t.isNullLiteral(nested.consequent)) return;
 			if (!t.isCallExpression(nested.alternate)) return;
 			if (!t.isMemberExpression(nested.alternate.callee)) return;
@@ -1721,7 +1720,7 @@ function hasLegacyIdeDiffConfigGuard(ast: t.File): boolean {
 			}
 			if (nested.alternate.arguments.length !== 1) return;
 
-			found = true;
+			found = guardStatus;
 			path.stop();
 		},
 	});
@@ -1730,11 +1729,13 @@ function hasLegacyIdeDiffConfigGuard(ast: t.File): boolean {
 }
 
 function hasIdeDiffConfigGuard(ast: t.File): boolean {
-	if (hasLegacyIdeDiffConfigGuard(ast)) return true;
+	const guardStatus = inspectIdeDiffConfigGuard(ast);
+	if (guardStatus === "current") return true;
+	if (guardStatus === "pre-decoder") return false;
 	// A present unpatched getConfig ternary is a real miss. Otherwise either our
 	// nested guard is in place or upstream has no such routing at all, and
 	// extended payloads are not sent to ideDiff.getConfig.
-	return !hasLegacyIdeDiffConfigCall(ast);
+	return !hasUnprotectedIdeDiffConfigCall(ast);
 }
 
 function hasStructuredEditInputNormalization(ast: t.File): {

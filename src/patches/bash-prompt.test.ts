@@ -5,7 +5,9 @@ import { parse, print } from "../loader.js";
 import { bashPrompt } from "./bash-prompt.js";
 import {
 	BACKGROUND_TASK_POLICY,
+	MODERN_CODE_SEARCH_DECISION_TREE_LINES,
 	MODERN_OUTPUT_LIMIT_WARNING,
+	MODERN_TOOL_PREFERENCE,
 } from "./prompt-policy.js";
 
 const STOCK_BACKGROUND_EXECUTION_GUIDANCE =
@@ -57,14 +59,14 @@ const powershell = "Pipe output through Select-Object -First/-Last or Select-Str
 
 const BASH_PROMPT_FIXTURE = `
 function ws_() {
-  let K = TM()
-    ? "\`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`"
-    : "\`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`";
-  return [
-    "Executes a bash command and returns its output.",
-    "",
-    \`- IMPORTANT: Avoid using this tool to run \${K} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.\`,
-  ].join("\\n");
+  let suppressToolGuidance = toolGuidanceDisabled(), guidance = [];
+  if (!suppressToolGuidance) {
+    let K = TM()
+      ? "\`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`"
+      : "\`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`";
+    guidance.push(\`- IMPORTANT: Avoid using this tool to run \${K} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.\`);
+  }
+  return ["Executes a bash command and returns its output.", ...guidance].join("\\n");
 }
 
 function backgroundGuidance() {
@@ -636,12 +638,7 @@ EOF
 	assert.equal(output.includes("--body-file"), false);
 });
 
-test("bash-prompt forces the short Bash builder gate even though verify does not inspect it", async () => {
-	// The short Bash builder's anchor is a prompt-text anchor but not an
-	// embedded-search gate anchor, so verify's forced-gate scan never inspects it.
-	// Pin the mutator-level outcome (the conditional-init gate is forced and the
-	// legacy guidance is gone) so a future drift that makes the force a silent
-	// no-op is caught here, where verify would miss it.
+test("bash-prompt does not install lean routing into an obsolete ungated builder", async () => {
 	const fixture = `
 function kFp(e) {
   let o = Qw()
@@ -656,8 +653,8 @@ function kFp(e) {
 	const ast = parse(fixture);
 	await runBashPromptViaPasses(ast);
 	const output = print(ast);
-	assert.match(output, /o = !0 \?/);
-	assert.equal(output.includes("appropriate dedicated tool"), false);
+	assert.equal(output.includes(MODERN_TOOL_PREFERENCE), false);
+	assert.equal(output.includes("appropriate dedicated tool"), true);
 });
 
 test("bash-prompt replaces a reworded working-directory line with the runtime-neutral wording", async () => {
@@ -706,5 +703,91 @@ function kFp(e) {
 			"Working-directory behavior is controlled by runtime policy",
 		),
 		false,
+	);
+});
+
+test("bash-prompt leaves the obsolete paired lean-guidance gate untouched", async () => {
+	const fixture = `
+function kFp(e) {
+  let o = Qw(), i = Rw(), s = [];
+  if (!o && !i) {
+    let d = Zw() ? "\`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`" : "\`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\`";
+    s.push(\`- IMPORTANT: Avoid using this tool to run \${d} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.\`);
+  }
+  return ["Executes a bash command and returns its output.", ...s].join("\\n");
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+	assert.doesNotMatch(output, /if \(!0\) \{/);
+	assert.equal(output.includes(MODERN_TOOL_PREFERENCE), false);
+	assert.equal(output.includes("appropriate dedicated tool"), true);
+});
+
+test("bash-prompt forces the latest lean Bash builder's single gate", async () => {
+	const fixture = `
+function renderLeanBashPrompt() {
+  let suppressToolGuidance = toolGuidanceDisabled(), guidance = [];
+  if (!suppressToolGuidance) {
+    let discouragedCommands = preferBasicUtilities() ? "\`cat\`, \`head\`, or \`tail\`" : "\`find\`, \`grep\`, or \`cat\`";
+    guidance.push(\`- IMPORTANT: Avoid using this tool to run \${discouragedCommands} commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.\`);
+  }
+  return ["Executes a bash command and returns its output.", ...guidance].join("\\n");
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /if \(!0\) \{/);
+	assert.equal(output.includes("if (!suppressToolGuidance)"), false);
+	assert.equal(output.includes(MODERN_TOOL_PREFERENCE), true);
+	for (const line of MODERN_CODE_SEARCH_DECISION_TREE_LINES) {
+		assert.equal(output.includes(line), true);
+	}
+	assert.equal(output.includes("appropriate dedicated tool"), false);
+});
+
+test("bash-prompt rewrites the auto-mode bash-first nudge to the dedicated-tool policy", async () => {
+	const fixture = `
+function renderAutoMode(e) {
+  let i = \`Do your work through the \${B} tool wherever it can accomplish the job: read files with cat, head, or sed -n, search with grep and find, and make file changes with sed, heredocs, or short scripts, rather than using the dedicated \${R}, \${E}, or \${W} tools. Fall back to a dedicated tool only when \${B} genuinely cannot do the job.\`,
+    s = e.bypass ? \`While bypass permissions mode is active:\\n\\n\${i}\` : e.steerOnly ? \`While auto mode is active:\\n\\n\${i}\` : i;
+  return s;
+}
+`;
+	const ast = parse(fixture);
+	await runBashPromptViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.includes("read files with cat, head, or sed -n"), false);
+	assert.equal(output.includes("genuinely cannot do the job"), false);
+	assert.equal(
+		output.includes(
+			"Work through ${B} wherever the shell has the better tool: fd for file discovery, eza for directory listings, bat -r for ranged reads, rg for exact lexical text, ast-grep run for syntax shapes and repeated rewrites (preview, then -U), comby for malformed or mixed syntax, sd for non-code text, and jq or yq for structured data. Keep ${R} for files you need whole in context, ${E} for a single known site, and ${W} for new files; route everything else through ${B}. For source code, choose by intent:",
+		),
+		true,
+	);
+});
+
+test("bash-prompt verify rejects a bundle that still carries the bash-first nudge", async () => {
+	const ast = parse(BASH_PROMPT_FIXTURE);
+	await runBashPromptViaPasses(ast);
+	const patched = print(ast);
+	assert.equal(bashPrompt.verify(patched, ast), true);
+
+	const legacy = `${patched}\nfunction renderAutoMode(e) { return \`While auto mode is active:\\n\\nDo your work through the \${B} tool wherever it can accomplish the job: read files with cat, head, or sed -n, search with grep and find, and make file changes with sed, heredocs, or short scripts, rather than using the dedicated \${R}, \${E}, or \${W} tools. Fall back to a dedicated tool only when \${B} genuinely cannot do the job.\`; }`;
+	const legacyResult = bashPrompt.verify(legacy, parse(legacy));
+	assert.equal(
+		typeof legacyResult === "string" && legacyResult.includes("bash-first"),
+		true,
+	);
+
+	const missing = `${patched}\nconst autoModeHeader = "While auto mode is active:";`;
+	const missingResult = bashPrompt.verify(missing, parse(missing));
+	assert.equal(
+		typeof missingResult === "string" &&
+			missingResult.includes("dedicated-tools auto-mode guidance"),
+		true,
 	);
 });

@@ -5,9 +5,17 @@ import * as path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { getProtectedPaths } from "./promote.js";
+import {
+	type CpuArchitecture,
+	type HostOperatingSystem,
+	type LinuxLibc,
+	type NativeArtifactPlatform,
+	parseNativeArtifactPlatform,
+} from "./targets/contract.js";
+import { compareReleaseVersions } from "./version-order.js";
 import { DEFAULT_NATIVE_CACHE_DIR } from "./version-paths.js";
 
-const DEFAULT_NATIVE_BUCKET =
+export const DEFAULT_NATIVE_BUCKET =
 	"https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases";
 const DEFAULT_NPM_PACKAGE_URL =
 	"https://registry.npmjs.org/@anthropic-ai%2Fclaude-code";
@@ -33,15 +41,17 @@ type NativeDownloadCandidateError = {
 	message: string;
 };
 
-export function getNativeBinaryCandidates(platform: string): string[] {
-	return platform.startsWith("windows-")
+export function getNativeBinaryCandidates(
+	platform: NativeArtifactPlatform,
+): string[] {
+	return platform.startsWith("win32-")
 		? ["claude.exe", "claude"]
 		: ["claude", "claude.exe"];
 }
 
 export function formatNativeDownloadFailure(
 	version: string,
-	platform: string,
+	platform: NativeArtifactPlatform,
 	errors: NativeDownloadCandidateError[],
 ): string {
 	if (errors.length === 0) {
@@ -56,7 +66,7 @@ export function formatNativeDownloadFailure(
 
 export interface NativeFetchOptions {
 	spec?: string;
-	platform?: string;
+	platform?: NativeArtifactPlatform;
 	cacheDir?: string;
 	forceDownload?: boolean;
 	bucketUrl?: string;
@@ -65,7 +75,7 @@ export interface NativeFetchOptions {
 export interface NativeFetchResult {
 	spec: string;
 	version: string;
-	platform: string;
+	platform: NativeArtifactPlatform;
 	checksum: string;
 	bucketUrl: string;
 	manifestUrl: string;
@@ -126,7 +136,7 @@ async function fetchWithTimeout(
 	}
 }
 
-function resolveArch(rawArch: string): string {
+function resolveArch(rawArch: string): CpuArchitecture {
 	if (rawArch === "x64") return "x64";
 	if (rawArch === "arm64") return "arm64";
 	throw new Error(`Unsupported architecture for native fetch: ${rawArch}`);
@@ -151,16 +161,52 @@ function isMuslLinux(): boolean {
 	}
 }
 
-export function detectNativeReleasePlatform(): string {
+export type NativeReleaseHost =
+	| {
+			operatingSystem: "linux";
+			architecture: CpuArchitecture;
+			libc: LinuxLibc;
+	  }
+	| {
+			operatingSystem: Exclude<HostOperatingSystem, "linux">;
+			architecture: CpuArchitecture;
+			libc?: never;
+	  };
+
+export function resolveNativeReleasePlatform(
+	host: NativeReleaseHost,
+): NativeArtifactPlatform {
+	if (host.operatingSystem === "linux") {
+		return host.libc === "musl"
+			? `linux-${host.architecture}-musl`
+			: `linux-${host.architecture}`;
+	}
+	if (host.operatingSystem === "darwin") {
+		return `darwin-${host.architecture}`;
+	}
+	return `win32-${host.architecture}`;
+}
+
+export function detectNativeReleasePlatform(): NativeArtifactPlatform {
 	const arch = resolveArch(process.arch);
 	if (process.platform === "linux") {
-		return isMuslLinux() ? `linux-${arch}-musl` : `linux-${arch}`;
+		return resolveNativeReleasePlatform({
+			operatingSystem: "linux",
+			architecture: arch,
+			libc: isMuslLinux() ? "musl" : "glibc",
+		});
 	}
 	if (process.platform === "darwin") {
-		return `darwin-${arch}`;
+		return resolveNativeReleasePlatform({
+			operatingSystem: "darwin",
+			architecture: arch,
+		});
 	}
 	if (process.platform === "win32") {
-		return `windows-${arch}`;
+		return resolveNativeReleasePlatform({
+			operatingSystem: "win32",
+			architecture: arch,
+		});
 	}
 	throw new Error(`Unsupported platform for native fetch: ${process.platform}`);
 }
@@ -298,21 +344,11 @@ function ensureExecutable(filePath: string): void {
 	fs.chmodSync(filePath, 0o755);
 }
 
-function compareSemver(a: string, b: string): number {
-	const pa = a.split(".").map(Number);
-	const pb = b.split(".").map(Number);
-	for (let i = 0; i < 3; i++) {
-		const diff = (pb[i] ?? 0) - (pa[i] ?? 0);
-		if (diff !== 0) return diff;
-	}
-	return 0;
-}
-
 function pickNewestVersion(candidates: string[]): string | null {
 	let newest: string | null = null;
 	for (const candidate of candidates) {
 		if (!isNativeVersion(candidate)) continue;
-		if (newest === null || compareSemver(candidate, newest) < 0) {
+		if (newest === null || compareReleaseVersions(candidate, newest) > 0) {
 			newest = candidate;
 		}
 	}
@@ -358,7 +394,7 @@ function evictOldVersions(cacheDir: string): void {
 	const entries = fs
 		.readdirSync(cacheDir)
 		.filter((e) => /^\d+\.\d+\.\d+/.test(e));
-	entries.sort(compareSemver); // descending by semver
+	entries.sort((left, right) => compareReleaseVersions(right, left));
 
 	let kept = 0;
 	for (const entry of entries) {
@@ -387,7 +423,9 @@ export async function fetchNativeRelease(
 			process.env.CLAUDE_PATCHER_NATIVE_BUCKET ??
 			DEFAULT_NATIVE_BUCKET,
 	);
-	const platform = options.platform ?? detectNativeReleasePlatform();
+	const platform = options.platform
+		? parseNativeArtifactPlatform(options.platform)
+		: detectNativeReleasePlatform();
 	const cacheDir = path.resolve(options.cacheDir ?? DEFAULT_NATIVE_CACHE_DIR);
 
 	const version = VERSION_CHANNELS.has(spec)
@@ -425,7 +463,7 @@ export async function fetchNativeRelease(
 	fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
 	fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
 
-	const fileName = platform.startsWith("windows-") ? "claude.exe" : "claude";
+	const fileName = platform.startsWith("win32-") ? "claude.exe" : "claude";
 	const binaryPath = path.join(platformDir, fileName);
 	if (
 		!options.forceDownload &&

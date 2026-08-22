@@ -91,18 +91,22 @@ test("signature policy auto follows selected patch set", () => {
 	assert.equal(withSignatureSelected.injectSignature, true);
 });
 
-test("legacy injectSignature option still maps to force/off policy", () => {
+test("removed injectSignature input cannot override automatic signature policy", () => {
 	const patchesWithoutSignature = allPatches.filter(
 		(patch) => patch.tag !== signature.tag,
 	);
 	const forceRunner = inspectRunner(
-		new PatchRunner(patchesWithoutSignature, { injectSignature: true }),
+		new PatchRunner(patchesWithoutSignature, {
+			injectSignature: true,
+		} as unknown as { signaturePolicy?: "auto" | "force" | "off" }),
 	);
 	const offRunner = inspectRunner(
-		new PatchRunner([signature], { injectSignature: false }),
+		new PatchRunner([signature], {
+			injectSignature: false,
+		} as unknown as { signaturePolicy?: "auto" | "force" | "off" }),
 	);
-	assert.equal(forceRunner.injectSignature, true);
-	assert.equal(offRunner.injectSignature, false);
+	assert.equal(forceRunner.injectSignature, false);
+	assert.equal(offRunner.injectSignature, true);
 });
 
 test("manager forces signature injection in native mode", () => {
@@ -130,17 +134,17 @@ test("manager forces signature injection in native mode", () => {
 	);
 });
 
-test("include/exclude env tags keep signature selection deterministic", async () => {
+test("patch registry stays complete under environment selection overrides", async () => {
+	const expectedTags = allPatches.map((patch) => patch.tag);
 	const includeOnlySignature = await loadPatchTagsWithEnv({
 		CLAUDE_PATCHER_INCLUDE_TAGS: "signature",
 		CLAUDE_PATCHER_EXCLUDE_TAGS: "",
 	});
-	assert.deepEqual(includeOnlySignature, ["signature"]);
+	assert.deepEqual(includeOnlySignature, expectedTags);
 
 	const excludeSignature = await loadPatchTagsWithEnv({
 		CLAUDE_PATCHER_INCLUDE_TAGS: "",
 		CLAUDE_PATCHER_EXCLUDE_TAGS: "signature",
 	});
-	assert.equal(excludeSignature.includes("signature"), false);
-	assert.ok(excludeSignature.length > 0);
+	assert.deepEqual(excludeSignature, expectedTags);
 });

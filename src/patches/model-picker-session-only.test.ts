@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
+import { clearTraverseCache } from "../babel.js";
 import { parse, print } from "../loader.js";
 import { modelPickerSessionOnly } from "./model-picker-session-only.js";
 
@@ -21,8 +22,7 @@ const PICKER_FIXTURE = `
 const childEnvOne = ["CLAUDE_CODE_SUBAGENT_MODEL"];
 const childEnvTwo = new Set(["CLAUDE_CODE_SUBAGENT_MODEL"]);
 const childEnvThree = ["CLAUDE_CODE_SUBAGENT_MODEL"];
-function renderModelPicker(props) {
-  let {
+function renderModelPicker({
     initial,
     sessionModel,
     onSelect,
@@ -33,17 +33,16 @@ function renderModelPicker(props) {
     headerText,
     options,
     skipSettingsWrite,
-  } = props,
-    state = initial;
+  }) {
+  let state = initial;
   function select(value) {
     if (onSetDefault) onSetDefault(value);
     onSelect(value);
     state = value;
   }
-  const header = headerText ?? "Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.";
   return {
     select,
-    header,
+    header: headerText ?? "Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.",
     canSetDefault: Boolean(onSetDefault),
     state,
     sessionModel,
@@ -158,7 +157,7 @@ test("selects for the session without invoking the settings writer", async () =>
 			1,
 		);
 	}
-	assert.equal(modelPickerSessionOnly.verify(output, ast), true);
+	assert.equal(modelPickerSessionOnly.verify(output), true);
 });
 
 test("model-picker-session-only forwards session-only mode to two arrays", async () => {
@@ -176,6 +175,15 @@ test("model-picker-session-only forwards session-only mode to two arrays", async
 		2,
 		"every remaining forwarding array must receive the session-only env",
 	);
+	assert.equal(modelPickerSessionOnly.verify(output, ast), true);
+});
+
+test("model-picker-session-only verifies after traversal cache release", async () => {
+	const ast = parse(PICKER_FIXTURE);
+	await runSessionOnlyPickerViaPasses(ast);
+	const output = print(ast);
+	clearTraverseCache();
+
 	assert.equal(modelPickerSessionOnly.verify(output, ast), true);
 });
 
@@ -205,5 +213,5 @@ test("model-picker-session-only is idempotent", async () => {
 	const twice = print(ast);
 
 	assert.equal(twice, once);
-	assert.equal(modelPickerSessionOnly.verify(twice, ast), true);
+	assert.equal(modelPickerSessionOnly.verify(twice), true);
 });

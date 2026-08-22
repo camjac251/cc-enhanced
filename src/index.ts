@@ -7,16 +7,27 @@ import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { withHeavyOperationGuard } from "./heavy-operation-guard.js";
 import { detectInstalledClaudeTarget } from "./installation-detection.js";
-import { Manager } from "./manager.js";
-import { allPatches } from "./patches/index.js";
+import { getNativeBuildOutputPath, Manager } from "./manager.js";
+import { createOperationResult } from "./operations/contract.js";
+import { profilePatchCatalog } from "./patches/index.js";
+import {
+	patchSelectionOverridesFromEnv,
+	resolvePatchSelection,
+} from "./patching/selection.js";
+import {
+	renderNativePull,
+	renderNativeUpdate,
+	renderPromote,
+	renderRollback,
+	renderStatus,
+} from "./presentation/human.js";
+import { getPatchProfile } from "./profiles/index.js";
 import { forceGarbageCollection } from "./profiling.js";
-import type {
-	PatchedVersionInfo,
-	PromoteResult,
-	RollbackResult,
-	StatusInfo,
-} from "./promote.js";
 import { stringifySummary } from "./summary-serializer.js";
+import {
+	type NativeArtifactPlatform,
+	parseNativeArtifactPlatform,
+} from "./targets/contract.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
@@ -70,6 +81,11 @@ async function main() {
 					.option("list", {
 						type: "boolean",
 						description: "List available patches and exit",
+					})
+					.option("profile", {
+						type: "string",
+						default: "cli-full",
+						description: "Patch profile",
 					})
 					.option("verify-anchors", {
 						type: "boolean",
@@ -189,7 +205,7 @@ async function main() {
 					.option("native-platform", {
 						type: "string",
 						description:
-							"Override native platform for fetch (e.g. linux-x64, darwin-arm64)",
+							"Override native platform for fetch (e.g. linux-x64, darwin-arm64, win32-x64)",
 					})
 					.option("native-cache-dir", {
 						type: "string",
@@ -444,6 +460,10 @@ async function main() {
 	}
 	const nativeFetchSpec =
 		nativeFetchSpecOption || positionalNativeFetchSpec || "";
+	const nativeArtifactPlatform =
+		typeof opts.nativePlatform === "string"
+			? parseNativeArtifactPlatform(opts.nativePlatform)
+			: undefined;
 	const hasNativeFetch =
 		nativeFetchSpec.length > 0 ||
 		opts.nativeFetchOnly ||
@@ -506,7 +526,11 @@ async function main() {
 				? path.resolve(opts.nativeCacheDir)
 				: undefined,
 		});
-		printStatus(info);
+		printHumanLines(
+			renderStatus(
+				createOperationResult({ operation: "status", ok: true, data: info }),
+			),
+		);
 		return;
 	}
 
@@ -520,7 +544,15 @@ async function main() {
 						: undefined,
 				skipSmokeTest: opts.skipSmokeTest,
 			});
-			printRollbackResult(result);
+			printHumanLines(
+				renderRollback(
+					createOperationResult({
+						operation: "rollback",
+						ok: true,
+						data: result,
+					}),
+				),
+			);
 		} catch (e) {
 			console.error(e);
 			process.exit(1);
@@ -533,7 +565,15 @@ async function main() {
 			const result = Manager.promote(path.resolve(opts.promote), {
 				skipSmokeTest: opts.skipSmokeTest,
 			});
-			printPromoteResult(result);
+			printHumanLines(
+				renderPromote(
+					createOperationResult({
+						operation: "promote",
+						ok: true,
+						data: result,
+					}),
+				),
+			);
 		} catch (e) {
 			console.error(e);
 			process.exit(1);
@@ -556,10 +596,7 @@ async function main() {
 					const result = await manager.pullNativeCleanJs(
 						nativeFetchSpec || "latest",
 						{
-							platform:
-								typeof opts.nativePlatform === "string"
-									? opts.nativePlatform
-									: undefined,
+							platform: nativeArtifactPlatform,
 							forceDownload: !!opts.nativeForceDownload,
 							outputRoot:
 								typeof opts.nativePullOutputDir === "string"
@@ -567,7 +604,15 @@ async function main() {
 									: undefined,
 						},
 					);
-					printNativePullResult(result);
+					printHumanLines(
+						renderNativePull(
+							createOperationResult({
+								operation: "native-pull",
+								ok: true,
+								data: result,
+							}),
+						),
+					);
 				},
 			);
 		} catch (e) {
@@ -577,6 +622,13 @@ async function main() {
 		return;
 	}
 
+	const patchSelection = resolvePatchSelection({
+		catalog: profilePatchCatalog,
+		profile: getPatchProfile(String(opts.profile)),
+		overrides: patchSelectionOverridesFromEnv(),
+	});
+	const selectedPatches = patchSelection.patches;
+
 	if (opts.update) {
 		try {
 			await withHeavyOperationGuard(
@@ -585,6 +637,7 @@ async function main() {
 				},
 				async () => {
 					const manager = new Manager({
+						patchSelection,
 						nativeCacheDir: opts.nativeCacheDir
 							? path.resolve(opts.nativeCacheDir)
 							: undefined,
@@ -597,10 +650,7 @@ async function main() {
 					const result = await manager.updateNative(
 						nativeFetchSpec || "latest",
 						{
-							platform:
-								typeof opts.nativePlatform === "string"
-									? opts.nativePlatform
-									: undefined,
+							platform: nativeArtifactPlatform,
 							forceDownload: !!opts.nativeForceDownload,
 							promoteOptions: {
 								skipSmokeTest: opts.skipSmokeTest,
@@ -614,7 +664,17 @@ async function main() {
 						await fs.writeFile(p, stringifySummary(result), "utf-8");
 						console.log(`Summary written to ${p}`);
 					}
-					printUpdateResult(result);
+					printHumanLines(
+						renderNativeUpdate(
+							createOperationResult({
+								operation: "native-update",
+								ok: true,
+								profile: patchSelection.receipt,
+								artifact: result.artifactReceipt,
+								data: result,
+							}),
+						),
+					);
 					if (!result.dryRun) {
 						// spawnSync below blocks this thread through the whole verification
 						// chain, which spawns its own full patch pipeline. No GC runs while
@@ -636,8 +696,8 @@ async function main() {
 	// Handle --list early to avoid target detection side effects.
 	if (opts.list) {
 		const { getPatchMetadata } = await import("./patch-metadata.js");
-		const groups = new Map<string, typeof allPatches>();
-		for (const patch of allPatches) {
+		const groups = new Map<string, typeof selectedPatches>();
+		for (const patch of selectedPatches) {
 			const meta = getPatchMetadata(patch.tag);
 			const group = groups.get(meta.group) ?? [];
 			group.push(patch);
@@ -654,7 +714,7 @@ async function main() {
 				);
 			}
 		}
-		console.log(`\nTotal: ${allPatches.length} patches\n`);
+		console.log(`\nTotal: ${selectedPatches.length} patches\n`);
 		return;
 	}
 
@@ -673,7 +733,7 @@ async function main() {
 		| {
 				spec: string;
 				version: string;
-				platform: string;
+				platform: NativeArtifactPlatform;
 				binaryPath: string;
 				fromCache: boolean;
 		  }
@@ -705,10 +765,7 @@ async function main() {
 			const fetched = await fetchManager.fetchNativeTarget(
 				nativeFetchSpec || "latest",
 				{
-					platform:
-						typeof opts.nativePlatform === "string"
-							? opts.nativePlatform
-							: undefined,
+					platform: nativeArtifactPlatform,
 					forceDownload: !!opts.nativeForceDownload,
 				},
 			);
@@ -735,8 +792,11 @@ async function main() {
 					.toISOString()
 					.replace(/[-:]/g, "")
 					.replace(/\.\d+Z$/, "");
-				const buildsDir = path.join(path.dirname(fetched.binaryPath), "builds");
-				opts.output = path.join(buildsDir, `${ts}-claude`);
+				opts.output = getNativeBuildOutputPath(
+					fetched.binaryPath,
+					fetched.platform,
+					ts,
+				);
 			}
 		} catch (error) {
 			console.error(error);
@@ -760,7 +820,7 @@ async function main() {
 			`Fetch:   ${chalk.gray(`${fetchedNativeInfo.version}/${fetchedNativeInfo.platform} via ${fetchedNativeInfo.spec} (${fetchedNativeInfo.fromCache ? "cache" : "download"})`)}`,
 		);
 	}
-	console.log(`Patches: ${chalk.green(`${allPatches.length} patches`)}`);
+	console.log(`Patches: ${chalk.green(`${selectedPatches.length} patches`)}`);
 	if (opts.dryRun)
 		console.log(chalk.yellow("Dry run mode - no changes will be written"));
 
@@ -768,6 +828,7 @@ async function main() {
 	console.log("");
 
 	const manager = new Manager({
+		patchSelection,
 		target: resolvedTargetPath,
 		outputPath: opts.output ? path.resolve(opts.output) : undefined,
 		backupDir: opts.backupDir ? path.resolve(opts.backupDir) : undefined,
@@ -898,129 +959,8 @@ async function main() {
 	}
 }
 
-// ── Display helpers ─────────────────────────────────────────────────────────
-
-function printStatus(info: StatusInfo): void {
-	console.log(chalk.bold("\nClaude Code Status\n"));
-
-	if (info.current) {
-		const v = info.current.version;
-		console.log(chalk.green("  Current:"));
-		console.log(`    Binary:  ${info.current.binaryPath}`);
-		if (v) {
-			const patchInfo = formatPatchInfo(v);
-			console.log(`    Version: ${v.version}${patchInfo}`);
-		}
-	} else {
-		console.log(chalk.yellow("  Current: (none)"));
-	}
-
-	if (info.previous) {
-		const v = info.previous.version;
-		console.log(chalk.blue("  Previous:"));
-		console.log(`    Binary:  ${info.previous.binaryPath}`);
-		if (v) {
-			const patchInfo = formatPatchInfo(v);
-			console.log(`    Version: ${v.version}${patchInfo}`);
-		}
-	} else {
-		console.log(chalk.dim("  Previous: (none)"));
-	}
-
-	if (info.cachedVersions.length > 0) {
-		console.log(chalk.bold("\n  Cached:"));
-		for (const cv of info.cachedVersions) {
-			const builds = cv.hasBuilds ? ` (${cv.buildCount} builds)` : "";
-			console.log(`    ${cv.version}/${cv.platform}${builds}`);
-		}
-	}
-	console.log("");
-}
-
-function formatPatchInfo(v: PatchedVersionInfo): string {
-	if (!v.isPatched) return " (unpatched)";
-	if (v.patchedTags.includes("signature")) {
-		return ` (${v.patchedTags.length} patches)`;
-	}
-	const runtimeCount = v.patchedTags.length;
-	const patchWord = runtimeCount === 1 ? "patch" : "patches";
-	return ` (${runtimeCount} runtime ${patchWord} + signature)`;
-}
-
-function printPromoteResult(result: PromoteResult): void {
-	console.log(chalk.green("\nPromoted:"));
-	console.log(`  Target:   ${result.target}`);
-	console.log(`  Current:  ${result.currentLink}`);
-	if (result.previousTarget) {
-		console.log(`  Previous: ${result.previousTarget}`);
-	}
-	if (result.smokeTestVersion) {
-		console.log(`  Version:  ${result.smokeTestVersion}`);
-	} else {
-		console.log(
-			chalk.yellow("  Warning: smoke test did not return version info"),
-		);
-	}
-	for (const cleaned of result.cleanedBuilds) {
-		console.log(chalk.dim(`  Cleaned:  ${cleaned}`));
-	}
-	console.log("");
-}
-
-function printRollbackResult(result: RollbackResult): void {
-	console.log(chalk.green("\nRolled back:"));
-	console.log(`  Target:   ${result.target}`);
-	if (result.previousTarget) {
-		console.log(`  Previous: ${result.previousTarget}`);
-	}
-	if (result.smokeTestVersion) {
-		console.log(`  Version:  ${result.smokeTestVersion}`);
-	}
-	console.log("");
-}
-
-function printUpdateResult(result: {
-	fetchResult: { version: string; platform: string; fromCache: boolean };
-	patchOutputPath: string;
-	dryRun: boolean;
-	promoteResult?: PromoteResult;
-}): void {
-	const fr = result.fetchResult;
-	console.log(
-		chalk.green(
-			result.dryRun ? "\nUpdate dry run complete:" : "\nUpdate complete:",
-		),
-	);
-	console.log(
-		`  Fetched:  ${fr.version}/${fr.platform} (${fr.fromCache ? "cache" : "download"})`,
-	);
-	if (result.dryRun) {
-		console.log(
-			`  Patch out: ${result.patchOutputPath} (not written in --dry-run mode)`,
-		);
-		console.log("");
-		return;
-	}
-	console.log(`  Patched:  ${result.patchOutputPath}`);
-	if (!result.promoteResult) {
-		console.log(chalk.yellow("  Warning: promote step did not run"));
-		console.log("");
-		return;
-	}
-	printPromoteResult(result.promoteResult);
-}
-
-function printNativePullResult(result: {
-	fetchResult: { version: string; platform: string; fromCache: boolean };
-	outputJsPath: string;
-}): void {
-	const fr = result.fetchResult;
-	console.log(chalk.green("\nClean native JS extracted:"));
-	console.log(
-		`  Fetched: ${fr.version}/${fr.platform} (${fr.fromCache ? "cache" : "download"})`,
-	);
-	console.log(`  Output:  ${result.outputJsPath}`);
-	console.log("");
+function printHumanLines(lines: readonly string[]): void {
+	for (const line of lines) console.log(line);
 }
 
 main();

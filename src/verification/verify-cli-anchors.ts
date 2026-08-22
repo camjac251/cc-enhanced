@@ -4,6 +4,7 @@ import { parse } from "../loader.js";
 import { hasStrongClaudeMdDisclaimer } from "../patches/claudemd-strong.js";
 import { allPatches } from "../patches/index.js";
 import { hasReadStateRebuildRangeGuard } from "../patches/read-bat.js";
+import type { Patch } from "../types.js";
 import type {
 	AnchorFailure,
 	SignatureExpectation,
@@ -131,8 +132,8 @@ const FORBIDDEN_REGEX_PATCHED: RegexRule[] = [
 	},
 ];
 
-function collectSelectedPatchTags(): string[] {
-	return allPatches
+function collectSelectedPatchTags(selectedPatches: readonly Patch[]): string[] {
+	return selectedPatches
 		.map((patch) => patch.tag)
 		.filter((tag) => tag !== "signature")
 		.sort();
@@ -308,9 +309,10 @@ function checkSignatureParity(
 	patchedCode: string,
 	failures: AnchorFailure[],
 	expectation: SignatureExpectation,
+	selectedPatches: readonly Patch[],
 ): { checksRun: number; actualSignatureTags: string[] } {
 	let checksRun = 0;
-	const selectedIncludesSignature = allPatches.some(
+	const selectedIncludesSignature = selectedPatches.some(
 		(patch) => patch.tag === "signature",
 	);
 	const allowForcedSignature = expectation === "allow-forced";
@@ -346,7 +348,7 @@ function checkSignatureParity(
 		return { checksRun, actualSignatureTags };
 	}
 
-	const expectedTags = collectSelectedPatchTags();
+	const expectedTags = collectSelectedPatchTags(selectedPatches);
 	const expectedSet = new Set(expectedTags);
 	const actualSet = new Set(actualSignatureTags);
 	const missing = expectedTags.filter((tag) => !actualSet.has(tag));
@@ -379,9 +381,10 @@ function runPatchVerifiers(
 	patchedCode: string,
 	ast: ReturnType<typeof parse>,
 	failures: AnchorFailure[],
+	selectedPatches: readonly Patch[],
 ): number {
 	let checksRun = 0;
-	for (const patch of allPatches) {
+	for (const patch of selectedPatches) {
 		if (patch.tag === "signature") continue;
 		checksRun++;
 		try {
@@ -469,6 +472,7 @@ export async function verifyCliAnchors(
 	runtime: VerifyCliAnchorsRuntime = DEFAULT_RUNTIME,
 ): Promise<VerifyCliAnchorsResult> {
 	const failures: AnchorFailure[] = [];
+	const selectedPatches = input.selectedPatches ?? allPatches;
 	let checksRun = 0;
 	checksRun += 2;
 
@@ -478,7 +482,7 @@ export async function verifyCliAnchors(
 			ok: false,
 			checksRun,
 			failures,
-			expectedPatchTags: collectSelectedPatchTags(),
+			expectedPatchTags: collectSelectedPatchTags(selectedPatches),
 			actualSignatureTags: [],
 		};
 	}
@@ -523,7 +527,12 @@ export async function verifyCliAnchors(
 		checksRun += checkPromptPolicyContract(patchedCode, failures);
 		if (!input.skipPatchVerifiers) {
 			if (patchedAst) {
-				checksRun += runPatchVerifiers(patchedCode, patchedAst, failures);
+				checksRun += runPatchVerifiers(
+					patchedCode,
+					patchedAst,
+					failures,
+					selectedPatches,
+				);
 			} else {
 				checksRun++;
 				pushFailure(
@@ -539,6 +548,7 @@ export async function verifyCliAnchors(
 			patchedCode,
 			failures,
 			input.signatureExpectation ?? "selected",
+			selectedPatches,
 		);
 		checksRun += signatureCheck.checksRun;
 
@@ -546,7 +556,7 @@ export async function verifyCliAnchors(
 			ok: failures.length === 0,
 			checksRun,
 			failures,
-			expectedPatchTags: collectSelectedPatchTags(),
+			expectedPatchTags: collectSelectedPatchTags(selectedPatches),
 			actualSignatureTags: signatureCheck.actualSignatureTags,
 		};
 	} finally {

@@ -66,6 +66,139 @@ test("--structural-evidence requires --summary-path", async () => {
 	}
 });
 
+test("--list resolves environment patch selection overrides at runtime", async () => {
+	const env: NodeJS.ProcessEnv = {
+		...process.env,
+		NO_COLOR: "1",
+		CLAUDE_PATCHER_INCLUDE_TAGS: "read-bat,signature",
+	};
+	delete env.CLAUDE_PATCHER_EXCLUDE_TAGS;
+
+	const { stdout } = await execFileAsync(
+		process.execPath,
+		["./src/index.ts", "--list"],
+		{
+			cwd: repoRoot,
+			env,
+			encoding: "utf-8",
+		},
+	);
+
+	assert.match(stdout, /read-bat/);
+	assert.match(stdout, /signature/);
+	assert.doesNotMatch(stdout, /shell-quote-fix/);
+	assert.doesNotMatch(stdout, /tools-off-desktop/);
+	assert.match(stdout, /Total: 2 patches/);
+});
+
+test("--list rejects an unknown environment patch tag", async () => {
+	const env: NodeJS.ProcessEnv = {
+		...process.env,
+		NO_COLOR: "1",
+		CLAUDE_PATCHER_INCLUDE_TAGS: "typo",
+	};
+	delete env.CLAUDE_PATCHER_EXCLUDE_TAGS;
+
+	await assert.rejects(
+		execFileAsync(process.execPath, ["./src/index.ts", "--list"], {
+			cwd: repoRoot,
+			env,
+			encoding: "utf-8",
+		}),
+		(error: ExecFileException & { stderr?: string | Buffer }) => {
+			assert.notEqual(error.code, 0);
+			assert.match(
+				String(error.stderr ?? ""),
+				/unknown include override patch tag: typo/i,
+			);
+			return true;
+		},
+	);
+});
+
+test("--list keeps the cli-full roster at 45 patches", async () => {
+	const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+	delete env.CLAUDE_PATCHER_INCLUDE_TAGS;
+	delete env.CLAUDE_PATCHER_EXCLUDE_TAGS;
+
+	const { stdout } = await execFileAsync(
+		process.execPath,
+		["./src/index.ts", "--list"],
+		{
+			cwd: repoRoot,
+			env,
+			encoding: "utf-8",
+		},
+	);
+
+	assert.match(stdout, /tools-off/);
+	assert.doesNotMatch(stdout, /tools-off-desktop/);
+	assert.match(stdout, /Total: 45 patches/);
+});
+
+test("CLI rejects profiles that do not have a verified implementation", async () => {
+	try {
+		await execFileAsync(
+			process.execPath,
+			["./src/index.ts", "--profile", "desktop-local", "--list"],
+			{
+				cwd: repoRoot,
+				env: { ...process.env, NO_COLOR: "1" },
+				encoding: "utf-8",
+			},
+		);
+		assert.fail("expected an unsupported patch profile to fail");
+	} catch (error) {
+		const childError = error as ExecFileException & {
+			stderr?: string | Buffer;
+			stdout?: string | Buffer;
+		};
+		const combined = `${String(childError.stdout ?? "")}\n${String(
+			childError.stderr ?? "",
+		)}`;
+		assert.notEqual(childError.code, 0);
+		assert.match(
+			combined,
+			/Unknown patch profile "desktop-local"\. Available profiles: cli-full/,
+		);
+	}
+});
+
+test("CLI rejects legacy native platform aliases before fetching", async () => {
+	try {
+		await execFileAsync(
+			process.execPath,
+			[
+				"./src/index.ts",
+				"--native-fetch",
+				"1.2.3",
+				"--native-platform",
+				"windows-x64",
+				"--native-fetch-only",
+			],
+			{
+				cwd: repoRoot,
+				env: { ...process.env, NO_COLOR: "1" },
+				encoding: "utf-8",
+			},
+		);
+		assert.fail("expected a legacy native platform alias to fail");
+	} catch (error) {
+		const childError = error as ExecFileException & {
+			stderr?: string | Buffer;
+			stdout?: string | Buffer;
+		};
+		const combined = `${String(childError.stdout ?? "")}\n${String(
+			childError.stderr ?? "",
+		)}`;
+		assert.notEqual(childError.code, 0);
+		assert.match(
+			combined,
+			/Unsupported native artifact platform "windows-x64"/,
+		);
+	}
+});
+
 test("prompts:drift-baseline keeps the export directory positional", async () => {
 	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "prompt-drift-cli-"));
 	const exportDir = path.join(tempDir, "export");

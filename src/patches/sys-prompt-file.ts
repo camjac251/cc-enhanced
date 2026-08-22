@@ -59,15 +59,49 @@ function flattenLogicalAnd(node: t.Node): t.Node[] {
 	return [node];
 }
 
+interface AppendFileBranchHelpers {
+	decodeCallee: t.Expression;
+	readFileCallee: t.Expression;
+	resolveCallee: t.Expression;
+}
+
+function getWrappedAppendReadCallees(
+	node: t.Node | null | undefined,
+	resolvedVarName: string,
+): { decodeCallee: t.Expression; readFileCallee: t.Expression } | null {
+	if (
+		!t.isCallExpression(node) ||
+		!t.isExpression(node.callee) ||
+		node.arguments.length !== 1 ||
+		!t.isAwaitExpression(node.arguments[0]) ||
+		!t.isCallExpression(node.arguments[0].argument)
+	) {
+		return null;
+	}
+	const readFileCall = node.arguments[0].argument;
+	if (
+		!t.isExpression(readFileCall.callee) ||
+		readFileCall.arguments.length !== 1 ||
+		!t.isIdentifier(readFileCall.arguments[0], { name: resolvedVarName })
+	) {
+		return null;
+	}
+	return {
+		decodeCallee: t.cloneNode(node.callee),
+		readFileCallee: t.cloneNode(readFileCall.callee),
+	};
+}
+
 function findAppendFileBranchHelpers(
 	appendIf: t.IfStatement,
 	optionsName: string,
-): { resolveCallee: t.Expression; readFileCallee: t.Expression } | null {
+): AppendFileBranchHelpers | null {
 	if (!t.isBlockStatement(appendIf.consequent)) return null;
 
 	let resolvedVarName: string | null = null;
 	let resolveCallee: t.Expression | null = null;
 	let readFileCallee: t.Expression | null = null;
+	let decodeCallee: t.Expression | null = null;
 
 	for (const stmt of appendIf.consequent.body) {
 		if (!t.isTryStatement(stmt) || !t.isBlockStatement(stmt.block)) continue;
@@ -91,35 +125,27 @@ function findAppendFileBranchHelpers(
 				}
 			}
 
-			const readFileCall =
-				t.isExpressionStatement(innerStmt) &&
-				t.isCallExpression(innerStmt.expression)
-					? innerStmt.expression
-					: t.isExpressionStatement(innerStmt) &&
-							t.isAssignmentExpression(innerStmt.expression) &&
-							t.isAwaitExpression(innerStmt.expression.right) &&
-							t.isCallExpression(innerStmt.expression.right.argument)
-						? innerStmt.expression.right.argument
-						: null;
 			if (
-				readFileCall &&
-				t.isExpression(readFileCall.callee) &&
-				readFileCall.arguments.length >= 1
+				!resolvedVarName ||
+				!t.isExpressionStatement(innerStmt) ||
+				!t.isAssignmentExpression(innerStmt.expression) ||
+				!t.isExpression(innerStmt.expression.right)
 			) {
-				const [firstArg] = readFileCall.arguments;
-				if (
-					resolvedVarName &&
-					t.isIdentifier(firstArg) &&
-					firstArg.name === resolvedVarName
-				) {
-					readFileCallee = t.cloneNode(readFileCall.callee);
-				}
+				continue;
+			}
+			const callees = getWrappedAppendReadCallees(
+				innerStmt.expression.right,
+				resolvedVarName,
+			);
+			if (callees) {
+				decodeCallee = callees.decodeCallee;
+				readFileCallee = callees.readFileCallee;
 			}
 		}
 	}
 
-	if (!resolveCallee || !readFileCallee) return null;
-	return { resolveCallee, readFileCallee };
+	if (!resolveCallee || !readFileCallee || !decodeCallee) return null;
+	return { resolveCallee, readFileCallee, decodeCallee };
 }
 
 function hasAppendPromptConflictCheck(
@@ -203,6 +229,7 @@ function inspectAutoAppendGuard(
 	path: NodePath<t.IfStatement>,
 	expected: {
 		appendLocalName: string;
+		decodeCallee: t.Expression;
 		resolveCallee: t.Expression;
 		readFileCallee: t.Expression;
 	},
@@ -243,7 +270,7 @@ function inspectAutoAppendGuard(
 	if (!t.isBlockStatement(path.node.consequent)) return null;
 
 	// The mutator injects a single wired shape:
-	//   appendPrompt = await readFile(resolvedVar, "utf8")
+	//   appendPrompt = decode(await readFile(resolvedVar))
 	// inside a try { ... } catch, where resolvedVar = resolve(
 	//   process.env.<ENV> ?? "/etc/claude-code/system-prompt.md"
 	// ). Verify mirrors that wiring rather than checking the four pieces
@@ -309,23 +336,18 @@ function inspectAutoAppendGuard(
 				!t.isIdentifier(innerStatement.expression.left, {
 					name: guardedAppendLocal,
 				}) ||
-				!t.isAwaitExpression(innerStatement.expression.right) ||
-				!t.isCallExpression(innerStatement.expression.right.argument)
+				!t.isExpression(innerStatement.expression.right)
 			) {
 				continue;
 			}
-			const readCall = innerStatement.expression.right.argument;
-			if (readCall.arguments.length !== 2) continue;
-			if (
-				!t.isIdentifier(readCall.arguments[0], { name: resolvedPathName }) ||
-				!t.isStringLiteral(readCall.arguments[1], { value: "utf8" })
-			) {
-				continue;
-			}
-			tryHasReadFile = t.isNodesEquivalent(
-				readCall.callee,
-				expected.readFileCallee,
+			const callees = getWrappedAppendReadCallees(
+				innerStatement.expression.right,
+				resolvedPathName,
 			);
+			tryHasReadFile =
+				callees !== null &&
+				t.isNodesEquivalent(callees.decodeCallee, expected.decodeCallee) &&
+				t.isNodesEquivalent(callees.readFileCallee, expected.readFileCallee);
 			if (tryHasReadFile) {
 				hasReadFile = true;
 				hasAppendAssignment = true;
@@ -396,6 +418,7 @@ function findAutoAppendGuardBeforeAppendBranch(ast: t.File): {
 
 			found = inspectAutoAppendGuard(previousSibling, {
 				appendLocalName: appendLocal.localName,
+				decodeCallee: helpers.decodeCallee,
 				resolveCallee: helpers.resolveCallee,
 				readFileCallee: helpers.readFileCallee,
 			});
@@ -535,20 +558,24 @@ function createSystemPromptFileMutator(): Visitor {
 				`
                 if (APPEND_PROMPT === void 0 && OPTIONS.appendSystemPromptFile === void 0) {
                     let configuredSystemPromptFilePath = process.env.CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE ?? "/etc/claude-code/system-prompt.md";
-                    try {
+					try {
 						let resolvedSystemPromptFile = RESOLVE(configuredSystemPromptFilePath);
-						APPEND_PROMPT = await READ_FILE(resolvedSystemPromptFile, "utf8");
+						APPEND_PROMPT = DECODE(await READ_FILE(resolvedSystemPromptFile));
 					} catch (err) {
 						if (!err || err.code !== "ENOENT") throw err;
 					}
 				}
 			`,
-				{ placeholderPattern: /^(APPEND_PROMPT|OPTIONS|RESOLVE|READ_FILE)$/ },
+				{
+					placeholderPattern:
+						/^(APPEND_PROMPT|OPTIONS|RESOLVE|READ_FILE|DECODE)$/,
+				},
 			)({
 				APPEND_PROMPT: t.identifier(appendLocal.localName),
 				OPTIONS: t.identifier(optionsName),
 				RESOLVE: t.cloneNode(helpers.resolveCallee),
 				READ_FILE: t.cloneNode(helpers.readFileCallee),
+				DECODE: t.cloneNode(helpers.decodeCallee),
 			});
 
 			parentBlock.body.splice(appendLocal.insertIndex, 0, autoAppendIf);
