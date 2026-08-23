@@ -47,6 +47,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Check documentation formatting
+        run: bun run docs:check
+
       - name: Typecheck
         run: bun run typecheck
 

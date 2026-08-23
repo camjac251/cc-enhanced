@@ -59,6 +59,8 @@
 		"prompts:compare": "bun scripts/compare-prompts.ts",
 		"prompts:compare:matrix": "bun scripts/compare-prompt-matrix.ts",
 		"prompts:drift-baseline": "bun src/index.ts --write-prompt-drift-baseline",
+		"docs:format": "prettier --write README.md \"docs/**/*.md\"",
+		"docs:check": "prettier --check README.md \"docs/**/*.md\"",
 		"test": "node scripts/run-tests-serial.mjs",
 		"typecheck": "tsc --noEmit",
 		"lint": "biome check src/ scripts/",
@@ -74,6 +76,7 @@
 		"@biomejs/biome": "^2.4.16",
 		"@types/node": "^26.0.0",
 		"@types/yargs": "^17.0.35",
+		"prettier": "3.9.6",
 		"typescript": "^7.0.0"
 	},
 	"dependencies": {

@@ -1,614 +1,128 @@
+<h1 align="center">cc-enhanced</h1>
+
+<p align="center"><strong>Verifiable AST patches for the latest Claude Code native CLI</strong></p>
+
 <p align="center">
-  <h1 align="center">cc-enhanced</h1>
-  <p align="center">AST-based patcher for customizing the Claude Code CLI</p>
+  <a href="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Tested with Claude Code 2.1.241" src="https://img.shields.io/badge/tested-Claude_Code_2.1.241-8A2BE2">
+  <img alt="45 patches" src="https://img.shields.io/badge/patches-45-f97316">
+  <img alt="Bun 1.4.0" src="https://img.shields.io/badge/Bun-1.4.0-fbf0df?logo=bun&logoColor=000">
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2563eb"></a>
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-  <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
-  <img src="https://img.shields.io/badge/Runtime-Bun_1.4.0-fbf0df.svg" alt="Bun 1.4.0">
-  <img src="https://img.shields.io/badge/Patches-45-orange.svg" alt="45 Patches">
-  <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.241-8A2BE2.svg" alt="Tested against Claude Code 2.1.241">
+  <a href="docs/getting-started.md">Get started</a> ·
+  <a href="docs/patches.md">Patch catalog</a> ·
+  <a href="docs/configuration.md">Configuration</a> ·
+  <a href="docs/target-workflows.md">Desktop and remote targets</a> ·
+  <a href="docs/README.md">Documentation</a>
 </p>
 
----
+cc-enhanced extracts the JavaScript bundle embedded in an official Claude Code native executable, applies a selected set of independently verifiable patches, and repacks the bundle without changing the native file's fixed layout. The primary `cli-full` profile improves Read and Edit ergonomics, modernizes prompt and tool routing, unlocks runtime and UI controls, and keeps the patched installation recoverable through atomic promotion and rollback.
 
-cc-enhanced extracts the JavaScript bundle embedded in the Claude Code native binary, applies 45 verifiable patches through Babel AST traversal, and repacks the result in place. Every patch is a self-contained module with an independent verifier; one failure does not take down the rest. Promotion uses atomic symlinks, so rollback is one command.
+> [!IMPORTANT]
+>
+> This repository contains patch source and build tooling only. It does not publish or redistribute Claude Code binaries, application bundles, container images, npm packages, credentials, session state, or generated private evidence.
 
-Use it to unlock capabilities the CLI ships with but does not expose, fix long-standing bugs (shell quoting and LSP fan-out), swap tool parameters for more ergonomic alternatives (`bat`-style ranges on Read and batched `edits[]` on Edit), and replace prompt fragments that steer the model toward better shell tooling.
+## What it changes
 
-> [!NOTE]
-> This tool patches your local copy of the Claude Code binary. It does not distribute Claude Code binaries or npm packages. All modifications happen on your machine.
+| Area | Highlights |
+| --- | --- |
+| Read and Edit | `bat`-style Read ranges, whitespace rendering, batched `edits[]`, safer content-addressed edits, and structured diff presentation. |
+| Tool policy | Optional removal of legacy built-ins, modern shell and MCP routing, preserved `NotebookEdit` support for Desktop-oriented candidates, and clearer task-output handling. |
+| Prompt harness | Stronger repository policy, focused agent roles, current code-search guidance, model routing metadata, and prompt-surface drift checks. |
+| Runtime | Cache policy, larger file limits, feature gates, model catalogs and aliases, session controls, and update protection. |
+| Terminal UX | Visible patch signatures, expanded results, plan diffs, queued follow-ups, skill and agent notices, and configurable file links. |
+| Native lifecycle | Official artifact fetching, fixed-layout repacking, receipt-bound verification, atomic promotion, rollback, and guarded cross-platform candidate workflows. |
 
-## Subscription routing
+The complete behavior and source link for every tag lives in the [45-patch catalog](docs/patches.md).
 
-The [subscription routing guide](docs/subscription-routing/README.md) documents
-a two-launcher setup that keeps normal Claude Max sessions
-direct while adding an isolated mixed-model launcher backed by Claude Max and
-ChatGPT Pro subscriptions. It installs upstream Clodex globally through mise
-and includes secure external credential storage, static and live verification,
-safe restart gates, managed-plus-routing prompt composition, per-model context
-metadata, and workflow delegation policy.
-
-The guide and its adjacent setup files are the canonical maintained package.
-Use them from the current cc-enhanced checkout rather than keeping a separate
-copy; the templates, tests, and verification scripts are versioned together.
-
-## How It Works
-
-```mermaid
-flowchart LR
-    Bin([native binary]) -->|unpack ELF| Js[cli.js]
-
-    Js --> Str[string patches<br/>prompt text only]
-    Str --> Ast
-
-    subgraph Ast[combined AST pass]
-        direction LR
-        D[discover] --> M[mutate] --> F[finalize]
-    end
-
-    Ast --> Ver{{each patch<br/>verifier}}
-    Ver -- all pass --> Sig[signature suffix]
-    Ver -- any fail --> Abort([abort + report])
-    Sig --> Repack[repack into ELF<br/>same byte length]
-    Repack --> Swap[atomic symlink swap]
-    Swap --> Active([active binary])
-    Active -. mise run native:rollback .-> Swap
-
-    classDef terminal fill:#1f2937,stroke:#111,color:#fff
-    classDef fail fill:#7f1d1d,stroke:#450a0a,color:#fff
-    class Bin,Active terminal
-    class Abort fail
-```
-
-Prompt-only edits run first as string transforms. Everything structural shares a single Babel traversal (`discover` -> `mutate` -> `finalize`) over the formatted bundle, so every AST patch sees the same parse. Each patch ships its own verifier; one failure is reported and the rest still apply. The repacked JavaScript goes back into the ELF container at the exact original byte length, so nothing downstream of the bundle is disturbed.
-
-## Quick Start
+## Quick start
 
 ```bash
-bun install
+mise install
+bun install --frozen-lockfile
 
-# Fetch latest upstream, patch it, and promote the result to active.
 mise run native:update
 
 claude --version
-# <current> (Claude Code; patched: shell-quote-fix, bash-prompt, ..., signature)
-
 mise run status
-# Shows current, previous, and cached versions.
 ```
 
-Rollback is a symlink swap, not a reinstall. `mise run native:rollback` exchanges the `current` and `previous` pointers atomically; the prior build stays on disk until it rotates out of the cache.
+`native:update` fetches the current official release, builds and verifies a separate candidate, and promotes it only after all selected patch gates pass. Rollback is an atomic symlink exchange:
+
+```bash
+mise run native:rollback
+```
+
+See [Getting started](docs/getting-started.md) for requirements, patch selection, runtime tooling, traffic settings, and verification levels.
+
+## How it works
 
 ```mermaid
 flowchart LR
-    Launcher["~/.local/bin/claude"] --> Current["versions/current"]
-    Previous["versions/previous"]
-    Current --> NewBuild[["build N<br/>patched current"]]
-    Previous --> OldBuild[["build N-1<br/>patched previous"]]
-    NewBuild <-. swap .-> OldBuild
-
-    classDef sym fill:#0b2545,stroke:#0b2545,color:#fff
-    classDef build fill:#1e293b,stroke:#0f172a,color:#e2e8f0
-    class Launcher,Current,Previous sym
-    class NewBuild,OldBuild build
+    upstream["Official native executable"] --> extract["Extract embedded bundle"]
+    extract --> prompts["Prompt string transforms"]
+    prompts --> ast["One shared AST pass<br/>discover → mutate → finalize"]
+    ast --> verify{"Every selected verifier passes?"}
+    verify -- no --> abort["Abort without writing"]
+    verify -- yes --> signature["Inject patch signature"]
+    signature --> repack["Repack at the original byte length and layout"]
+    repack --> promote["Atomic promotion"]
+    promote -. rollback .-> promote
 ```
 
-Native lifecycle commands now produce a versioned operation envelope before
-their output is rendered. Pure human renderers preserve the existing CLI text,
-while a deterministic JSON renderer provides the shared contract for future
-automation and GUI work. The CLI does not expose a JSON switch yet because
-patch-progress output must first be isolated from standard output.
+Structural patches share one parsed AST and run in registration order. Each patch owns its verifier, failed tags are reported together, and no artifact is written when any required verification fails. Native lifecycle operations are serialized by a process-tree lease because bundle parsing, repacking, prompt export, and full verification are memory-heavy.
 
-`Manager.buildNative()` fetches, patches, and verifies a candidate without
-activating it. `Manager.updateNative()` is the current build-and-promote
-orchestrator; dry runs return before promotion. This boundary lets future
-Desktop, WSL, SSH, and image targets reuse candidate construction without
-inheriting the standalone CLI's symlink activation policy.
+## Profiles and target surfaces
 
-## Patches
+| Surface | Patch policy | Selection state | What is still required |
+| --- | --: | --- | --- |
+| Standalone CLI (`cli-full`) | 45 registered patches | Supported and selectable | A real latest-bundle verification before release or promotion claims. |
+| Desktop-local | 31 probe-required candidates, 15 exclusions | Reserved and build-only | Exact target receipts plus stock and patched Read/Edit/tool approval and presentation probes. |
+| Remote Control | 31 probe-required candidates, 15 exclusions | Reserved and build-only | Matching-host proof and separate web, mobile, and Desktop client compatibility evidence. |
+| Self-hosted runner | 31 probe-required candidates, 15 exclusions | Reserved and build-only | Runner registration, child execution, deployment, and client qualification. |
 
-Each patch has a short tag. The default `cli-full` profile selects all 45
-registered patches in their established execution order. Make that selection
-explicit when inspecting the CLI:
+> [!NOTE]
+>
+> The target work did not remove or minimize the CLI patch roster. `cli-full` remains the exact ordered 45-patch profile. The surface catalog contains one additional profile-only `tools-off-desktop` variant, making 46 classified entries for Desktop, Remote Control, and self-hosted planning.
 
-```bash
-bun run cli -- --profile cli-full --list
-```
+Offline construction, matching-host execution, stock-client rendering, and live control-plane operation are separate proof levels. A passing earlier level never promotes a reserved profile or establishes later compatibility. The [target workflow guide](docs/target-workflows.md) explains the commands, client UI risks, Remote Control path, self-hosted path, and upkeep model.
 
-`cli-full` is the only supported patch profile today. Desktop, Remote
-Control, and self-hosted runner profiles are reserved until their runtime and
-approval-rendering probes pass. Include or exclude a subset with environment
-variables:
+## Documentation
 
-```bash
-CLAUDE_PATCHER_INCLUDE_TAGS=read-bat,limits,edit-extended mise run native:update
-CLAUDE_PATCHER_EXCLUDE_TAGS=tools-off,agents-off           mise run native:update
-```
+| Guide | Use it for |
+| --- | --- |
+| [Getting started](docs/getting-started.md) | Install, patch, activate, select tags, verify, and roll back. |
+| [Patch catalog](docs/patches.md) | Review every registered patch and its exact effect. |
+| [Configuration](docs/configuration.md) | Configure patch selection, prompt policy, models, file opening, and runtime controls. |
+| [CLI and inspection reference](docs/cli-reference.md) | Run lifecycle, prompt export, bundle inspection, evidence, and release-diff commands. |
+| [Target workflows](docs/target-workflows.md) | Build or assess Desktop, Remote Control, and self-hosted candidates without overstating support. |
+| [Subscription routing](docs/subscription-routing/README.md) | Maintain the optional direct-plus-mixed-model launcher setup. |
+| [Maintainer reference](docs/maintainer-reference.md) | Understand binary formats, patch interactions, release procedures, prompt drift, and authoring rules. |
 
-Inspect the machine-readable surface-support plan without selecting or patching
-a target:
+## Development and verification
 
 ```bash
-bun run profile:support -- --surface desktop-local
-bun run profile:support -- --surface desktop-local --json
-bun run profile:support -- --surface desktop-local --evidence
-bun run profile:support -- --surface remote-control --evidence
-bun run profile:support -- --surface self-hosted-runner --evidence
-```
-
-The same versioned, path-free data feeds the human CLI, JSON operation
-envelope, and future GUI. Every registered patch has an ordered effect and
-surface classification. The profile catalog adds one surface-only variant
-without changing the 45-patch CLI roster. The current Desktop-local plan
-intentionally reports zero supported patches, 31 probe-required candidates,
-and 15 explicit exclusions; it remains non-selectable until the required SDK,
-runtime, approval, rendering, restart, and resume evidence exists. The original
-`tools-off` stays excluded because it disables `NotebookEdit`; the candidate
-`tools-off-desktop` policy disables the same five core tools while requiring
-every `NotebookEdit` registration to remain available.
-
-
-
-The CLI resolves these variables for each invocation after loading the selected
-profile. They no longer mutate the global patch registry at module import time,
-so separate targets and profiles can safely be planned in one process. The
-include list acts as an allowlist, and the exclude list wins when a tag appears
-in both.
-
-### Tooling
-
-Changes to built-in tools (Read, Edit, Bash, LSP, Task, MCP).
-
-| Patch | Effect |
-|-------|--------|
-| [`read-bat`](src/patches/read-bat.ts) | Read replaces `offset`/`limit` with a single `range` string (`30:40`, `-30:`, `50:+20`, `100::10`, `30:40:2`), renders text through `bat` with line numbers, adds `show_whitespace: true` to reveal tabs/spaces/newlines, drops blank `pages` and `range` strings before schema validation, surfaces the read range on the tool-use chip including agent-output (`.output`) reads so chunked reads render distinctly, auto-tails `*.output` files to `-500:` when `range` is omitted, previews the first 200 lines of oversized files, caps changed-file reminder snippets at a bounded head-plus-tail summary, and marks content-identical changed-file re-reads as seen so mtime-only churn (for example from git operations) does not re-read watched files on every cycle. |
-| [`edit-extended`](src/patches/edit-extended.ts) | Edit accepts batched changes via `edits[]` and keeps them intact through validation, call dispatch, diff rendering, and transcript cleanup. Scratchpad Edit results render their structured hunks instead of collapsing to line counts. Plain Edit no longer fails only because a prior Read timestamp is stale; current-file exact-match and ambiguity checks decide whether the content-addressed edit can apply. Write can overwrite existing files without a prior Read while still honoring modified-since-read protection when read state exists. The tool-use chip surfaces `batch(N)` for `edits[]` and `replace_all` when those fields are set. Prompt guidance routes repeated structural code rewrites through ast-grep previews, reserves `sd` for non-code text replacement, and covers fuzzy-match recovery plus multi-site refactors. |
-| [`tools-off`](src/patches/tools-off.ts) | The immutable `cli-full` policy disables `Glob`, `Grep`, `WebSearch`, `WebFetch`, `NotebookEdit`, and the upstream-deprecated `TaskOutput`, and strips their references from prompts, tool tables, agent frontmatter, and workflow `allowed_tools` examples. Task status and results route through the completion notification and the output file it names. The model is steered toward `fd`, `bat`, ast-grep for syntax shapes, and `rg` for exact lexical text. A separate profile-only `tools-off-desktop` variant performs the same cleanup and disables the five core tools while retaining every `NotebookEdit` registration; it is not part of the 45-patch CLI roster and remains probe-required rather than selectable. |
-| [`shell-quote-fix`](src/patches/shell-quote-fix.ts) | Bash no longer mangles `!` in negation (`!x`, `!==`), shell tests (`[ ! -f ]`), or literal banged strings. Fixes real-world breakage on `-c` invocations. |
-| [`mcp-server-name`](src/patches/mcp-server-name.ts) | MCP server-name validation accepts the plugin-style form (`plugin:<plugin>:<key>`) alongside the stock alphanumeric form, so settings entries stop silently dropping at schema parse time. |
-| [`lsp-multi-server`](src/patches/lsp-multi-server.ts) | File lifecycle notifications (`didOpen`/`didChange`/`didSave`) fan out to every language server registered for a file extension. Stacked setups (TypeScript + ESLint + Tailwind) stay in sync. Also routes by filename when the extension yields no server: `getServerForFile` and the lifecycle functions fall back to per-server `filenames` (exact basename) and `filenamePatterns` (glob) so extensionless files like `Dockerfile` and patterns like `Dockerfile.*` reach a server, and `didOpen` uses the matched filename/glob languageId instead of `plaintext`. The primary `[0]` navigation path is preserved. |
-| [`lsp-filename-schema`](src/patches/lsp-filename-schema.ts) | Widens the strict per-server LSP plugin-manifest schema to accept two optional fields, `filenames` and `filenamePatterns` (each `record(name, languageId)`), so a plugin can declare filename/glob matches alongside `extensionToLanguage`. The runtime routing that consumes them lives in `lsp-multi-server`. |
-
-### System
-
-Runtime behavior, caching, memory, and configuration.
-
-| Patch | Effect |
-|-------|--------|
-| [`cache-tail-policy`](src/patches/cache-tail-policy.ts) | Forces 1h TTL on system prompt and eligible tools, switches the system-prompt identity block to global cache scope, and extends 1h eligibility to real `agent:*` subagents. Its two-user tail and 15-user decimation checkpoints stop at the stock skip-write boundary; deferred tools are scrubbed; and the final 4-breakpoint clamp evicts oldest tool/system overflow before retaining stable fork or rolling checkpoints ahead of generic decimation and the newest tail. |
-| [`child-network-env`](src/patches/child-network-env.ts) | Applies Clodex's child-command network handoff without changing the parent route: restore the pre-bridge proxy/CA environment, clear all proxy/bypass/extra-CA values, or expose only a selected upstream HTTP CONNECT proxy. Internal handoff markers are removed before the command launches. Nested wrapped clients retain the local model bridge, and launches without a handoff keep stock environment behavior. |
-| [`effort-stack`](src/patches/effort-stack.ts) | Lets `CLAUDE_CODE_EFFORT_LEVEL=max` stack with ultracode workflow orchestration without sending a non-API `ultracode` effort value. Set `CLAUDE_CODE_EFFORT_LEVEL=max` plus either `CLAUDE_CODE_ULTRACODE=1` or a true `ultracode` setting. Env values seed new sessions, while `/effort` choices become session-only overrides instead of staying locked behind env. The active gate still requires workflows and an `xhigh`-capable model, and `/effort` shows the stacked max+ultracode state instead of claiming the env override disabled it. |
-| [`feature-flags`](src/patches/feature-flags.ts) | Enables the built-in Monitor tool locally instead of depending on the remote `tengu_amber_sentinel` GrowthBook flag. This keeps event-stream monitoring available when the flag cache is empty or GrowthBook traffic is disabled, while preserving the platform shell-availability gate. |
-| [`image-limits`](src/patches/image-limits.ts) | Restores the per-side image cap for `claude-fable-5`, `claude-mythos-5`, `claude-sonnet-5`, `claude-opus-4-7`, `claude-opus-4-8`, and `claude-opus-5` to the documented 2576px (3.75 MP). Upstream silently downgrades all six overrides to 2000px so conversations with more than 20 images stop tripping the API's many-image batch limit ("dimension exceeds max for many-image requests: 2000 pixels"), but the per-message API limit is 8000px and the models themselves process input up to 2576px on the long edge. The downgrade trades documented headroom for everyone to silence one error class for heavy multi-screenshot sessions. The patch keeps the headroom and, when a request has more than 20 image/document blocks with any image over 2000px on either side, downscales only the oversized image blocks to the API's many-image bucket before submission. |
-| [`model-context-metadata`](src/patches/model-context-metadata.ts) | When gateway model discovery is enabled, activates the existing model-capability cache and uses each matching model's positive safe-integer `max_input_tokens` value before the global custom-model fallback, capped at 1M. Catalog entries from `configured-model-catalog` use the same downstream context, output, and compaction logic through an exact pre-gate lookup without activating unrelated cached gateway metadata. Native Claude 1M handling keeps precedence. `max_tokens` continues to drive the existing per-model output limit, so parent and child agents can safely mix different context and output windows in one process. A catalog entry's `auto_compact_window` sets that model's auto-compaction target, ranked below the environment override and an explicit setting so `/auto-compact` still wins, and clamped to the model's own window. Models without the field keep stock behavior, so one model can compact early without moving any other model off its tuned default. |
-| [`no-autoupdate`](src/patches/no-autoupdate.ts) | Forces the autoupdater guard to a safe stub so the patched binary is not replaced in the background. Marketplace plugin autoupdates continue to work through the same guard path. |
-| [`limits`](src/patches/limits.ts) | Read keeps larger files inline. Byte ceiling 256K -> 1M, token budget 25K -> 50K (still overridable via `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`), persistence threshold 50K -> 120K chars, per-tool result cap 100K -> 250K chars. |
-| [`session-mem`](src/patches/session-mem.ts) | An explicit `autoDreamEnabled: true` setting bypasses the server-side auto-dream availability gate. |
-| [`sys-prompt-file`](src/patches/sys-prompt-file.ts) | Every conversation auto-appends a system prompt file when no append system prompt is explicitly set. Source is `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE`, falling back to `/etc/claude-code/system-prompt.md`. Replacement-mode launches via `--system-prompt` or `--system-prompt-file` still receive the auto-append layer unless they provide their own append prompt. |
-
-### Prompt
-
-Prompt text sent to the model.
-
-| Patch | Effect |
-|-------|--------|
-| [`bash-prompt`](src/patches/bash-prompt.ts) | Bash tool guidance points at modern CLI (`fd`, `eza`, `rg`, `ast-grep`, `bat`, `sd`) and routes code work by intent: Serena/LSP for symbols, ChunkHound for unfamiliar concepts, Probe for known terms, `rg` for exact lexical text, and ast-grep for syntax shapes. It reserves `sd` for non-code text and enables the code path that hides legacy `find`/`grep` from the tool list. The lean Bash description that lean-prompt models receive carries the same routing block plus change routing (Edit for one site, `ast-grep run -r` for a repeated shape, `comby` for malformed syntax, `sd` for non-code text) with its experiment gate forced on, and the auto-mode and bypass-mode attachment that told the model to read with `cat`/`sed -n` and search with `grep`/`find` through Bash now keeps the shell-first stance but names the tools that beat the built-ins (`fd`, `eza`, `bat -r`, `rg`, `ast-grep run`, `comby`, `sd`, `jq`/`yq`) while keeping Edit for a single known site and Write for new files. |
-| [`built-in-agent-prompt`](src/patches/built-in-agent-prompt.ts) | Explore is reframed as a deep codebase research agent (execution-path tracing, `file:line` citations, reuse candidates) with the same source-code tool routing. Plan is reframed as a blueprint-producing architect with concrete sequencing and trade-offs. Worker and workflow-subagent prompts get modern code-search routing, the Agent tool routes known-symbol lookups to Serena/Probe instead of grep via Bash, and broad investigation wording stops suggesting grep sweeps. |
-| [`claude-api-scope`](src/patches/claude-api-scope.ts) | Narrows the bundled Claude API reference skill to application work that directly calls the API or uses an SDK. Merely mentioning Claude Code, `cli.js`, local session transcripts, statuslines, hooks, skills, subagents, workflows, MCP configuration, or model-routing infrastructure no longer instructs workers to load the full multi-language SDK reference. |
-| [`claudemd-strong`](src/patches/claudemd-strong.ts) | CLAUDE.md wrapper text treats project and managed `/etc/claude-code/CLAUDE.md` instructions as mandatory when they apply, instead of advisory context, pins a small always-applied baseline, and keeps CLAUDE.md user context available to slim subagents. |
-| [`memory-prompt-soften`](src/patches/memory-prompt-soften.ts) | Memory/init and dream-memory prompt text stops presenting `ls`, `find`, `grep`, `cat`, `head`, and `tail` as the canonical inspection set. Memory consolidation/pruning examples now use `eza`, `fd`, and `rg -m 50` instead. |
-| [`prompt-dash-style`](src/patches/prompt-dash-style.ts) | Prompt-like strings and template text normalize Unicode en/em dash punctuation to ASCII sentence, label, or numeric-range forms so bundled guidance does not demonstrate dash-heavy prose style. |
-| [`session-guidance`](src/patches/session-guidance.ts) | Session-specific exploration guidance no longer renders fallback `find`/`grep` helper text. Broad exploration uses the same capability router as the rest of the prompt stack: Serena, ChunkHound, Probe, `rg` for exact lexical text, and the ast-grep CLI for syntax shapes and structural rewrites. |
-| [`subagent-system-prompt`](src/patches/subagent-system-prompt.ts) | Shared subagent prompt assembly resolves `appendSubagentSystemPrompt ?? appendSystemPrompt` and appends the result after the base subagent prompt. This keeps `/etc/claude-code/system-prompt.md` policy available to standard non-forked Agent-tool subagents and Workflow `agent()` calls that route through the shared subagent runner. |
-| [`todo-use`](src/patches/todo-use.ts) | Todo guidance is compressed to a short, high-signal set of bullets. |
-
-### Agent
-
-Which built-in agents and commands are exposed.
-
-| Patch | Effect |
-|-------|--------|
-| [`agents-off`](src/patches/agents-off.ts) | Removes `statusline-setup` and `claude-code-guide` from the built-in agent registry. Those flows move to user skills. |
-| [`commands-off`](src/patches/commands-off.ts) | Removes the `/security-review` built-in slash command, leaving `/review` as the single review entry point and freeing the name for local skills to shadow. |
-| [`configured-model-catalog`](src/patches/configured-model-catalog.ts) | `CLAUDE_CODE_CONFIGURED_MODEL_CATALOG` supplies validated provider model IDs plus friendly names, descriptions, context windows, output limits, per-model auto-compaction targets, and effort metadata. Exact catalog matches participate in capability lookup before the gateway-cache gate without enabling unrelated cached metadata, so configured models use the native effort, `xhigh`, `max`, and default-effort resolvers. `/model` gains matching rows subject to stock `availableModels` policy, catalog metadata reconciles duplicate provider rows, and a resumed session can restore a model that remains in the launch-scoped catalog. The catalog is forwarded to child processes so parent agents and Agent/Workflow children use the same metadata. |
-| [`model-aliases`](src/patches/model-aliases.ts) | `CLAUDE_CODE_MODEL_ALIASES` defines case-insensitive aliases for full provider model IDs across main-model selection, Agent and Workflow calls, explicit teammate models, resume, and an explicit `CLAUDE_CODE_AUTO_MODE_MODEL` classifier override. Workflow status renders an exact configured target with its friendly alias while preserving stock fallback reporting when the response identifies a genuinely different model. The strict JSON map is one-hop, cannot replace native aliases or `inherit`, rejects `[1m]` names and targets, and still passes resolved IDs through stock normalization and `availableModels` enforcement. The auto-mode override is launch-scoped, does not enable auto mode or change its availability gate, and leaves the upstream classifier selection unchanged when unset. |
-| [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | Agent model overrides accept a trimmed, nonempty built-in alias, `inherit`, or a full model ID exposed by the active provider instead of being limited to the four built-in aliases. Explicit one-off overrides are persisted and resolved again during resume. Forks bypass the global subagent override at launch and resume so they retain the parent model and context window. When `CLAUDE_CODE_SUBAGENT_MODEL` is set globally, Task rows also omit the redundant dimmed `model: ...` label. |
-| [`workflow-safety`](src/patches/workflow-safety.ts) | Workflow agent metadata retains its owning run ID and is durably written before launch. `SendMessage` fails closed when agent metadata is unavailable, and refuses to deliver to or resume workflow-owned agents outside the workflow lifecycle. Workflow progress retains the last nonzero token total across intermediate assistant records with zero usage, while accepting later nonzero totals. Structured-output validation also detects when required properties were embedded as XML-like tags inside another string and returns a targeted correction without accepting malformed output or changing the retry cap. |
-| [`skill-paths-invoke`](src/patches/skill-paths-invoke.ts) | Keeps `paths`-scoped skills visible to model invocation while preserving the stored path metadata and explicit model-invocation opt-outs. Skill-cache resets keep the activation guard, so an already-activated path skill is not re-bucketed and re-activated after every skills reload (which otherwise loops into per-cycle registry reloads). |
-| [`skill-global-paths`](src/patches/skill-global-paths.ts) | Adds a `global-paths` skill frontmatter field whose globs path-activate a skill when a matching file is touched anywhere on disk, not only inside the project. Uses the same gitignore syntax (including `!` exclusions) as `paths`, is purely additive, and is ignored by unpatched builds. |
-
-### UX
-
-Terminal interface polish.
-
-| Patch | Effect |
-|-------|--------|
-| [`billing-label`](src/patches/billing-label.ts) | `CLAUDE_CODE_BILLING_LABEL` replaces only the generic `API Usage Billing` status label when the client cannot identify its upstream account type, which is useful for subscription-backed local gateways. The value is trimmed, line breaks are normalized, and display text is capped at 64 characters. With the variable unset or blank, stock labeling is unchanged. This is display-only and does not alter authentication, routing, account selection, or billing. |
-| [`file-link-targets`](src/patches/file-link-targets.ts) | File hyperlinks keep their stock labels and `file:///...` targets. On Linux under WSL, the click dispatcher opens the exact decoded path through `wslview`, allowing Windows file associations to choose the right application for text, images, media, PDFs, and directories. Non-WSL runtimes retain stock behavior, with explicit stock, VS Code, `wslview`, and custom-executable overrides. |
-| [`plan-diff-ui`](src/patches/plan-diff-ui.ts) | Plan mode shows the real diff for plan-backed Edit and Write instead of "Updated plan" / "Reading Plan" placeholders, and stops hiding the preview hint or the tool-use row for plan-backed file writes. |
-| [`plan-compact-execute`](src/patches/plan-compact-execute.ts) | Plan approval adds a non-bypass "compact context and execute" path that summarizes the current conversation before submitting the approved implementation prompt. The approval selector expands to the option count when space allows, so the extra choice does not hide normal actions. |
-| [`no-collapse`](src/patches/no-collapse.ts) | Read, Search, and Grep results stay expanded in the transcript. Memory-file writes render with full path and diff instead of a generic collapsed summary. |
-| [`skill-listing-ui`](src/patches/skill-listing-ui.ts) | The "Saved N skills" and "Loaded N skills from path" notifications preview the first few skill names inline instead of showing only a count badge. Agent and workflow forks also replace inherited skill-listing attachments with the current listing while preserving the inherited copy if rebuilding fails, preventing resumed sessions from propagating obsolete descriptions after a client update without losing a usable fallback. |
-| [`skill-activation-notice`](src/patches/skill-activation-notice.ts) | When a `paths`/`global-paths` skill activates because a touched file matched, a notice surfaces the activated skill name and file instead of the activation being silent. Notices are deduplicated per session by file and skill set, so re-activation churn never repeats them. |
-| [`agent-listing-ui`](src/patches/agent-listing-ui.ts) | The "N agent types available" notification previews the available agent type names inline instead of showing only a count badge. |
-| [`model-picker-session-only`](src/patches/model-picker-session-only.ts) | `CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY` makes `/model` selection session-only for that launch. Enter selects the highlighted model without writing a new default to settings, the persistence callback and shortcut are removed, and the picker header states that the choice will not affect new sessions. Unset launches retain stock persistence behavior. |
-| [`tab-queue`](src/patches/tab-queue.ts) | While Claude is responding, plain Tab queues the current draft as a follow-up shown inside the prompt bar. Press Tab on an empty prompt with queued drafts to pop the latest draft back into the input for editing. Follow-ups drain only after a non-aborted turn and behind pending task notifications, so background-task summaries stay ahead of deferred drafts. Idle Tab behavior and autocomplete completion stay unchanged unless an aborted turn leaves a queued draft to edit. |
-
-### Metadata
-
-| Patch | Effect |
-|-------|--------|
-| [`signature`](src/patches/signature.ts) | `claude --version` appends `patched: <tag1>, <tag2>, ...` and the UI title bar gains a `• patched` suffix, so the active patch set is visible at a glance. Runs after all other patches verify. |
-
-## Configuration
-
-### Patcher and maintainer tooling
-
-| Variable | Purpose |
-|----------|---------|
-| `CLAUDE_PATCHER_INCLUDE_TAGS` | Per-invocation comma-separated allowlist applied to the selected patch profile. Only listed patches run. |
-| `CLAUDE_PATCHER_EXCLUDE_TAGS` | Per-invocation comma-separated blocklist applied after the allowlist. Listed patches are skipped. |
-| `CLAUDE_PATCHER_REVISION` | Override the revision recorded in `.patch-meta.json` and the patched-build cache key. |
-| `CLAUDE_PATCHER_CACHE_KEEP` | Retain extra cached builds beyond the default rotation. |
-| `CLAUDE_PATCHER_PROFILE` | Set to `1` to emit per-phase and per-tag verify timings plus passive process-memory checkpoints to stderr during each patch run. |
-
-### Runtime (installed binary)
-
-| Variable | Consumed by | Default |
-|----------|-------------|---------|
-| `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE` | [`sys-prompt-file`](src/patches/sys-prompt-file.ts) | `/etc/claude-code/system-prompt.md` |
-| `CLAUDE_CODE_BILLING_LABEL` | [`billing-label`](src/patches/billing-label.ts) | unset; stock `API Usage Billing` fallback |
-| `CLAUDE_CODE_FILE_OPEN_MODE` | [`file-link-targets`](src/patches/file-link-targets.ts) | `auto` |
-| `CLAUDE_CODE_FILE_OPENER` | [`file-link-targets`](src/patches/file-link-targets.ts) | unset |
-| `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS` | [`limits`](src/patches/limits.ts) | 50000 |
-| `CLAUDE_CODE_CONFIGURED_MODEL_CATALOG` | [`configured-model-catalog`](src/patches/configured-model-catalog.ts) | unset; JSON array of model metadata entries |
-| `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | [`model-context-metadata`](src/patches/model-context-metadata.ts) | unset |
-| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | [`model-context-metadata`](src/patches/model-context-metadata.ts) | fallback for custom models without valid discovered metadata |
-| `CLAUDE_CODE_AUTO_MODE_MODEL` | [`model-aliases`](src/patches/model-aliases.ts) | unset; stock auto-mode classifier selection |
-| `CLAUDE_CODE_MODEL_ALIASES` | [`model-aliases`](src/patches/model-aliases.ts) | unset; JSON object mapping aliases to provider model IDs |
-| `CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY` | [`model-picker-session-only`](src/patches/model-picker-session-only.ts) | unset; any present value enables session-only selection |
-| `CLAUDE_CODE_SUBAGENT_MODEL` | [`subagent-model-tag`](src/patches/subagent-model-tag.ts) | unset |
-
-`CLAUDE_CODE_BILLING_LABEL` changes only the fallback text shown by the client when it cannot infer an account plan through its own authentication state. It does not select a credential or change how a provider charges a request. Scope it to the launcher that needs the clarification rather than placing it in shared Claude settings.
-
-`file-link-targets` leaves stock `file:///...` hyperlinks intact and changes only their click dispatch. In `auto` mode, Linux runtimes with `WSL_INTEROP`, `WSL_DISTRO_NAME`, or `WSLENV` invoke `wslview` with the decoded path as one direct argument; no shell command is constructed. `wslview` must be available on `PATH`. This hands files and directories to their registered Windows applications. Outside WSL, `auto` preserves the stock file-manager behavior. Set `CLAUDE_CODE_FILE_OPEN_MODE=stock` or `off` to force stock behavior, `wslview` to force `wslview`, or `vscode` to run `code --reuse-window <path>`. In `auto` mode, `CLAUDE_CODE_FILE_OPENER` selects a custom executable before WSL detection; explicit `stock`, `off`, `wslview`, and `vscode` modes take precedence over it. Once an enhanced opener is attempted, its result is final, preventing a failed command from causing a second application or folder launch. Failures use the stock warning channel and report only the opener kind plus a numeric exit code or a generic exception label, never the target path.
-
-`autoDreamEnabled` is a Claude Code setting rather than an env var. When it is explicitly `true`, `session-mem` lets auto-dream run even if the server-side availability flag is off.
-
-When gateway model discovery is enabled, Claude Code manages its model-capability cache under its configured cache directory. Do not edit that cache directly. Matching positive safe-integer `max_input_tokens` values take precedence over `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; the environment value remains the startup, offline, and unknown-model fallback.
-
-`CLAUDE_CODE_CONFIGURED_MODEL_CATALOG` is a JSON array such as `[{"id":"provider/model","displayName":"Model","description":"Subscription route","maxInputTokens":258400,"maxOutputTokens":128000,"effortLevels":["low","medium","high","xhigh","max"],"defaultEffort":"medium"}]`. IDs are trimmed, unique case-insensitively, and cannot replace native aliases or contain `[1m]`. Context windows must be positive safe integers up to 1M; output limits must be safe integers from 4096 through 1M. Optional `autoCompactWindow` must be a safe integer from 100000 through 1M and strictly below that entry's `maxInputTokens`, matching the range the stock auto-compaction setting accepts; a value at or above the window would never compact, so it is rejected rather than silently ignored. Optional `effortLevels` must be duplicate-free, contain the native `low`, `medium`, and `high` base levels, and may additionally contain `xhigh` or `max`. `defaultEffort`, when set, must be one of that entry's declared levels. An exact configured match is available even when gateway discovery is off, but the catalog does not activate or consult unrelated cached gateway entries. Picker rows still obey stock `availableModels` policy, so include the canonical provider ID in that allowlist when one is configured.
-
-Catalog effort metadata controls the native per-model `/effort` gates and
-default. It is sufficient for ordinary `xhigh` and `max` selection when the
-route preserves those provider values. The separate `effort-stack` patch is
-only for combining `max` with ultracode workflow orchestration. Provider effort
-values that Claude Code cannot represent in its selector or session state are
-not advertised through the catalog.
-
-`CLAUDE_CODE_MODEL_ALIASES` is alias indirection, not an allowlist bypass. Its value is a JSON object such as `{"sol":"provider/model"}`. Keys are trimmed and matched case-insensitively. The map fails fast when it is malformed, has distinct keys that collide after normalization, replaces a native alias or `inherit`, includes `[1m]`, uses an empty or non-string target, or chains one alias to another. Exact duplicate JSON keys follow normal `JSON.parse` last-value semantics. Each resolved target still goes through stock model normalization and must be admitted by `availableModels`. Aliases work with `--model`, Agent `model`, Workflow `agent({model})`, agent frontmatter, resume, explicit teammate selection, and `CLAUDE_CODE_AUTO_MODE_MODEL`. Aliases alone do not add `/model` rows; use `CLAUDE_CODE_CONFIGURED_MODEL_CATALOG` when a launch also needs friendly picker entries and per-model capability metadata.
-
-`CLAUDE_CODE_AUTO_MODE_MODEL` changes only the model attached to auto-mode
-classifier requests after auto mode is available and active. It accepts the
-same native aliases, configured aliases, and admitted provider model IDs as the
-normal model selector. Unset or empty values preserve the classifier selected
-by the upstream client. The override does not enable auto mode, bypass its
-model or account eligibility checks, or change permission behavior outside
-auto mode. Selecting the same model for the main session and classifier removes
-the independent-model boundary, so scope the variable to an explicit launcher
-instead of shared settings.
-
-`CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY` is intended for launch-scoped wrappers that share a settings directory with normal Claude Code. With the variable present, `/model` changes the current session without overwriting the default used by future normal launches.
-
-Alias resolution is runtime plumbing, not a routing policy. A launch-scoped system prompt can teach an orchestrator when to select a configured alias without changing normal launches that use the same patched binary. Forks continue to inherit the parent model, and `CLAUDE_CODE_SUBAGENT_MODEL` is unnecessary for per-call alias selection.
-
-Do not set `DISABLE_TELEMETRY`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, or `DISABLE_GROWTHBOOK`. They disable feature-flag evaluation and the server-side flags that depend on it, including features this patcher relies on and the upstream Remote Control surface. Use the individual `DISABLE_ERROR_REPORTING`, `DISABLE_AUTOUPDATER`, and `DISABLE_BUG_COMMAND` switches instead.
-
-## CLI Reference
-
-```bash
-mise run native:update                            # Fetch + patch + promote + verify
-mise run native:update -- <channel-or-version>    # latest, next, stable, or X.Y.Z
-mise run native:update -- --dry-run               # Preview without promoting
-mise run native:fetch-patch -- <version> --dry-run
-mise run native:promote -- <build-path>           # Promote an already-patched cached build
-mise run native:rollback                          # Swap current and previous symlinks
-mise run status                                   # Show current, previous, cached
-mise run desktop:sdk-contract -- --inventory <desktop-inventory-evidence> --evidence
-mise run desktop:permission-probe -- --sdk-contract <desktop-sdk-contract-evidence> --evidence
-mise run desktop:permission-preflight -- --inventory <inventory> --artifact <artifact> --sdk-contract <sdk> --probe-plan <plan> --profile-support <profile> --evidence
-mise run remote:plan -- --evidence              # Deterministic blocked Remote Control plan
-mise run remote:doctor -- --json                # Inspect known blockers; never starts a session
-mise run remote:artifacts -- <matrix-args...>    # Build all 8 offline Remote host candidates
-mise run remote:host -- <host-finalize-args...>  # Re-extract and run --version on one matching host
-mise run remote:start -- <explicit-gates...>    # Consented receipt-bound foreground server
-mise run self-hosted:plan -- --evidence          # Deterministic blocked runner plan; no start
-mise run self-hosted:artifacts -- <matrix-args...> # Build 6 Linux/macOS structural candidates
-mise run self-hosted:host -- <host-args...>      # Re-extract and run --version on one matching host
-mise run self-hosted:image -- <image-args...>    # Build an untagged receipt-bound Linux x64 proof image
-mise run self-hosted:wrapper -- <wrapper-args...> # Generate and synthetically prove exact exec handoff
-mise run self-hosted:wrapper-image -- <args...>   # Bind wrapper into an untagged child image; no runner start
-mise run native:pull -- <version>                 # Fetch upstream + extract clean JS to versions_clean/<version>/cli.js
-mise run native:unpack-current -- <out>           # Extract patched JS from the currently-promoted binary (auto-detects via PATH)
-mise run native:unpack -- <bin> <out>             # Extract embedded JS from any native binary
-mise run verify:patches                           # Typecheck + lint + native patch + prompt drift
-SELECTED_VERSION=<X.Y.Z> mise run verify:patches:matrix # Dry-run patches against one clean cli.js
-VERIFY_PATCHES_MATRIX_SCOPE=all mise run verify:patches:matrix
-PATCH_EVIDENCE_OUTPUT=/tmp/<version>.json mise run verify:patches
-PATCH_EVIDENCE_DIR=/tmp/patch-evidence SELECTED_VERSION=<X.Y.Z> mise run verify:patches:matrix
-bun run patch-evidence:compare /tmp/<old>.json /tmp/<new>.json
-mise run verify:anchors -- <patched-cli> <clean-cli>
-mise run verify:prompt-surfaces -- <export-dir>
-mise run verify:prompt-drift -- <export-dir> --prompt-drift-baseline <baseline.json>
-mise run prompts:export                           # Export prompt artifacts from promoted binary
-mise run prompts:export -- <version> --output-dir /tmp/prompts-<version>
-mise run prompts:drift-baseline -- <export-dir> --prompt-drift-version <version>
-bun run prompts:compare <vanilla-export> <patched-export> /etc/claude-code
-bun run prompts:compare:matrix <old-clean> <old-patched> <new-clean> <new-patched> /etc/claude-code
-bun run inspect search versions_clean/<version>/cli.js "Read" --field string --object
-bun run inspect prompts versions_clean/<version>/cli.js "Command sandbox"
-bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js
-bun run diff -- matrix versions_clean/<v1>/cli.js versions_clean/<v2>/cli.js versions_clean/<v3>/cli.js
-bun run cli --list                                   # List available patches
-bun run test                                      # Run one isolated test-file process at a time
-```
-
-High-memory entrypoints are mutually exclusive across terminals and nested
-workflow processes. Nested child commands inherit the active lease, and the
-operating system releases it if the owner exits or crashes. There is no fixed
-RAM admission threshold. Normal patch and update runs avoid detailed
-structural telemetry, and `--summary-path` alone stays lean. Add
-`--structural-evidence` for handler counts, overlap evidence, and recursive
-structural hashes. The verification scripts add that flag automatically when
-`PATCH_EVIDENCE_OUTPUT` or `PATCH_EVIDENCE_DIR` requests a persisted release
-manifest. Large verifier sets release Babel traversal state once at their
-midpoint; smaller filtered runs avoid the extra collection.
-
-`mise run patch` is intentionally disabled; it exists only to redirect to `native:update`. `package.json` is the canonical alias table, and `mise.toml` is kept as a thin task index that calls those aliases. Use `mise run <task> -- ...` to pass versions, paths, or flags through to the underlying Bun alias. Non-trivial workflow logic lives in TypeScript, especially [`scripts/verify-patches.ts`](scripts/verify-patches.ts). See `mise.toml` for the task list and `bun run cli --help` for CLI flags.
-
-## Prompt Artifacts and Inspection
-
-Prompt exports are generated from `cli.js` bundles extracted from native builds. That keeps the installed artifact as the truth while still making prompt drift reviewable as Markdown and JSON artifacts. Export comparisons require the current expression-hash corpus schema and fail closed on older hashless artifacts.
-
-```bash
-mise run prompts:export -- current
-mise run prompts:export -- <version> --output-dir /tmp/prompts-<version>
-mise run prompts:export -- versions_clean/<version>/cli.js --label <version>-check \
-  --output-dir /tmp/prompts-<version>-check --max-uncategorized 200
-mise run prompts:bundle -- current
-```
-
-Useful outputs:
-
-| File | Purpose |
-|------|---------|
-| `manifest.json` | Counts, input bundle path, generated file list, and prompt-quality metadata such as `uncategorizedCount`. |
-| `corpus-categorized.json` | Prompt-corpus entries grouped by category. |
-| `tools/builtin/*.md`, `agents/*.md`, `system/sections/*.md` | Human-reviewable live prompt surfaces. |
-| `workflows/README.md`, `workflows.json` | Aggregated workflow/orchestration surface index linking to canonical prompt files. |
-
-`verify:prompt-surfaces` checks the curated patched surfaces and fails on dynamic prompt markers or unresolved helper placeholders such as `${value_...}`, `${conditional(...)`, and `${...spread}` unless that specific surface allows synthetic runtime placeholders. Broad corpus exports may still contain runtime-only placeholders; track those with `manifest.quality.uncategorizedCount` and use `--max-uncategorized` only when you want a hard drift budget.
-
-`verify:prompt-drift` adds a path-based drift guard for the surfaces this patcher cares about most. `prompt-surface-baseline.json` is checked in and used by `mise run verify:patches` by default. Generate or refresh it only from a reviewed known-good patched export:
-
-```bash
-mise run prompts:drift-baseline -- exported-prompts/<version>_patched --prompt-drift-version <version>
-```
-
-Then compare future exports against it:
-
-```bash
-mise run verify:prompt-drift -- exported-prompts/<new-version>_patched --prompt-drift-baseline prompt-surface-baseline.json
+bun run docs:check
+bun run typecheck
+bun run lint
+bun run test
 mise run verify:patches
 ```
 
-The baseline hashes normalized Markdown by exported path, not by content-derived prompt id. The drift watch list in [`src/verification/prompt-surface-rules.ts`](src/verification/prompt-surface-rules.ts) is authoritative for surfaces expected to exist in patched exports; optional surfaces removed by `tools-off` / `agents-off` stay in the broader review list but are not baseline requirements. If a new watched surface is added but the baseline has not been refreshed, `verify:prompt-drift` fails with `baseline-missing-surface`. If a watched hash changes, the update is not complete until the patch/exporter/rules are corrected or the baseline is refreshed after reviewing the new export as known-good. Edit the same file to choose which surfaces are watched, which optional surfaces are review-only, and which required/forbidden needles are enforced. Normalization ignores generated `source_symbol` values and renumbers synthetic `${value_...}` / `${expr_...}` placeholders so minifier churn does not create noisy drift.
+`bun run test` deliberately executes one test file at a time to bound memory. Fixture tests validate contracts and edge cases; only `mise run verify:patches` against a real native bundle proves that the current upstream release still matches and verifies. See the [CLI reference](docs/cli-reference.md) for prompt exports, matrix checks, and release-diff tooling.
 
-`prompts:compare` is a human review report for comparing a vanilla prompt export, a patched prompt export, and the runtime `/etc/claude-code` policy layer. It reports file inventory deltas, manifest count changes, Unicode dash-style counts, review prompt-surface status (including optional surfaces intentionally removed by patching), exact-line overlap from `/etc` into the patched bundle export, and policy-term presence across both layers. The patched `Unicode Dash Style` counts should normally be zero; nonzero counts mean an exported prompt still demonstrates en dash or em dash prose style and should be reviewed before refreshing drift baselines.
+## Distribution and safety
 
-```bash
-bun run prompts:compare exported-prompts/<version> exported-prompts/<version>_patched /etc/claude-code
-bun run prompts:compare exported-prompts/<version> exported-prompts/<version>_patched /etc/claude-code -- --json
-bun run prompts:compare exported-prompts/<version> exported-prompts/<version>_patched /etc/claude-code -- --output /tmp/prompt-comparison.md
-```
-
-`prompts:compare:matrix` separates four relationships that a single clean-to-patched report cannot: previous clean to current clean, previous patched to current patched, previous clean to previous patched, and current clean to current patched. It also compares interpolation dependencies from each `prompt-corpus.json`. The exporter hashes each raw expression before storing the corpus, so the report detects display-token collisions while exposing only dependency parity and invalid-reference counts. Older exports without expression hashes remain readable but report dependency parity as `unknown`, never `exact`.
-
-```bash
-bun run prompts:compare:matrix \
-  exported-prompts/<old> exported-prompts/<old>_patched \
-  exported-prompts/<new> exported-prompts/<new>_patched \
-  /etc/claude-code
-```
-
-Every patch summary now carries a code-free `result.evidence` manifest. It
-records whole-input/output SHA-256 hashes, exact patch pass/fail state, handler
-counts, shared-node overlap counts, and semantic witnesses where a patch
-defines them. Deep evidence additionally records bounded structural hashes
-that ignore identifier and literal values. Persist a deep manifest with
-`PATCH_EVIDENCE_OUTPUT` for native verification or `PATCH_EVIDENCE_DIR` for
-matrix verification, then compare adjacent releases with
-`patch-evidence:compare`. These manifests are drift evidence, not a replacement
-for `mise run verify:patches`.
-
-The inspector parses a bundle once per invocation and can run multiple search queries:
-
-```bash
-# Clean upstream JS for matcher development
-mise run native:pull -- <version>                       # writes versions_clean/<version>/cli.js
-
-# Currently-promoted patched JS for verifying a patch landed in the running build
-mise run native:unpack-current /tmp/cli-patched.js
-
-bun run inspect search versions_clean/<version>/cli.js "You are Claude Code" "Read a file" \
-  --json --limit 5 --breadcrumb-depth 10 --object
-
-bun run inspect search versions_clean/<version>/cli.js '^read$' --regex --ignore-case --field string
-bun run inspect prompts versions_clean/<version>/cli.js "Command sandbox" --context 2
-
-# Diff patched output against clean upstream
-bun run diff -- versions_clean/<version>/cli.js /tmp/cli-patched.js
-```
-
-Use `rg` for quick literal string search in `cli.js`; use `bun run inspect search` when you need ranked AST matches, value-kind filters, nearest object context, byte span, breadcrumbs, scope, or JSON output. Do not use ast-grep on `cli.js`.
-
-## Bundle Diff and Release Triage
-
-`bun run diff` defaults to bundle-surface comparison. It is meant for upstream-to-upstream release review, where raw minified diffs are too noisy and prompt exports can miss new command wiring, telemetry surfaces, routes, or feature flags.
-
-```bash
-# Broad release report
-bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js --limit 20
-
-# Narrow reports while triaging a build
-bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js --focus commands
-bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js --focus settings
-bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js --focus rewrites --markdown
-bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js --focus patches
-
-# Cross-check prompt artifacts against added prompt-like bundle surfaces
-bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js \
-  --prompt-export /tmp/prompts-<new> --focus prompts
-
-# Cache extracted surfaces for repeated analysis
-bun run diff -- versions_clean/<old>/cli.js versions_clean/<new>/cli.js --cache
-
-# Compare a run of adjacent versions and summarize latest-only additions
-bun run diff -- matrix \
-  versions_clean/<v1>/cli.js \
-  versions_clean/<v2>/cli.js \
-  versions_clean/<v3>/cli.js \
-  --markdown
-```
-
-The report groups high-signal additions and removals, suppresses opaque short
-object-key churn, reconstructs command candidates with nearby descriptions and
-flags, detects settings-write count changes, separates `<system-reminder>`
-prompt surfaces, detects prefix/text rewrites such as subsystem renames,
-highlights capability candidates, and estimates patch relevance from local
-patch anchors. For clean-vs-patched AST node comparison, call the AST mode
-explicitly:
-
-```bash
-bun run diff -- ast versions_clean/<version>/cli.js /tmp/cli-patched.js
-```
-
-Optional `bundle-diff.config.json` settings keep local triage noise out of reports without hardcoding upstream internals:
-
-```json
-{
-  "ignoreTokens": ["placeholder"],
-  "ignorePrefixes": ["[debug]"],
-  "highSignalTokens": ["gateway", "purge"]
-}
-```
-
-## Extending
-
-Each patch lives in `src/patches/<tag>.ts` beside a co-located `<tag>.test.ts`. New patches register in two places: the export barrel (`src/patches/index.ts`) and the metadata record (`src/patch-metadata.ts`). The `/new-patch` skill scaffolds the full set.
-
-```mermaid
-classDiagram
-    class Patch {
-        +string tag
-        +string(code) code
-        +astPasses(ast) PatchAstPass[]
-        +postApply(ast, tags)
-        +verify(code, ast) true|string
-    }
-    class PatchAstPass {
-        +AstPassName pass
-        +Visitor visitor
-    }
-    class AstPassName {
-        <<enum>>
-        discover
-        mutate
-        finalize
-    }
-    Patch "1" --> "*" PatchAstPass : produces
-    PatchAstPass --> AstPassName
-    note for Patch "string runs pre-parse.<br/>astPasses run in the combined traversal.<br/>verify gates promotion.<br/>postApply is for signature only."
-```
-
-Principles baked into the codebase:
-
-- Find code by structure (string literals, property names), never by minified identifier names. They change every release.
-- AST passes own all structural and behavioral change. String patches are reserved for prompt text.
-- Verifiers target behavior and invariants, not expression shape.
-- Target only the latest upstream. No backward-compatibility fallbacks.
-
-Prompt policy is centralized in [`src/patches/prompt-policy.ts`](src/patches/prompt-policy.ts). Surface-specific patches still own their upstream anchors (`bash-prompt`, `built-in-agent-prompt`, `claudemd-strong`, `memory-prompt-soften`, `session-guidance`), but shared wording for Serena/LSP/ChunkHound/Probe/ast-grep routing lives in one module. Prompt-surface checks and drift watch paths are centralized in [`src/verification/prompt-surface-rules.ts`](src/verification/prompt-surface-rules.ts), and tests build fixtures from those rules instead of duplicating long prompt text. Drift checks use fixed needles in [`src/verification/prompt-policy-contract.ts`](src/verification/prompt-policy-contract.ts) rather than importing the same generated strings, so accidental weakening of the shared policy still fails verification.
-
-When a prompt patch changes live guidance, update both the patch verifier and the exported-surface rules. Current curated live surfaces include Bash/Read/REPL/tool-search/Edit tool prompts, Agent tool routing, Explore/Plan/worker/workflow-subagent/claude agent surfaces, remote-planning reminders, optional `system/sections/schedule-remote-agents.md`, `system/sections/session-specific-guidance.md`, and the dream-memory consolidation/pruning sections. Verify by exporting a patched bundle and running `bun run verify:prompt-surfaces <export-dir>`; `bun run verify:patches` does this for the native build path.
-
-## Upstream Target Policy
-
-Current target: **Claude Code 2.1.241**. Tracks the latest upstream release and is updated with each upstream bump. Older versions are not maintained or tested; when upstream breaks a patch, it is fixed forward rather than kept backward-compatible. The immediately previous clean bundle may be retained for release-diff evidence, but it is not a matcher, fixture, matrix, or promotion target. Run `claude --version` on the promoted binary to confirm the active target.
-
-`native:update` accepts `latest`, `next`, `stable`, or an explicit `X.Y.Z`. The `latest` resolver cross-checks the native release bucket with the npm `latest` and `next` dist-tags so release promotion can follow npm when a new version appears there before the bucket alias moves.
-
-## Requirements
-
-- **Bun 1.4.0** (the Rust rewrite, managed via `mise`'s GitHub backend)
-- **mise** for task-runner aliases; build and verification logic lives in Bun/TypeScript scripts
-- **Linux x86_64** (native ELF support is built in; other platforms require `node-lief`)
-- A working **Claude Code** installation
-- A local Claude Code policy file at `/etc/claude-code/system-prompt.md`, or set `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE` to the file you want auto-appended
-
-CI uses a single required lane pinned to Bun 1.4.0. It records the installed Bun version and revision, installs from `bun.lock` with `--frozen-lockfile`, and runs typecheck, lint, and the serial test command.
-
-Babel AST + generator over the formatted bundle is the heaviest part of the patcher. JSC (Bun's engine) sizes its heap dynamically, so no explicit flag is required; both direct `bun src/index.ts ...` and `mise` task invocations work.
-
-The test suite uses `bun test` against the `node:test` API shim. Use `bun run test`, which starts one isolated Bun process per test file, sequentially, to bound memory and avoid the shim's concurrent file-load failures. Raw `bun test src/`, even with `--parallel=1`, keeps the files in one Bun process and is not equivalent.
-
-### Runtime Tooling Assumptions
-
-Several prompt patches intentionally route Claude Code away from the stock `find`/`grep`/`cat`/`head`/`tail` workflow. For the patched guidance to be useful, keep these command-line tools on `PATH`:
-
-| Tool | Why it matters |
-|------|----------------|
-| `bat` | Shell-side file range viewing uses `bat -r START:END`; Read handles non-code files and known code ranges after symbol lookup. |
-| `fd` | File discovery replaces `find`. |
-| `eza` | Directory listing replaces routine `ls`. |
-| `rg` | Exact lexical search, including code strings and comments, logs, config, and prompt artifacts. |
-| `ast-grep` | Structural code search and AST-aware rewrites. |
-| `sd` | Literal shell-native replacement for non-code files. |
-| `gh` | GitHub URL and API workflows are expected to use `gh api`. |
-
-Recommended supporting tools for local development and verification:
-
-| Tool | Used for |
-|------|----------|
-| `jq` / `yq` | JSON and YAML inspection in exported prompt artifacts and settings. |
-| `biome` | Formatting checks through the installed npm dependency. |
-| `tsc` | Typechecking through the installed npm dependency. |
-
-### MCP Tooling Assumptions
-
-The prompt patches use "available" deliberately. The patched CLI should still run without every MCP below, but the strongest behavior assumes these servers are configured where you expect code work to happen:
-
-| MCP / integration | Expected role |
-|-------------------|---------------|
-| Serena | Primary symbol navigation and symbol-safe edits. Prefer it over raw LSP for named symbols. |
-| Raw LSP | Fallback for direct coordinate lookups when Serena is unavailable or does not fit. |
-| ChunkHound | Conceptual and architectural codebase search. Use semantic search for "where/how does this work" questions. |
-| Probe | Known-symbol, known-phrase, and boolean code search, especially when ChunkHound is unavailable or too broad. |
-| ast-grep CLI | Structural syntax search and AST-aware rewrites. Preview rewrites before applying them. |
-| Context7, ref | Library and framework documentation lookup when built-in web tools are disabled. |
-| Perplexity, Exa, Firecrawl, Nia | Web research, code examples, scraping, package/repo indexing, and persistent knowledge workflows. |
-
-`tools-off` disables Claude Code's built-in `Glob`, `Grep`, `WebSearch`, `WebFetch`, `NotebookEdit`, and `TaskOutput` surfaces. That is intentional. Keep the modern CLI tools and MCP replacements available, or exclude `tools-off` for a build that needs the stock tools.
+- Generated candidates and evidence belong under ignored repository-local cache paths or another explicit private location.
+- CI installs dependencies, checks documentation, typechecks, lints, and runs the serial test suite; it does not upload release assets or patched builds.
+- Desktop-managed artifacts are not mutated by the offline candidate builder.
+- Remote Control and self-hosted live actions remain explicit, receipt-bound operations with their own trust and consent gates.
 
 ## Disclaimer
 
-This project is not affiliated with, endorsed by, or connected to Anthropic, PBC or any of its affiliates. "Claude" and "Claude Code" are trademarks of Anthropic, PBC. All other trademarks are the property of their respective owners.
-
-This repository does not distribute Claude Code artifacts. CI does not publish packages, release assets, container images, or patched binaries. Patches contain short text fragments used as match anchors for locating and replacing specific sections. The patcher operates exclusively on the end user's locally installed copy.
-
-This tool modifies Claude Code, which may not be permitted under Anthropic's terms of service. Users are responsible for ensuring their use complies with all applicable terms and laws. The authors hold no liability for misuse, account actions, or damages resulting from this tool. Use at your own risk.
+This project is not affiliated with, endorsed by, or connected to Anthropic, PBC or any of its affiliates. "Claude" and "Claude Code" are trademarks of Anthropic, PBC. This tool modifies a locally obtained Claude Code executable, which may not be permitted under applicable terms. Users are responsible for their own compliance and use it at their own risk.
 
 ## License
 

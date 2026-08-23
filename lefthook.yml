@@ -11,19 +11,24 @@ assert_lefthook_installed: true
 pre-commit:
   parallel: false
   commands:
+    docs-format:
+      glob: "{README.md,docs/*.md,docs/**/*.md}"
+      run: bun run prettier --write {staged_files}
+      stage_fixed: true
+      priority: 1
     format:
       glob: "{src/**/*.{ts,js,mjs,json},scripts/**/*.{ts,js,mjs},biome.json}"
       run: bun run biome format --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
-      priority: 1
+      priority: 2
     lint:
       glob: "{src/**/*.{ts,js,mjs,json},scripts/**/*.{ts,js,mjs},biome.json}"
       run: bun run biome check --no-errors-on-unmatched {staged_files}
-      priority: 2
+      priority: 3
     typecheck:
       glob: "{src/**/*.ts,scripts/**/*.ts,tsconfig.json,package.json}"
       run: bun run typecheck
-      priority: 3
+      priority: 4
 
 commit-msg:
   commands:
