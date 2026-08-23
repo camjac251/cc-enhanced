@@ -19,6 +19,7 @@ export const REMOTE_CONTROL_REQUIRED_PROBES = [
 	"remote-control-write-approval",
 	"remote-control-tool-inventory",
 	"remote-control-prompt-surface",
+	"remote-control-artifact-read-semantics",
 	"remote-control-agent-surface",
 	"remote-control-command-surface",
 	"remote-control-protocol-events",

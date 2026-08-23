@@ -432,6 +432,39 @@ const skill = {
 	assert.equal(disableTools.verify(output, ast), true);
 });
 
+test("tools-off removes Artifact skill fallbacks to disabled WebFetch", async () => {
+	const input = `
+${TOOL_FIXTURE}
+const whiteboard = "With the Artifact tool, or by WebFetching the URL where the Artifact tool isn't available.";
+const artifactReview = "with the Artifact tool, or by WebFetching the artifact URL where the Artifact tool isn't available \\u2014 and parse ONLY the decision island.";
+`;
+	const { output, ast } = await applyFullPatch(input);
+
+	assert.equal(
+		output.includes(
+			"WebFetching the URL where the Artifact tool isn't available",
+		),
+		false,
+	);
+	assert.equal(
+		output.includes(
+			"WebFetching the artifact URL where the Artifact tool isn't available",
+		),
+		false,
+	);
+	assert.equal(
+		output.match(
+			/If the Artifact tool is unavailable, tell the user the artifact cannot be reread in this session\./g,
+		)?.length,
+		2,
+	);
+	assert.equal(
+		output.includes("Otherwise, parse ONLY the decision island."),
+		true,
+	);
+	assert.equal(disableTools.verify(output, ast), true);
+});
+
 test("tools-off strips forbidden tools from JSON-style allowed_tools examples", async () => {
 	const input = `
 ${TOOL_FIXTURE}
@@ -740,6 +773,47 @@ test("tools-off verify fails when a plain-backtick 'Full docs via WebFetch' refe
 	const result = disableTools.verify(survivor, ast);
 	assert.notEqual(result, true);
 	assert.match(String(result), /Full docs via WebFetch|full-docs/);
+});
+
+test("tools-off verify rejects artifact reads routed through disabled WebFetch", async () => {
+	const ast = await disabledToolsAst();
+	const survivor =
+		print(ast) +
+		'\nconst artifactPrompt = "**To read an existing artifact\'s content**: call WebFetch with its URL.";';
+	const result = disableTools.verify(survivor, ast);
+	assert.notEqual(result, true);
+	assert.match(String(result), /Artifact.*WebFetch/i);
+});
+
+test("tools-off verify rejects Artifact skill fallbacks to disabled WebFetch", async () => {
+	const ast = await disabledToolsAst();
+	for (const survivor of [
+		"WebFetching the URL where the Artifact tool isn't available.",
+		"WebFetching the artifact URL where the Artifact tool isn't available.",
+	]) {
+		const result = disableTools.verify(
+			`${print(ast)}\nconst artifactFallback = ${JSON.stringify(survivor)};`,
+			ast,
+		);
+		assert.notEqual(result, true);
+		assert.match(String(result), /Artifact.*WebFetch/i);
+	}
+});
+
+test("tools-off verify requires an Artifact read action when WebFetch is disabled", async () => {
+	const input = `${TOOL_FIXTURE}
+const artifactTool = {
+  name: "Artifact",
+  description: "Publish a local file as a page",
+  inputSchema: {},
+  prompt: "Publish a local file and update it later.",
+  isEnabled() { return true; },
+  call() {},
+};`;
+	const { output, ast } = await applyFullPatch(input);
+	const result = disableTools.verify(output, ast);
+	assert.notEqual(result, true);
+	assert.match(String(result), /Artifact.*read action/i);
 });
 
 test("tools-off leak guard catches an escaped-backtick REPL filesystem Glob survivor", async () => {

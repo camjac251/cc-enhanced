@@ -20,6 +20,7 @@ export const SELF_HOSTED_RUNNER_REQUIRED_PROBES = [
 	"self-hosted-write-approval",
 	"self-hosted-tool-inventory",
 	"self-hosted-prompt-surface",
+	"self-hosted-artifact-read-semantics",
 	"self-hosted-agent-surface",
 	"self-hosted-command-surface",
 	"self-hosted-protocol-events",

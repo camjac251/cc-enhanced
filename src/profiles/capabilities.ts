@@ -41,6 +41,7 @@ const REMOTE_PROBE_BY_DESKTOP_PROBE: Record<
 	"desktop-write-approval": "remote-control-write-approval",
 	"desktop-tool-inventory": "remote-control-tool-inventory",
 	"desktop-prompt-surface": "remote-control-prompt-surface",
+	"desktop-artifact-read-semantics": "remote-control-artifact-read-semantics",
 	"desktop-agent-surface": "remote-control-agent-surface",
 	"desktop-command-surface": "remote-control-command-surface",
 	"desktop-protocol-events": "remote-control-protocol-events",
@@ -63,6 +64,7 @@ const SELF_HOSTED_PROBE_BY_DESKTOP_PROBE: Record<
 	"desktop-write-approval": "self-hosted-write-approval",
 	"desktop-tool-inventory": "self-hosted-tool-inventory",
 	"desktop-prompt-surface": "self-hosted-prompt-surface",
+	"desktop-artifact-read-semantics": "self-hosted-artifact-read-semantics",
 	"desktop-agent-surface": "self-hosted-agent-surface",
 	"desktop-command-surface": "self-hosted-command-surface",
 	"desktop-protocol-events": "self-hosted-protocol-events",
@@ -248,6 +250,7 @@ const CAPABILITY_DEFINITIONS: Record<string, PatchCapabilityDefinition> = {
 		probeRequired(
 			"desktop-tool-inventory",
 			"desktop-prompt-surface",
+			"desktop-artifact-read-semantics",
 			"desktop-restart-resume",
 		),
 	),
@@ -432,6 +435,12 @@ export const patchProbeDefinitions: readonly PatchProbeDefinition[] = [
 			"Exported and live Desktop prompt surfaces contain the intended policy without terminal-only or disabled-tool contradictions.",
 	},
 	{
+		id: "desktop-artifact-read-semantics",
+		label: "Desktop Artifact read semantics",
+		evidenceRequired:
+			"Desktop rereads an owned and a shared artifact through the authenticated Artifact read action while WebFetch remains unavailable.",
+	},
+	{
 		id: "desktop-agent-surface",
 		label: "Agent and skill surfaces",
 		evidenceRequired:
@@ -528,6 +537,12 @@ export const patchProbeDefinitions: readonly PatchProbeDefinition[] = [
 			"Exported and live host prompts contain the intended policy without terminal-only or disabled-tool contradictions.",
 	},
 	{
+		id: "remote-control-artifact-read-semantics",
+		label: "Remote Control Artifact read semantics",
+		evidenceRequired:
+			"The patched host rereads an owned and a shared artifact through the authenticated Artifact read action while every claimed stock client remains synchronized and WebFetch remains unavailable.",
+	},
+	{
 		id: "remote-control-agent-surface",
 		label: "Remote Control agent and skill surfaces",
 		evidenceRequired:
@@ -622,6 +637,12 @@ export const patchProbeDefinitions: readonly PatchProbeDefinition[] = [
 		label: "Self-hosted prompt surfaces",
 		evidenceRequired:
 			"Exported and live child prompts contain the intended policy without terminal-only or disabled-tool contradictions.",
+	},
+	{
+		id: "self-hosted-artifact-read-semantics",
+		label: "Self-hosted Artifact read semantics",
+		evidenceRequired:
+			"The runner child rereads an owned and a shared artifact through the authenticated Artifact read action while every claimed stock client remains synchronized and WebFetch remains unavailable.",
 	},
 	{
 		id: "self-hosted-agent-surface",

@@ -1,5 +1,5 @@
 {
-  "version": "2.1.238",
+  "version": "2.1.241",
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
@@ -8,11 +8,14 @@
     "agents/plan.md": "6ab8ca239ed87d3d7913ca1f601f69622200430c3e7a1686b8c252eb1ff7cef1",
     "agents/worker.md": "6aab1480076dbaa735a7ed4617af1c55963bb9dfea1de7010c59ba61e14ff364",
     "agents/workflow-subagent.md": "4d42d7653bf4878a61943b50c54e4c95a62e6cb47f004c5aa0b2227c01932d91",
+    "skills/artifact-pr-review.md": "e3ab649973dee01ff74b1636ce61f5ea646c2e1ca99ba65b8680f7537587054e",
+    "skills/whiteboard.md": "c3280f754f4841006bc34031d17a56e7cf2c1aee13ef4d80681f3d229ccdd18b",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge-2.md": "8d24296a1459ba9472328887c294278e8be614df3168e70b1134b7ae13dd2ff9",
     "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge.md": "ca6cf36e2d06d7db385d9b760fb409f7969299b56c91d185a35605259c40fd6f",
     "system/sections/dream-memory-consolidation.md": "2c1f842b2911603b38825858d98f31285cfea96278adb9a3ad3081b46baba84b",
     "system/sections/session-specific-guidance.md": "f2cfef1db00c1af26fc7976d3877975569ce25fb151315662cba935070ca1eee",
     "system/sections/using-your-tools.md": "9f7e7a7321436c63b1a06629cfb11caefa722e8ab81b87ad744c8598b375ea7c",
-    "tools/builtin/agent.md": "3a4e517f45aec455586b60f201cdec5b673ab085a9156e2a8bf78790eb27b7d3"
+    "tools/builtin/agent.md": "3a4e517f45aec455586b60f201cdec5b673ab085a9156e2a8bf78790eb27b7d3",
+    "tools/builtin/artifact.md": "d35949877dee6eeaa6749c03161338aef60ea23e52524e0bafc876e48c7f4a3c"
   }
 }

@@ -39,6 +39,7 @@ export const DESKTOP_LOCAL_REQUIRED_PROBES = [
 	"desktop-write-approval",
 	"desktop-tool-inventory",
 	"desktop-prompt-surface",
+	"desktop-artifact-read-semantics",
 	"desktop-agent-surface",
 	"desktop-command-surface",
 	"desktop-protocol-events",

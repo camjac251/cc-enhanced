@@ -151,7 +151,7 @@ test("Desktop candidate build verifies a distinct path-free offline copy", async
 			),
 			{ tag: "effort-stack", reason: "unsupported-runtime" },
 		);
-		assert.equal(output.evidence.profile.requiredProbes.length, 16);
+		assert.equal(output.evidence.profile.requiredProbes.length, 17);
 		assert.equal(output.evidence.boundaries.profilePromotion, "blocked");
 		assert.equal(output.evidence.candidate.desktopLaunch, "not-run");
 		assert.equal(

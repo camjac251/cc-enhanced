@@ -92,6 +92,14 @@ function verifyResolvedSurface(
 			);
 			continue;
 		}
+		if (placeholder.startsWith("${expr_")) {
+			if (rule.allowSyntheticPlaceholders) continue;
+			pushOnce(
+				"surface-unresolved-expression",
+				"Surface still contains an unresolved synthetic expression placeholder",
+			);
+			continue;
+		}
 		if (
 			rule.allowSyntheticPlaceholders &&
 			AGENT_REFERENCE_PLACEHOLDER.test(placeholder)

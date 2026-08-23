@@ -85,6 +85,38 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 		],
 	},
 	{
+		file: "tools/builtin/artifact.md",
+		allowSyntheticPlaceholders: true,
+		required: [
+			{
+				id: "artifact-read-action",
+				needle: 'pass `action: "read"` with its `url`',
+				reason:
+					"Artifact surface missing its authenticated existing-content read action",
+			},
+			{
+				id: "artifact-shared-read-action",
+				needle: 'Shared artifacts can be read (`action: "read"`)',
+				reason:
+					"Artifact surface missing its shared-artifact read-action guidance",
+			},
+		],
+		forbidden: [
+			{
+				id: "artifact-read-webfetch",
+				needle: "call WebFetch with its URL",
+				reason:
+					"Artifact surface routes existing-content reads through disabled WebFetch",
+			},
+			{
+				id: "artifact-shared-webfetch",
+				needle: "Shared artifacts can be read with WebFetch",
+				reason:
+					"Artifact surface routes shared-artifact reads through disabled WebFetch",
+			},
+		],
+	},
+	{
 		file: "tools/builtin/repl.md",
 		presence: "optional",
 		required: [
@@ -259,6 +291,56 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 				id: "design-sync-grep-verb-lower",
 				needle: "grep classes/tokens",
 				reason: "design-sync skill still uses grep as an instruction",
+			},
+		],
+	},
+	{
+		file: "skills/whiteboard.md",
+		required: [
+			{
+				id: "whiteboard-artifact-read-action",
+				needle: 'Artifact tool (`action: "read"`, `url`)',
+				reason:
+					"whiteboard skill missing the authenticated Artifact read action",
+			},
+			{
+				id: "whiteboard-artifact-unavailable",
+				needle:
+					"If the Artifact tool is unavailable, tell the user the artifact cannot be reread in this session.",
+				reason:
+					"whiteboard skill missing its fail-closed Artifact-unavailable guidance",
+			},
+		],
+		forbidden: [
+			{
+				id: "whiteboard-artifact-webfetch",
+				needle: "WebFetch",
+				reason: "whiteboard skill still depends on disabled WebFetch",
+			},
+		],
+	},
+	{
+		file: "skills/artifact-pr-review.md",
+		required: [
+			{
+				id: "artifact-pr-review-read-action",
+				needle: 'with the Artifact tool (`action: "read"`',
+				reason:
+					"artifact PR review skill missing the authenticated Artifact read action",
+			},
+			{
+				id: "artifact-pr-review-unavailable",
+				needle:
+					"If the Artifact tool is unavailable, tell the user the artifact cannot be reread in this session.",
+				reason:
+					"artifact PR review skill missing its fail-closed Artifact-unavailable guidance",
+			},
+		],
+		forbidden: [
+			{
+				id: "artifact-pr-review-webfetch",
+				needle: "WebFetch",
+				reason: "artifact PR review skill still depends on disabled WebFetch",
 			},
 		],
 	},

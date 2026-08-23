@@ -123,7 +123,7 @@ test("Desktop candidate presenter reports verified construction without implying
 	assert.match(output, /constructed and verified/i);
 	assert.match(output, /Selected patches:\s+30/);
 	assert.match(output, /Excluded patches:\s+16/);
-	assert.match(output, /Required live probes:\s+16/);
+	assert.match(output, /Required live probes:\s+17/);
 	assert.match(output, /candidate[.]exe/);
 	assert.match(output, /Signing:\s+not-run/);
 	assert.match(output, /Desktop launch:\s+not-run/);

@@ -366,6 +366,19 @@ const DISABLED_TOOL_PROMPT_LEAKS = [
 		reason: "ToolSearch prompt still demonstrates disabled Grep",
 	},
 	{
+		needle: "call WebFetch with its URL",
+		reason: "Artifact read guidance still routes through disabled WebFetch",
+	},
+	{
+		needle: "WebFetching the URL where the Artifact tool isn't available",
+		reason: "Artifact skill fallback still routes through disabled WebFetch",
+	},
+	{
+		needle:
+			"WebFetching the artifact URL where the Artifact tool isn't available",
+		reason: "Artifact skill fallback still routes through disabled WebFetch",
+	},
+	{
 		needle: "Explore the codebase directly with Glob, Grep, and Read.",
 		reason:
 			"Remote planning prompt still routes exploration through disabled Glob/Grep",
@@ -494,6 +507,14 @@ const SKILL_DOC_TEXT_REPLACEMENTS: Array<[RegExp, string]> = [
 		"If fetching fails or you have no network:",
 	],
 	[
+		/,\s+or by\s+WebFetching the artifact URL where the Artifact tool\s+isn't\s+available\s+\\u2014\s+and/g,
+		". If the Artifact tool is unavailable, tell the user the artifact cannot be reread in this session. Otherwise,",
+	],
+	[
+		/,\s+or by\s+WebFetching the (?:artifact )?URL where the Artifact tool\s+isn't available\./g,
+		". If the Artifact tool is unavailable, tell the user the artifact cannot be reread in this session.",
+	],
+	[
 		/\*\*Latest docs via WebFetch:\*\*/g,
 		`**Latest docs via ${MCP_DOC_HINT_SHORT}:**`,
 	],
@@ -588,6 +609,10 @@ function hasForbiddenAllowedToolsBullets(code: string): boolean {
 }
 
 const FORBIDDEN_TOOLS = new Set(["Glob", "Grep", "WebSearch", "WebFetch"]);
+const ARTIFACT_READ_ACTION_PROMPT =
+	/To read an existing artifact's content\*\*:\s*pass [^\n]{0,24}action:\s*\\?["']read\\?["'][^\n]{0,24}url/;
+const ARTIFACT_READ_ACTION_RESULT =
+	"'read' returns the content of the published artifact";
 
 // ---------------------------------------------------------------------------
 // Core tools-off logic
@@ -705,6 +730,10 @@ function createDisableToolsPatch(policy: ToolDisablePolicy): Patch {
 				result.includes("**Common tool matchers:**") ||
 				result.includes("When to Use WebFetch") ||
 				result.includes("<h2>When to Use WebFetch</h2>") ||
+				result.includes("WebFetching the URL where the Artifact tool") ||
+				result.includes(
+					"WebFetching the artifact URL where the Artifact tool",
+				) ||
 				result.includes("<tr><td>Glob</td>") ||
 				result.includes("<tr><td>Grep</td>");
 			if (hasSkillMarkers) {
@@ -754,6 +783,7 @@ function createDisableToolsPatch(policy: ToolDisablePolicy): Patch {
 			// tool-shaped object carrying a target name is disabled.
 			const toolObjectTotals = new Map<string, number>();
 			const toolObjectDisabled = new Map<string, number>();
+			let artifactToolCount = 0;
 			traverse(ast, {
 				ObjectExpression(path: any) {
 					const nameProp = path.node.properties.find(
@@ -762,13 +792,15 @@ function createDisableToolsPatch(policy: ToolDisablePolicy): Patch {
 					if (!nameProp) return;
 
 					const toolName = resolveStringValue(path, nameProp.value as any);
-					if (
-						!toolName ||
-						(!disabledTools.has(toolName) && !retainedTools.has(toolName))
-					) {
+					if (!toolName) return;
+					if (!isLikelyToolObject(path.node)) return;
+					if (toolName === "Artifact") {
+						artifactToolCount++;
 						return;
 					}
-					if (!isLikelyToolObject(path.node)) return;
+					if (!disabledTools.has(toolName) && !retainedTools.has(toolName)) {
+						return;
+					}
 
 					toolObjectTotals.set(
 						toolName,
@@ -808,6 +840,14 @@ function createDisableToolsPatch(policy: ToolDisablePolicy): Patch {
 				if (disabled > 0) {
 					return `Tool ${tool} has a disabled registration (${disabled} of ${total} disabled via isEnabled)`;
 				}
+			}
+			if (
+				disabledTools.has("WebFetch") &&
+				artifactToolCount > 0 &&
+				(!ARTIFACT_READ_ACTION_PROMPT.test(code) ||
+					!code.includes(ARTIFACT_READ_ACTION_RESULT))
+			) {
+				return "Artifact read action is missing while WebFetch is disabled";
 			}
 
 			// Verify prompt cleanup: current unpatched strings must be gone

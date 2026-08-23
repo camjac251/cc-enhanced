@@ -45,6 +45,7 @@ test("the profile catalog adds one ordered Desktop tool-policy variant", () => {
 					requiredProbes: [
 						"desktop-tool-inventory",
 						"desktop-prompt-surface",
+						"desktop-artifact-read-semantics",
 						"desktop-restart-resume",
 					],
 				},
@@ -53,6 +54,7 @@ test("the profile catalog adds one ordered Desktop tool-policy variant", () => {
 					requiredProbes: [
 						"remote-control-tool-inventory",
 						"remote-control-prompt-surface",
+						"remote-control-artifact-read-semantics",
 						"remote-control-reconnect-resume",
 					],
 				},
@@ -61,6 +63,7 @@ test("the profile catalog adds one ordered Desktop tool-policy variant", () => {
 					requiredProbes: [
 						"self-hosted-tool-inventory",
 						"self-hosted-prompt-surface",
+						"self-hosted-artifact-read-semantics",
 						"self-hosted-reconnect-resume",
 					],
 				},
@@ -191,6 +194,7 @@ test("Read, Edit, and tool policy expose their exact stock-client gates", () => 
 		requiredProbes: [
 			"desktop-tool-inventory",
 			"desktop-prompt-surface",
+			"desktop-artifact-read-semantics",
 			"desktop-restart-resume",
 		],
 	});
@@ -204,6 +208,7 @@ test("Read, Edit, and tool policy expose their exact stock-client gates", () => 
 		requiredProbes: [
 			"remote-control-tool-inventory",
 			"remote-control-prompt-surface",
+			"remote-control-artifact-read-semantics",
 			"remote-control-reconnect-resume",
 		],
 	});
@@ -217,9 +222,38 @@ test("Read, Edit, and tool policy expose their exact stock-client gates", () => 
 		requiredProbes: [
 			"self-hosted-tool-inventory",
 			"self-hosted-prompt-surface",
+			"self-hosted-artifact-read-semantics",
 			"self-hosted-reconnect-resume",
 		],
 	});
+});
+
+test("tools-off-desktop requires Artifact read semantics on every stock-client surface", () => {
+	const desktopTools = profilePatchCapabilities.find(
+		({ tag }) => tag === "tools-off-desktop",
+	);
+
+	assert.deepEqual(desktopTools?.support["desktop-local"]?.requiredProbes, [
+		"desktop-tool-inventory",
+		"desktop-prompt-surface",
+		"desktop-artifact-read-semantics",
+		"desktop-restart-resume",
+	]);
+	assert.deepEqual(desktopTools?.support["remote-control"]?.requiredProbes, [
+		"remote-control-tool-inventory",
+		"remote-control-prompt-surface",
+		"remote-control-artifact-read-semantics",
+		"remote-control-reconnect-resume",
+	]);
+	assert.deepEqual(
+		desktopTools?.support["self-hosted-runner"]?.requiredProbes,
+		[
+			"self-hosted-tool-inventory",
+			"self-hosted-prompt-surface",
+			"self-hosted-artifact-read-semantics",
+			"self-hosted-reconnect-resume",
+		],
+	);
 });
 
 test("capability validation rejects incomplete and invalid catalogs", () => {

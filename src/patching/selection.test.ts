@@ -118,7 +118,7 @@ test("Desktop-local candidate selection uses only the reserved profile catalog",
 	assert.equal(selection.receipt.surface, "desktop-local");
 	assert.equal(selection.receipt.selectedTags.length, 30);
 	assert.equal(selection.receipt.exclusions.length, 16);
-	assert.equal(selection.receipt.requiredProbes.length, 16);
+	assert.equal(selection.receipt.requiredProbes.length, 17);
 	assert.equal(selection.receipt.selectedTags.includes("tools-off"), false);
 	assert.equal(selection.receipt.selectedTags.includes("effort-stack"), false);
 	assert.deepEqual(

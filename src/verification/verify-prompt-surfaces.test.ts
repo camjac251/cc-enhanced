@@ -148,6 +148,86 @@ test("verifyPromptSurfaces passes for patched live prompt surfaces", async () =>
 	}
 });
 
+test("verifyPromptSurfaces rejects Artifact reads that depend on WebFetch", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "verify-prompt-surfaces-artifact-webfetch-"),
+	);
+	try {
+		await createValidSurfaceFixture(tempDir);
+		await writeSurface(
+			tempDir,
+			"tools/builtin/artifact.md",
+			[
+				"# Tool: Artifact",
+				"**To read an existing artifact's content**: call WebFetch with its URL.",
+				"Shared artifacts can be read with WebFetch but never updated.",
+			].join("\n"),
+		);
+		const result = await verifyPromptSurfaces({ exportDir: tempDir });
+		assert.equal(result.ok, false);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "artifact-read-webfetch",
+			),
+		);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("verifyPromptSurfaces rejects Artifact skill fallbacks to WebFetch", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "verify-prompt-surfaces-artifact-skills-"),
+	);
+	try {
+		await createValidSurfaceFixture(tempDir);
+		await writeSurface(
+			tempDir,
+			"skills/whiteboard.md",
+			"Read it by WebFetching the URL where the Artifact tool isn't available.",
+		);
+		await writeSurface(
+			tempDir,
+			"skills/artifact-pr-review.md",
+			"Read it by WebFetching the artifact URL where the Artifact tool isn't available.",
+		);
+		const result = await verifyPromptSurfaces({ exportDir: tempDir });
+		assert.equal(result.ok, false);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "whiteboard-artifact-webfetch",
+			),
+		);
+		assert.ok(
+			result.failures.some(
+				(failure) => failure.id === "artifact-pr-review-webfetch",
+			),
+		);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("verifyPromptSurfaces allows generated expression placeholders on opted-in surfaces", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "verify-prompt-surfaces-synthetic-expression-"),
+	);
+	try {
+		await createValidSurfaceFixture(tempDir);
+		const rule = ruleFor("tools/builtin/artifact.md");
+		await writeSurface(
+			tempDir,
+			rule.file,
+			`${validContentForRule(rule)}\nSize limit: \${expr_25}MB`,
+		);
+		const result = await verifyPromptSurfaces({ exportDir: tempDir });
+		assert.equal(result.ok, true);
+		assert.deepEqual(result.failures, []);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
 test("verifyPromptSurfaces allows Bash to omit relocated PR guidance", async () => {
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "verify-prompt-surfaces-bash-without-pr-"),
