@@ -1,6 +1,7 @@
 {
 	"name": "patcher",
 	"version": "1.0.0",
+	"private": true,
 	"description": "Power-user local CLI patcher with verifiable bundle patches for tool ergonomics, prompt cleanup, workflow controls, runtime guards, and native repacking.",
 	"main": "index.js",
 	"scripts": {
@@ -67,7 +68,7 @@
 	"keywords": [],
 	"author": "",
 	"license": "MIT",
-	"packageManager": "bun@1.4.0-canary.1",
+	"packageManager": "bun@1.4.0",
 	"devDependencies": {
 		"@babel/template": "^8.0.0",
 		"@biomejs/biome": "^2.4.16",

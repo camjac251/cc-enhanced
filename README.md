@@ -6,7 +6,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Platform-Linux-green.svg" alt="Platform: Linux">
-  <img src="https://img.shields.io/badge/Runtime-Bun_1.4_canary-fbf0df.svg" alt="Bun 1.4 canary">
+  <img src="https://img.shields.io/badge/Runtime-Bun_1.4.0-fbf0df.svg" alt="Bun 1.4.0">
   <img src="https://img.shields.io/badge/Patches-45-orange.svg" alt="45 Patches">
   <img src="https://img.shields.io/badge/Tested-Claude_Code_2.1.241-8A2BE2.svg" alt="Tested against Claude Code 2.1.241">
 </p>
@@ -552,13 +552,13 @@ Current target: **Claude Code 2.1.241**. Tracks the latest upstream release and 
 
 ## Requirements
 
-- **Bun 1.4 canary** (the Rust rewrite, managed via `mise`'s GitHub backend)
+- **Bun 1.4.0** (the Rust rewrite, managed via `mise`'s GitHub backend)
 - **mise** for task-runner aliases; build and verification logic lives in Bun/TypeScript scripts
 - **Linux x86_64** (native ELF support is built in; other platforms require `node-lief`)
 - A working **Claude Code** installation
 - A local Claude Code policy file at `/etc/claude-code/system-prompt.md`, or set `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE` to the file you want auto-appended
 
-CI keeps the Bun 1.4 canary compatibility lane and a separate required lane pinned to Bun 1.3.14. Both lanes record the installed Bun version and revision, install from `bun.lock` with `--frozen-lockfile`, and run typecheck, lint, and the serial test command. The pinned `Required / Bun 1.3.14` job is the reproducible branch-protection target; canary failures remain visible as compatibility failures.
+CI uses a single required lane pinned to Bun 1.4.0. It records the installed Bun version and revision, installs from `bun.lock` with `--frozen-lockfile`, and runs typecheck, lint, and the serial test command.
 
 Babel AST + generator over the formatted bundle is the heaviest part of the patcher. JSC (Bun's engine) sizes its heap dynamically, so no explicit flag is required; both direct `bun src/index.ts ...` and `mise` task invocations work.
 
@@ -606,7 +606,7 @@ The prompt patches use "available" deliberately. The patched CLI should still ru
 
 This project is not affiliated with, endorsed by, or connected to Anthropic, PBC or any of its affiliates. "Claude" and "Claude Code" are trademarks of Anthropic, PBC. All other trademarks are the property of their respective owners.
 
-This repository does not distribute Claude Code artifacts. Patches contain short text fragments used as match anchors for locating and replacing specific sections. The patcher operates exclusively on the end user's locally installed copy.
+This repository does not distribute Claude Code artifacts. CI does not publish packages, release assets, container images, or patched binaries. Patches contain short text fragments used as match anchors for locating and replacing specific sections. The patcher operates exclusively on the end user's locally installed copy.
 
 This tool modifies Claude Code, which may not be permitted under Anthropic's terms of service. Users are responsible for ensuring their use complies with all applicable terms and laws. The authors hold no liability for misuse, account actions, or damages resulting from this tool. Use at your own risk.
 
