@@ -22,14 +22,17 @@ for argument in "$@"; do
 		;;
 	--stock)
 		if [ "$stock_selected" -eq 1 ]; then
-			printf '%s\n' 'usage: verify-live.sh [--smoke] [--stock]' >&2
+			printf '%s\n' 'usage: verify-live.sh [--smoke] [--stock] [--model=sol|terra|luna]' >&2
 			exit 2
 		fi
 		verification_mode=stock
 		stock_selected=1
 		;;
+	--model=sol | --model=terra | --model=luna)
+		model_alias=${argument#--model=}
+		;;
 	*)
-		printf '%s\n' 'usage: verify-live.sh [--smoke] [--stock]' >&2
+		printf '%s\n' 'usage: verify-live.sh [--smoke] [--stock] [--model=sol|terra|luna]' >&2
 		exit 2
 		;;
 	esac

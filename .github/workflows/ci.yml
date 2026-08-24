@@ -50,6 +50,12 @@ jobs:
       - name: Check documentation formatting
         run: bun run docs:check
 
+      - name: Test subscription routing templates
+        run: |
+          docs/subscription-routing/test-service-control.sh
+          docs/subscription-routing/test-client-compatibility.sh
+          docs/subscription-routing/test-prompt-composition.sh
+
       - name: Typecheck
         run: bun run typecheck
 

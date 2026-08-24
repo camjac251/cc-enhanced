@@ -26,8 +26,6 @@ esac
 
 setup_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 provider_id=openai-oauth
-model_id=gpt-5.6-sol
-model_alias=sol
 
 for command_name in cmp dd grep mise mktemp od rg sed stat wc; do
 	command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is unavailable"
@@ -182,22 +180,25 @@ else
 	esac
 fi
 
-"$node_bin" - "$config_file" "$provider_id" "$model_id" "$model_alias" <<'NODE'
+"$node_bin" - "$config_file" "$provider_id" <<'NODE'
 const fs = require('node:fs');
 
-const [configPath, providerId, modelId, aliasName] = process.argv.slice(2);
+const [configPath, providerId] = process.argv.slice(2);
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-const hasFavorite = config.favoriteModels?.some(
-  entry => entry.providerId === providerId && entry.modelId === modelId,
-);
-const hasAlias = config.modelAliases?.some(
-  entry => entry.name === aliasName
-    && entry.providerId === providerId
-    && entry.modelId === modelId,
-);
-if (!hasFavorite || !hasAlias) {
-  process.stderr.write('expected routed favorite or alias is missing\n');
-  process.exit(1);
+for (const aliasName of ['sol', 'terra', 'luna']) {
+  const modelId = `gpt-5.6-${aliasName}`;
+  const hasFavorite = config.favoriteModels?.some(
+    entry => entry.providerId === providerId && entry.modelId === modelId,
+  );
+  const hasAlias = config.modelAliases?.some(
+    entry => entry.name === aliasName
+      && entry.providerId === providerId
+      && entry.modelId === modelId,
+  );
+  if (!hasFavorite || !hasAlias) {
+    process.stderr.write(`expected routed favorite or alias is missing: ${aliasName}\n`);
+    process.exit(1);
+  }
 }
 NODE
 

@@ -21,6 +21,20 @@ output_dir="$test_root/output"
 output_prompt="$output_dir/system-prompt.md"
 expected_prompt="$test_root/expected.md"
 composer="$setup_dir/templates/claudex-compose-system-prompt"
+routing_template="$setup_dir/templates/system-prompt-routing.md"
+
+for required_contract in \
+	"The routed aliases are \`sol\`, \`terra\`, and \`luna\`." \
+	"preserve the exact \`subagent_type\` selected from the current setup" \
+	'Never replace it with a model-specific agent type.' \
+	"\`agent(prompt, { agentType: \"security-reviewer\", model: \"luna\", effort: \"max\" })\`" \
+	"\`/model\` changes the main session model."; do
+	rg -F "$required_contract" "$routing_template" >/dev/null ||
+		fail "the routing policy is missing its arbitrary-agent contract: $required_contract"
+done
+if rg -F 'routed-luna-worker' "$routing_template" >/dev/null; then
+	fail "the routing policy creates a model-specific agent type"
+fi
 
 mkdir -p "$output_dir"
 printf '%s\n' '# Managed policy' 'Keep the safety boundary.' >"$managed_prompt"

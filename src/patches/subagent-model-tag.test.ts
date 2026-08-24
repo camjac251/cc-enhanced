@@ -51,10 +51,110 @@ const agentInputSchema = objectSchema({
 `;
 
 const AGENT_LIFECYCLE_FIXTURE = `
+const agentTool = {
+  async call(
+    {
+      prompt,
+      subagent_type,
+      description,
+      model,
+      run_in_background,
+      name,
+      isolation,
+      cwd,
+    },
+    context,
+  ) {
+    const parentModel = getParentModel(context);
+    const isFork = subagent_type === "fork";
+    if (name) {
+      return spawnTeammate({
+        name,
+        prompt,
+        description,
+        use_splitpane: true,
+        plan_mode_required: false,
+        model,
+        agent_type: subagent_type,
+        invokingRequestId,
+      }, context);
+    }
+    let selectedAgent;
+    if (isFork) selectedAgent = forkAgent;
+    else selectedAgent = configuredAgent;
+    const resolvedModel = resolveAgentModel(
+      getAgentModel(selectedAgent, parentModel),
+      parentModel,
+      isFork ? void 0 : model,
+      permissionMode,
+    );
+    if (isRemote) {
+      await createRemoteSession({
+        initialMessage: prompt,
+        source: "remote_agent",
+        model: resolvedModel,
+        permissionMode,
+        branchName,
+        signal,
+        storageV5,
+        credentials,
+      });
+    }
+    const launchOptions = {
+      agentDefinition: selectedAgent,
+      promptMessages,
+      toolUseContext: context,
+      canUseTool,
+      isAsync: run_in_background,
+      querySource,
+      spawnedBySkill,
+      model: isFork ? void 0 : model,
+      override,
+      availableTools,
+      description,
+    };
+    const launchMetadata = {
+      prompt,
+      resolvedAgentModel: resolvedModel,
+      isBuiltInAgent,
+      startTime,
+      agentType: selectedAgent.agentType,
+      isAsync: run_in_background,
+      agentDepth,
+      source: selectedAgent.source,
+    };
+    registerTask({ model: resolvedModel, selectedAgent });
+    return runChild(launchOptions, launchMetadata);
+  },
+};
+
+function spawnTeammateBackendA(input, context) {
+  const state = context.getAppState();
+  return reserveTeammate(async ({ teammateId }) => {
+    return buildTeammateArguments({
+      planModeRequired: input.plan_mode_required,
+      permissionMode: state.toolPermissionContext.mode,
+      proactivityLevel: state.proactivityLevel,
+      sessionEffort: state.sessionEffort,
+      skipModel: !!input.model,
+    });
+  });
+}
+
+function spawnTeammateBackendB(input, context) {
+  const state = context.getAppState();
+  return reserveTeammate(async ({ teammateId }) => {
+    return buildTeammateArguments({
+      planModeRequired: input.plan_mode_required,
+      permissionMode: state.toolPermissionContext.mode,
+      proactivityLevel: state.proactivityLevel,
+      sessionEffort: state.sessionEffort,
+      skipModel: !!input.model,
+    });
+  });
+}
+
 async function* runChild({ agentDefinition, model, extraMetadata }) {
-  const parentModel = getParentModel(context);
-  const isFork = agentDefinition.agentType === "fork";
-  const resolvedModel = resolveAgentModel(getAgentModel(agentDefinition, parentModel), parentModel, isFork ? void 0 : model, permissionMode);
   saveAgentMetadata(agentId, model !== undefined || extraMetadata !== undefined, {
     agentType: agentDefinition.agentType,
     ...(parentContext.agentId && { parentAgentId: parentContext.agentId }),
@@ -62,15 +162,14 @@ async function* runChild({ agentDefinition, model, extraMetadata }) {
     ...(model && { model }),
     ...extraMetadata,
   });
-  const launchMetadata = {
-    prompt,
-    resolvedAgentModel: resolvedModel,
-    isBuiltInAgent,
-    startTime,
-    agentType: agentDefinition.agentType,
-    isAsync,
-    agentDepth,
-    source: agentDefinition.source,
+}
+
+function mirrorAgentMetadata(metadata) {
+  return {
+    type: "agent_metadata",
+    agentType: metadata.agentType,
+    ...(metadata.model && { model: metadata.model }),
+    ...(metadata.permissionMode && { permissionMode: metadata.permissionMode }),
   };
 }
 
@@ -78,7 +177,7 @@ async function resumeChild() {
   const metadata = await readAgentMetadata(agentId);
   const configuredAgent = getSelectedAgent(metadata);
   const isFork = metadata?.isFork === true;
-  const selectedAgent =
+  let selectedAgent =
     metadata?.agentType === defaultAgent.agentType && metadata?.isBuiltIn !== true
       ? configuredAgent
       : metadata?.isBuiltIn === true
@@ -143,8 +242,8 @@ const SUBAGENT_FIXTURE_EFFORT_WRAPPED = SUBAGENT_FIXTURE.replace(
 	"        : configuredAgent ?? (isFork ? forkAgent : defaultAgent);",
 	"        : configuredAgent ?? (isFork ? forkAgent : defaultAgent);\n  const effortAgent = resumeOptions?.effort !== undefined ? { ...selectedAgent, effort: resumeOptions.effort } : selectedAgent;",
 ).replace(
-	"getAgentModel(selectedAgent, parentModel)",
-	"getAgentModel(effortAgent, parentModel)",
+	"const resolvedModel = resolveAgentModel(getAgentModel(selectedAgent, parentModel), parentModel, metadata?.isObserver ? void 0 : metadata?.model, permissionMode);",
+	"const resolvedModel = resolveAgentModel(getAgentModel(effortAgent, parentModel), parentModel, metadata?.isObserver ? void 0 : metadata?.model, permissionMode);",
 );
 
 test("verify rejects unpatched code", () => {
@@ -203,6 +302,118 @@ test("subagent-model-tag accepts a nonempty full model ID in the Agent schema", 
 		true,
 		"Agent model guidance must explain how to select discovered models",
 	);
+});
+
+test("subagent-model-tag adds per-call effort without replacing the selected agent", async () => {
+	const output = await patchSource(SUBAGENT_FIXTURE);
+
+	assert.equal(
+		output.includes(
+			'effort: A.enum(["low", "medium", "high", "xhigh", "max"]).optional().describe',
+		),
+		true,
+		"the Agent tool must accept every named Claude Code effort level",
+	);
+	assert.equal(
+		output.includes("effort: __claudeCodeAgentEffortOverride"),
+		true,
+		"the Agent call must bind the per-call effort input",
+	);
+	assert.equal(
+		output.includes("!isFork && __claudeCodeAgentEffortOverride !== void 0"),
+		true,
+		"forks must ignore a per-call effort override",
+	);
+	assert.equal(
+		output.includes(
+			"selectedAgent = { ...selectedAgent, effort: __claudeCodeAgentEffortOverride }",
+		),
+		true,
+		"the effort override must clone the selected definition instead of changing its type",
+	);
+	assert.equal(output.includes("subagent_type"), true);
+});
+
+test("subagent-model-tag persists and restores per-call effort", async () => {
+	const output = await patchSource(SUBAGENT_FIXTURE);
+
+	assert.equal(
+		output.includes(
+			"extraMetadata: !isFork && __claudeCodeAgentEffortOverride !== void 0",
+		),
+		true,
+		"launch metadata must carry the explicit effort for cold resume",
+	);
+	assert.equal(
+		output.includes("metadata?.isFork !== true && metadata?.effort !== void 0"),
+		true,
+		"resume must restore effort only for a non-fork agent",
+	);
+	assert.equal(
+		output.includes(
+			"...(metadata.effort !== void 0 && { effort: metadata.effort })",
+		),
+		true,
+		"the transcript metadata mirror must retain effort",
+	);
+	assert.equal(
+		output.includes("effort: selectedAgent.effort"),
+		true,
+		"remote-agent creation must receive the resolved selected-agent effort",
+	);
+});
+
+test("subagent-model-tag routes named teammates without replacing agent_type", async () => {
+	const output = await patchSource(SUBAGENT_FIXTURE);
+
+	assert.equal(
+		output.includes("agent_type: subagent_type"),
+		true,
+		"the selected teammate agent type must remain unchanged",
+	);
+	assert.equal(
+		output.includes("effort: __claudeCodeAgentEffortOverride"),
+		true,
+		"the Agent call must forward its effort override to teammate launch",
+	);
+	assert.equal(
+		output.split('kind: "level", value: input.effort').length - 1,
+		2,
+		"both teammate backends must turn the named level into session effort",
+	);
+});
+
+test("subagent-model-tag verification rejects coordinated effort drift", async () => {
+	const output = await patchSource(SUBAGENT_FIXTURE);
+	const mutations = [
+		[
+			'["low", "medium", "high", "xhigh", "max"]',
+			'["low", "medium", "high", "xhigh"]',
+		],
+		[
+			"selectedAgent = { ...selectedAgent, effort: __claudeCodeAgentEffortOverride }",
+			"selectedAgent = { effort: __claudeCodeAgentEffortOverride }",
+		],
+		["effort: selectedAgent.effort", 'effort: "high"'],
+		[
+			"...(metadata.effort !== void 0 && { effort: metadata.effort })",
+			"...(metadata.model !== void 0 && { effort: metadata.model })",
+		],
+		[
+			'kind: "level", value: input.effort',
+			'kind: "inherit", value: input.effort',
+		],
+	] as const;
+
+	for (const [expected, replacement] of mutations) {
+		const mutated = output.replace(expected, replacement);
+		assert.notEqual(mutated, output, `fixture output was missing: ${expected}`);
+		assert.notEqual(
+			subagentModelTag.verify(mutated, parse(mutated)),
+			true,
+			`verification accepted drift at: ${expected}`,
+		);
+	}
 });
 
 test("subagent-model-tag widens the latest direct-factory Agent schema", async () => {

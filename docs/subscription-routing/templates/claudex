@@ -15,6 +15,7 @@ default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
 system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
 requested_model=''
 auto_mode_model=''
+routed_model_id=''
 
 case "${1:-}" in
 fable)
@@ -28,21 +29,40 @@ opus)
 sol)
 	requested_model='sol'
 	auto_mode_model='sol'
+	routed_model_id='clodex:openai-oauth:gpt-5.6-sol'
+	shift
+	;;
+terra)
+	requested_model='terra'
+	auto_mode_model='terra'
+	routed_model_id='clodex:openai-oauth:gpt-5.6-terra'
+	shift
+	;;
+luna)
+	requested_model='luna'
+	auto_mode_model='luna'
+	routed_model_id='clodex:openai-oauth:gpt-5.6-luna'
 	shift
 	;;
 esac
 
-# Sol's larger window is opt-in per launch and never saved. GPT-5.6 prices the
+# A routed model's larger window is opt-in per launch and never saved. GPT-5.6 prices the
 # full request at a higher rate above 272,000 input tokens, so the default stop
 # stays under that line and this shortcut is the deliberate way across it.
 context_stop=''
-if [ "${1:-}" = '--1m' ]; then
-	if [ "$requested_model" != 'sol' ]; then
-		printf '%s\n' 'claudex: --1m is only valid after the sol shortcut' >&2
+if [ "${1:-}" = '--max-context' ]; then
+	if [ -z "$routed_model_id" ]; then
+		printf '%s\n' \
+			'claudex: --max-context is only valid after a sol, terra, or luna shortcut' >&2
 		exit 2
 	fi
-	context_stop='clodex:openai-oauth:gpt-5.6-sol=max'
+	context_stop="$routed_model_id=max"
 	shift
+fi
+if [ "${1:-}" = '--1m' ]; then
+	printf '%s\n' \
+		'claudex: use --max-context after a sol, terra, or luna shortcut' >&2
+	exit 2
 fi
 
 has_model=0
@@ -166,14 +186,14 @@ export CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt_file"
 export CLAUDE_CODE_PROCESS_WRAPPER="$launcher_process_wrapper"
 export CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE="$system_prompt_file"
 export CLAUDE_CODE_BILLING_LABEL='Claude Max + ChatGPT Pro'
-export CLAUDE_CODE_MODEL_ALIASES='{"sol":"clodex:openai-oauth:gpt-5.6-sol"}'
+export CLAUDE_CODE_MODEL_ALIASES='{"sol":"clodex:openai-oauth:gpt-5.6-sol","terra":"clodex:openai-oauth:gpt-5.6-terra","luna":"clodex:openai-oauth:gpt-5.6-luna"}'
 if [ -n "$auto_mode_model" ]; then
 	export CLAUDE_CODE_AUTO_MODE_MODEL="$auto_mode_model"
 fi
 # Clodex reports resolved model metadata; the mapping to Claude Code's catalog
 # schema lives here, because that schema is this patcher's, not Clodex's. Probe
-# the command contract first so stable Clodex releases without the metadata
-# surface use the fallback without printing an unrelated unknown-option error.
+# the command contract first so an unsupported release fails without printing
+# an unrelated unknown-option error.
 clodex_models_help=$("$clodex_bin" models --help 2>&1) || clodex_models_help=''
 clodex_json_supported=0
 clodex_context_supported=0
@@ -184,21 +204,21 @@ case "$clodex_models_help" in
 *'--context'*) clodex_context_supported=1 ;;
 esac
 
-if [ -n "$context_stop" ] && {
-	[ "$clodex_json_supported" -ne 1 ] || [ "$clodex_context_supported" -ne 1 ]
-}; then
-	printf '%s\n' \
-		'claudex: --1m requires a Clodex build with models --json and --context support' >&2
+if [ "$clodex_json_supported" -ne 1 ] || [ "$clodex_context_supported" -ne 1 ]; then
+	if [ -n "$context_stop" ]; then
+		printf '%s\n' \
+			'claudex: --max-context requires a Clodex build with models --json and --context support' >&2
+	else
+		printf '%s\n' 'claudex: Clodex models --json and --context support is required' >&2
+	fi
 	exit 1
 fi
 
 clodex_metadata=''
-if [ "$clodex_json_supported" -eq 1 ]; then
-	if [ -n "$context_stop" ]; then
-		clodex_metadata=$("$clodex_bin" models --json --context "$context_stop") || clodex_metadata=''
-	else
-		clodex_metadata=$("$clodex_bin" models --json) || clodex_metadata=''
-	fi
+if [ -n "$context_stop" ]; then
+	clodex_metadata=$("$clodex_bin" models --json --context "$context_stop") || clodex_metadata=''
+else
+	clodex_metadata=$("$clodex_bin" models --json) || clodex_metadata=''
 fi
 clodex_catalog=''
 if [ -n "$clodex_metadata" ]; then
@@ -211,7 +231,12 @@ if [ -n "$clodex_metadata" ]; then
 // request must still resolve one exact model with a bounded effective context.
 const VALID_EFFORT = ['low', 'medium', 'high', 'xhigh', 'max'];
 const BASE_EFFORT = ['low', 'medium', 'high'];
-const ROUTED_MODEL_ID = 'clodex:openai-oauth:gpt-5.6-sol';
+const ROUTED_MODEL_IDS = [
+  'clodex:openai-oauth:gpt-5.6-sol',
+  'clodex:openai-oauth:gpt-5.6-terra',
+  'clodex:openai-oauth:gpt-5.6-luna',
+];
+const routedModelSet = new Set(ROUTED_MODEL_IDS);
 const requiredMaxModel = process.env.CLAUDEX_REQUIRED_MAX_MODEL ?? '';
 let models;
 try {
@@ -224,14 +249,14 @@ try {
 if (!Array.isArray(models) || models.length === 0 || models.length > 64) process.exit(1);
 const bounded = (value, min, max) =>
   Number.isSafeInteger(value) && value >= min && value <= max ? value : undefined;
-const entries = [];
+const entriesById = new Map();
 const seen = new Set();
 let requiredMaxResolved = requiredMaxModel === '';
 for (const model of models) {
   if (model === null || Array.isArray(model) || typeof model !== 'object') process.exit(1);
   const id = typeof model?.id === 'string' ? model.id.trim() : '';
   if (!id || id.length > 512 || /[\u0000-\u001f\u007f]/.test(id)) process.exit(1);
-  if (id !== ROUTED_MODEL_ID) continue;
+  if (!routedModelSet.has(id)) continue;
   const normalizedId = id.toLowerCase();
   if (seen.has(normalizedId)) process.exit(1);
   seen.add(normalizedId);
@@ -265,7 +290,7 @@ for (const model of models) {
     usable && typeof model.effort?.default === 'string' && levels.includes(model.effort.default)
       ? model.effort.default
       : undefined;
-  entries.push({
+  entriesById.set(id, {
     id,
     displayName,
     description: 'ChatGPT Pro subscription route',
@@ -276,6 +301,10 @@ for (const model of models) {
     ...(defaultEffort === undefined ? {} : { defaultEffort }),
   });
 }
+const entries = ROUTED_MODEL_IDS.flatMap(id => {
+  const entry = entriesById.get(id);
+  return entry === undefined ? [] : [entry];
+});
 if (entries.length === 0 || !requiredMaxResolved) process.exit(1);
 process.stdout.write(JSON.stringify(entries));
 NODE
@@ -285,13 +314,12 @@ case "$clodex_catalog" in
 '['*']') ;;
 *)
 	if [ -n "$context_stop" ]; then
-		printf '%s\n' 'claudex: --1m could not resolve bounded Clodex model metadata' >&2
-		exit 1
+		printf '%s\n' \
+			'claudex: --max-context could not resolve bounded Clodex model metadata' >&2
+	else
+		printf '%s\n' 'claudex: could not resolve routed GPT-5.6 model metadata' >&2
 	fi
-	# The standard stop is 272,000 raw x 95% headroom = 258,400, keeping a
-	# session under the pricing boundary even when metadata export is unavailable.
-	printf '%s\n' 'claudex: model metadata unavailable; using the standard-stop fallback' >&2
-	clodex_catalog='[{"id":"clodex:openai-oauth:gpt-5.6-sol","displayName":"GPT-5.6 Sol","description":"ChatGPT Pro subscription route","maxInputTokens":258400,"maxOutputTokens":128000,"effortLevels":["low","medium","high","xhigh","max"],"defaultEffort":"medium"}]'
+	exit 1
 	;;
 esac
 export CLAUDE_CODE_CONFIGURED_MODEL_CATALOG="$clodex_catalog"
