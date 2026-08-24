@@ -154,7 +154,11 @@ chmod 700 "$launcher_process_wrapper" "$prompt_composer" "$test_bin/systemctl"
 
 launcher_template="$setup_dir/templates/claudex"
 launcher="$test_root/claudex"
-node_bin=$(mise --cd "$test_root" which node)
+node_bin=${NODE_BIN:-}
+if [ -z "$node_bin" ]; then
+	node_bin=$(command -v node) || fail "node is unavailable"
+fi
+[ -x "$node_bin" ] || fail "node is not executable"
 sed \
 	-e "s|@NODE_BIN@|$node_bin|g" \
 	-e "s|@CLAUDE_BIN@|$claude_bin|g" \

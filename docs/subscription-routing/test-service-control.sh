@@ -21,7 +21,11 @@ launcher_process_wrapper="$test_root/claudex-process-wrapper"
 prompt_composer="$test_root/claudex-compose-system-prompt"
 credential_helper="$test_root/credential-helper"
 claude_bin="$test_root/claude"
-node_bin=$(mise --cd "$test_root" which node)
+node_bin=${NODE_BIN:-}
+if [ -z "$node_bin" ]; then
+	node_bin=$(command -v node) || fail "node is unavailable"
+fi
+[ -x "$node_bin" ] || fail "node is not executable"
 system_prompt="$test_home/.config/claudex-clodex/system-prompt.md"
 mkdir -p "$fake_bin" "$clodex_home" "$(dirname "$system_prompt")"
 
