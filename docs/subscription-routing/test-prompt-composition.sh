@@ -29,10 +29,10 @@ for required_contract in \
 	'Never replace it with a model-specific agent type.' \
 	"\`agent(prompt, { agentType: \"security-reviewer\", model: \"luna\", effort: \"max\" })\`" \
 	"\`/model\` changes the main session model."; do
-	rg -F "$required_contract" "$routing_template" >/dev/null ||
+	grep -F "$required_contract" "$routing_template" >/dev/null ||
 		fail "the routing policy is missing its arbitrary-agent contract: $required_contract"
 done
-if rg -F 'routed-luna-worker' "$routing_template" >/dev/null; then
+if grep -F 'routed-luna-worker' "$routing_template" >/dev/null; then
 	fail "the routing policy creates a model-specific agent type"
 fi
 
@@ -69,7 +69,7 @@ CLAUDEX_MANAGED_SYSTEM_PROMPT_FILE="$managed_prompt" \
 	CLAUDEX_ROUTING_POLICY_FILE="$routing_overlay" \
 	CLAUDEX_COMPOSED_SYSTEM_PROMPT_FILE="$output_prompt" \
 	"$composer"
-rg -Fx 'Updated managed policy.' "$output_prompt" >/dev/null ||
+grep -Fx 'Updated managed policy.' "$output_prompt" >/dev/null ||
 	fail "a managed prompt update did not reach the composed output"
 
 if CLAUDEX_MANAGED_SYSTEM_PROMPT_FILE="$test_root/missing.md" \
@@ -78,7 +78,7 @@ if CLAUDEX_MANAGED_SYSTEM_PROMPT_FILE="$test_root/missing.md" \
 	"$composer" >"$test_root/missing.out" 2>"$test_root/missing.err"; then
 	fail "the composer accepted a missing managed prompt"
 fi
-rg -F 'prompt input is not readable' "$test_root/missing.err" >/dev/null ||
+grep -F 'prompt input is not readable' "$test_root/missing.err" >/dev/null ||
 	fail "the missing-input error was not specific"
 
 printf '%s\n' 'prompt-composition tests passed'
