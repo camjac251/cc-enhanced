@@ -67,7 +67,7 @@ interface EndTurnDrainTarget {
 }
 
 interface HintFactories {
-	react: t.Expression;
+	elementCallee: t.Expression;
 	text: t.Expression;
 	shortcut: t.Expression;
 }
@@ -80,14 +80,14 @@ interface FooterHintTarget {
 	isInputEmpty: t.Identifier;
 	isLoading: t.Identifier;
 	factories: HintFactories;
-	pushIf: NodePath<t.IfStatement>;
+	pushIf: NodePath<t.IfStatement> | null;
 }
 
 interface PromptBarPreviewTarget {
 	functionPath: NodePath<FunctionLike>;
 	textInputDeclaration: NodePath<t.VariableDeclarator>;
 	textInputId: t.Identifier;
-	react: t.Expression;
+	elementCallee: t.Expression;
 	box: t.Expression;
 	text: t.Expression;
 	loading: t.Expression;
@@ -1003,23 +1003,21 @@ function getPromptBarPreviewTarget(
 	if (!t.isIdentifier(textInputId)) return null;
 
 	const init = textInputDeclaration.node.init;
-	if (!t.isConditionalExpression(init) || !isElementCall(init.alternate)) {
-		return null;
-	}
+	if (!t.isConditionalExpression(init) || !isTextInputChoice(init)) return null;
+	if (!t.isCallExpression(init.alternate)) return null;
 	const callee = init.alternate.callee;
-	const react =
-		t.isMemberExpression(callee) && t.isExpression(callee.object)
-			? callee.object
-			: null;
+	const elementCallee = t.isExpression(callee)
+		? t.cloneNode(callee, true)
+		: null;
 	const box = findPromptBarBoxComponent(functionPath.node, textInputId);
 	const text = findPromptBarTextComponent(functionPath.node);
-	if (!react || !box || !text) return null;
+	if (!elementCallee || !box || !text) return null;
 
 	return {
 		functionPath,
 		textInputDeclaration,
 		textInputId,
-		react,
+		elementCallee,
 		box,
 		text,
 		loading: target.loading,
@@ -1037,14 +1035,14 @@ function patchPromptBarPreviewTarget(target: DraftQueueTarget): boolean {
 
 	declaration.insertBefore(
 		buildPromptBarPreviewDeclarations(
-			previewTarget.react,
+			previewTarget.elementCallee,
 			previewTarget.box,
 			previewTarget.text,
 			globalQueueMember(),
 		),
 	);
 	previewTarget.textInputDeclaration.node.init = buildWrappedTextInputElement(
-		previewTarget.react,
+		previewTarget.elementCallee,
 		previewTarget.box,
 		originalInit,
 	);
@@ -1082,7 +1080,7 @@ function patchTypeaheadThinkingHintTarget(
 }
 
 function isDeferredSubmitReceiverConfig(object: t.ObjectExpression): boolean {
-	return (
+	const hasBaseContract =
 		hasObjectProperty(object, "input") &&
 		hasObjectProperty(object, "helpers") &&
 		hasObjectProperty(object, "turn") &&
@@ -1090,9 +1088,14 @@ function isDeferredSubmitReceiverConfig(object: t.ObjectExpression): boolean {
 		hasObjectProperty(object, "mode") &&
 		hasObjectProperty(object, "onInputChange") &&
 		hasObjectProperty(object, "setPastedContents") &&
-		hasObjectProperty(object, "onQuery") &&
-		hasObjectProperty(object, "setMessages")
-	);
+		hasObjectProperty(object, "setMessages");
+	const hasQueryCallback = hasObjectProperty(object, "onQuery");
+	const hasEmbeddedQueryContext =
+		hasObjectProperty(object, "messages") &&
+		hasObjectProperty(object, "mainLoopModel") &&
+		hasObjectProperty(object, "getAppState") &&
+		hasObjectProperty(object, "setAppState");
+	return hasBaseContract && (hasQueryCallback || hasEmbeddedQueryContext);
 }
 
 function getDeferredSubmitReceiverTarget(
@@ -1218,30 +1221,45 @@ function patchDeferredSubmitReceiver(
 function findEndTurnDrainBlock(
 	path: NodePath<FunctionLike>,
 ): NodePath<t.BlockStatement> | null {
-	let drainBlock: NodePath<t.BlockStatement> | null = null;
+	const endResultNames = new Set<string>();
+	const blocks: NodePath<t.BlockStatement>[] = [];
 	path.traverse({
 		Function(inner) {
 			if (inner.node !== path.node) inner.skip();
 		},
-		IfStatement(inner) {
-			if (drainBlock) return;
+		VariableDeclarator(inner) {
+			if (!t.isIdentifier(inner.node.id)) return;
+			const init = inner.node.init;
 			if (
-				nodeContains(
-					inner.node.test,
-					(node) =>
-						t.isCallExpression(node) &&
-						t.isMemberExpression(node.callee) &&
-						getMemberName(node.callee) === "end",
-				) &&
+				t.isCallExpression(init) &&
+				t.isMemberExpression(init.callee) &&
+				getMemberName(init.callee) === "end"
+			) {
+				endResultNames.add(inner.node.id.name);
+			}
+		},
+		IfStatement(inner) {
+			const callsEnd = nodeContains(
+				inner.node.test,
+				(node) =>
+					t.isCallExpression(node) &&
+					t.isMemberExpression(node.callee) &&
+					getMemberName(node.callee) === "end",
+			);
+			const checksEndResult = Array.from(endResultNames).some((name) =>
+				nodeContains(inner.node.test, (node) => t.isIdentifier(node, { name })),
+			);
+			if (
+				(callsEnd || checksEndResult) &&
 				t.isBlockStatement(inner.node.consequent)
 			) {
 				const consequent = inner.get("consequent");
-				if (consequent.isBlockStatement()) drainBlock = consequent;
+				if (consequent.isBlockStatement()) blocks.push(consequent);
 			}
 		},
 	});
 
-	return drainBlock;
+	return blocks.length === 1 ? blocks[0] : null;
 }
 
 function getPromptQueueCalleeFromBranch(
@@ -1559,20 +1577,19 @@ function findQueueFactories(functionNode: FunctionLike): HintFactories | null {
 				const shortcutCall = getElementChildren(path.node).find(
 					(arg): arg is t.CallExpression =>
 						t.isCallExpression(arg) &&
-						isElementCall(arg) &&
+						t.isExpression(arg.callee) &&
+						t.isObjectExpression(arg.arguments[1]) &&
 						expressionHasStringProp(arg, "action", "return to team lead"),
 				);
 				if (!shortcutCall) return;
 				const callee = path.node.callee;
-				if (!t.isMemberExpression(callee) || !t.isExpression(callee.object)) {
-					return;
-				}
+				if (!t.isExpression(callee)) return;
 				const text = path.node.arguments[0];
 				const shortcut = shortcutCall.arguments[0];
 				if (!t.isExpression(text) || !t.isExpression(shortcut)) return;
 
 				factories = {
-					react: callee.object,
+					elementCallee: t.cloneNode(callee, true),
 					text,
 					shortcut,
 				};
@@ -1618,8 +1635,55 @@ function getQueuePartsDeclarator(
 			result = { queueParts: path.node.id, declaration };
 		},
 	});
+	if (result) return result;
 
-	return result;
+	const directCandidates: Array<{
+		queueParts: t.Identifier;
+		declaration: NodePath<t.VariableDeclaration>;
+	}> = [];
+	functionPath.traverse({
+		Function(path) {
+			if (path.node !== functionPath.node) path.skip();
+		},
+		VariableDeclarator(path) {
+			if (!t.isIdentifier(path.node.id)) return;
+			if (
+				!t.isArrayExpression(path.node.init) ||
+				path.node.init.elements.length > 0
+			) {
+				return;
+			}
+			const declaration = path.parentPath;
+			if (!declaration.isVariableDeclaration()) return;
+			const binding = path.scope.getBinding(path.node.id.name);
+			const hasAnchoredPush =
+				binding?.referencePaths.some((reference) => {
+					const memberPath = reference.parentPath;
+					if (
+						!memberPath?.isMemberExpression() ||
+						memberPath.node.object !== reference.node ||
+						getMemberName(memberPath.node) !== "push"
+					) {
+						return false;
+					}
+					const callPath = memberPath.parentPath;
+					return (
+						callPath?.isCallExpression() === true &&
+						callPath.node.arguments.some((argument) =>
+							expressionHasStringProp(
+								argument as t.Node,
+								"action",
+								"return to team lead",
+							),
+						)
+					);
+				}) ?? false;
+			if (hasAnchoredPush) {
+				directCandidates.push({ queueParts: path.node.id, declaration });
+			}
+		},
+	});
+	return directCandidates.length === 1 ? directCandidates[0] : null;
 }
 
 function getSpreadPushIf(
@@ -1671,7 +1735,6 @@ function getFooterHintTarget(
 	const queuePartsResult = getQueuePartsDeclarator(path, showHint);
 	if (!queuePartsResult) return null;
 	const pushIf = getSpreadPushIf(path, showHint, queuePartsResult.queueParts);
-	if (!pushIf) return null;
 	const factories = findQueueFactories(path.node);
 	if (!factories) return null;
 
@@ -1710,12 +1773,14 @@ function hasEditHint(target: FooterHintTarget): boolean {
 }
 
 function hasQueuePartsLengthFallback(target: FooterHintTarget): boolean {
+	if (!target.pushIf) return true;
 	return nodeContains(target.pushIf.node.test, (node) =>
 		isQueuePartsLengthFallback(node, target.queueParts),
 	);
 }
 
 function patchPushCondition(target: FooterHintTarget): boolean {
+	if (!target.pushIf) return true;
 	if (hasQueuePartsLengthFallback(target)) return true;
 
 	// Upstream gates the queue-parts spread on the bare showHint identifier
@@ -1743,7 +1808,7 @@ function patchFooterHintTarget(target: FooterHintTarget): boolean {
 				target.queueParts,
 				target.isLoading,
 				target.isInputEmpty,
-				target.factories.react,
+				target.factories.elementCallee,
 				target.factories.text,
 				target.factories.shortcut,
 			),
@@ -1754,7 +1819,7 @@ function patchFooterHintTarget(target: FooterHintTarget): boolean {
 			buildEditHintStatement(
 				target.queueParts,
 				target.isInputEmpty,
-				target.factories.react,
+				target.factories.elementCallee,
 				target.factories.text,
 				target.factories.shortcut,
 				buildQueueHasItems(),

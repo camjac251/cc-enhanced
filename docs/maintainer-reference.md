@@ -58,10 +58,11 @@ type AstPassName = "discover" | "mutate" | "finalize";
 
 **Native binary lifecycle** (`src/manager.ts`, `src/native.ts`, `src/native-linux.ts`, `src/native-lief.ts`, `src/bun-format.ts`):
 
-1. `unpack`: extract embedded `cli.js` from the ELF/Mach-O/PE binary.
-2. Run the patch pipeline above.
-3. `repack` in place at the original byte length so all file offsets, virtual addresses, section or segment layouts, and `PT_LOAD` mappings stay valid (see "Bun Standalone Binary Format").
-4. `promote`: atomic symlink swap. `~/.local/bin/claude` -> `~/.local/share/claude/versions/current` -> patched binary in `~/.claude-patcher/native-cache/`.
+1. `unpack`: enumerate embedded JavaScript modules in the ELF/Mach-O/PE binary.
+2. When the entry point spans multiple supported modules, rebundle them into one ESM patch surface with tree shaking and identifier minification disabled.
+3. Run the patch pipeline above.
+4. `repack` in place at the original byte length so all file offsets, virtual addresses, section or segment layouts, and `PT_LOAD` mappings stay valid (see "Bun Standalone Binary Format").
+5. `promote`: atomic symlink swap. `~/.local/bin/claude` -> `~/.local/share/claude/versions/current` -> patched binary in `~/.claude-patcher/native-cache/`.
 
 Mach-O and PE repacking is a structural operation only. Platform signing is a separate fail-closed lifecycle gate; cross-format parsing or repacking on Linux does not prove macOS or Windows launch support.
 
@@ -69,7 +70,7 @@ Rollback (`Manager.rollback`) symmetrically swaps `current` and `previous`.
 
 ## Bun Standalone Binary Format
 
-Related files: `src/native-linux.ts`, `src/native-lief.ts`, `src/bun-format.ts`, `src/native.ts`.
+Related files: `src/native-linux.ts`, `src/native-lief.ts`, `src/bun-format.ts`, `src/native-rebundle.ts`, `src/native.ts`.
 
 Bun 1.3+ changed how standalone binaries embed and discover modules. The repack strategy must match the current format version.
 
@@ -83,14 +84,15 @@ Bun 1.3+ changed how standalone binaries embed and discover modules. The repack 
 
 Mach-O and PE place the same Bun payload behind a length header inside a bounded native section: `__BUN/__bun` for Mach-O and `.bun` for PE. The exact `node-lief` `1.3.2` dependency supplies typed section and segment offsets for these formats. The driver uses it only to parse and locate the raw file range; it never calls the generic binary writer, changes section sizes, extends segments, removes signatures, or signs artifacts.
 
-**Repack strategy**:
+**Rebundle and repack strategy**:
 
-- The `cli.js` module has a large precompiled bytecode payload in the data section.
-- Patched JS is written directly over the bytecode area, which is comfortably larger than the formatted bundle.
-- The module content pointer is updated and the bytecode pointer is zeroed.
-- All pointer and capacity ranges are validated before mutation.
-- No overlay or section rebuild, no size changes, and no native layout modifications.
-- The binary stays exactly the same size, so all offsets, virtual addresses, sections, segments, and mappings remain valid.
+- A single-module executable uses its entry-point JavaScript directly. A split-module executable is rebundled into one ESM patch surface before parsing.
+- The rebundler resolves embedded relative imports from the module table, preserves external runtime imports, disables splitting and tree shaking, and leaves identifiers unminified.
+- The writer selects the smallest validated embedded bytecode region large enough for the patched JavaScript, preferring the entry point when it fits.
+- Patched JavaScript is written into that bounded region. The entry content pointer and length are updated, and stale bytecode and module-information pointers are cleared so the runtime parses the replacement source.
+- The entry module format remains ESM. If another module donated storage, its stale bytecode pointer is cleared as well.
+- All module-table, pointer, content, and capacity ranges are validated before mutation.
+- No overlay or section rebuild, no size changes, and no native layout modifications occur. The binary stays exactly the same size, so all offsets, virtual addresses, sections, segments, and mappings remain valid.
 
 **Why not append and rebuild**: rebuilding the overlay or native section changes `byteCount`, the payload length header, and data boundaries. On ELF, the `BUN_COMPILED.size` virtual address, `PT_LOAD` mapping, and `.bun` section offset would need updating. Generic Mach-O or PE reconstruction can likewise move or resize sections and invalidate platform signatures. In-place patching avoids all of these changes by keeping the original binary structure intact.
 
@@ -115,7 +117,8 @@ When orienting in this repo, reach for these by purpose:
 | Desktop, Remote Control, self-hosted, and stock-client compatibility workflows | `docs/target-workflows.md` |
 | Desktop inventory, drift, and inspection-only artifact evidence | `src/desktop/`, `scripts/desktop-status.ts`, `scripts/desktop-compare.ts`, `scripts/desktop-inspect.ts` |
 | Patch capability catalog and surface readiness | `src/profiles/capabilities.ts`, `src/profiles/readiness.ts`, `scripts/profile-support.ts` |
-| ELF unpack/repack | `src/native-linux.ts`, `src/bun-format.ts` |
+| Embedded-module enumeration, rebundling, and fixed-layout replacement | `src/bun-format.ts`, `src/native-rebundle.ts` |
+| ELF unpack/repack | `src/native-linux.ts` |
 | Mach-O / PE unpack/repack (via node-lief) | `src/native.ts` |
 | Auto-detect installed `claude` binary on PATH | `src/installation-detection.ts` |
 | Default symlink + cache paths | `src/version-paths.ts` |

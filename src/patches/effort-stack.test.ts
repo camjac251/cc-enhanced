@@ -408,6 +408,44 @@ test("effort-stack patches ultracode active gate to treat max as active", async 
 	);
 });
 
+test("effort-stack resolves the availability helper in an enclosing module scope", async () => {
+	const ast = parse(`function initializeModule() {${EFFORT_STACK_FIXTURE}}`);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		output.includes(
+			'ultracode === !0 && ultracodeAvailable(model) && (resolveEffort(model, effort) === "xhigh" || resolveEffort(model, effort) === "max")',
+		),
+		true,
+	);
+});
+
+test("effort-stack accepts explicit undefined in rebundled effort surfaces", async () => {
+	const fixture = EFFORT_STACK_FIXTURE.replace(
+		"model === void 0",
+		"model === undefined",
+	)
+		.replace(
+			'envEffort !== void 0 && envEffort !== "xhigh"',
+			'envEffort !== undefined && envEffort !== "xhigh"',
+		)
+		.replace(
+			"buildEffortSettings(model, value), void 0, scope",
+			"buildEffortSettings(model, value), undefined, scope",
+		);
+	const ast = parse(fixture);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /ultracodeAvailable\(model\)/);
+	assert.match(output, /Ultracode workflows active for this session/);
+	assert.match(
+		output,
+		/if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) return;/,
+	);
+});
+
 test("effort-stack rewrites the ultrathink notification text", async () => {
 	const ast = parse(EFFORT_STACK_FIXTURE);
 	await runEffortStackViaPasses(ast);
@@ -740,7 +778,7 @@ function buildEffortSettings(model, value) {
 }
 
 async function storeEffortSetting(value, model, scope) {
-  return saveSettings("userSettings", buildEffortSettings(model, value), void 0, scope);
+  return saveSettings("userSettings", buildEffortSettings(model, value), undefined, scope);
 }
 `;
 	const ast = parse(fixture);

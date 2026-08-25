@@ -3765,12 +3765,13 @@ export const readWithBat: Patch = {
 								// minified guesses (the old behavior) produced a render that called
 								// a non-existent factory and broke the Read tool chip once upstream
 								// moved rendering to the JSX runtime.
-								let createElementId = "A3";
 								let abbrFunc = "j6";
 								let checkFunc = "C51";
 								let filePathComp = "sk";
 								let displayVar = "Z";
-								let foundFactory = false;
+								let fileElementCallee: t.Expression | null = null;
+								let fragmentElementCallee: t.Expression | null = null;
+								let fragmentType: t.Expression | null = null;
 								let foundDisplay = false;
 								let foundCheck = false;
 
@@ -3800,13 +3801,18 @@ export const readWithBat: Patch = {
 										foundCheck = true;
 									},
 									// Find the file-path component render, runtime-agnostic:
-									// X.createElement(sk, { filePath: ... }) or X.jsx(sk, { filePath: ... }).
+									// member and direct automatic-runtime calls are both supported.
 									CallExpression(callPath) {
-										if (foundFactory) return;
+										if (
+											fileElementCallee &&
+											fragmentElementCallee &&
+											fragmentType
+										) {
+											return;
+										}
 										const callee = callPath.node.callee;
-										if (!t.isMemberExpression(callee)) return;
 										if (!isElementCall(callPath.node)) return;
-										if (!t.isIdentifier(callee.object)) return;
+										if (!t.isExpression(callee)) return;
 
 										const args = callPath.node.arguments;
 										if (args.length >= 2 && t.isIdentifier(args[0])) {
@@ -3817,9 +3823,35 @@ export const readWithBat: Patch = {
 													hasObjectKeyName(p, "filePath"),
 												)
 											) {
-												createElementId = callee.object.name;
+												fileElementCallee = t.cloneNode(callee, true);
 												filePathComp = args[0].name;
-												foundFactory = true;
+												if (t.isMemberExpression(callee)) {
+													fragmentElementCallee = t.cloneNode(callee, true);
+													fragmentType = t.memberExpression(
+														t.cloneNode(callee.object, true),
+														t.identifier("Fragment"),
+													);
+												} else {
+													const wrapperPath = callPath.findParent(
+														(parentPath) =>
+															parentPath.isCallExpression() &&
+															isElementCall(parentPath.node),
+													);
+													if (wrapperPath?.isCallExpression()) {
+														const wrapperCallee = wrapperPath.node.callee;
+														const wrapperType = wrapperPath.node.arguments[0];
+														if (
+															t.isExpression(wrapperCallee) &&
+															t.isExpression(wrapperType)
+														) {
+															fragmentElementCallee = t.cloneNode(
+																wrapperCallee,
+																true,
+															);
+															fragmentType = t.cloneNode(wrapperType, true);
+														}
+													}
+												}
 											}
 										}
 									},
@@ -3830,7 +3862,13 @@ export const readWithBat: Patch = {
 								// (e.g. an upstream render-shape change), leave the function fully
 								// unpatched so the stock chip still renders and verify fails loudly
 								// instead of emitting a render that calls a non-existent factory.
-								if (!foundFactory || !foundDisplay || !foundCheck) {
+								if (
+									!fileElementCallee ||
+									!fragmentElementCallee ||
+									!fragmentType ||
+									!foundDisplay ||
+									!foundCheck
+								) {
 									console.warn(
 										"Read with bat: renderToolUseMessage factory/component not found; leaving Read render unpatched",
 									);
@@ -3839,38 +3877,131 @@ export const readWithBat: Patch = {
 								}
 
 								path.node.params[0] = newFirstParam;
-
-								// Build new function body with options display
-								const newBody = t.blockStatement(
-									template.statements(
-										`
-					if (!FILE_PATH) return null;
-					if (CHECK_FN(FILE_PATH)) return R ? " · range: " + R : "";
-					let DISPLAY = VERBOSE ? FILE_PATH : ABBR_FN(FILE_PATH);
-					if (PAGES) return CE.jsx(CE.Fragment, { children: [CE.jsx(COMP, { filePath: FILE_PATH, children: DISPLAY }), " · pages " + PAGES] });
-					var opts = [];
-					if (R) opts.push("range: " + R);
-					if (WSPC) opts.push("whitespace");
-					if (opts.length > 0) {
-						return CE.jsx(CE.Fragment, { children: [CE.jsx(COMP, { filePath: FILE_PATH, children: DISPLAY }), " · " + opts.join(", ")] });
-					}
-					return CE.jsx(COMP, { filePath: FILE_PATH, children: DISPLAY });
-				`,
-										{
-											placeholderPattern:
-												/^(FILE_PATH|CHECK_FN|DISPLAY|VERBOSE|ABBR_FN|PAGES|CE|COMP)$/,
-										},
-									)({
-										FILE_PATH: t.identifier(filePathVar),
-										CHECK_FN: t.identifier(checkFunc),
-										DISPLAY: t.identifier(displayVar),
-										VERBOSE: t.identifier(verboseVar),
-										ABBR_FN: t.identifier(abbrFunc),
-										PAGES: t.identifier(pagesVar),
-										CE: t.identifier(createElementId),
-										COMP: t.identifier(filePathComp),
-									}),
+								const resolvedFileElementCallee = t.cloneNode(
+									fileElementCallee,
+									true,
 								);
+								const resolvedFragmentElementCallee = t.cloneNode(
+									fragmentElementCallee,
+									true,
+								);
+								const resolvedFragmentType = t.cloneNode(fragmentType, true);
+
+								const createFileElement = (): t.CallExpression =>
+									t.callExpression(
+										t.cloneNode(resolvedFileElementCallee, true),
+										[
+											t.identifier(filePathComp),
+											t.objectExpression([
+												t.objectProperty(
+													t.identifier("filePath"),
+													t.identifier(filePathVar),
+												),
+												t.objectProperty(
+													t.identifier("children"),
+													t.identifier(displayVar),
+												),
+											]),
+										],
+									);
+								const createSuffixedElement = (
+									suffix: t.Expression,
+								): t.CallExpression =>
+									t.callExpression(
+										t.cloneNode(resolvedFragmentElementCallee, true),
+										[
+											t.cloneNode(resolvedFragmentType, true),
+											t.objectExpression([
+												t.objectProperty(
+													t.identifier("children"),
+													t.arrayExpression([createFileElement(), suffix]),
+												),
+											]),
+										],
+									);
+
+								const newBody = t.blockStatement([
+									t.ifStatement(
+										t.unaryExpression("!", t.identifier(filePathVar)),
+										t.returnStatement(t.nullLiteral()),
+									),
+									t.ifStatement(
+										t.callExpression(t.identifier(checkFunc), [
+											t.identifier(filePathVar),
+										]),
+										t.returnStatement(
+											t.conditionalExpression(
+												t.identifier("R"),
+												t.binaryExpression(
+													"+",
+													t.stringLiteral(" · range: "),
+													t.identifier("R"),
+												),
+												t.stringLiteral(""),
+											),
+										),
+									),
+									t.variableDeclaration("let", [
+										t.variableDeclarator(
+											t.identifier(displayVar),
+											t.conditionalExpression(
+												t.identifier(verboseVar),
+												t.identifier(filePathVar),
+												t.callExpression(t.identifier(abbrFunc), [
+													t.identifier(filePathVar),
+												]),
+											),
+										),
+									]),
+									t.ifStatement(
+										t.identifier(pagesVar),
+										t.returnStatement(
+											createSuffixedElement(
+												t.binaryExpression(
+													"+",
+													t.stringLiteral(" · pages "),
+													t.identifier(pagesVar),
+												),
+											),
+										),
+									),
+									...template.statements(
+										`
+										var opts = [];
+										if (R) opts.push("range: " + R);
+										if (WSPC) opts.push("whitespace");
+										`,
+										{ placeholderPattern: /^(R|WSPC)$/ },
+									)({ R: t.identifier("R"), WSPC: t.identifier("WSPC") }),
+									t.ifStatement(
+										t.binaryExpression(
+											">",
+											t.memberExpression(
+												t.identifier("opts"),
+												t.identifier("length"),
+											),
+											t.numericLiteral(0),
+										),
+										t.blockStatement([
+											t.returnStatement(
+												createSuffixedElement(
+													t.binaryExpression(
+														"+",
+														t.stringLiteral(" · "),
+														t.callExpression(
+															t.memberExpression(
+																t.identifier("opts"),
+																t.identifier("join"),
+															),
+															[t.stringLiteral(", ")],
+														),
+													),
+												),
+											),
+										]),
+									),
+									t.returnStatement(createFileElement()),
+								]);
 
 								path.node.body = newBody;
 								path.stop();

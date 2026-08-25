@@ -779,14 +779,74 @@ function getStringLiteralArrayValues(
 	return values;
 }
 
-function isCacheTtlAllowlistProperty(
-	prop: t.ObjectProperty,
-): prop is t.ObjectProperty & { value: t.ArrayExpression } {
-	if (getObjectKeyName(prop.key) !== "allowlist") return false;
-	if (!t.isArrayExpression(prop.value)) return false;
-	const values = getStringLiteralArrayValues(prop.value);
-	if (!values) return false;
-	return CACHE_TTL_ALLOWLIST_ANCHORS.every((entry) => values.includes(entry));
+function hasCacheTtlAllowlistAnchors(array: t.ArrayExpression): boolean {
+	const values = getStringLiteralArrayValues(array);
+	return (
+		values !== null &&
+		CACHE_TTL_ALLOWLIST_ANCHORS.every((entry) => values.includes(entry))
+	);
+}
+
+function getCacheTtlAllowlistSpreadName(prop: t.ObjectProperty): string | null {
+	if (getObjectKeyName(prop.key) !== "allowlist") return null;
+	if (!t.isArrayExpression(prop.value)) return null;
+	if (prop.value.elements.length !== 1) return null;
+	const [element] = prop.value.elements;
+	if (!t.isSpreadElement(element) || !t.isIdentifier(element.argument)) {
+		return null;
+	}
+	return element.argument.name;
+}
+
+function getArrayExpressionFromBindingPath(
+	path: any,
+): t.ArrayExpression | null {
+	const node = path?.node;
+	if (t.isVariableDeclarator(node) && t.isArrayExpression(node.init)) {
+		return node.init;
+	}
+	if (t.isAssignmentExpression(node) && t.isArrayExpression(node.right)) {
+		return node.right;
+	}
+	if (t.isIdentifier(node)) {
+		const parent = path.parentPath?.node;
+		if (t.isVariableDeclarator(parent) && t.isArrayExpression(parent.init)) {
+			return parent.init;
+		}
+		if (t.isAssignmentExpression(parent) && t.isArrayExpression(parent.right)) {
+			return parent.right;
+		}
+	}
+	return null;
+}
+
+function resolveCacheTtlAllowlistArray(
+	path: NodePath<t.ObjectProperty>,
+): t.ArrayExpression | null {
+	if (getObjectKeyName(path.node.key) !== "allowlist") return null;
+	if (
+		t.isArrayExpression(path.node.value) &&
+		hasCacheTtlAllowlistAnchors(path.node.value)
+	) {
+		return path.node.value;
+	}
+
+	const spreadName = getCacheTtlAllowlistSpreadName(path.node);
+	if (!spreadName) return null;
+	const binding = path.scope.getBinding(spreadName);
+	if (!binding) return null;
+
+	const matches = new Set<t.ArrayExpression>();
+	for (const candidatePath of [
+		binding.path,
+		...(binding.constantViolations ?? []),
+	]) {
+		const candidate = getArrayExpressionFromBindingPath(candidatePath);
+		if (candidate && hasCacheTtlAllowlistAnchors(candidate)) {
+			matches.add(candidate);
+		}
+	}
+	return matches.size === 1 ? (matches.values().next().value ?? null) : null;
 }
 
 function nodeContains(
@@ -848,14 +908,53 @@ function getSomeCallObjectName(
 
 function findCacheTtlAllowlistReturn(
 	body: t.Statement[],
+	allowlistName?: string | null,
 ): { index: number; allowlistName: string } | null {
 	for (let index = 0; index < body.length; index++) {
 		const stmt = body[index];
 		if (!t.isReturnStatement(stmt) || !t.isExpression(stmt.argument)) continue;
-		const allowlistName = getSomeCallObjectName(stmt.argument);
-		if (allowlistName) return { index, allowlistName };
+		if (
+			allowlistName &&
+			nodeContains(stmt.argument, (node) =>
+				t.isIdentifier(node, { name: allowlistName }),
+			)
+		) {
+			return { index, allowlistName };
+		}
+		const someAllowlistName = getSomeCallObjectName(stmt.argument);
+		if (someAllowlistName) {
+			return { index, allowlistName: someAllowlistName };
+		}
 	}
 	return null;
+}
+
+function findCacheTtlAllowlistLocalName(
+	body: t.Statement[],
+	allowlistProperty: t.ObjectProperty,
+): string | null {
+	const names = new Set<string>();
+	for (const statement of body) {
+		nodeContains(statement, (candidate) => {
+			if (
+				t.isAssignmentExpression(candidate) &&
+				t.isIdentifier(candidate.left) &&
+				nodeContains(candidate.right, (node) => node === allowlistProperty)
+			) {
+				names.add(candidate.left.name);
+			}
+			if (
+				t.isVariableDeclarator(candidate) &&
+				t.isIdentifier(candidate.id) &&
+				candidate.init &&
+				nodeContains(candidate.init, (node) => node === allowlistProperty)
+			) {
+				names.add(candidate.id.name);
+			}
+			return false;
+		});
+	}
+	return names.size === 1 ? (names.values().next().value ?? null) : null;
 }
 
 function hasAgentCacheTtlRuntimeGuard(
@@ -922,7 +1021,9 @@ function getEnclosingFunctionBody(path: NodePath): t.Statement[] | null {
 function patchAgentCacheTtlRuntimeGuard(path: NodePath): boolean {
 	const body = getEnclosingFunctionBody(path);
 	if (!body) return false;
-	const allowlistReturn = findCacheTtlAllowlistReturn(body);
+	if (!path.isObjectProperty()) return false;
+	const allowlistName = findCacheTtlAllowlistLocalName(body, path.node);
+	const allowlistReturn = findCacheTtlAllowlistReturn(body, allowlistName);
 	if (!allowlistReturn) return false;
 	if (hasAgentCacheTtlRuntimeGuard(body, allowlistReturn.allowlistName)) {
 		return true;
@@ -945,20 +1046,26 @@ function createAgentCacheTtlAllowlistMutator(
 	return {
 		ObjectProperty(path) {
 			if (patchedDefault && patchedRuntimeGuard) return;
-			if (!isCacheTtlAllowlistProperty(path.node)) return;
+			const allowlistArray = resolveCacheTtlAllowlistArray(path);
+			if (!allowlistArray) return;
 
-			const values = getStringLiteralArrayValues(path.node.value);
+			const values = getStringLiteralArrayValues(allowlistArray);
 			if (!values) return;
 			let changed = false;
 			if (!values.includes(AGENT_CACHE_TTL_QUERY_SOURCE)) {
-				path.node.value.elements.push(
+				allowlistArray.elements.push(
 					t.stringLiteral(AGENT_CACHE_TTL_QUERY_SOURCE),
 				);
 				changed = true;
 			}
 			patchedDefault = true;
 			const body = getEnclosingFunctionBody(path);
-			const allowlistReturn = body ? findCacheTtlAllowlistReturn(body) : null;
+			const allowlistName = body
+				? findCacheTtlAllowlistLocalName(body, path.node)
+				: null;
+			const allowlistReturn = body
+				? findCacheTtlAllowlistReturn(body, allowlistName)
+				: null;
 			const hadRuntimeGuard =
 				body !== null &&
 				allowlistReturn !== null &&
@@ -1549,6 +1656,20 @@ export function collectCacheTailVerificationInventory(
 	let foundAllowlist = false;
 	let hasAgentQuerySource = false;
 	let hasRuntimeGuard = false;
+	const allowlistCandidates: Array<{
+		property: t.ObjectProperty;
+		body: t.Statement[] | null;
+	}> = [];
+	const namedAllowlistArrays = new Map<string, t.ArrayExpression[]>();
+	const recordNamedAllowlistArray = (
+		name: string,
+		array: t.ArrayExpression,
+	): void => {
+		if (!hasCacheTtlAllowlistAnchors(array)) return;
+		const arrays = namedAllowlistArrays.get(name) ?? [];
+		if (!arrays.includes(array)) arrays.push(array);
+		namedAllowlistArrays.set(name, arrays);
+	};
 
 	let requestClampAnchor = clampAnchorCache.get(ast);
 	let requestBuilderFunctionNode: t.Node | null = null;
@@ -2032,6 +2153,10 @@ export function collectCacheTailVerificationInventory(
 			}
 		},
 		VariableDeclarator(path) {
+			if (t.isIdentifier(path.node.id) && t.isArrayExpression(path.node.init)) {
+				recordNamedAllowlistArray(path.node.id.name, path.node.init);
+			}
+
 			if (tailFunctionNode && isWithinFunction(path, tailFunctionNode)) {
 				if (t.isIdentifier(path.node.id, { name: "cacheTailWindow" })) {
 					tailWindowDeclCount += 1;
@@ -2075,6 +2200,16 @@ export function collectCacheTailVerificationInventory(
 			}
 		},
 		AssignmentExpression(assignPath) {
+			if (
+				t.isIdentifier(assignPath.node.left) &&
+				t.isArrayExpression(assignPath.node.right)
+			) {
+				recordNamedAllowlistArray(
+					assignPath.node.left.name,
+					assignPath.node.right,
+				);
+			}
+
 			if (tailFunctionNode && isWithinFunction(assignPath, tailFunctionNode)) {
 				if (
 					t.isIdentifier(assignPath.node.left, {
@@ -2301,22 +2436,18 @@ export function collectCacheTailVerificationInventory(
 			}
 		},
 		ObjectProperty(path) {
-			if (!isCacheTtlAllowlistProperty(path.node)) return;
-			foundAllowlist = true;
-
-			const values = getStringLiteralArrayValues(path.node.value);
-			if (values?.includes(AGENT_CACHE_TTL_QUERY_SOURCE)) {
-				hasAgentQuerySource = true;
-			}
-			const body = getEnclosingFunctionBody(path);
-			const allowlistReturn = body ? findCacheTtlAllowlistReturn(body) : null;
+			if (getObjectKeyName(path.node.key) !== "allowlist") return;
+			if (!t.isArrayExpression(path.node.value)) return;
 			if (
-				body &&
-				allowlistReturn &&
-				hasAgentCacheTtlRuntimeGuard(body, allowlistReturn.allowlistName)
+				!hasCacheTtlAllowlistAnchors(path.node.value) &&
+				!getCacheTtlAllowlistSpreadName(path.node)
 			) {
-				hasRuntimeGuard = true;
+				return;
 			}
+			allowlistCandidates.push({
+				property: path.node,
+				body: getEnclosingFunctionBody(path),
+			});
 		},
 		UnaryExpression(path) {
 			if (path.node.operator !== "delete") return;
@@ -2375,6 +2506,45 @@ export function collectCacheTailVerificationInventory(
 		},
 		noScope: true,
 	});
+
+	for (const candidate of allowlistCandidates) {
+		let allowlistArray: t.ArrayExpression | null = null;
+		if (
+			t.isArrayExpression(candidate.property.value) &&
+			hasCacheTtlAllowlistAnchors(candidate.property.value)
+		) {
+			allowlistArray = candidate.property.value;
+		} else {
+			const spreadName = getCacheTtlAllowlistSpreadName(candidate.property);
+			const arrays = spreadName
+				? namedAllowlistArrays.get(spreadName)
+				: undefined;
+			if (arrays?.length === 1) allowlistArray = arrays[0];
+		}
+		if (!allowlistArray) continue;
+
+		foundAllowlist = true;
+		const values = getStringLiteralArrayValues(allowlistArray);
+		if (values?.includes(AGENT_CACHE_TTL_QUERY_SOURCE)) {
+			hasAgentQuerySource = true;
+		}
+		const allowlistName = candidate.body
+			? findCacheTtlAllowlistLocalName(candidate.body, candidate.property)
+			: null;
+		const allowlistReturn = candidate.body
+			? findCacheTtlAllowlistReturn(candidate.body, allowlistName)
+			: null;
+		if (
+			candidate.body &&
+			allowlistReturn &&
+			hasAgentCacheTtlRuntimeGuard(
+				candidate.body,
+				allowlistReturn.allowlistName,
+			)
+		) {
+			hasRuntimeGuard = true;
+		}
+	}
 
 	if (requestClampAnchor === undefined) {
 		requestClampAnchor = null;

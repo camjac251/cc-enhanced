@@ -446,14 +446,15 @@ function findUltracodeAvailabilityHelperName(
 	path: NodePath,
 	workflowCalleeName: string,
 ): string | null {
-	const program = path.findParent((parentPath) => parentPath.isProgram());
-	if (!program?.isProgram()) return null;
-	for (const stmt of program.node.body) {
-		if (!t.isFunctionDeclaration(stmt) || !stmt.id) continue;
-		const [param] = stmt.params;
-		if (!t.isIdentifier(param) || !t.isBlockStatement(stmt.body)) continue;
-		if (stmt.body.body.length !== 1) continue;
-		const returnStmt = stmt.body.body[0];
+	for (const binding of Object.values(path.scope.getAllBindings())) {
+		const declaration = binding.path.node;
+		if (!t.isFunctionDeclaration(declaration) || !declaration.id) continue;
+		const [param] = declaration.params;
+		if (!t.isIdentifier(param) || !t.isBlockStatement(declaration.body)) {
+			continue;
+		}
+		if (declaration.body.body.length !== 1) continue;
+		const returnStmt = declaration.body.body[0];
 		if (!t.isReturnStatement(returnStmt) || !returnStmt.argument) continue;
 		if (
 			isAvailabilityHelperReturn(
@@ -462,7 +463,7 @@ function findUltracodeAvailabilityHelperName(
 				param.name,
 			)
 		) {
-			return stmt.id.name;
+			return declaration.id.name;
 		}
 	}
 	return null;

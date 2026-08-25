@@ -261,7 +261,7 @@ test("verifyPromptSurfaces allows intentionally disabled optional surfaces to be
 	}
 });
 
-test("verifyPromptSurfaces requires background routing on Bash and claude-agent surfaces", async () => {
+test("verifyPromptSurfaces requires background routing on Bash and background-job surfaces", async () => {
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "verify-prompt-surfaces-background-routing-"),
 	);
@@ -269,8 +269,8 @@ test("verifyPromptSurfaces requires background routing on Bash and claude-agent 
 		await createValidSurfaceFixture(tempDir);
 		const missingBashPolicy = BACKGROUND_TASK_POLICY_LINES.at(-1);
 		assert.ok(missingBashPolicy);
-		const missingClaudePolicy = BACKGROUND_TASK_POLICY_LINES.at(-2);
-		assert.ok(missingClaudePolicy);
+		const missingBackgroundJobPolicy = BACKGROUND_TASK_POLICY_LINES.at(-2);
+		assert.ok(missingBackgroundJobPolicy);
 		await writeSurface(
 			tempDir,
 			"tools/builtin/bash.md",
@@ -285,16 +285,16 @@ test("verifyPromptSurfaces requires background routing on Bash and claude-agent 
 		);
 		await writeSurface(
 			tempDir,
-			"agents/claude.md",
+			"agents/background-job.md",
 			[
-				validContentForRule(ruleFor("agents/claude.md")).replace(
+				validContentForRule(ruleFor("agents/background-job.md")).replace(
 					MODERN_BACKGROUND_AGENT_FILE_ROUTING,
 					"Use shell commands for all file operations.",
 				),
 				...BACKGROUND_TASK_POLICY_LINES,
 			]
 				.join("\n")
-				.split(missingClaudePolicy)
+				.split(missingBackgroundJobPolicy)
 				.join("Background tasks may be polled immediately."),
 		);
 
@@ -312,12 +312,12 @@ test("verifyPromptSurfaces requires background routing on Bash and claude-agent 
 		);
 		assert.ok(
 			result.failures.some(
-				(failure) => failure.id === "claude-background-file-routing",
+				(failure) => failure.id === "background-job-file-routing",
 			),
 		);
 		assert.ok(
 			result.failures.some(
-				(failure) => failure.id === "claude-background-policy-5",
+				(failure) => failure.id === "background-job-policy-5",
 			),
 		);
 	} finally {

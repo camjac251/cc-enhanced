@@ -7,6 +7,7 @@ import {
 	buildFrontmatterPromptMap,
 	createUniqueSlug,
 	extractFrontmatterName,
+	selectPromptCorpusText,
 	writeArtifact,
 } from "./prompt-export-utils.js";
 
@@ -62,4 +63,21 @@ test("buildFrontmatterPromptMap keeps the longest prompt per name", () => {
 	assert.equal(prompts.get("design-sync"), longPrompt);
 	assert.equal(prompts.get("verify"), quotedPrompt);
 	assert.equal(prompts.has("not frontmatter"), false);
+});
+
+test("selectPromptCorpusText prefers the least dynamic current surface", () => {
+	const selected = selectPromptCorpusText(
+		[
+			{ text: "Current surface ${value_1} with stable anchor and extra text." },
+			{ text: "Current surface with stable anchor." },
+			{ text: "Unrelated surface." },
+		],
+		["Current surface", "stable anchor"],
+	);
+
+	assert.equal(selected, "Current surface with stable anchor.");
+	assert.equal(
+		selectPromptCorpusText([{ text: "Unrelated surface." }], ["missing"]),
+		null,
+	);
 });

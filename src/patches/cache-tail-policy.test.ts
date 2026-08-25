@@ -5,7 +5,10 @@ import {
 	runCombinedAstPasses,
 } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
-import { cacheTailPolicy } from "./cache-tail-policy.js";
+import {
+	cacheTailPolicy,
+	collectCacheTailVerificationInventory,
+} from "./cache-tail-policy.js";
 
 async function runCacheTailViaPasses(
 	ast: any,
@@ -536,6 +539,24 @@ function shouldUseOneHourCache(querySource) {
 }
 `;
 
+const CACHE_TTL_REBUNDLED_ALLOWLIST_FIXTURE = `
+var defaultAllowlist;
+function initializeCacheDefaults() {
+  defaultAllowlist = ["repl_main_thread*", "sdk", "auto_mode", "memdir_relevance"];
+}
+function shouldUseOneHourCache(querySource) {
+  let allowlist = getCachedAllowlist();
+  if (allowlist === null)
+    ((allowlist =
+      flag("tengu_prompt_cache_1h_config", { allowlist: [...defaultAllowlist] })
+        .allowlist ?? []),
+      setCachedAllowlist(allowlist));
+  return matchesQuerySource(querySource, allowlist)
+    ? { ttl: "1h" }
+    : { ttl: "5m" };
+}
+`;
+
 test("cache-tail-policy preserves caller-controlled cache control TTL", async () => {
 	const ast = parse(CACHE_CONTROL_BUILDER_FIXTURE);
 	await runCacheTailViaPasses(ast);
@@ -557,6 +578,20 @@ test("cache-tail-policy extends 1h TTL allowlist to subagent query sources", asy
 	assert.equal(output.includes('"verification_agent"'), false);
 	assert.equal(output.includes('"agent_summary"'), false);
 	assert.equal(output.includes('"agent_creation"'), false);
+});
+
+test("cache-tail-policy extends a rebundled spread allowlist", async () => {
+	const ast = parse(CACHE_TTL_REBUNDLED_ALLOWLIST_FIXTURE);
+	await runCacheTailViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes('"agent:*"'), true);
+	assert.equal(output.includes('allowlist.push("agent:*")'), true);
+	const inventory = collectCacheTailVerificationInventory(parse(output));
+	assert.deepEqual(
+		inventory.checks.find((check) => check.id === "agent-allowlist"),
+		{ id: "agent-allowlist", result: true },
+	);
 });
 
 test("cache-tail-policy 1h allowlist matches only real subagent query sources", async () => {

@@ -44,6 +44,7 @@ import {
 import {
 	buildFrontmatterPromptMap,
 	createUniqueSlug,
+	selectPromptCorpusText,
 	writeArtifact,
 } from "../src/prompt-export-utils.js";
 import {
@@ -292,8 +293,8 @@ async function resolveCurrentInput(
 	};
 }
 
-function parseOptions(): PromptExportOptions {
-	const argv = yargs(hideBin(process.argv))
+function parseOptions(argvInput: string[]): PromptExportOptions {
+	const argv = yargs(hideBin(argvInput))
 		.scriptName("export-prompts")
 		.usage("$0 [version-or-path] [options]")
 		.version(false)
@@ -462,10 +463,7 @@ function getFunctionSymbol(pathRef: NodePath<t.Function>): string | null {
 function resolveIdentifierName(name: string, context: RenderContext): string {
 	const alias = context.aliases.get(name);
 	if (alias) return alias;
-	if (isLikelyMinifiedSymbol(name)) {
-		return getSyntheticLabel(context, `id:${name}`, "value");
-	}
-	return name;
+	return getSyntheticLabel(context, `id:${name}`, "value");
 }
 
 function renderTemplateLiteralWithResolver(
@@ -1553,18 +1551,20 @@ function collectLocalBindings(body: t.Statement[]): Map<string, t.Expression> {
 	return bindings;
 }
 
-function withLocalBindings(
+function withLocalBindings<T>(
 	context: RenderContext,
 	localExprs: Map<string, t.Expression>,
 	seenFunctions: Set<string>,
-	fn: () => string | null,
-): string | null {
+	fn: () => T,
+): T {
 	const saved = new Map<string, string | undefined>();
 	const savedExpressions = new Map<string, t.Expression | undefined>();
 	for (const [name, expr] of localExprs) {
 		saved.set(name, context.stringBindings.get(name));
 		savedExpressions.set(name, context.expressionBindings.get(name));
 		context.expressionBindings.set(name, expr);
+	}
+	for (const [name, expr] of localExprs) {
 		const resolved = renderPromptExpression(
 			expr,
 			context,
@@ -1592,6 +1592,36 @@ function withLocalBindings(
 			}
 		}
 	}
+}
+
+function collectVisibleLocalBindingLayers(
+	pathRef: NodePath,
+): Array<Map<string, t.Expression>> {
+	const layers: Array<Map<string, t.Expression>> = [];
+	let current: NodePath | null = pathRef;
+	while (current) {
+		if (current.isFunction() && t.isBlockStatement(current.node.body)) {
+			const bindings = collectLocalBindings(current.node.body.body);
+			if (bindings.size > 0) layers.push(bindings);
+		}
+		current = current.parentPath;
+	}
+	return layers.reverse();
+}
+
+function withVisibleLocalBindings<T>(
+	pathRef: NodePath,
+	context: RenderContext,
+	fn: () => T,
+): T {
+	const layers = collectVisibleLocalBindingLayers(pathRef);
+	const runLayer = (index: number): T => {
+		if (index >= layers.length) return fn();
+		return withLocalBindings(context, layers[index], new Set<string>(), () =>
+			runLayer(index + 1),
+		);
+	};
+	return runLayer(0);
 }
 
 function extractPromptFromFunctionNode(
@@ -1838,43 +1868,44 @@ function collectBuiltInTools(
 				getObjectProperty(pathRef.node, "inputSchema") ??
 				getObjectProperty(pathRef.node, "input_schema");
 			if (!nameProp || !promptProp || !inputSchemaProp) return;
+			withVisibleLocalBindings(pathRef, context, () => {
+				const name = extractPropertyText(nameProp, context)?.trim();
+				if (!name || !isLikelyToolName(name)) return;
 
-			const name = extractPropertyText(nameProp, context)?.trim();
-			if (!name || !isLikelyToolName(name)) return;
+				const prompt = extractPropertyText(promptProp, context)?.trim();
+				const descriptionProp = getObjectProperty(pathRef.node, "description");
+				const description = descriptionProp
+					? (extractPropertyText(descriptionProp, context)?.trim() ?? null)
+					: null;
+				const outputSchemaProp =
+					getObjectProperty(pathRef.node, "outputSchema") ??
+					getObjectProperty(pathRef.node, "output_schema");
+				const sourceSymbol = inferAssignedSymbol(pathRef);
+				const existing = byName.get(name);
 
-			const prompt = extractPropertyText(promptProp, context)?.trim();
-			const descriptionProp = getObjectProperty(pathRef.node, "description");
-			const description = descriptionProp
-				? (extractPropertyText(descriptionProp, context)?.trim() ?? null)
-				: null;
-			const outputSchemaProp =
-				getObjectProperty(pathRef.node, "outputSchema") ??
-				getObjectProperty(pathRef.node, "output_schema");
-			const sourceSymbol = inferAssignedSymbol(pathRef);
-			const existing = byName.get(name);
+				const candidate: ToolPrompt = {
+					name,
+					slug: existing?.slug ?? createUniqueSlug(slugify(name), usedSlugs),
+					sourceSymbol,
+					description,
+					prompt: prompt || null,
+					hasInputSchema: !!inputSchemaProp,
+					hasOutputSchema: !!outputSchemaProp,
+				};
 
-			const candidate: ToolPrompt = {
-				name,
-				slug: existing?.slug ?? createUniqueSlug(slugify(name), usedSlugs),
-				sourceSymbol,
-				description,
-				prompt: prompt || null,
-				hasInputSchema: !!inputSchemaProp,
-				hasOutputSchema: !!outputSchemaProp,
-			};
-
-			const candidatePromptLength = candidate.prompt?.length ?? 0;
-			const existingPromptLength = existing?.prompt?.length ?? 0;
-			const candidateDescriptionLength = candidate.description?.length ?? 0;
-			const existingDescriptionLength = existing?.description?.length ?? 0;
-			if (
-				!existing ||
-				candidatePromptLength > existingPromptLength ||
-				(candidatePromptLength === existingPromptLength &&
-					candidateDescriptionLength > existingDescriptionLength)
-			) {
-				byName.set(name, candidate);
-			}
+				const candidatePromptLength = candidate.prompt?.length ?? 0;
+				const existingPromptLength = existing?.prompt?.length ?? 0;
+				const candidateDescriptionLength = candidate.description?.length ?? 0;
+				const existingDescriptionLength = existing?.description?.length ?? 0;
+				if (
+					!existing ||
+					candidatePromptLength > existingPromptLength ||
+					(candidatePromptLength === existingPromptLength &&
+						candidateDescriptionLength > existingDescriptionLength)
+				) {
+					byName.set(name, candidate);
+				}
+			});
 		},
 	});
 
@@ -1901,33 +1932,37 @@ function collectSchemaTools(
 				getObjectProperty(pathRef.node, "input_schema");
 			if (!nameProp || !descriptionProp || !inputSchemaProp || promptProp)
 				return;
+			withVisibleLocalBindings(pathRef, context, () => {
+				const name = extractPropertyText(nameProp, context)?.trim();
+				if (!name || !isLikelyToolName(name) || excludedNames.has(name)) return;
 
-			const name = extractPropertyText(nameProp, context)?.trim();
-			if (!name || !isLikelyToolName(name) || excludedNames.has(name)) return;
+				const description = extractPropertyText(
+					descriptionProp,
+					context,
+				)?.trim();
+				if (!description || description.length < 20) return;
 
-			const description = extractPropertyText(descriptionProp, context)?.trim();
-			if (!description || description.length < 20) return;
+				const titleProp = getObjectProperty(pathRef.node, "title");
+				const title = titleProp
+					? (extractPropertyText(titleProp, context)?.trim() ?? null)
+					: null;
+				const sourceSymbol = inferAssignedSymbol(pathRef);
+				const existing = byName.get(name);
+				const candidate: SchemaTool = {
+					name,
+					slug: existing?.slug ?? createUniqueSlug(slugify(name), usedSlugs),
+					sourceSymbol,
+					title,
+					description,
+				};
 
-			const titleProp = getObjectProperty(pathRef.node, "title");
-			const title = titleProp
-				? (extractPropertyText(titleProp, context)?.trim() ?? null)
-				: null;
-			const sourceSymbol = inferAssignedSymbol(pathRef);
-			const existing = byName.get(name);
-			const candidate: SchemaTool = {
-				name,
-				slug: existing?.slug ?? createUniqueSlug(slugify(name), usedSlugs),
-				sourceSymbol,
-				title,
-				description,
-			};
-
-			if (
-				!existing ||
-				candidate.description.length > existing.description.length
-			) {
-				byName.set(name, candidate);
-			}
+				if (
+					!existing ||
+					candidate.description.length > existing.description.length
+				) {
+					byName.set(name, candidate);
+				}
+			});
 		},
 	});
 
@@ -1946,29 +1981,30 @@ function collectAgentPrompts(
 			const agentTypeProp = getObjectProperty(pathRef.node, "agentType");
 			const getPromptProp = getObjectProperty(pathRef.node, "getSystemPrompt");
 			if (!agentTypeProp || !getPromptProp) return;
+			withVisibleLocalBindings(pathRef, context, () => {
+				const agentType = extractAgentType(agentTypeProp, context);
+				if (!agentType) return;
 
-			const agentType = extractAgentType(agentTypeProp, context);
-			if (!agentType) return;
+				const sourceSymbol = inferAssignedSymbol(pathRef);
+				const slug = slugify(agentType);
+				if (sourceSymbol) {
+					context.aliases.set(sourceSymbol, `agent.${slug}`);
+				}
 
-			const sourceSymbol = inferAssignedSymbol(pathRef);
-			const slug = slugify(agentType);
-			if (sourceSymbol) {
-				context.aliases.set(sourceSymbol, `agent.${slug}`);
-			}
+				const promptFunction = getFunctionFromPromptProperty(
+					getPromptProp,
+					context,
+				);
+				if (!promptFunction) return;
+				const prompt = extractPromptFromFunctionNode(promptFunction, context);
+				if (!prompt || prompt.trim().length < 50) return;
 
-			const promptFunction = getFunctionFromPromptProperty(
-				getPromptProp,
-				context,
-			);
-			if (!promptFunction) return;
-			const prompt = extractPromptFromFunctionNode(promptFunction, context);
-			if (!prompt || prompt.trim().length < 50) return;
-
-			byType.set(agentType, {
-				agentType,
-				slug,
-				sourceSymbol,
-				prompt: prompt.trim(),
+				byType.set(agentType, {
+					agentType,
+					slug,
+					sourceSymbol,
+					prompt: prompt.trim(),
+				});
 			});
 		},
 	});
@@ -2002,7 +2038,9 @@ function collectSectionPrompts(
 				context.aliases.set(sourceSymbol, `section.${slug}`);
 			}
 
-			const snippets = collectPromptSnippetsFromFunction(pathRef, context);
+			const snippets = withVisibleLocalBindings(pathRef, context, () =>
+				collectPromptSnippetsFromFunction(pathRef, context),
+			);
 			if (snippets.length === 0) return;
 			const existing = bySlug.get(slug);
 			if (!existing || snippets.length > existing.snippets.length) {
@@ -2549,100 +2587,101 @@ function collectSkillPrompts(
 				getObjectProperty(pathRef.node, "getPromptForCommand") ??
 				getObjectProperty(pathRef.node, "getPromptWhileMarketplaceIsPrivate");
 			if (!nameProp || !getPromptProp) return;
+			withVisibleLocalBindings(pathRef, context, () => {
+				const name = extractPropertyText(nameProp, context)?.trim();
+				if (!name || !isValidSkillName(name)) return;
 
-			const name = extractPropertyText(nameProp, context)?.trim();
-			if (!name || !isValidSkillName(name)) return;
-
-			// Skip explicitly disabled skills: isEnabled: () => !1
-			const isEnabledProp = getObjectProperty(pathRef.node, "isEnabled");
-			if (isEnabledProp && t.isObjectProperty(isEnabledProp)) {
-				const val = isEnabledProp.value;
-				if (
-					t.isArrowFunctionExpression(val) &&
-					!t.isBlockStatement(val.body) &&
-					t.isUnaryExpression(val.body) &&
-					val.body.operator === "!" &&
-					t.isNumericLiteral(val.body.argument) &&
-					val.body.argument.value === 1
-				) {
-					return;
-				}
-			}
-
-			const descProp = getObjectProperty(pathRef.node, "description");
-			const description = descProp
-				? (extractPropertyText(descProp, context)?.trim() ?? null)
-				: null;
-
-			const whenToUseProp = getObjectProperty(pathRef.node, "whenToUse");
-			const whenToUse = whenToUseProp
-				? (extractPropertyText(whenToUseProp, context)?.trim() ?? null)
-				: null;
-
-			const argHintProp = getObjectProperty(pathRef.node, "argumentHint");
-			const argumentHint = argHintProp
-				? (extractPropertyText(argHintProp, context)?.trim() ?? null)
-				: null;
-
-			const userInvocable =
-				extractBooleanValue(pathRef.node, "userInvocable") ?? false;
-			const disableModelInvocation =
-				extractBooleanValue(pathRef.node, "disableModelInvocation") ?? false;
-			const allowedTools = extractStringArrayFromObject(
-				pathRef.node,
-				"allowedTools",
-				context,
-			);
-
-			const promptFunction = getFunctionFromPromptProperty(
-				getPromptProp,
-				context,
-			);
-			let promptTexts: string[] = [];
-			if (promptFunction) {
-				promptTexts = extractSkillPromptTexts(promptFunction, context);
-			}
-			// Fallback: try getPromptWhileMarketplaceIsPrivate
-			if (promptTexts.length === 0) {
-				const marketplaceProp = getObjectProperty(
-					pathRef.node,
-					"getPromptWhileMarketplaceIsPrivate",
-				);
-				if (marketplaceProp) {
-					const mpFunc = getFunctionFromPromptProperty(
-						marketplaceProp,
-						context,
-					);
-					if (mpFunc) {
-						promptTexts = extractSkillPromptTexts(mpFunc, context);
+				// Skip explicitly disabled skills: isEnabled: () => !1
+				const isEnabledProp = getObjectProperty(pathRef.node, "isEnabled");
+				if (isEnabledProp && t.isObjectProperty(isEnabledProp)) {
+					const val = isEnabledProp.value;
+					if (
+						t.isArrowFunctionExpression(val) &&
+						!t.isBlockStatement(val.body) &&
+						t.isUnaryExpression(val.body) &&
+						val.body.operator === "!" &&
+						t.isNumericLiteral(val.body.argument) &&
+						val.body.argument.value === 1
+					) {
+						return;
 					}
 				}
-			}
 
-			const sourceSymbol = inferAssignedSymbol(pathRef);
-			const existing = byName.get(name);
-			const candidate: SkillPrompt = {
-				name,
-				slug: existing?.slug ?? createUniqueSlug(slugify(name), usedSlugs),
-				sourceSymbol,
-				description,
-				whenToUse,
-				argumentHint,
-				userInvocable,
-				disableModelInvocation,
-				allowedTools,
-				promptTexts,
-			};
+				const descProp = getObjectProperty(pathRef.node, "description");
+				const description = descProp
+					? (extractPropertyText(descProp, context)?.trim() ?? null)
+					: null;
 
-			if (
-				!existing ||
-				candidate.promptTexts.length > existing.promptTexts.length ||
-				(candidate.promptTexts.length === existing.promptTexts.length &&
-					(candidate.description?.length ?? 0) >
-						(existing.description?.length ?? 0))
-			) {
-				byName.set(name, candidate);
-			}
+				const whenToUseProp = getObjectProperty(pathRef.node, "whenToUse");
+				const whenToUse = whenToUseProp
+					? (extractPropertyText(whenToUseProp, context)?.trim() ?? null)
+					: null;
+
+				const argHintProp = getObjectProperty(pathRef.node, "argumentHint");
+				const argumentHint = argHintProp
+					? (extractPropertyText(argHintProp, context)?.trim() ?? null)
+					: null;
+
+				const userInvocable =
+					extractBooleanValue(pathRef.node, "userInvocable") ?? false;
+				const disableModelInvocation =
+					extractBooleanValue(pathRef.node, "disableModelInvocation") ?? false;
+				const allowedTools = extractStringArrayFromObject(
+					pathRef.node,
+					"allowedTools",
+					context,
+				);
+
+				const promptFunction = getFunctionFromPromptProperty(
+					getPromptProp,
+					context,
+				);
+				let promptTexts: string[] = [];
+				if (promptFunction) {
+					promptTexts = extractSkillPromptTexts(promptFunction, context);
+				}
+				// Fallback: try getPromptWhileMarketplaceIsPrivate
+				if (promptTexts.length === 0) {
+					const marketplaceProp = getObjectProperty(
+						pathRef.node,
+						"getPromptWhileMarketplaceIsPrivate",
+					);
+					if (marketplaceProp) {
+						const mpFunc = getFunctionFromPromptProperty(
+							marketplaceProp,
+							context,
+						);
+						if (mpFunc) {
+							promptTexts = extractSkillPromptTexts(mpFunc, context);
+						}
+					}
+				}
+
+				const sourceSymbol = inferAssignedSymbol(pathRef);
+				const existing = byName.get(name);
+				const candidate: SkillPrompt = {
+					name,
+					slug: existing?.slug ?? createUniqueSlug(slugify(name), usedSlugs),
+					sourceSymbol,
+					description,
+					whenToUse,
+					argumentHint,
+					userInvocable,
+					disableModelInvocation,
+					allowedTools,
+					promptTexts,
+				};
+
+				if (
+					!existing ||
+					candidate.promptTexts.length > existing.promptTexts.length ||
+					(candidate.promptTexts.length === existing.promptTexts.length &&
+						(candidate.description?.length ?? 0) >
+							(existing.description?.length ?? 0))
+				) {
+					byName.set(name, candidate);
+				}
+			});
 		},
 	});
 
@@ -2664,6 +2703,60 @@ function applySkillPromptCorpusFallbacks(
 	}
 }
 
+function applyCurrentCorpusFallbacks(
+	agents: AgentPrompt[],
+	skills: SkillPrompt[],
+	tools: ToolPrompt[],
+	corpus: Array<{ text: string }>,
+): void {
+	let backgroundJobPrompt = selectPromptCorpusText(corpus, [
+		"This session is a background job.",
+		"A classifier reads only your message text",
+	]);
+	const agentToolName = tools.find((tool) => tool.name === "Agent")?.name;
+	if (backgroundJobPrompt && agentToolName) {
+		backgroundJobPrompt = backgroundJobPrompt.replace(
+			/when you have the \$\{value_\d+\} tool/,
+			`when you have the ${agentToolName} tool`,
+		);
+	}
+	if (
+		backgroundJobPrompt &&
+		!agents.some((agent) => agent.agentType === "background-job")
+	) {
+		agents.push({
+			agentType: "background-job",
+			slug: "background-job",
+			sourceSymbol: null,
+			prompt: backgroundJobPrompt,
+		});
+		agents.sort((left, right) => left.agentType.localeCompare(right.agentType));
+	}
+
+	const apiSkill = skills.find((skill) => skill.name === "claude-api");
+	if (apiSkill && !apiSkill.description) {
+		apiSkill.description = selectPromptCorpusText(corpus, [
+			"TRIGGER - read before opening the target file",
+			"API request parameters, model IDs, pricing, limits, streaming",
+		]);
+	}
+
+	const artifactTool = tools.find((tool) => tool.name === "Artifact");
+	if (artifactTool?.prompt && /^\$\{value_\d+\}/.test(artifactTool.prompt)) {
+		const artifactPromptPrefix = selectPromptCorpusText(corpus, [
+			"Render an HTML file to an Artifact.",
+			"Before writing the file",
+			"Keep the title stable across redeploys.",
+		]);
+		if (artifactPromptPrefix) {
+			artifactTool.prompt = artifactTool.prompt.replace(
+				/^\$\{value_\d+\}/,
+				`${artifactPromptPrefix.trimEnd()}\n\n`,
+			);
+		}
+	}
+}
+
 function collectSystemReminders(
 	ast: t.File,
 	context: RenderContext,
@@ -2674,36 +2767,42 @@ function collectSystemReminders(
 
 	traverse(ast, {
 		TemplateLiteral(pathRef) {
-			const text = renderTemplateLiteral(pathRef.node, context);
-			if (!text.includes("<system-reminder>")) return;
-			// Extract content between tags
-			const match = text.match(
-				/<system-reminder>\n?([\s\S]*?)\n?<\/system-reminder>/,
+			const containsReminderTag = pathRef.node.quasis.some((quasi) =>
+				(quasi.value.cooked ?? quasi.value.raw).includes("<system-reminder>"),
 			);
-			if (!match) return;
-			const content = match[1].trim();
-			if (content.length < 20 || seen.has(content)) return;
-			seen.add(content);
-			const firstLine = content.split("\n")[0].trim().slice(0, 60);
-			const slug = createUniqueSlug(
-				slugify(firstLine) || "reminder",
-				usedSlugs,
-			);
-			const isDynamic = content.includes("${");
-			const parentPath = pathRef.parentPath;
-			let sourceSymbol: string | null = null;
-			if (
-				parentPath?.isVariableDeclarator() &&
-				t.isIdentifier(parentPath.node.id)
-			) {
-				sourceSymbol = parentPath.node.id.name;
-			} else if (
-				parentPath?.isAssignmentExpression() &&
-				t.isIdentifier(parentPath.node.left)
-			) {
-				sourceSymbol = parentPath.node.left.name;
-			}
-			reminders.push({ slug, sourceSymbol, template: content, isDynamic });
+			if (!containsReminderTag) return;
+			withVisibleLocalBindings(pathRef, context, () => {
+				const text = renderTemplateLiteral(pathRef.node, context);
+				if (!text.includes("<system-reminder>")) return;
+				// Extract content between tags
+				const match = text.match(
+					/<system-reminder>\n?([\s\S]*?)\n?<\/system-reminder>/,
+				);
+				if (!match) return;
+				const content = match[1].trim();
+				if (content.length < 20 || seen.has(content)) return;
+				seen.add(content);
+				const firstLine = content.split("\n")[0].trim().slice(0, 60);
+				const slug = createUniqueSlug(
+					slugify(firstLine) || "reminder",
+					usedSlugs,
+				);
+				const isDynamic = content.includes("${");
+				const parentPath = pathRef.parentPath;
+				let sourceSymbol: string | null = null;
+				if (
+					parentPath?.isVariableDeclarator() &&
+					t.isIdentifier(parentPath.node.id)
+				) {
+					sourceSymbol = parentPath.node.id.name;
+				} else if (
+					parentPath?.isAssignmentExpression() &&
+					t.isIdentifier(parentPath.node.left)
+				) {
+					sourceSymbol = parentPath.node.left.name;
+				}
+				reminders.push({ slug, sourceSymbol, template: content, isDynamic });
+			});
 		},
 		StringLiteral(pathRef) {
 			const text = pathRef.node.value;
@@ -3204,10 +3303,10 @@ function writeBundleIndex(outputDir: string, label: string): void {
 	console.log(`Index: ${path.relative(repoRoot, indexPath)}`);
 }
 
-async function main(): Promise<void> {
+export async function runPromptExport(argvInput = process.argv): Promise<void> {
 	let cleanupDir: string | undefined;
 	try {
-		const options = parseOptions();
+		const options = parseOptions(argvInput);
 		const resolved = await resolveInput(options.inputArg, options.label);
 		cleanupDir = resolved.cleanupDir;
 		let code = fs.readFileSync(resolved.cliPath, "utf-8");
@@ -3236,11 +3335,6 @@ async function main(): Promise<void> {
 		const builder = extractBuilderOutline(ast, context);
 		const skills = collectSkillPrompts(ast, context);
 		const sections = collectSectionPrompts(ast, context);
-		const workflowSurfaces = collectWorkflowSurfaces(
-			builtInTools,
-			agents,
-			sections,
-		);
 		const promptCorpus = collectPromptCorpus(ast, context);
 		const promptCorpusIdMap = buildPromptCorpusIdMap(promptCorpus);
 		const promptDataset = buildPromptDataset(resolved.label, promptCorpus);
@@ -3254,6 +3348,17 @@ async function main(): Promise<void> {
 			promptCorpusIdMap,
 		);
 		applySkillPromptCorpusFallbacks(skills, promptCorpusDebug);
+		applyCurrentCorpusFallbacks(
+			agents,
+			skills,
+			builtInTools,
+			promptCorpusDebug,
+		);
+		const workflowSurfaces = collectWorkflowSurfaces(
+			builtInTools,
+			agents,
+			sections,
+		);
 		const systemVariants = collectSystemPromptVariants(
 			promptCorpusDebug,
 			context,
@@ -3874,9 +3979,11 @@ async function main(): Promise<void> {
 	}
 }
 
-await withHeavyOperationGuard(
-	{
-		operation: "prompt export",
-	},
-	main,
-);
+if (import.meta.main) {
+	await withHeavyOperationGuard(
+		{
+			operation: "prompt export",
+		},
+		() => runPromptExport(process.argv),
+	);
+}

@@ -11,6 +11,7 @@ export const SIZEOF_STRING_POINTER = 8;
 // New format (~1.3.7+):    6 StringPointers + 4 u8s = 52 bytes (adds moduleInfo, bytecodeOriginPath)
 export const SIZEOF_MODULE_OLD = 4 * SIZEOF_STRING_POINTER + 4;
 export const SIZEOF_MODULE_NEW = 6 * SIZEOF_STRING_POINTER + 4;
+export const BUN_MODULE_FORMAT_ESM = 1;
 
 export const BUSY_FILE_CODES = new Set(["ETXTBSY", "EBUSY", "EPERM"]);
 
@@ -38,6 +39,14 @@ export interface BunModule {
 	loader: number;
 	moduleFormat: number;
 	side: number;
+}
+
+export interface BunEmbeddedModule {
+	index: number;
+	moduleEntryOffset: number;
+	name: string;
+	contents: Buffer;
+	module: BunModule;
 }
 
 export function parseStringPointer(
@@ -172,6 +181,7 @@ export function mapEntryPointModule<T>(
 
 export interface BunEntryPointReplacement {
 	moduleIndex: number;
+	storageModuleIndex: number;
 	moduleEntryOffset: number;
 	bytecodeOffset: number;
 	bytecodeCapacity: number;
@@ -194,6 +204,62 @@ function assertBoundedRange(
 			`${label} range (${offset}+${length}) exceeds Bun blob (${bufferLength} bytes)`,
 		);
 	}
+}
+
+export function listEmbeddedModules(
+	bunBlob: Buffer,
+	bunOffsets: BunOffsets,
+	moduleStructSize: number,
+): BunEmbeddedModule[] {
+	assertBoundedRange(
+		"Module table",
+		bunOffsets.modulesPtr.offset,
+		bunOffsets.modulesPtr.length,
+		bunBlob.length,
+	);
+	if (
+		moduleStructSize !== SIZEOF_MODULE_OLD &&
+		moduleStructSize !== SIZEOF_MODULE_NEW
+	) {
+		throw new Error(`Unsupported Bun module struct size: ${moduleStructSize}`);
+	}
+	if (bunOffsets.modulesPtr.length % moduleStructSize !== 0) {
+		throw new Error(
+			`Bun module table length (${bunOffsets.modulesPtr.length}) is not divisible by module struct size (${moduleStructSize})`,
+		);
+	}
+
+	const moduleCount = bunOffsets.modulesPtr.length / moduleStructSize;
+	return Array.from({ length: moduleCount }, (_, index) => {
+		const moduleEntryOffset =
+			bunOffsets.modulesPtr.offset + index * moduleStructSize;
+		assertBoundedRange(
+			`Module ${index}`,
+			moduleEntryOffset,
+			moduleStructSize,
+			bunBlob.length,
+		);
+		const module = parseModule(bunBlob, moduleEntryOffset, moduleStructSize);
+		assertBoundedRange(
+			`Module ${index} name`,
+			module.name.offset,
+			module.name.length,
+			bunBlob.length,
+		);
+		assertBoundedRange(
+			`Module ${index} contents`,
+			module.contents.offset,
+			module.contents.length,
+			bunBlob.length,
+		);
+		return {
+			index,
+			moduleEntryOffset,
+			name: getPointerContent(bunBlob, module.name).toString("utf-8"),
+			contents: getPointerContent(bunBlob, module.contents),
+			module,
+		};
+	});
 }
 
 export function replaceEntryPointModuleInPlace(
@@ -227,25 +293,46 @@ export function replaceEntryPointModuleInPlace(
 			`Bun entry-point module index (${moduleIndex}) exceeds module count (${moduleCount})`,
 		);
 	}
-	const moduleEntryOffset =
-		bunOffsets.modulesPtr.offset + moduleIndex * moduleStructSize;
-	assertBoundedRange(
-		"Entry-point module",
-		moduleEntryOffset,
-		moduleStructSize,
-		bunBlob.length,
-	);
-	const module = parseModule(bunBlob, moduleEntryOffset, moduleStructSize);
-	assertBoundedRange(
-		"Entry-point bytecode",
-		module.bytecode.offset,
-		module.bytecode.length,
-		bunBlob.length,
-	);
 
-	if (modifiedClaudeJs.length > module.bytecode.length) {
+	const modules = Array.from({ length: moduleCount }, (_, index) => {
+		const entryOffset = bunOffsets.modulesPtr.offset + index * moduleStructSize;
+		assertBoundedRange(
+			index === moduleIndex ? "Entry-point module" : `Module ${index}`,
+			entryOffset,
+			moduleStructSize,
+			bunBlob.length,
+		);
+		const module = parseModule(bunBlob, entryOffset, moduleStructSize);
+		assertBoundedRange(
+			index === moduleIndex
+				? "Entry-point bytecode"
+				: `Module ${index} bytecode`,
+			module.bytecode.offset,
+			module.bytecode.length,
+			bunBlob.length,
+		);
+		return { index, entryOffset, module };
+	});
+	const entry = modules[moduleIndex];
+	const storage = modules
+		.filter(
+			(candidate) =>
+				candidate.module.bytecode.length >= modifiedClaudeJs.length,
+		)
+		.sort((left, right) => {
+			if (left.index === moduleIndex) return -1;
+			if (right.index === moduleIndex) return 1;
+			return left.module.bytecode.length - right.module.bytecode.length;
+		})[0];
+
+	if (!storage) {
+		const largestCapacity = modules.reduce(
+			(largest, candidate) =>
+				Math.max(largest, candidate.module.bytecode.length),
+			0,
+		);
 		throw new Error(
-			`Modified JS (${modifiedClaudeJs.length} bytes) exceeds bytecode area (${module.bytecode.length} bytes)`,
+			`Modified JS (${modifiedClaudeJs.length} bytes) exceeds bytecode area (${largestCapacity} bytes)`,
 		);
 	}
 	if (modifiedClaudeJs.length > 0xffff_ffff) {
@@ -254,29 +341,40 @@ export function replaceEntryPointModuleInPlace(
 		);
 	}
 
-	const moduleEntryEnd = moduleEntryOffset + moduleStructSize;
-	const bytecodeEnd = module.bytecode.offset + module.bytecode.length;
+	const moduleTableEnd =
+		bunOffsets.modulesPtr.offset + bunOffsets.modulesPtr.length;
+	const bytecodeEnd =
+		storage.module.bytecode.offset + storage.module.bytecode.length;
 	if (
-		module.bytecode.offset < moduleEntryEnd &&
-		bytecodeEnd > moduleEntryOffset
+		storage.module.bytecode.offset < moduleTableEnd &&
+		bytecodeEnd > bunOffsets.modulesPtr.offset
 	) {
-		throw new Error("Entry-point bytecode overlaps its module metadata");
+		throw new Error("Replacement bytecode overlaps Bun module metadata");
 	}
 
-	modifiedClaudeJs.copy(bunBlob, module.bytecode.offset);
-	if (modifiedClaudeJs.length < module.bytecode.length) {
-		bunBlob[module.bytecode.offset + modifiedClaudeJs.length] = 0;
+	modifiedClaudeJs.copy(bunBlob, storage.module.bytecode.offset);
+	if (modifiedClaudeJs.length < storage.module.bytecode.length) {
+		bunBlob[storage.module.bytecode.offset + modifiedClaudeJs.length] = 0;
 	}
-	bunBlob.writeUInt32LE(module.bytecode.offset, moduleEntryOffset + 8);
-	bunBlob.writeUInt32LE(modifiedClaudeJs.length, moduleEntryOffset + 12);
-	bunBlob.writeUInt32LE(0, moduleEntryOffset + 24);
-	bunBlob.writeUInt32LE(0, moduleEntryOffset + 28);
+	bunBlob.writeUInt32LE(storage.module.bytecode.offset, entry.entryOffset + 8);
+	bunBlob.writeUInt32LE(modifiedClaudeJs.length, entry.entryOffset + 12);
+	bunBlob.writeUInt32LE(0, entry.entryOffset + 24);
+	bunBlob.writeUInt32LE(0, entry.entryOffset + 28);
+	if (moduleStructSize === SIZEOF_MODULE_NEW) {
+		bunBlob.writeUInt32LE(0, entry.entryOffset + 32);
+		bunBlob.writeUInt32LE(0, entry.entryOffset + 36);
+	}
+	if (storage.index !== moduleIndex) {
+		bunBlob.writeUInt32LE(0, storage.entryOffset + 24);
+		bunBlob.writeUInt32LE(0, storage.entryOffset + 28);
+	}
 
 	return {
 		moduleIndex,
-		moduleEntryOffset,
-		bytecodeOffset: module.bytecode.offset,
-		bytecodeCapacity: module.bytecode.length,
+		storageModuleIndex: storage.index,
+		moduleEntryOffset: entry.entryOffset,
+		bytecodeOffset: storage.module.bytecode.offset,
+		bytecodeCapacity: storage.module.bytecode.length,
 	};
 }
 

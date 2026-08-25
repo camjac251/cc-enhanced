@@ -53,6 +53,19 @@ function flattenNullish(node: t.Expression): t.Expression[] {
 	return [node];
 }
 
+function isResolverFallbackOperand(
+	node: t.Node | null | undefined,
+	parameterName: string,
+): boolean {
+	return (
+		t.isIdentifier(node, { name: parameterName }) ||
+		(t.isCallExpression(node) &&
+			t.isIdentifier(node.callee) &&
+			node.arguments.length === 1 &&
+			t.isIdentifier(node.arguments[0], { name: parameterName }))
+	);
+}
+
 function isStockDisplayResolverBody(
 	node: t.Node | null | undefined,
 	parameterName: string,
@@ -64,7 +77,7 @@ function isStockDisplayResolverBody(
 		t.isCallExpression(operands[0]) &&
 		operands[0].arguments.length === 1 &&
 		t.isIdentifier(operands[0].arguments[0], { name: parameterName }) &&
-		t.isIdentifier(operands[1], { name: parameterName })
+		isResolverFallbackOperand(operands[1], parameterName)
 	);
 }
 
@@ -139,7 +152,7 @@ export function projectWorkflowModelFormatter(
 		t.isIdentifier(displayOperands[1].arguments[0], {
 			name: displayParameterName,
 		}) &&
-		t.isIdentifier(displayOperands[2], { name: displayParameterName })
+		isResolverFallbackOperand(displayOperands[2], displayParameterName)
 	) {
 		return {
 			...base,

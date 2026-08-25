@@ -1,9 +1,11 @@
 import * as fs from "node:fs";
 import {
 	BUN_TRAILER,
+	type BunEmbeddedModule,
 	type BunOffsets,
 	detectModuleStructSize,
 	getPointerContent,
+	listEmbeddedModules,
 	mapEntryPointModule,
 	parseOffsets,
 	replaceEntryPointModuleInPlace,
@@ -41,6 +43,11 @@ interface LiefBunData {
 }
 
 export type NativeBinaryKind = "elf" | "macho" | "pe" | "unknown";
+
+export interface NativeEmbeddedModuleSet {
+	entryPointId: number;
+	modules: BunEmbeddedModule[];
+}
 
 function parseSectionBunBlob(sectionData: Buffer): {
 	bunBlob: Buffer;
@@ -207,6 +214,35 @@ export function extractClaudeJsFromNativeBinary(filePath: string): Buffer {
 			extracted.bunOffsets,
 			extracted.moduleStructSize,
 		);
+	}
+	throw new Error(`Unsupported native binary: ${filePath}`);
+}
+
+export function extractEmbeddedModulesFromNativeBinary(
+	filePath: string,
+): NativeEmbeddedModuleSet {
+	const kind = detectNativeBinaryKind(filePath);
+	if (kind === "elf") {
+		const extracted = extractClaudeJsFromNativeLinux(filePath);
+		return {
+			entryPointId: extracted.bunOffsets.entryPointId,
+			modules: listEmbeddedModules(
+				extracted.bunBlob,
+				extracted.bunOffsets,
+				extracted.moduleStructSize,
+			),
+		};
+	}
+	if (kind === "macho" || kind === "pe") {
+		const extracted = extractLiefBunData(filePath);
+		return {
+			entryPointId: extracted.bunOffsets.entryPointId,
+			modules: listEmbeddedModules(
+				extracted.bunBlob,
+				extracted.bunOffsets,
+				extracted.moduleStructSize,
+			),
+		};
 	}
 	throw new Error(`Unsupported native binary: ${filePath}`);
 }

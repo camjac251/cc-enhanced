@@ -302,6 +302,23 @@ test("skill-listing-ui patches the memoized render shape", async () => {
 	assert.equal(skillListingUi.verify(output, ast), true);
 });
 
+test("skill-listing-ui patches direct automatic-runtime element calls", async () => {
+	const source = MEMOIZED_SKILL_LISTING_FIXTURE.replaceAll(
+		/yK\.jsx(?:s)?/g,
+		"renderElement",
+	);
+	const ast = parse(source);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(
+		output.match(/_claudePatchFormatSkillListingSummary\(q\)/g)?.length,
+		2,
+	);
+	assert.equal(output.match(/if \(true\)/g)?.length, 2);
+	assert.equal(skillListingUi.verify(output, ast), true);
+});
+
 test("skill-listing-ui verify rejects memoized summaries with stale cache guards", async () => {
 	const ast = parse(MEMOIZED_SKILL_LISTING_FIXTURE);
 	await runSkillListingUiViaPasses(ast);

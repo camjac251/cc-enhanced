@@ -33,21 +33,6 @@ const __dirname = path.dirname(__filename);
 const EXTENDED_EDIT_TRANSPORT_PREFIX = "__claude_edit_extended_v1__:";
 const EXTENDED_EDIT_TRANSPORT_DECODE = "_claudeDecodeExtendedEditTransport";
 
-function adaptHookCodeForRuntime(hookCode: string): string {
-	const isNativeMode = process.env.CLAUDE_PATCHER_NATIVE_MODE === "1";
-	if (!isNativeMode) return hookCode;
-
-	return hookCode
-		.replace(
-			/^import \* as _claudeFs from "node:fs";\s*$/m,
-			'const _claudeFs = require("node:fs");',
-		)
-		.replace(
-			/^import \* as _claudePath from "node:path";\s*$/m,
-			'const _claudePath = require("node:path");',
-		);
-}
-
 function findNamedToolObjectPath(ast: t.File, toolName: string): any {
 	let found: any = null;
 	traverse(ast, {
@@ -1263,8 +1248,7 @@ function runEditToolPatch(ast: t.File): void {
 			const hookCode = fs
 				.readFileSync(templatePath, "utf-8")
 				.replace(/\nexport\s*\{\s*\};?\s*$/, "\n");
-			const runtimeHookCode = adaptHookCodeForRuntime(hookCode);
-			const hookAst = parse(runtimeHookCode);
+			const hookAst = parse(hookCode);
 
 			if (ast.program?.body) {
 				ast.program.body.push(...hookAst.program.body);

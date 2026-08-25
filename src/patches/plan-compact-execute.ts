@@ -16,12 +16,12 @@ const COMPACT_FAILED_NOTIFICATION_KEY = "plan-compact-execute-failed";
 const COMPACT_RUNNING_NOTIFICATION_KEY = "plan-compact-execute-running";
 
 interface InteractiveContextIds {
-	commands: string;
-	getToolUseContext: string;
+	commands: t.Expression;
+	getToolUseContext: t.Expression;
 	messagesSnapshot: t.CallExpression;
-	setMessages: string;
-	mainLoopModel: string;
-	addNotification: string;
+	setMessages: t.Expression;
+	mainLoopModel: t.Expression;
+	addNotification: t.Expression;
 }
 
 function visitNodeValues(
@@ -691,17 +691,99 @@ function discoverInteractiveContextIds(
 				addNotification
 			) {
 				ids = {
-					commands,
-					getToolUseContext,
+					commands: t.identifier(commands),
+					getToolUseContext: t.identifier(getToolUseContext),
 					messagesSnapshot,
-					setMessages,
-					mainLoopModel,
-					addNotification,
+					setMessages: t.identifier(setMessages),
+					mainLoopModel: t.identifier(mainLoopModel),
+					addNotification: t.identifier(addNotification),
 				};
 			}
 		},
 	});
 	return ids;
+}
+
+function getDestructuredLocalName(
+	pattern: t.ObjectPattern,
+	keyName: string,
+): string | null {
+	for (const property of pattern.properties) {
+		if (!t.isObjectProperty(property)) continue;
+		if (getObjectKeyName(property.key) !== keyName) continue;
+		return getPatternBindingName(property.value as t.Node);
+	}
+	return null;
+}
+
+function discoverHostBackedInteractiveContextIds(
+	path: NodePath<t.Function>,
+): InteractiveContextIds | null {
+	if (!t.isBlockStatement(path.node.body)) return null;
+	const body = path.node.body.body;
+	let hostName: string | null = null;
+	for (const statement of body) {
+		if (!t.isVariableDeclaration(statement)) continue;
+		for (const declaration of statement.declarations) {
+			if (!t.isIdentifier(declaration.id)) continue;
+			if (!t.isCallExpression(declaration.init)) continue;
+			if (!t.isMemberExpression(declaration.init.callee)) continue;
+			if (getMemberPropertyName(declaration.init.callee) !== "_requireHost") {
+				continue;
+			}
+			if (!t.isThisExpression(declaration.init.callee.object)) continue;
+			hostName = declaration.id.name;
+		}
+	}
+	if (!hostName) return null;
+
+	let transcriptName: string | null = null;
+	let mainLoopModelName: string | null = null;
+	for (const statement of body) {
+		if (!t.isVariableDeclaration(statement)) continue;
+		for (const declaration of statement.declarations) {
+			if (
+				!t.isObjectPattern(declaration.id) ||
+				!t.isIdentifier(declaration.init, { name: hostName })
+			) {
+				continue;
+			}
+			transcriptName = getDestructuredLocalName(declaration.id, "transcript");
+			mainLoopModelName = getDestructuredLocalName(
+				declaration.id,
+				"mainLoopModel",
+			);
+		}
+	}
+	if (!transcriptName || !mainLoopModelName) return null;
+
+	let setMessagesName: string | null = null;
+	for (const statement of body) {
+		if (!t.isVariableDeclaration(statement)) continue;
+		for (const declaration of statement.declarations) {
+			if (!t.isIdentifier(declaration.id)) continue;
+			if (!t.isMemberExpression(declaration.init)) continue;
+			if (
+				!t.isIdentifier(declaration.init.object, { name: transcriptName }) ||
+				getMemberPropertyName(declaration.init) !== "replace"
+			) {
+				continue;
+			}
+			setMessagesName = declaration.id.name;
+		}
+	}
+	if (!setMessagesName) return null;
+
+	const host = t.identifier(hostName);
+	const transcript = t.identifier(transcriptName);
+	return {
+		commands: member(t.cloneNode(host), "commands"),
+		getToolUseContext: member(t.thisExpression(), "buildToolUseContext"),
+		messagesSnapshot: t.callExpression(member(transcript, "getSnapshot"), []),
+		setMessages: t.identifier(setMessagesName),
+		mainLoopModel: t.identifier(mainLoopModelName),
+		addNotification: member(t.cloneNode(host), "addNotification"),
+	};
 }
 
 function findInteractiveContextIds(
@@ -710,9 +792,10 @@ function findInteractiveContextIds(
 	let current: NodePath<t.Node> | null = path;
 	while (current) {
 		if (current.isFunction()) {
-			const ids = discoverInteractiveContextIds(
-				current as NodePath<t.Function>,
-			);
+			const functionPath = current as NodePath<t.Function>;
+			const ids =
+				discoverInteractiveContextIds(functionPath) ??
+				discoverHostBackedInteractiveContextIds(functionPath);
 			if (ids) return ids;
 		}
 		current = current.parentPath;
@@ -770,7 +853,7 @@ function buildCompactRunningNotification(
 	ids: InteractiveContextIds,
 ): t.ExpressionStatement {
 	return t.expressionStatement(
-		t.callExpression(t.identifier(ids.addNotification), [
+		t.callExpression(t.cloneNode(ids.addNotification, true), [
 			t.objectExpression([
 				t.objectProperty(
 					t.identifier("key"),
@@ -819,7 +902,7 @@ function buildCompactInitialMessageBlock(
 			t.variableDeclaration("const", [
 				t.variableDeclarator(
 					command,
-					t.callExpression(member(t.identifier(ids.commands), "find"), [
+					t.callExpression(member(t.cloneNode(ids.commands, true), "find"), [
 						t.arrowFunctionExpression(
 							[t.identifier(candidateName)],
 							buildCommandPredicate(candidateName),
@@ -846,12 +929,18 @@ function buildCompactInitialMessageBlock(
 											),
 											[
 												t.stringLiteral(""),
-												t.callExpression(t.identifier(ids.getToolUseContext), [
-													t.cloneNode(ids.messagesSnapshot, true),
-													t.arrayExpression([]),
-													t.newExpression(t.identifier("AbortController"), []),
-													t.identifier(ids.mainLoopModel),
-												]),
+												t.callExpression(
+													t.cloneNode(ids.getToolUseContext, true),
+													[
+														t.cloneNode(ids.messagesSnapshot, true),
+														t.arrayExpression([]),
+														t.newExpression(
+															t.identifier("AbortController"),
+															[],
+														),
+														t.cloneNode(ids.mainLoopModel, true),
+													],
+												),
 											],
 										),
 									),
@@ -879,7 +968,7 @@ function buildCompactInitialMessageBlock(
 										),
 									]),
 									t.expressionStatement(
-										t.callExpression(t.identifier(ids.setMessages), [
+										t.callExpression(t.cloneNode(ids.setMessages, true), [
 											buildCompactionResultExpansion(summaryName),
 										]),
 									),
@@ -890,7 +979,7 @@ function buildCompactInitialMessageBlock(
 							t.identifier(errorName),
 							t.blockStatement([
 								t.expressionStatement(
-									t.callExpression(t.identifier(ids.addNotification), [
+									t.callExpression(t.cloneNode(ids.addNotification, true), [
 										t.objectExpression([
 											t.objectProperty(
 												t.identifier("key"),

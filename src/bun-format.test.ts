@@ -12,6 +12,8 @@ interface FixtureModule {
 	name: Buffer;
 	contents: Buffer;
 	bytecode: Buffer;
+	moduleInfo?: Buffer;
+	moduleFormat?: number;
 }
 
 function buildBunBlob(
@@ -33,6 +35,7 @@ function buildBunBlob(
 		name: append(module.name),
 		contents: append(module.contents),
 		bytecode: append(module.bytecode),
+		moduleInfo: append(module.moduleInfo ?? Buffer.alloc(0)),
 	}));
 	const moduleTableOffset = length;
 	const moduleTable = Buffer.alloc(modules.length * SIZEOF_MODULE_NEW);
@@ -53,6 +56,15 @@ function buildBunBlob(
 			modulePointers.bytecode.length,
 			moduleOffset + 28,
 		);
+		moduleTable.writeUInt32LE(
+			modulePointers.moduleInfo.offset,
+			moduleOffset + 32,
+		);
+		moduleTable.writeUInt32LE(
+			modulePointers.moduleInfo.length,
+			moduleOffset + 36,
+		);
+		moduleTable.writeUInt8(modules[index].moduleFormat ?? 1, moduleOffset + 50);
 	}
 	chunks.push(moduleTable);
 	length += moduleTable.length;
@@ -107,6 +119,99 @@ test("replaces the entry-point contents inside its existing bytecode region", ()
 	assert.deepEqual(getPointerContent(bunBlob, module.contents), replacement);
 	assert.deepEqual(module.bytecode, { offset: 0, length: 0 });
 	assert.equal(bunBlob[result.bytecodeOffset + replacement.length], 0);
+});
+
+test("uses another module's bytecode region when the entry-point region is too small", () => {
+	const donorContents = Buffer.from("donor contents");
+	const { bunBlob, bunOffsets } = buildBunBlob(
+		[
+			{
+				name: Buffer.from("entry"),
+				contents: Buffer.from("old entry"),
+				bytecode: Buffer.alloc(8, 0x55),
+			},
+			{
+				name: Buffer.from("donor"),
+				contents: donorContents,
+				bytecode: Buffer.alloc(64, 0x66),
+			},
+		],
+		0,
+	);
+	const replacement = Buffer.from("new entry contents from a split bundle");
+
+	const result = replaceEntryPointModuleInPlace(
+		bunBlob,
+		bunOffsets,
+		SIZEOF_MODULE_NEW,
+		replacement,
+	);
+	const entry = parseModule(
+		bunBlob,
+		bunOffsets.modulesPtr.offset,
+		SIZEOF_MODULE_NEW,
+	);
+	const donor = parseModule(
+		bunBlob,
+		bunOffsets.modulesPtr.offset + SIZEOF_MODULE_NEW,
+		SIZEOF_MODULE_NEW,
+	);
+
+	assert.equal(result.moduleIndex, 0);
+	assert.equal(result.storageModuleIndex, 1);
+	assert.equal(result.bytecodeCapacity, 64);
+	assert.deepEqual(getPointerContent(bunBlob, entry.contents), replacement);
+	assert.deepEqual(entry.bytecode, { offset: 0, length: 0 });
+	assert.deepEqual(donor.bytecode, { offset: 0, length: 0 });
+	assert.deepEqual(getPointerContent(bunBlob, donor.contents), donorContents);
+	assert.equal(bunBlob[result.bytecodeOffset + replacement.length], 0);
+});
+
+test("clears stale entry module metadata when replacing source", () => {
+	const donorModuleInfo = Buffer.from("donor metadata");
+	const { bunBlob, bunOffsets } = buildBunBlob(
+		[
+			{
+				name: Buffer.from("entry"),
+				contents: Buffer.from("old entry"),
+				bytecode: Buffer.alloc(64, 0x55),
+				moduleInfo: Buffer.from("stale entry metadata"),
+			},
+			{
+				name: Buffer.from("donor"),
+				contents: Buffer.from("donor contents"),
+				bytecode: Buffer.alloc(8, 0x66),
+				moduleInfo: donorModuleInfo,
+			},
+		],
+		0,
+	);
+
+	replaceEntryPointModuleInPlace(
+		bunBlob,
+		bunOffsets,
+		SIZEOF_MODULE_NEW,
+		Buffer.from("new entry contents"),
+	);
+	const entry = parseModule(
+		bunBlob,
+		bunOffsets.modulesPtr.offset,
+		SIZEOF_MODULE_NEW,
+	);
+	const donor = parseModule(
+		bunBlob,
+		bunOffsets.modulesPtr.offset + SIZEOF_MODULE_NEW,
+		SIZEOF_MODULE_NEW,
+	);
+
+	assert.deepEqual(entry.moduleInfo, { offset: 0, length: 0 });
+	assert.equal(entry.moduleFormat, 1);
+	assert.equal(donor.moduleFormat, 1);
+	assert.ok(donor.moduleInfo);
+	assert.deepEqual(
+		getPointerContent(bunBlob, donor.moduleInfo),
+		donorModuleInfo,
+	);
 });
 
 test("rejects an oversized replacement without mutating the Bun blob", () => {

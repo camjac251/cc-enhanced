@@ -628,35 +628,32 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 		],
 	},
 	{
-		file: "agents/claude.md",
+		file: "agents/background-job.md",
 		allowSyntheticPlaceholders: true,
 		required: [
 			...BACKGROUND_TASK_POLICY_LINES.map((needle, index) => ({
-				id: `claude-background-policy-${index + 1}`,
+				id: `background-job-policy-${index + 1}`,
 				needle,
 				reason:
-					"claude background-job agent missing shared background execution policy",
+					"background-job agent missing shared background execution policy",
 			})),
 			{
-				id: "claude-investigation-routing",
+				id: "background-job-investigation-routing",
 				needle:
 					"route by intent (Serena or LSP for symbols when available, ChunkHound for unfamiliar concepts when available, Probe for known terms, rg for exact lexical text, ast-grep CLI for syntax shapes)",
-				reason:
-					"claude background-job agent missing modern investigation routing",
+				reason: "background-job agent missing modern investigation routing",
 			},
 			{
-				id: "claude-background-file-routing",
+				id: "background-job-file-routing",
 				needle: MODERN_BACKGROUND_AGENT_FILE_ROUTING,
-				reason:
-					"claude background-job agent missing fd, eza, Read, and bat routing",
+				reason: "background-job agent missing fd, eza, Read, and bat routing",
 			},
 		],
 		forbidden: [
 			{
-				id: "claude-legacy-grep-sweeps",
+				id: "background-job-grep-sweeps",
 				needle: "grep sweeps, log trawls, broad search",
-				reason:
-					"claude background-job agent still uses legacy grep-sweep wording",
+				reason: "background-job agent still uses old grep-sweep wording",
 			},
 		],
 	},

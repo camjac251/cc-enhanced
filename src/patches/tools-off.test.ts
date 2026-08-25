@@ -437,6 +437,8 @@ test("tools-off removes Artifact skill fallbacks to disabled WebFetch", async ()
 ${TOOL_FIXTURE}
 const whiteboard = "With the Artifact tool, or by WebFetching the URL where the Artifact tool isn't available.";
 const artifactReview = "with the Artifact tool, or by WebFetching the artifact URL where the Artifact tool isn't available \\u2014 and parse ONLY the decision island.";
+const artifactReviewAscii = \`with the Artifact tool, or by WebFetching the artifact URL where the Artifact tool
+isn't available - and parse ONLY the decision island.\`;
 `;
 	const { output, ast } = await applyFullPatch(input);
 
@@ -456,7 +458,7 @@ const artifactReview = "with the Artifact tool, or by WebFetching the artifact U
 		output.match(
 			/If the Artifact tool is unavailable, tell the user the artifact cannot be reread in this session\./g,
 		)?.length,
-		2,
+		3,
 	);
 	assert.equal(
 		output.includes("Otherwise, parse ONLY the decision island."),
@@ -790,6 +792,7 @@ test("tools-off verify rejects Artifact skill fallbacks to disabled WebFetch", a
 	for (const survivor of [
 		"WebFetching the URL where the Artifact tool isn't available.",
 		"WebFetching the artifact URL where the Artifact tool isn't available.",
+		"WebFetching the artifact URL where the Artifact tool\n isn't available - and continue.",
 	]) {
 		const result = disableTools.verify(
 			`${print(ast)}\nconst artifactFallback = ${JSON.stringify(survivor)};`,

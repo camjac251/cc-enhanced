@@ -507,7 +507,7 @@ const SKILL_DOC_TEXT_REPLACEMENTS: Array<[RegExp, string]> = [
 		"If fetching fails or you have no network:",
 	],
 	[
-		/,\s+or by\s+WebFetching the artifact URL where the Artifact tool\s+isn't\s+available\s+\\u2014\s+and/g,
+		/,\s+or by\s+WebFetching the artifact URL where the Artifact tool\s+isn't\s+available\s+(?:\\u2014|\u2014|-)\s+and/g,
 		". If the Artifact tool is unavailable, tell the user the artifact cannot be reread in this session. Otherwise,",
 	],
 	[
@@ -940,6 +940,13 @@ function verifyPromptRewrite(code: string): true | string {
 		if (code.includes(leak.needle)) {
 			return leak.reason;
 		}
+	}
+	if (
+		/WebFetching the (?:artifact )?URL where the Artifact tool(?:\s|\\[nrt])+isn't(?:\s|\\[nrt])+available/.test(
+			code,
+		)
+	) {
+		return "Artifact skill fallback still routes through disabled WebFetch";
 	}
 	if (
 		/ALWAYS use \$\{[^}]+\} for search tasks\. NEVER invoke \\`grep\\`/.test(

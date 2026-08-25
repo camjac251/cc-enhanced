@@ -173,6 +173,19 @@ test("lsp-multi-server rewrites all current lifecycle functions", async () => {
 	assert.equal(lspMultiServer.verify(output), true);
 });
 
+test("lsp-multi-server resolves a direct pathToFileURL import", async () => {
+	const fixture = `import { pathToFileURL as toFileUrl } from "url";\n${LSP_FACTORY_FIXTURE.replaceAll(
+		"XTH.pathToFileURL",
+		"toFileUrl",
+	)}`;
+	const ast = parse(fixture);
+	await runViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /toFileUrl\(kn\.resolve\(/);
+	assert.equal(lspMultiServer.verify(output, ast), true);
+});
+
 test("lsp-multi-server verify catches missing for-loop", () => {
 	// Fixture where openFile has no for-loop (original single-server code)
 	const ast = parse(LSP_FACTORY_FIXTURE);

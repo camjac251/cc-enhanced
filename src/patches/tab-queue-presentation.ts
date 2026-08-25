@@ -14,7 +14,7 @@ function getCreateElementProps(
 }
 
 function buildReactElementCall(
-	react: t.Expression,
+	elementCallee: t.Expression,
 	component: t.Expression,
 	props: t.Expression | null,
 	children: t.Expression[],
@@ -29,19 +29,28 @@ function buildReactElementCall(
 			),
 		);
 	}
-	return t.callExpression(
-		t.memberExpression(t.cloneNode(react, true), t.identifier("jsx")),
-		[t.cloneNode(component, true), propsObject],
-	);
+	return t.callExpression(t.cloneNode(elementCallee, true), [
+		t.cloneNode(component, true),
+		propsObject,
+	]);
 }
 
 export function isTextInputChoice(node: t.Node | null | undefined): boolean {
 	if (!t.isConditionalExpression(node)) return false;
-	return [node.consequent, node.alternate].every((branch) => {
-		if (!isElementCall(branch)) return false;
+	const branches = [node.consequent, node.alternate];
+	const callees: t.Expression[] = [];
+	const valid = branches.every((branch) => {
+		if (!t.isCallExpression(branch) || !t.isExpression(branch.callee)) {
+			return false;
+		}
 		const props = getCreateElementProps(branch);
-		return !!props && props.properties.some((prop) => t.isSpreadElement(prop));
+		if (!props?.properties.some((prop) => t.isSpreadElement(prop))) {
+			return false;
+		}
+		callees.push(branch.callee);
+		return true;
 	});
+	return valid && t.isNodesEquivalent(callees[0], callees[1]);
 }
 
 export function getPromptBarBoxComponent(
@@ -93,7 +102,7 @@ export function isPromptBarPreviewKey(
 }
 
 export function buildPromptBarPreviewDeclarations(
-	react: t.Expression,
+	elementCallee: t.Expression,
 	box: t.Expression,
 	text: t.Expression,
 	globalQueue: t.Expression,
@@ -161,7 +170,7 @@ export function buildPromptBarPreviewDeclarations(
 				t.conditionalExpression(
 					t.cloneNode(queuedDraft),
 					buildReactElementCall(
-						react,
+						elementCallee,
 						box,
 						t.objectExpression([
 							t.objectProperty(
@@ -172,7 +181,7 @@ export function buildPromptBarPreviewDeclarations(
 						]),
 						[
 							buildReactElementCall(
-								react,
+								elementCallee,
 								text,
 								t.objectExpression([
 									t.objectProperty(
@@ -195,7 +204,7 @@ export function buildPromptBarPreviewDeclarations(
 								],
 							),
 							buildReactElementCall(
-								react,
+								elementCallee,
 								text,
 								t.objectExpression([
 									t.objectProperty(
@@ -227,12 +236,12 @@ export function buildPromptBarPreviewDeclarations(
 }
 
 export function buildWrappedTextInputElement(
-	react: t.Expression,
+	elementCallee: t.Expression,
 	box: t.Expression,
 	originalInit: t.Expression,
 ): t.ConditionalExpression {
 	const wrappedInput = buildReactElementCall(
-		react,
+		elementCallee,
 		box,
 		t.objectExpression([
 			t.objectProperty(
@@ -351,14 +360,14 @@ export function isQueuePartsLengthFallback(
 }
 
 function buildShortcutHintElement(
-	react: t.Expression,
+	elementCallee: t.Expression,
 	text: t.Expression,
 	shortcut: t.Expression,
 	key: string,
 	action: string,
 ): t.CallExpression {
 	const shortcutElement = buildReactElementCall(
-		react,
+		elementCallee,
 		shortcut,
 		t.objectExpression([
 			t.objectProperty(t.identifier("chord"), t.stringLiteral("tab")),
@@ -374,7 +383,7 @@ function buildShortcutHintElement(
 	);
 
 	return buildReactElementCall(
-		react,
+		elementCallee,
 		text,
 		t.objectExpression([
 			t.objectProperty(t.identifier("dimColor"), t.booleanLiteral(true)),
@@ -388,7 +397,7 @@ export function buildQueueHintStatement(
 	queueParts: t.Identifier,
 	isLoading: t.Identifier,
 	isInputEmpty: t.Identifier,
-	react: t.Expression,
+	elementCallee: t.Expression,
 	text: t.Expression,
 	shortcut: t.Expression,
 ): t.IfStatement {
@@ -407,7 +416,7 @@ export function buildQueueHintStatement(
 					),
 					[
 						buildShortcutHintElement(
-							react,
+							elementCallee,
 							text,
 							shortcut,
 							"queue-draft",
@@ -423,7 +432,7 @@ export function buildQueueHintStatement(
 export function buildEditHintStatement(
 	queueParts: t.Identifier,
 	isInputEmpty: t.Identifier,
-	react: t.Expression,
+	elementCallee: t.Expression,
 	text: t.Expression,
 	shortcut: t.Expression,
 	queueHasItems: t.Expression,
@@ -439,7 +448,7 @@ export function buildEditHintStatement(
 					),
 					[
 						buildShortcutHintElement(
-							react,
+							elementCallee,
 							text,
 							shortcut,
 							"edit-queued-draft",

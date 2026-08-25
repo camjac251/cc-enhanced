@@ -428,6 +428,30 @@ test("edit-extended injects unified preview via normalize+apply pipeline", async
 	assert.equal(output.includes("sd 'pattern' 'replacement' file.md -p"), true);
 });
 
+test("edit-extended keeps static helper imports in native ESM mode", async () => {
+	const previousNativeMode = process.env.CLAUDE_PATCHER_NATIVE_MODE;
+	process.env.CLAUDE_PATCHER_NATIVE_MODE = "1";
+	try {
+		const ast = parse(EDIT_FIXTURE);
+		await runEditToolViaPasses(ast);
+		const output = print(ast);
+
+		assert.equal(output.includes('import * as _claudeFs from "node:fs"'), true);
+		assert.equal(
+			output.includes('import * as _claudePath from "node:path"'),
+			true,
+		);
+		assert.equal(output.includes('_claudeFs = require("node:fs")'), false);
+		assert.equal(output.includes('_claudePath = require("node:path")'), false);
+	} finally {
+		if (previousNativeMode === undefined) {
+			delete process.env.CLAUDE_PATCHER_NATIVE_MODE;
+		} else {
+			process.env.CLAUDE_PATCHER_NATIVE_MODE = previousNativeMode;
+		}
+	}
+});
+
 test("edit-extended verify accepts escaped Bash guidance in emitted prompt strings", async () => {
 	const ast = parse(EDIT_FIXTURE);
 	await runEditToolViaPasses(ast);

@@ -57,3 +57,24 @@ export function buildFrontmatterPromptMap(
 	}
 	return promptsByFrontmatterName;
 }
+
+function unresolvedPlaceholderCount(text: string): number {
+	return text.match(/\$\{[^}]+\}/g)?.length ?? 0;
+}
+
+export function selectPromptCorpusText(
+	corpus: Array<{ text: string }>,
+	anchors: readonly string[],
+): string | null {
+	const candidates = corpus
+		.map((entry) => entry.text)
+		.filter((text) => anchors.every((anchor) => text.includes(anchor)))
+		.sort((left, right) => {
+			const placeholderDelta =
+				unresolvedPlaceholderCount(left) - unresolvedPlaceholderCount(right);
+			if (placeholderDelta !== 0) return placeholderDelta;
+			if (left.length !== right.length) return left.length - right.length;
+			return left.localeCompare(right);
+		});
+	return candidates[0] ?? null;
+}

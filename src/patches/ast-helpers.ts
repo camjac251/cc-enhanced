@@ -383,14 +383,21 @@ const ELEMENT_FACTORY_NAMES = new Set(["createElement", "jsx", "jsxs"]);
 
 /**
  * Check whether a node is a React element-factory call, runtime-agnostic.
- * Anchors on the callee's member-property name only; the receiving object is
- * minified and must never be matched on.
+ * Member calls anchor on the stable factory property. Rebundled automatic
+ * runtime calls use a direct imported binding, so those anchor on the stable
+ * object-props `children` contract instead of the minified callee name.
  */
 export function isElementCall(
 	node: t.Node | null | undefined,
 ): node is t.CallExpression {
 	if (!t.isCallExpression(node)) return false;
 	const callee = node.callee;
+	if (t.isIdentifier(callee)) {
+		const props = getElementProps(node);
+		return (
+			props !== null && getObjectPropertyByName(props, "children") !== null
+		);
+	}
 	if (!t.isMemberExpression(callee) && !t.isOptionalMemberExpression(callee)) {
 		return false;
 	}

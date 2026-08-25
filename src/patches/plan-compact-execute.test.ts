@@ -218,6 +218,32 @@ function MainRepl({ initialMessage: l }) {
 }
 `;
 
+const HOST_BACKED_INITIAL_MESSAGE_FIXTURE = `
+class SessionRunner {
+  buildToolUseContext(messages, allowedCommands, abortController, mainLoopModel) {
+    return { messages, allowedCommands, abortController, mainLoopModel };
+  }
+
+  _requireHost() {
+    return {};
+  }
+
+  submitInitial(input) {
+    let host = this._requireHost(),
+      { transcript, mainLoopModel } = host,
+      setMessages = transcript.replace;
+    (async (initialMessage) => {
+      if (initialMessage.clearContext) {
+        await Promise.resolve();
+      }
+      let plan = initialMessage.message.planContent && false;
+      let content = initialMessage.message.message.content;
+      return { plan, content };
+    })(input);
+  }
+}
+`;
+
 test("verify rejects unpatched plan compact execute code", () => {
 	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
 	const code = print(ast);
@@ -407,6 +433,23 @@ test("plan-compact-execute handler reads the message store snapshot", async () =
 		"handler must read the message store snapshot",
 	);
 	assert.equal(planCompactExecute.verify(output), true);
+});
+
+test("plan-compact-execute supports a class handler backed by its host", async () => {
+	const ast = parse(HOST_BACKED_INITIAL_MESSAGE_FIXTURE);
+	await runPlanCompactExecuteViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes("__ccEnhancedPlanCompactCommand"), true);
+	assert.match(output, /host\.commands\.find/);
+	assert.match(output, /this\.buildToolUseContext\(/);
+	assert.match(output, /transcript\.getSnapshot\(\)/);
+	assert.match(output, /host\.addNotification\(/);
+	assert.ok(
+		output.indexOf("__ccEnhancedPlanCompactCommand") <
+			output.indexOf("initialMessage.message.message.content"),
+		"compact handler must run before the initial message content is read",
+	);
 });
 
 test("plan-compact-execute compact-auto branch keeps the auto-mode runtime guard", async () => {

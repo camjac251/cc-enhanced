@@ -246,6 +246,18 @@ const SUBAGENT_FIXTURE_EFFORT_WRAPPED = SUBAGENT_FIXTURE.replace(
 	"const resolvedModel = resolveAgentModel(getAgentModel(effortAgent, parentModel), parentModel, metadata?.isObserver ? void 0 : metadata?.model, permissionMode);",
 );
 
+const SUBAGENT_FIXTURE_LAUNCH_OVERRIDE_ALIAS = SUBAGENT_FIXTURE.replace(
+	`    const resolvedModel = resolveAgentModel(
+      getAgentModel(selectedAgent, parentModel),
+      parentModel,
+      isFork ? void 0 : model,`,
+	`    const launchModelOverride = isFork ? undefined : model;
+    const resolvedModel = resolveAgentModel(
+      getAgentModel(selectedAgent, parentModel),
+      parentModel,
+      launchModelOverride,`,
+);
+
 test("verify rejects unpatched code", () => {
 	const ast = parse(SUBAGENT_FIXTURE);
 	const code = print(ast);
@@ -428,6 +440,37 @@ test("subagent-model-tag widens the latest direct-factory Agent schema", async (
 	assert.match(
 		output,
 		/model: stringSchema\(\)\.trim\(\)\.min\(1\)\.optional\(\)\.describe/,
+	);
+	assert.equal(subagentModelTag.verify(output, parse(output)), true);
+});
+
+test("subagent-model-tag recognizes a compound Agent model description", async () => {
+	const compoundSchema = AGENT_SCHEMA_FIXTURE.replace(
+		`model: A.enum(["sonnet", "opus", "haiku", "fable"]).optional().describe('Optional model override for this agent. Takes precedence over the agent definition\\'s model frontmatter. Ignored for subagent_type: "fork"; forks always inherit the parent model.'),`,
+		`model: A.enum(["sonnet", "opus", "haiku", "fable"]).optional().describe(
+    \`Optional model override for this agent. Takes precedence over the agent definition's model frontmatter. Ignored for subagent_type: "fork"; forks always inherit the parent model.\` +
+      (isCoordinator ? " Set only when explicitly requested." : "")
+  ),`,
+	);
+	assert.notEqual(compoundSchema, AGENT_SCHEMA_FIXTURE);
+	const input = SUBAGENT_FIXTURE.replace(AGENT_SCHEMA_FIXTURE, compoundSchema);
+	const output = await patchSource(input);
+
+	assert.match(output, /model: A\.string\(\)\.trim\(\)\.min\(1\)/);
+	assert.match(
+		output,
+		/effort: A\.enum\(\["low", "medium", "high", "xhigh", "max"\]\)/,
+	);
+	assert.equal(subagentModelTag.verify(output, parse(output)), true);
+});
+
+test("subagent-model-tag follows a local fork model override alias", async () => {
+	assert.notEqual(SUBAGENT_FIXTURE_LAUNCH_OVERRIDE_ALIAS, SUBAGENT_FIXTURE);
+	const output = await patchSource(SUBAGENT_FIXTURE_LAUNCH_OVERRIDE_ALIAS);
+
+	assert.equal(
+		output.split("isFork ? parentModel : resolveAgentModel").length - 1,
+		2,
 	);
 	assert.equal(subagentModelTag.verify(output, parse(output)), true);
 });

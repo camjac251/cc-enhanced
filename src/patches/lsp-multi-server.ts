@@ -43,7 +43,8 @@ interface LspRefs {
 	trackMap: string; // uri -> open tracking
 	// Module/utility refs (from function body scanning)
 	pathMod: string; // path module (extname, resolve)
-	urlMod: string; // url module (pathToFileURL)
+	urlMod: string; // namespace-style URL module
+	pathToFileUrlFn: string; // direct pathToFileURL import
 	logFn: string; // log function
 	errFn: string; // error report function
 }
@@ -54,8 +55,17 @@ let discoveredRefs: LspRefs | null = null;
 
 function discoverRefs(ast: t.File): LspRefs | null {
 	let result: LspRefs | null = null;
+	const pathToFileUrlImports = new Set<string>();
 
 	traverse(ast, {
+		ImportSpecifier(path) {
+			if (
+				getObjectKeyName(path.node.imported) === "pathToFileURL" &&
+				t.isIdentifier(path.node.local)
+			) {
+				pathToFileUrlImports.add(path.node.local.name);
+			}
+		},
 		ReturnStatement(path) {
 			const arg = path.node.argument;
 			if (!t.isObjectExpression(arg)) return;
@@ -127,6 +137,7 @@ function discoverRefs(ast: t.File): LspRefs | null {
 			// Extract module/utility refs by scanning all function bodies in factory
 			let pathMod = "";
 			let urlMod = "";
+			let pathToFileUrlFn = "";
 			let logFn = "";
 			let errFn = "";
 			for (const stmt of body) {
@@ -146,6 +157,9 @@ function discoverRefs(ast: t.File): LspRefs | null {
 						t.isIdentifier(node.callee) &&
 						node.arguments.length >= 1
 					) {
+						if (pathToFileUrlImports.has(node.callee.name)) {
+							pathToFileUrlFn = node.callee.name;
+						}
 						const a = node.arguments[0];
 						// Log function: called with string/template containing "LSP:"
 						if (
@@ -169,7 +183,9 @@ function discoverRefs(ast: t.File): LspRefs | null {
 					}
 				});
 			}
-			if (!pathMod || !urlMod || !logFn || !errFn) return;
+			if (!pathMod || (!urlMod && !pathToFileUrlFn) || !logFn || !errFn) {
+				return;
+			}
 
 			result = {
 				factoryName: factoryFn.id.name,
@@ -183,6 +199,7 @@ function discoverRefs(ast: t.File): LspRefs | null {
 				trackMap,
 				pathMod,
 				urlMod,
+				pathToFileUrlFn,
 				logFn,
 				errFn,
 			};
@@ -226,8 +243,14 @@ function parseBody(code: string): t.Statement[] {
 	return fn.body.body;
 }
 
+function pathToFileUrlCall(r: LspRefs, argument: string): string {
+	if (r.pathToFileUrlFn) return `${r.pathToFileUrlFn}(${argument})`;
+	return `${r.urlMod}.pathToFileURL(${argument})`;
+}
+
 function buildOpenFile(r: LspRefs, params: string[]): t.Statement[] {
 	const [file, text] = params;
+	const uri = pathToFileUrlCall(r, `${r.pathMod}.resolve(${file})`);
 	// prettier-ignore
 	return parseBody(
 		`async function _r(${file}, ${text}) {
@@ -235,7 +258,7 @@ function buildOpenFile(r: LspRefs, params: string[]): t.Statement[] {
   var _ns = ${r.extMap}.get(_ext);
   if (!_ns || _ns.length === 0) _ns = _lspByName(${file});
   if (!_ns || _ns.length === 0) return;
-  var _uri = ${r.urlMod}.pathToFileURL(${r.pathMod}.resolve(${file})).href;
+  var _uri = ${uri}.href;
   for (var _i = 0; _i < _ns.length; _i++) {
     var _sv = ${r.serverMap}.get(_ns[_i]);
     if (!_sv) continue;
@@ -268,6 +291,7 @@ function buildOpenFile(r: LspRefs, params: string[]): t.Statement[] {
 
 function buildChangeFile(r: LspRefs, params: string[]): t.Statement[] {
 	const [file, text] = params;
+	const uri = pathToFileUrlCall(r, `${r.pathMod}.resolve(${file})`);
 	// prettier-ignore
 	return parseBody(
 		`async function _r(${file}, ${text}) {
@@ -275,7 +299,7 @@ function buildChangeFile(r: LspRefs, params: string[]): t.Statement[] {
   var _ns = ${r.extMap}.get(_ext);
   if (!_ns || _ns.length === 0) _ns = _lspByName(${file});
   if (!_ns || _ns.length === 0) return;
-  var _uri = ${r.urlMod}.pathToFileURL(${r.pathMod}.resolve(${file})).href;
+  var _uri = ${uri}.href;
   var _os = ${r.trackMap}.get(_uri);
   for (var _i = 0; _i < _ns.length; _i++) {
     var _sv = ${r.serverMap}.get(_ns[_i]);
@@ -316,6 +340,7 @@ function buildChangeFile(r: LspRefs, params: string[]): t.Statement[] {
 
 function buildSaveFile(r: LspRefs, params: string[]): t.Statement[] {
 	const [file] = params;
+	const uri = pathToFileUrlCall(r, `${r.pathMod}.resolve(${file})`);
 	// prettier-ignore
 	return parseBody(
 		`async function _r(${file}) {
@@ -323,7 +348,7 @@ function buildSaveFile(r: LspRefs, params: string[]): t.Statement[] {
   var _ns = ${r.extMap}.get(_ext);
   if (!_ns || _ns.length === 0) _ns = _lspByName(${file});
   if (!_ns || _ns.length === 0) return;
-  var _uri = ${r.urlMod}.pathToFileURL(${r.pathMod}.resolve(${file})).href;
+  var _uri = ${uri}.href;
   for (var _i = 0; _i < _ns.length; _i++) {
     var _sv = ${r.serverMap}.get(_ns[_i]);
     if (!_sv || _sv.state !== "running") continue;

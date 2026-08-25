@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="Tested with Claude Code 2.1.241" src="https://img.shields.io/badge/tested-Claude_Code_2.1.241-8A2BE2">
+  <img alt="Tested with Claude Code 2.1.245" src="https://img.shields.io/badge/tested-Claude_Code_2.1.245-8A2BE2">
   <img alt="45 patches" src="https://img.shields.io/badge/patches-45-f97316">
   <img alt="Bun 1.4.0" src="https://img.shields.io/badge/Bun-1.4.0-fbf0df?logo=bun&logoColor=000">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2563eb"></a>
@@ -18,7 +18,7 @@
   <a href="docs/README.md">Documentation</a>
 </p>
 
-cc-enhanced extracts the JavaScript bundle embedded in an official Claude Code native executable, applies a selected set of independently verifiable patches, and repacks the bundle without changing the native file's fixed layout. The primary `cli-full` profile improves Read and Edit ergonomics, modernizes prompt and tool routing, unlocks runtime and UI controls, and keeps the patched installation recoverable through atomic promotion and rollback.
+cc-enhanced extracts the JavaScript embedded in an official Claude Code native executable, rebundles split modules into one patch surface when needed, applies a selected set of independently verifiable patches, and repacks the result without changing the native file's fixed layout. The primary `cli-full` profile improves Read and Edit ergonomics, modernizes prompt and tool routing, unlocks runtime and UI controls, and keeps the patched installation recoverable through atomic promotion and rollback.
 
 > [!IMPORTANT]
 >
@@ -33,7 +33,7 @@ cc-enhanced extracts the JavaScript bundle embedded in an official Claude Code n
 | Prompt harness | Stronger repository policy, focused agent roles, current code-search guidance, model routing metadata, and prompt-surface drift checks. |
 | Runtime | Cache policy, larger file limits, feature gates, model catalogs and aliases, session controls, and update protection. |
 | Terminal UX | Visible patch signatures, expanded results, plan diffs, queued follow-ups, skill and agent notices, and configurable file links. |
-| Native lifecycle | Official artifact fetching, fixed-layout repacking, receipt-bound verification, atomic promotion, rollback, and guarded cross-platform candidate workflows. |
+| Native lifecycle | Official artifact fetching, split-module rebundling, fixed-layout repacking, receipt-bound verification, atomic promotion, rollback, and guarded cross-platform candidate workflows. |
 
 The complete behavior and source link for every tag lives in the [45-patch catalog](docs/patches.md).
 
@@ -61,7 +61,7 @@ See [Getting started](docs/getting-started.md) for requirements, patch selection
 
 ```mermaid
 flowchart LR
-    upstream["Official native executable"] --> extract["Extract embedded bundle"]
+    upstream["Official native executable"] --> extract["Extract or rebundle embedded JavaScript"]
     extract --> prompts["Prompt string transforms"]
     prompts --> ast["One shared AST pass<br/>discover → mutate → finalize"]
     ast --> verify{"Every selected verifier passes?"}

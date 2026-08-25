@@ -187,6 +187,43 @@ async function runPrompt(newMessages, abortController) {
 }
 `;
 
+const DIRECT_FOOTER_FIXTURE = `function renderFooterLeft({ showHint, isInputEmpty, isLoading }) {
+  let parts = [];
+  if (viewingCompletedTeammate) {
+    parts.push(jsx(Text, {
+      dimColor: true,
+      children: jsx(KeyboardShortcutHint, {
+        chord: "esc",
+        action: "return to team lead",
+        format: { keyCase: "lower" },
+      }),
+    }));
+  }
+  if (showHint) parts.push(jsx(Text, { children: "? for shortcuts" }));
+  return jsx(Box, { children: parts });
+}`;
+
+const CURRENT_TAB_QUEUE_FIXTURE = TAB_QUEUE_FIXTURE.replaceAll(
+	"React.jsx",
+	"jsx",
+)
+	.replace(
+		/function renderFooterLeft[\s\S]*?\n}\n\nasync function replSubmit/,
+		`${DIRECT_FOOTER_FIXTURE}\n\nasync function replSubmit`,
+	)
+	.replace(
+		"    onQuery: runPrompt,\n    setMessages,",
+		`    messages: messagesRef.current,
+    mainLoopModel,
+    getAppState,
+    setAppState,
+    setMessages,`,
+	)
+	.replace(
+		"    if (turnGate.end(generation)) {",
+		"    const turnEnded = turnGate.end(generation);\n    if (turnEnded) {",
+	);
+
 test("verify rejects unpatched code", () => {
 	const ast = parse(TAB_QUEUE_FIXTURE);
 	const code = print(ast);
@@ -244,6 +281,19 @@ test("tab-queue adds busy-only Tab queue handler, preview, edit, and footer hint
 	assert.match(output, /action: "edit queued"/);
 	assert.match(output, /showHint \|\| hintParts\.length > 0/);
 	assert.equal(tabQueue.verify(output, ast), true);
+});
+
+test("tab-queue supports direct element factories and current queue lifecycle shapes", async () => {
+	assert.notEqual(CURRENT_TAB_QUEUE_FIXTURE, TAB_QUEUE_FIXTURE);
+	const ast = parse(CURRENT_TAB_QUEUE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /jsx\(Box, \{[\s\S]*key: "tab-queue-status"/);
+	assert.match(output, /options && options\.deferUntilTurnEnd/);
+	assert.match(output, /turnEnded[\s\S]*__ccTabQueue/);
+	assert.match(output, /parts\.unshift\([\s\S]*action: "queue"/);
+	assert.equal(tabQueue.verify(output, parse(output)), true);
 });
 
 test("tab-queue public Patch preserves the presentation boundary", async () => {

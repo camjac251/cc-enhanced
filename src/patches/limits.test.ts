@@ -344,6 +344,24 @@ function getPersistenceThreshold(toolName, maxResultSizeChars, persistenceThresh
 	);
 });
 
+test("limits identifies the rebundled Read tool by its search hint", async () => {
+	const ast = parse(`
+var readToolName;
+function initializeReadTool() {
+  readToolName = "Read";
+}
+var readToolDef = {
+  name: readToolName,
+  searchHint: "read files, images, PDFs, notebooks",
+  maxResultSizeChars: 100000,
+};
+`);
+	await runLimitsViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /maxResultSizeChars: 250000/);
+});
+
 test("limits leaves an already-Infinity maxResultSizeChars untouched and still verifies", async () => {
 	const infinityFixture = `
 var bYC = 262144;
@@ -361,7 +379,7 @@ var readToolName = "Read";
 var readToolDef = {
   name: readToolName,
   searchHint: "read files, images, PDFs, notebooks",
-  maxResultSizeChars: 1 / 0,
+  maxResultSizeChars: Infinity,
   description: "Read files"
 };
 function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
@@ -374,7 +392,7 @@ function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
 	const output = print(ast);
 	// Infinity cap must be preserved (patch records no-op, never writes 250000 here)
 	assert.equal(
-		output.includes("maxResultSizeChars: 1 / 0"),
+		output.includes("maxResultSizeChars: Infinity"),
 		true,
 		"Infinity maxResultSizeChars should be preserved",
 	);

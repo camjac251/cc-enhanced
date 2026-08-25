@@ -14,7 +14,7 @@ import { emitMemoryCheckpoint } from "./profiling.js";
 
 const ELF_MAGIC = Buffer.from([0x7f, 0x45, 0x4c, 0x46]); // \x7fELF
 
-interface ExtractedNativeLinux {
+export interface ExtractedNativeLinux {
 	binary: Buffer;
 	bunBlob: Buffer; // [data][offsets][trailer]
 	bunOffsets: BunOffsets;

@@ -755,6 +755,22 @@ test("read-bat render uses the discovered element factory, never a stale default
 	assert.doesNotMatch(output, /\.createElement\(/);
 });
 
+test("read-bat render supports direct automatic-runtime bindings", async () => {
+	const fixture = READ_DELEGATION_FIXTURE.replace(
+		"  return RC.jsx(FileComp, { filePath: A, children: Z });",
+		`  if (Y) return jsxMany(Fragment, { children: [jsxOne(FileComp, { filePath: A, children: Z }), " · pages " + Y] });
+  return jsxOne(FileComp, { filePath: A, children: Z });`,
+	);
+	assert.notEqual(fixture, READ_DELEGATION_FIXTURE);
+	const ast = parse(fixture);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /jsxOne\(FileComp,\s*\{[\s\S]*?filePath:/);
+	assert.match(output, /jsxMany\(Fragment,\s*\{[\s\S]*?children:/);
+	assert.match(output, /opts\.push\("whitespace"\)/);
+});
+
 test("read-bat leaves the render unpatched and fails verify when no element factory is found", async () => {
 	// Strip the element factory from the render so discovery cannot resolve a real
 	// factory/component. The patch must refuse to rebuild the render (rather than

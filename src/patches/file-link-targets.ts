@@ -100,6 +100,7 @@ interface HelperDispatchCall {
 }
 
 interface DispatcherAnalysis {
+	containerBody: t.Statement[];
 	functionNode: t.FunctionDeclaration;
 	helperCalls: HelperDispatchCall[];
 	loggerBindingNode: t.Node;
@@ -255,10 +256,7 @@ function getDbusRevealBindings(
 	}
 
 	const functionPath = path.getFunctionParent();
-	if (
-		!functionPath?.isFunctionDeclaration() ||
-		!functionPath.parentPath?.isProgram()
-	) {
+	if (!functionPath?.isFunctionDeclaration()) {
 		return null;
 	}
 	if (!hasStockRunnerSuccessContract(path)) return null;
@@ -358,7 +356,6 @@ function getWindowsExplorerRevealBindings(
 	const functionPath = path.getFunctionParent();
 	if (
 		!functionPath?.isFunctionDeclaration() ||
-		!functionPath.parentPath?.isProgram() ||
 		functionPath.node.params.length !== 1
 	) {
 		return null;
@@ -427,10 +424,22 @@ function getComparedIdentifier(
 function isFileUrlToPathCall(
 	node: t.Node | null | undefined,
 	inputName: string,
+	path?: NodePath<t.CallExpression>,
 ): node is t.CallExpression {
 	if (!t.isCallExpression(node) || node.arguments.length !== 1) return false;
-	if (!t.isMemberExpression(node.callee)) return false;
-	if (getMemberPropertyName(node.callee) !== "fileURLToPath") return false;
+	let isDirectImport = false;
+	if (t.isIdentifier(node.callee) && path) {
+		const binding = path.scope.getBinding(node.callee.name);
+		if (binding?.path.isImportSpecifier()) {
+			isDirectImport =
+				getObjectKeyName(binding.path.node.imported) === "fileURLToPath";
+		}
+	}
+	const isFileUrlDecoder =
+		(t.isMemberExpression(node.callee) &&
+			getMemberPropertyName(node.callee) === "fileURLToPath") ||
+		isDirectImport;
+	if (!isFileUrlDecoder) return false;
 	return t.isIdentifier(node.arguments[0], { name: inputName });
 }
 
@@ -467,11 +476,17 @@ function getGuardedFileDispatchFlow(
 	const [decodeDeclaration] = decodeStatement.declarations;
 	if (
 		!t.isIdentifier(decodeDeclaration.id) ||
-		!isFileUrlToPathCall(decodeDeclaration.init, inputName)
+		!t.isCallExpression(decodeDeclaration.init)
 	) {
 		return null;
 	}
 	const decodeCallPath = callPaths.get(decodeDeclaration.init);
+	if (
+		!decodeCallPath ||
+		!isFileUrlToPathCall(decodeDeclaration.init, inputName, decodeCallPath)
+	) {
+		return null;
+	}
 	const decodedPathBinding = decodeCallPath?.scope.getBinding(
 		decodeDeclaration.id.name,
 	);
@@ -647,8 +662,13 @@ function getAllowlistLoggerCall(
 function analyzeDispatcher(
 	path: NodePath<t.FunctionDeclaration>,
 ): DispatcherAnalysis | null {
-	if (!path.parentPath?.isProgram()) return null;
 	if (!t.isBlockStatement(path.node.body)) return null;
+	const containerBody = path.parentPath?.isProgram()
+		? path.parentPath.node.body
+		: path.parentPath?.isBlockStatement()
+			? path.parentPath.node.body
+			: null;
+	if (!containerBody) return null;
 	const firstParam = path.node.params[0];
 	if (!t.isIdentifier(firstParam)) return null;
 	const inputName = firstParam.name;
@@ -780,6 +800,7 @@ function analyzeDispatcher(
 	}
 
 	return {
+		containerBody,
 		functionNode: path.node,
 		helperCalls,
 		loggerBindingNode,
@@ -847,10 +868,7 @@ function createFileLinkPasses(): PatchAstPass[] {
 					addStockRevealBinding(state.bindingCandidates, candidate);
 				},
 				FunctionDeclaration(path) {
-					if (
-						path.parentPath?.isProgram() &&
-						path.node.id?.name === HELPER_NAME
-					) {
+					if (path.node.id?.name === HELPER_NAME) {
 						state.helperCount += 1;
 					}
 				},
@@ -882,7 +900,7 @@ function createFileLinkPasses(): PatchAstPass[] {
 			pass: "mutate",
 			visitor: {
 				Program: {
-					exit(programPath) {
+					exit() {
 						if (!state.bindings) return;
 						if (state.dispatcherCandidates.length !== 1) return;
 						const analysis = state.dispatcherCandidates[0];
@@ -919,7 +937,7 @@ function createFileLinkPasses(): PatchAstPass[] {
 						) {
 							return;
 						}
-						const functionIndex = programPath.node.body.indexOf(
+						const functionIndex = analysis.containerBody.indexOf(
 							analysis.functionNode,
 						);
 						if (functionIndex < 0) return;
@@ -929,7 +947,7 @@ function createFileLinkPasses(): PatchAstPass[] {
 							state.bindings,
 							analysis,
 						);
-						programPath.node.body.splice(
+						analysis.containerBody.splice(
 							functionIndex,
 							0,
 							buildHelperStatement(),
@@ -985,7 +1003,7 @@ function collectVerificationEvidence(ast: t.File): VerificationEvidence {
 			if (candidate) addStockRevealBinding(evidence.bindings, candidate);
 		},
 		FunctionDeclaration(path) {
-			if (path.parentPath?.isProgram() && path.node.id?.name === HELPER_NAME) {
+			if (path.node.id?.name === HELPER_NAME) {
 				evidence.helpers.push(path.node);
 			}
 		},

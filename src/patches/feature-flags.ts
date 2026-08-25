@@ -31,17 +31,10 @@ function findObjectMethod(
 }
 
 function findMonitorGate(ast: t.File | t.Program): MonitorGate | string {
-	const declarations = new Map<string, t.FunctionDeclaration[]>();
-	const gateNames: string[] = [];
+	const gates: t.FunctionDeclaration[] = [];
 	const root = t.isFile(ast) ? ast : t.file(ast);
 
 	traverse(root, {
-		FunctionDeclaration(path) {
-			if (!path.node.id) return;
-			const existing = declarations.get(path.node.id.name) ?? [];
-			existing.push(path.node);
-			declarations.set(path.node.id.name, existing);
-		},
 		ObjectExpression(path) {
 			const userFacingName = findObjectMethod(path.node, "userFacingName");
 			if (!userFacingName) return;
@@ -59,19 +52,17 @@ function findMonitorGate(ast: t.File | t.Program): MonitorGate | string {
 			) {
 				return;
 			}
-			gateNames.push(enabledReturn.left.callee.name);
+			const binding = path.scope.getBinding(enabledReturn.left.callee.name);
+			if (binding?.path.isFunctionDeclaration()) {
+				gates.push(binding.path.node);
+			}
 		},
 	});
 
-	if (gateNames.length !== 1) {
-		return `Expected one Monitor enablement site, found ${gateNames.length}`;
+	if (gates.length !== 1) {
+		return `Expected one Monitor enablement site with a function binding, found ${gates.length}`;
 	}
-	const gateName = gateNames[0];
-	const candidates = declarations.get(gateName) ?? [];
-	if (candidates.length !== 1) {
-		return `Expected one Monitor gate declaration, found ${candidates.length}`;
-	}
-	return { declaration: candidates[0] };
+	return { declaration: gates[0] };
 }
 
 function getGateReturn(

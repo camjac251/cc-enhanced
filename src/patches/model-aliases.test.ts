@@ -423,6 +423,46 @@ test("model-aliases normalizes explicit teammate models and forwards the alias m
 	);
 });
 
+test("model-aliases recognizes explicit undefined in teammate validation", async () => {
+	const fixture = MODEL_ROUTING_FIXTURE.replace(
+		"explicitModel !== void 0",
+		"explicitModel !== undefined",
+	);
+	assert.notEqual(fixture, MODEL_ROUTING_FIXTURE);
+	const output = await patchSource(fixture);
+
+	assert.equal(
+		output.includes("explicitModel = normalizeModel(explicitModel)"),
+		true,
+	);
+	assert.equal(modelAliases.verify(output), true);
+});
+
+test("model-aliases preserves a stock workflow display fallback helper", async () => {
+	const fixture = MODEL_ROUTING_FIXTURE.replace(
+		"function formatWorkflowModel(model, fallbackModel) {",
+		`function fallbackModelDisplayName(model) { return "fallback:" + model; }
+
+		function formatWorkflowModel(model, fallbackModel) {`,
+	).replace(
+		"knownModelDisplayName(candidate) ?? candidate",
+		"knownModelDisplayName(candidate) ?? fallbackModelDisplayName(candidate)",
+	);
+	assert.notEqual(fixture, MODEL_ROUTING_FIXTURE);
+	const output = await patchSource(fixture);
+	const routedModel = "clodex:openai-oauth:gpt-5.6-sol";
+	const { renderWorkflowAgent } = loadWorkflowFunctions(output, {
+		CLAUDE_CODE_MODEL_ALIASES: JSON.stringify({ sol: routedModel }),
+	});
+
+	assert.equal(renderWorkflowAgent({ model: routedModel }), "Sol");
+	assert.equal(
+		renderWorkflowAgent({ model: "custom-model" }),
+		"fallback:custom-model",
+	);
+	assert.equal(modelAliases.verify(output), true);
+});
+
 test("model-aliases renders an exact configured target with its friendly alias", async () => {
 	const output = await patchSource(MODEL_ROUTING_FIXTURE);
 	const routedModel = "clodex:openai-oauth:gpt-5.6-sol";

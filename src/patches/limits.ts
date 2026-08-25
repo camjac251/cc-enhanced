@@ -103,6 +103,7 @@ function findTokenBudgetLiteral(
 /** Resolve maxResultSizeChars value from NumericLiteral or BinaryExpression (1/0 = Infinity). */
 function resolveMaxResultSizeValue(node: t.Node): number | null {
 	if (t.isNumericLiteral(node)) return node.value;
+	if (t.isIdentifier(node, { name: "Infinity" })) return Infinity;
 	// 1 / 0 = Infinity
 	if (
 		t.isBinaryExpression(node, { operator: "/" }) &&
@@ -312,20 +313,18 @@ function collectCurrentLimits(ast: t.File): {
 					nameVal = init.init.value;
 				}
 			}
-			if (nameVal !== "Read") return;
-
-			// Discriminate against other tools: Read tool has searchHint with "read files"
+			// Rebundled modules can assign the Read name after the declaration,
+			// which makes the identifier binding's initializer unavailable here.
+			// The tool's search hint remains a stable public contract.
 			const searchHintProp = path.node.properties.find(
 				(p: any): p is t.ObjectProperty =>
 					t.isObjectProperty(p) && getObjectKeyName(p.key) === "searchHint",
 			);
-			if (
-				searchHintProp &&
+			const hasReadSearchHint =
+				searchHintProp !== undefined &&
 				t.isStringLiteral(searchHintProp.value) &&
-				!searchHintProp.value.value.includes("read file")
-			) {
-				return;
-			}
+				searchHintProp.value.value.includes("read file");
+			if (nameVal !== "Read" && !hasReadSearchHint) return;
 
 			const maxProp = path.node.properties.find(
 				(p: any): p is t.ObjectProperty =>
@@ -536,13 +535,18 @@ function runLimitsPatch(ast: t.File): void {
 						nameVal = init.init.value;
 					}
 				}
-				if (nameVal !== "Read") return;
 
-				// Discriminate against other tools: Read tool has searchHint with "read files"
 				const searchHintProp = path.node.properties.find(
 					(p: any): p is t.ObjectProperty =>
 						t.isObjectProperty(p) && getObjectKeyName(p.key) === "searchHint",
 				);
+				const hasReadSearchHint =
+					searchHintProp !== undefined &&
+					t.isStringLiteral(searchHintProp.value) &&
+					searchHintProp.value.value.includes("read file");
+				if (nameVal !== "Read" && !hasReadSearchHint) return;
+
+				// Discriminate against other named tools when their search hint is present.
 				if (
 					searchHintProp &&
 					t.isStringLiteral(searchHintProp.value) &&

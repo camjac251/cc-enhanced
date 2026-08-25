@@ -14,13 +14,16 @@ import {
 import type { AstPassTelemetryLevel } from "./ast-pass-engine.js";
 import {
 	copyBunCjsEnvelope,
-	extractClaudeJsFromNativeBinary,
 	isNativeBinary,
 	repackNativeBinary,
 	unwrapBunCjsModule,
 	wrapBunCjsModule,
 	wrapBunCjsModuleBuffer,
 } from "./native.js";
+import {
+	extractPatchableJavaScriptFromNativeBinary,
+	type PatchableNativeJavaScript,
+} from "./native-rebundle.js";
 import {
 	fetchNativeRelease,
 	type NativeFetchResult,
@@ -449,8 +452,18 @@ export class Manager {
 
 	private async processNativeTarget(targetPath: string) {
 		console.log(chalk.blue(`→ Extracting embedded JS from ${targetPath}`));
-		let extractedCliText: string | null =
-			extractClaudeJsFromNativeBinary(targetPath).toString("utf-8");
+		let extraction: PatchableNativeJavaScript | null =
+			await extractPatchableJavaScriptFromNativeBinary(targetPath);
+		if (extraction.sourceMode === "rebundled") {
+			console.log(
+				chalk.gray(
+					`   Rebundled ${extraction.sourceModuleCount} embedded JavaScript modules into one patch surface`,
+				),
+			);
+		}
+		let extractedCliText: string | null = extraction.code.toString("utf-8");
+		extraction = null;
+		forceGarbageCollection();
 		let wrapper = unwrapBunCjsModule(extractedCliText);
 		let pristineBody: string | null = wrapper?.body ?? extractedCliText;
 		emitMemoryCheckpoint("native.source-extracted");
@@ -654,8 +667,11 @@ export class Manager {
 			throw new Error(`Target is not a native binary: ${resolvedTarget}`);
 		}
 
-		const extractedCliText =
-			extractClaudeJsFromNativeBinary(resolvedTarget).toString("utf-8");
+		let extraction: PatchableNativeJavaScript | null =
+			await extractPatchableJavaScriptFromNativeBinary(resolvedTarget);
+		const extractedCliText = extraction.code.toString("utf-8");
+		extraction = null;
+		forceGarbageCollection();
 		const wrapper = unwrapBunCjsModule(extractedCliText);
 		const outputText = wrapper ? wrapper.body : extractedCliText;
 		await this.ensureOutputDir(resolvedOutput);
@@ -680,8 +696,11 @@ export class Manager {
 			throw new Error(`Target is not a native binary: ${resolvedTarget}`);
 		}
 
-		const sourceCliText =
-			extractClaudeJsFromNativeBinary(resolvedTarget).toString("utf-8");
+		let extraction: PatchableNativeJavaScript | null =
+			await extractPatchableJavaScriptFromNativeBinary(resolvedTarget);
+		const sourceCliText = extraction.code.toString("utf-8");
+		extraction = null;
+		forceGarbageCollection();
 		const wrapper = unwrapBunCjsModule(sourceCliText);
 		const inputBody = await fs.readFile(resolvedInput, "utf-8");
 		const repackedText = wrapper

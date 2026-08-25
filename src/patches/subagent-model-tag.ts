@@ -81,7 +81,16 @@ function getPropertyDescription(
 	const property = getObjectPropertyByName(object, propertyName);
 	if (!property) return null;
 	const describeCall = getMemberCall(property.value, "describe");
-	return getStaticString(describeCall?.arguments[0] as t.Node | undefined);
+	const argument = describeCall?.arguments[0] as t.Node | undefined;
+	const direct = getStaticString(argument);
+	if (direct !== null) return direct;
+	if (!argument) return null;
+	const fragments: string[] = [];
+	t.traverseFast(argument, (node) => {
+		const value = getStaticString(node);
+		if (value !== null) fragments.push(value);
+	});
+	return fragments.length > 0 ? fragments.join(" ") : null;
 }
 
 function isAgentModelDescription(description: string | null): boolean {
@@ -414,13 +423,27 @@ function getResolverParentModelName(call: t.CallExpression): string | null {
 	return parentModel.name;
 }
 
-function getForkLaunchCallShape(call: t.CallExpression): {
+function getForkLaunchCallShape(
+	path: NodePath<t.VariableDeclarator>,
+	call: t.CallExpression,
+): {
 	forkName: string;
 	parentModelName: string;
 } | null {
 	if (call.arguments.length < 4) return null;
 	const parentModelName = getResolverParentModelName(call);
-	const override = call.arguments[2];
+	const rawOverride = call.arguments[2];
+	let override: t.Node | null = t.isNode(rawOverride) ? rawOverride : null;
+	if (t.isIdentifier(override)) {
+		const binding = path.scope.getBinding(override.name);
+		if (
+			binding &&
+			t.isVariableDeclarator(binding.path.node) &&
+			t.isExpression(binding.path.node.init)
+		) {
+			override = binding.path.node.init;
+		}
+	}
 	if (
 		!parentModelName ||
 		!t.isConditionalExpression(override) ||
@@ -437,7 +460,7 @@ function classifyForkLaunchResolution(
 ): ForkResolutionCandidate | null {
 	const initializer = path.node.init;
 	if (t.isCallExpression(initializer)) {
-		const shape = getForkLaunchCallShape(initializer);
+		const shape = getForkLaunchCallShape(path, initializer);
 		if (!shape || !hasResolvedAgentModelReference(path)) return null;
 		return { path, resolverCall: initializer, state: "unpatched", ...shape };
 	}
@@ -449,7 +472,7 @@ function classifyForkLaunchResolution(
 	) {
 		return null;
 	}
-	const shape = getForkLaunchCallShape(initializer.alternate);
+	const shape = getForkLaunchCallShape(path, initializer.alternate);
 	if (!shape || !hasResolvedAgentModelReference(path)) return null;
 	const state: PatchSiteState =
 		initializer.test.name === shape.forkName &&
@@ -699,8 +722,9 @@ function subtreeHasObjectKey(node: t.Node, keyName: string): boolean {
 
 function isVoidZero(node: t.Node | null | undefined): boolean {
 	return (
-		t.isUnaryExpression(node, { operator: "void" }) &&
-		t.isNumericLiteral(node.argument, { value: 0 })
+		t.isIdentifier(node, { name: "undefined" }) ||
+		(t.isUnaryExpression(node, { operator: "void" }) &&
+			t.isNumericLiteral(node.argument, { value: 0 }))
 	);
 }
 

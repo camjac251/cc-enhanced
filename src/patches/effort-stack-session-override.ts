@@ -81,8 +81,9 @@ export function isFalseLiteralExpression(
 
 export function isVoidZeroExpression(expr: t.Expression): boolean {
 	return (
-		t.isUnaryExpression(expr, { operator: "void" }) &&
-		t.isNumericLiteral(expr.argument, { value: 0 })
+		t.isIdentifier(expr, { name: "undefined" }) ||
+		(t.isUnaryExpression(expr, { operator: "void" }) &&
+			t.isNumericLiteral(expr.argument, { value: 0 }))
 	);
 }
 

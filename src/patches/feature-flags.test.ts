@@ -53,6 +53,25 @@ test("feature-flags is idempotent", async () => {
 	assert.equal(twice, once);
 });
 
+test("feature-flags resolves the Monitor gate through its lexical binding", async () => {
+	const source = `${MONITOR_FIXTURE}
+function unrelatedScope() {
+  function monitorGate() {
+    return false;
+  }
+  return monitorGate();
+}
+`;
+
+	const output = await applyFeatureFlagsPatch(source);
+
+	assert.match(output, /function monitorGate\(\) \{\s*return true;\s*\}/);
+	assert.match(
+		output,
+		/function unrelatedScope\(\) \{[\s\S]*return false;[\s\S]*return monitorGate\(\);/,
+	);
+});
+
 test("feature-flags verify fails when the Monitor gate remains remote", () => {
 	const ast = parse(MONITOR_FIXTURE);
 	assert.match(

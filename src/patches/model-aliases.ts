@@ -773,8 +773,9 @@ if (process.env.${MODEL_ALIASES_ENV} !== void 0) {
 
 function isVoidZero(node: t.Node | null | undefined): boolean {
 	return (
-		t.isUnaryExpression(node, { operator: "void" }) &&
-		t.isNumericLiteral(node.argument, { value: 0 })
+		t.isIdentifier(node, { name: "undefined" }) ||
+		(t.isUnaryExpression(node, { operator: "void" }) &&
+			t.isNumericLiteral(node.argument, { value: 0 }))
 	);
 }
 

@@ -213,6 +213,31 @@ test("file-link-targets patches the current guarded file dispatcher", async () =
 	assert.equal(fileLinkTargets.verify(output), true);
 });
 
+test("file-link-targets patches a dispatcher inside a module initializer", async () => {
+	const ast = parse(`function initializeModule() {${FILE_DISPATCH_FIXTURE}}`);
+	await runFileLinkTargetsViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(
+		output,
+		/return await _ccEnhancedOpenFileTarget\(filePath, revealFile, runProcess, warn\)/,
+	);
+	assert.equal(fileLinkTargets.verify(output, ast), true);
+});
+
+test("file-link-targets resolves a directly imported file URL decoder", async () => {
+	const fixture = `import { fileURLToPath as decodeFileUrl } from "url";\n${FILE_DISPATCH_FIXTURE.replaceAll(
+		"pathApi.fileURLToPath(value)",
+		"decodeFileUrl(value)",
+	)}`;
+	const ast = parse(fixture);
+	await runFileLinkTargetsViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /return await _ccEnhancedOpenFileTarget/);
+	assert.equal(fileLinkTargets.verify(output, ast), true);
+});
+
 test("file-link-targets preserves the Windows Explorer reveal fallback", async () => {
 	const ast = parse(WINDOWS_FILE_DISPATCH_FIXTURE);
 	await runFileLinkTargetsViaPasses(ast);
