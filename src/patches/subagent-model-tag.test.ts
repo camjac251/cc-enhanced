@@ -232,6 +232,11 @@ ${AGENT_SCHEMA_FIXTURE}
 ${AGENT_LIFECYCLE_FIXTURE}
 `;
 
+const CURRENT_SUBAGENT_FIXTURE = SUBAGENT_FIXTURE.replace(
+	/function spawnTeammateBackendA[\s\S]+?(?=async function\* runChild)/,
+	"",
+);
+
 // A resume-time wrapper re-exposes the selected agent through
 // `cond ? { ...selectedAgent, effort } : selectedAgent` before the model
 // resolver reads it, so the fork flag sits one binding level behind the model
@@ -393,6 +398,17 @@ test("subagent-model-tag routes named teammates without replacing agent_type", a
 		2,
 		"both teammate backends must turn the named level into session effort",
 	);
+});
+
+test("subagent-model-tag routes effort through the unified teammate launch", async () => {
+	const output = await patchSource(CURRENT_SUBAGENT_FIXTURE);
+
+	assert.equal(output.includes("agent_type: subagent_type"), true);
+	assert.equal(
+		output.includes("effort: __claudeCodeAgentEffortOverride"),
+		true,
+	);
+	assert.equal(subagentModelTag.verify(output, parse(output)), true);
 });
 
 test("subagent-model-tag verification rejects coordinated effort drift", async () => {

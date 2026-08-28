@@ -71,6 +71,39 @@ test("rebundles static and dynamic imports into one ESM module", async () => {
 	);
 });
 
+test("retains patchable lazy modules without executing them", async () => {
+	const modules = [
+		embeddedJavaScriptModule(
+			0,
+			"/app/entry.js",
+			'export const result = "entry";',
+		),
+		embeddedJavaScriptModule(
+			1,
+			"/app/lazy.js",
+			'globalThis.__lazyPatchSurfaceExecuted = true; export const prompt = "File must be read first";',
+		),
+		embeddedJavaScriptModule(
+			2,
+			"/app/unrelated.js",
+			'export const unrelated = "not retained";',
+		),
+	];
+
+	const output = await rebundleEmbeddedJavaScript(modules, 0);
+	const code = output.toString("utf-8");
+
+	assert.match(code, /File must be read first/);
+	assert.doesNotMatch(code, /not retained/);
+	delete (globalThis as Record<string, unknown>).__lazyPatchSurfaceExecuted;
+	const moduleUrl = `data:text/javascript;base64,${output.toString("base64")}`;
+	await import(moduleUrl);
+	assert.equal(
+		(globalThis as Record<string, unknown>).__lazyPatchSurfaceExecuted,
+		undefined,
+	);
+});
+
 test("reports build failures without exposing embedded module names", async () => {
 	const modules = [
 		embeddedJavaScriptModule(

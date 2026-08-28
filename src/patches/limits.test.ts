@@ -22,7 +22,6 @@ async function runLimitsViaPasses(ast: any): Promise<void> {
 //
 // Key structural requirements the patch traversal expects:
 // - byteCeiling: async function(file, limit = VAR) with inline stat(file).size <= limit
-// - tokenBudget: function containing CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS env ref + sibling default var after the function
 // - resultSizeCap: helper with third param defaulting to VAR and returning Math.min(secondParam, thirdParam)
 // - readMaxResultSize: object with name:"Read" and maxResultSizeChars:100000
 // - linesCap/lineChars: template literal with "Reads a file" trigger + interpolated vars
@@ -31,16 +30,6 @@ var bYC = 262144;
 var ZPA = 50000;
 var lNC = 2000;
 var lCC = 500;
-
-function getMaxOutputTokens() {
-  let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
-  if (env) {
-    let parsed = Number(env);
-    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
-  }
-  return;
-}
-var rTI = 25000;
 
 async function checkFileSize(filePath, maxSize = bYC) {
   if ((await require("fs").stat(filePath)).size <= maxSize) {
@@ -65,7 +54,7 @@ The file reads up to \${lNC} lines of content.
 Lines longer than \${lCC} characters are truncated.\`;
 `;
 
-test("limits patch modifies all six numeric targets via combined AST passes", async () => {
+test("limits patch modifies the current numeric targets via combined AST passes", async () => {
 	const ast = parse(LIMITS_FIXTURE);
 	await runLimitsViaPasses(ast);
 	const output = print(ast);
@@ -80,18 +69,6 @@ test("limits patch modifies all six numeric targets via combined AST passes", as
 		output.includes("1048576"),
 		true,
 		"new byteCeiling should be present",
-	);
-
-	// tokenBudget: 25000 -> 50000
-	assert.equal(
-		output.includes("rTI = 25000"),
-		false,
-		"old tokenBudget should be gone",
-	);
-	assert.equal(
-		output.includes("rTI = 50000"),
-		true,
-		"new tokenBudget should be present",
 	);
 
 	// resultSizeCap: 50000 -> 120000
@@ -143,21 +120,6 @@ test("limits patch modifies all six numeric targets via combined AST passes", as
 	);
 });
 
-test("limits finds the token budget after intervening helper declarations", async () => {
-	const fixture = LIMITS_FIXTURE.replace(
-		"var rTI = 25000;",
-		`function normalizeReadOptions() { return {}; }
-function buildReadResult() { return {}; }
-var rTI = 25000;`,
-	);
-	const ast = parse(fixture);
-	await runLimitsViaPasses(ast);
-	const output = print(ast);
-
-	assert.equal(output.includes("rTI = 50000"), true);
-	assert.equal(limits.verify(output, parse(output)), true);
-});
-
 test("limits verify returns true on patched AST", async () => {
 	const ast = parse(LIMITS_FIXTURE);
 	await runLimitsViaPasses(ast);
@@ -182,23 +144,6 @@ test("limits verify detects unpatched byteCeiling", () => {
 		true,
 		"failure should mention byteCeiling",
 	);
-});
-
-test("limits verify detects wrong tokenBudget value", async () => {
-	// Patch it, then manually revert just the token budget
-	const ast = parse(LIMITS_FIXTURE);
-	await runLimitsViaPasses(ast);
-	const output = print(ast);
-
-	const tampered = output.replace("rTI = 50000", "rTI = 30000");
-	const tamperedAst = parse(tampered);
-	const result = limits.verify(tampered, tamperedAst);
-	assert.equal(
-		typeof result,
-		"string",
-		"verify should fail on wrong tokenBudget",
-	);
-	assert.equal(String(result).includes("tokenBudget"), true);
 });
 
 test("limits verify requires resultSizeCap < readMaxResultSize", async () => {
@@ -227,42 +172,6 @@ test("limits verify requires resultSizeCap < readMaxResultSize", async () => {
 	);
 });
 
-test("limits verify requires CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS env var reference", async () => {
-	// First fully patch the fixture, then remove the env var reference.
-	// The verify check for the env var (line 618+) runs after the numeric limit checks,
-	// so we need all numeric limits to be correct first.
-	const ast = parse(LIMITS_FIXTURE);
-	await runLimitsViaPasses(ast);
-	const output = print(ast);
-	assert.equal(
-		limits.verify(output, ast),
-		true,
-		"sanity: patched fixture should pass",
-	);
-
-	// Strip the env var name from the output. collectCurrentLimits also uses
-	// this env var to find the token budget function, so it won't find tokenBudget.
-	// The verify will fail on "Could not resolve limit tokenBudget" first.
-	// That's still a valid failure. Verify catches the env var removal indirectly.
-	const stripped = output.replaceAll(
-		"CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS",
-		"SOME_OTHER_ENV_VAR",
-	);
-	const strippedAst = parse(stripped);
-	const result = limits.verify(stripped, strippedAst);
-	assert.equal(
-		typeof result,
-		"string",
-		"verify should fail when env var is removed",
-	);
-	// The failure is about tokenBudget resolution (which depends on the env var function)
-	assert.equal(
-		String(result).includes("tokenBudget"),
-		true,
-		"should fail to resolve tokenBudget without the env var",
-	);
-});
-
 test("limits verify returns failure string when AST is missing", () => {
 	const result = limits.verify("some code");
 	assert.equal(typeof result, "string");
@@ -280,11 +189,6 @@ test("limits patch is idempotent (running twice produces same output)", async ()
 	const output2 = print(ast2);
 
 	// The numeric values should be unchanged (patch guards on original values)
-	assert.equal(
-		output2.includes("rTI = 50000"),
-		true,
-		"tokenBudget should remain 50000",
-	);
 	assert.equal(
 		output2.includes("1048576"),
 		true,

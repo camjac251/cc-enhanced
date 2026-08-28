@@ -7,7 +7,6 @@ import { getObjectKeyName, isMemberPropertyName } from "./ast-helpers.js";
 const NEW_LINES_CAP = 5000;
 const NEW_LINE_CHARS = 5000;
 const NEW_BYTE_CEILING = 1048576;
-const NEW_TOKEN_BUDGET = 50000;
 // Persistence cap: controls when formatted results get disk-persisted.
 // 120K chars ~ 30K tokens. The token budget (50K raw) remains the primary gate;
 // this cap prevents large formatted output from staying inline forever.
@@ -78,28 +77,6 @@ function isMathReference(node: t.Expression | t.Super): boolean {
 	);
 }
 
-function findTokenBudgetLiteral(
-	functionPath: any,
-	acceptedValues: readonly number[],
-): t.NumericLiteral | null {
-	const siblings = functionPath.getAllNextSiblings?.();
-	if (!Array.isArray(siblings)) return null;
-	for (const sibling of siblings) {
-		if (t.isFunctionDeclaration(sibling.node)) continue;
-		if (!t.isVariableDeclaration(sibling.node)) return null;
-		for (const declaration of sibling.node.declarations) {
-			if (
-				t.isNumericLiteral(declaration.init) &&
-				acceptedValues.includes(declaration.init.value)
-			) {
-				return declaration.init;
-			}
-		}
-		return null;
-	}
-	return null;
-}
-
 /** Resolve maxResultSizeChars value from NumericLiteral or BinaryExpression (1/0 = Infinity). */
 function resolveMaxResultSizeValue(node: t.Node): number | null {
 	if (t.isNumericLiteral(node)) return node.value;
@@ -166,19 +143,15 @@ function collectCurrentLimits(ast: t.File): {
 	linesCap?: number;
 	lineChars?: number;
 	byteCeiling?: number;
-	tokenBudget?: number;
 	resultSizeCap?: number;
 	readMaxResultSize?: number;
-	hasTokenEnvRef?: boolean;
 } {
 	const current: {
 		linesCap?: number;
 		lineChars?: number;
 		byteCeiling?: number;
-		tokenBudget?: number;
 		resultSizeCap?: number;
 		readMaxResultSize?: number;
-		hasTokenEnvRef?: boolean;
 	} = {};
 
 	// One full-tree traversal collects every verifier input at once. Each
@@ -257,35 +230,6 @@ function collectCurrentLimits(ast: t.File): {
 				}
 			}
 
-			// tokenBudget: function whose body references the env var, followed by
-			// helper declarations and the budget-default variable declaration.
-			if (
-				current.tokenBudget === undefined &&
-				t.isBlockStatement(path.node.body)
-			) {
-				let hasEnv = false;
-				path.traverse({
-					MemberExpression(innerPath: any) {
-						const node = innerPath.node;
-						const prop = node.property;
-						const propName =
-							(t.isIdentifier(prop) && prop.name) ||
-							(t.isStringLiteral(prop) && prop.value) ||
-							null;
-						if (propName !== "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS") return;
-						hasEnv = true;
-						innerPath.stop();
-					},
-				});
-				if (hasEnv) {
-					const budget = findTokenBudgetLiteral(path, [
-						25000,
-						NEW_TOKEN_BUDGET,
-					]);
-					if (budget) current.tokenBudget = budget.value;
-				}
-			}
-
 			// resultSizeCap
 			if (current.resultSizeCap === undefined) {
 				const resolved = resolveResultSizeCapBinding(path);
@@ -337,20 +281,6 @@ function collectCurrentLimits(ast: t.File): {
 
 			current.readMaxResultSize = resolved;
 		},
-		MemberExpression(path: any) {
-			// Token-budget env var: just confirm an occurrence exists somewhere
-			// in the bundle. The original verify did a dedicated full-tree
-			// traverse for this; folding it in here drops one full walk.
-			if (current.hasTokenEnvRef) return;
-			const prop = path.node.property;
-			const propName =
-				(t.isIdentifier(prop) && prop.name) ||
-				(t.isStringLiteral(prop) && prop.value) ||
-				null;
-			if (propName === "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS") {
-				current.hasTokenEnvRef = true;
-			}
-		},
 	});
 
 	return current;
@@ -360,7 +290,6 @@ function runLimitsPatch(ast: t.File): void {
 	limitsChanged = {};
 
 	patchByteCeiling(ast);
-	patchTokenBudget(ast);
 	patchResultSizeCap(ast);
 	patchReadMaxResultSize(ast);
 
@@ -445,45 +374,6 @@ function runLimitsPatch(ast: t.File): void {
 				limitsChanged.byteCeiling = [
 					String(init.value),
 					String(NEW_BYTE_CEILING),
-				];
-				patched = true;
-				path.stop();
-			},
-		});
-	}
-
-	function patchTokenBudget(ast: any) {
-		let patched = false;
-
-		traverse(ast, {
-			Function(path: any) {
-				if (patched) return;
-				if (!t.isBlockStatement(path.node.body)) return;
-
-				let hasEnv = false;
-				path.traverse({
-					MemberExpression(innerPath: any) {
-						const node = innerPath.node;
-						const prop = node.property;
-						const propName =
-							(t.isIdentifier(prop) && prop.name) ||
-							(t.isStringLiteral(prop) && prop.value) ||
-							null;
-						if (propName !== "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS") return;
-						hasEnv = true;
-						innerPath.stop();
-					},
-				});
-				if (!hasEnv) return;
-
-				const budget = findTokenBudgetLiteral(path, [25000]);
-				if (!budget) return;
-				const oldValue = budget.value;
-				budget.value = NEW_TOKEN_BUDGET;
-				budget.extra = undefined;
-				limitsChanged.tokenBudget = [
-					String(oldValue),
-					String(NEW_TOKEN_BUDGET),
 				];
 				patched = true;
 				path.stop();
@@ -633,7 +523,6 @@ export const limits: Patch = {
 			[keyof NonNullable<PatchResult["limits"]>, number, number | undefined]
 		> = [
 			["byteCeiling", NEW_BYTE_CEILING, current.byteCeiling],
-			["tokenBudget", NEW_TOKEN_BUDGET, current.tokenBudget],
 			["resultSizeCap", NEW_RESULT_SIZE_CAP, current.resultSizeCap],
 		];
 		for (const [key, expected, actual] of requiredChecks) {
@@ -670,10 +559,6 @@ export const limits: Patch = {
 			current.resultSizeCap >= current.readMaxResultSize
 		) {
 			return `resultSizeCap (${current.resultSizeCap}) must be less than readMaxResultSize (${current.readMaxResultSize}) for persistence to govern`;
-		}
-
-		if (!current.hasTokenEnvRef) {
-			return "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS env var reference not found in token budget function";
 		}
 
 		return true;

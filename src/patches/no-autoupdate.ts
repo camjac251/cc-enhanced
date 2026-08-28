@@ -14,9 +14,15 @@ import { getMemberPropertyName } from "./ast-helpers.js";
  * reason if disabled. We inject an early return "patched".
  */
 function isDisableAutoupdaterCheck(node: t.Node | null | undefined): boolean {
-	if (!node || !t.isMemberExpression(node)) return false;
-	if (!t.isIdentifier(node.object)) return false;
-	return getMemberPropertyName(node) === "DISABLE_AUTOUPDATER";
+	if (!node) return false;
+	const candidate =
+		t.isCallExpression(node) && node.arguments.length === 1
+			? node.arguments[0]
+			: node;
+	return (
+		t.isMemberExpression(candidate) &&
+		getMemberPropertyName(candidate) === "DISABLE_AUTOUPDATER"
+	);
 }
 
 function isForceAutoupdatePluginsMember(

@@ -76,7 +76,7 @@ interface StockRevealBindings {
 	revealName: string;
 	revealBindingNode: t.Node;
 	runnerName: string;
-	runnerBindingNode: t.Node;
+	runnerBindingNode: t.Node | null;
 }
 
 interface StockDispatchCall {
@@ -263,8 +263,9 @@ function getDbusRevealBindings(
 	const revealName = getCallableName(functionPath);
 	if (!revealName) return null;
 	const revealBindingNode = path.scope.getBinding(revealName)?.path.node;
-	const runnerBindingNode = path.scope.getBinding(node.callee.name)?.path.node;
-	if (!revealBindingNode || !runnerBindingNode) return null;
+	const runnerBindingNode =
+		path.scope.getBinding(node.callee.name)?.path.node ?? null;
+	if (!revealBindingNode) return null;
 	return {
 		revealName,
 		revealBindingNode,
@@ -375,8 +376,9 @@ function getWindowsExplorerRevealBindings(
 	const revealName = getCallableName(functionPath);
 	if (!revealName) return null;
 	const revealBindingNode = path.scope.getBinding(revealName)?.path.node;
-	const runnerBindingNode = path.scope.getBinding(node.callee.name)?.path.node;
-	if (!revealBindingNode || !runnerBindingNode) return null;
+	const runnerBindingNode =
+		path.scope.getBinding(node.callee.name)?.path.node ?? null;
+	if (!revealBindingNode) return null;
 	return {
 		revealName,
 		revealBindingNode,
@@ -501,19 +503,31 @@ function getGuardedFileDispatchFlow(
 	if (
 		!t.isIfStatement(rejectStatement) ||
 		rejectStatement.alternate ||
-		!t.isCallExpression(rejectStatement.test) ||
-		!t.isIdentifier(rejectStatement.test.callee) ||
-		rejectStatement.test.arguments.length !== 1 ||
-		!t.isIdentifier(rejectStatement.test.arguments[0]) ||
 		!isFalseReturn(rejectStatement.consequent)
 	) {
 		return null;
 	}
-	const rejectCallPath = callPaths.get(rejectStatement.test);
+	const rejectCalls: t.CallExpression[] = [];
+	t.traverseFast(rejectStatement.test, (node) => {
+		if (t.isCallExpression(node)) rejectCalls.push(node);
+	});
 	if (
-		!rejectCallPath ||
-		rejectCallPath.scope.getBinding(rejectStatement.test.arguments[0].name) !==
-			decodedPathBinding
+		rejectCalls.length === 0 ||
+		rejectCalls.some((rejectCall) => {
+			if (
+				!t.isIdentifier(rejectCall.callee) ||
+				rejectCall.arguments.length !== 1 ||
+				!t.isIdentifier(rejectCall.arguments[0])
+			) {
+				return true;
+			}
+			const rejectCallPath = callPaths.get(rejectCall);
+			return (
+				!rejectCallPath ||
+				rejectCallPath.scope.getBinding(rejectCall.arguments[0].name) !==
+					decodedPathBinding
+			);
+		})
 	) {
 		return null;
 	}

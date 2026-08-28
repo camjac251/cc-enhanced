@@ -3,13 +3,11 @@ import { test } from "node:test";
 import { parse, print } from "../loader.js";
 import { signature } from "./signature.js";
 
-// Mirrors the real upstream shape: the title is a composite outer template
-// wrapping helper calls whose first argument is the literal "Claude Code".
-// The marketplace error template merely starts its quasi with "Claude Code v..."
-// (= "Claude Code version") and must NOT be decorated by the signature patch.
+// Mirrors the current upstream shape: the title is an element children array
+// containing a bold brand, a separator, and a dim version element.
 const SIGNATURE_FIXTURE = `
-function makeTitle(e, I) {
-  return \` \${Eq("claude", e)("Claude Code")} \${Eq("inactive", e)(\`v\${I}\`)} \`;
+function makeTitle(Text, I) {
+  return jsxs(Text, { children: [jsx(Text, { bold: true, children: "Claude Code" }), " ", jsxs(Text, { dimColor: true, children: ["v", I] })] });
 }
 
 function marketplaceError(H) {
@@ -28,15 +26,13 @@ test("signature verify rejects unpatched fixture", () => {
 	assert.equal(typeof result, "string");
 });
 
-test("signature decorates composite UI title and version, leaves marketplace error intact", () => {
+test("signature decorates UI title and version, leaves marketplace error intact", () => {
 	const ast = parse(SIGNATURE_FIXTURE);
 	signature.postApply?.(ast, ["alpha", "beta"]);
 	const output = print(ast);
 
-	// Composite title's outer last quasi gets the patched marker appended.
-	// The original last quasi is " " (a space), so print() emits "  \u2022 patched".
 	assert.equal(
-		output.includes('Eq("inactive", e)(`v${I}`)}  \\u2022 patched`'),
+		output.includes('children: "Claude Code \\u2022 patched"'),
 		true,
 		`title not decorated; output:\n${output}`,
 	);
@@ -75,7 +71,7 @@ test("signature verify rejects bundle where only marketplace error has patched m
 	// marketplace error template instead of the real composite title.
 	const polluted = `
 function makeTitle(e, I) {
-  return \` \${Eq("claude", e)("Claude Code")} \${Eq("inactive", e)(\`v\${I}\`)} \`;
+  return jsxs(e, { children: [jsx(e, { bold: true, children: "Claude Code" }), " ", jsxs(e, { dimColor: true, children: ["v", I] })] });
 }
 
 function marketplaceError(H) {
@@ -102,7 +98,7 @@ function versionText(VERSION) {
 	);
 });
 
-test("signature postApply is idempotent on composite title", () => {
+test("signature postApply is idempotent on UI title", () => {
 	const ast = parse(SIGNATURE_FIXTURE);
 	signature.postApply?.(ast, ["alpha"]);
 	signature.postApply?.(ast, ["alpha"]);
@@ -126,7 +122,7 @@ test("signature postApply is a no-op when no tags applied", () => {
 	assert.equal(output.includes("patched:"), false);
 });
 
-test("signature base fixture has exactly one composite title and decorates it once", () => {
+test("signature base fixture has exactly one UI title and decorates it once", () => {
 	const ast = parse(SIGNATURE_FIXTURE);
 	signature.postApply?.(ast, ["alpha"]);
 	const output = print(ast);
@@ -140,13 +136,10 @@ test("signature base fixture has exactly one composite title and decorates it on
 	);
 });
 
-test("signature decorates every composite UI title when more than one exists", () => {
-	// Two composite-title-shaped templates: both wrap a sole-arg helper call
-	// on the literal "Claude Code", so both must be decorated and verify must
-	// require all of them signed (patchedTitleCount === compositeTitleCount).
+test("signature decorates every UI title when more than one exists", () => {
 	const twoTitles = `
-function titleA(e, I) { return \` \${Eq("claude", e)("Claude Code")} \${Eq("inactive", e)(\`v\${I}\`)} \`; }
-function titleB(e, I) { return \`[\${Eq("claude", e)("Claude Code")}] v\${I} \`; }
+function titleA(e, I) { return jsxs(e, { children: [jsx(e, { bold: true, children: "Claude Code" }), " ", jsxs(e, { dimColor: true, children: ["v", I] })] }); }
+function titleB(e, I) { return jsxs(e, { children: [jsx(e, { bold: true, children: "Claude Code" }), " ", jsxs(e, { dimColor: true, children: ["v", I] })] }); }
 function versionText(VERSION) { return \`\${VERSION} (Claude Code)\${suffix()}\`; }
 `;
 	const ast = parse(twoTitles);
@@ -167,7 +160,7 @@ test("signature verify rejects bundle with an unsigned leftover version template
 	// hasPatchedVersion is true via the signed one, but hasLegacyVersionTemplate
 	// must still reject because an unsigned " (Claude Code)" template remains.
 	const partial = `
-function titleX(e, I) { return \` \${Eq("claude", e)("Claude Code")} \${Eq("inactive", e)(\`v\${I}\`)} • patched \`; }
+function titleX(e, I) { return jsxs(e, { children: [jsx(e, { bold: true, children: "Claude Code • patched" }), " ", jsxs(e, { dimColor: true, children: ["v", I] })] }); }
 function versionA(V) { return \`\${V} (Claude Code; patched: alpha)\${s()}\`; }
 function versionB(V) { return \`\${V} (Claude Code)\${s()}\`; }
 `;

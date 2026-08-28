@@ -189,7 +189,7 @@ function expressionMatches(left: t.Expression, right: t.Expression): boolean {
 	if (t.isIdentifier(left) && t.isIdentifier(right)) {
 		return left.name === right.name;
 	}
-	return false;
+	return t.isNodesEquivalent(left, right);
 }
 
 function globalQueueMember(): t.MemberExpression {
@@ -355,6 +355,39 @@ function getFunctionObjectParam(
 	return null;
 }
 
+function findPastedSetter(
+	functionPath: NodePath<FunctionLike>,
+): t.Expression | null {
+	const pattern = getFunctionObjectParam(functionPath);
+	const directSetter = pattern
+		? getLocalObjectPatternName(pattern, "setPastedContents")
+		: null;
+	if (directSetter) return directSetter;
+
+	const candidates: t.Identifier[] = [];
+	traverse(
+		functionPath.node,
+		{
+			noScope: true,
+			Function(path) {
+				if (path.node !== functionPath.node) path.skip();
+			},
+			VariableDeclarator(path) {
+				if (
+					t.isIdentifier(path.node.id) &&
+					t.isMemberExpression(path.node.init) &&
+					getMemberName(path.node.init) === "setPastedContents"
+				) {
+					candidates.push(path.node.id);
+				}
+			},
+		},
+		undefined,
+		undefined,
+	);
+	return candidates.length === 1 ? candidates[0] : null;
+}
+
 function getInputFromSuppressHint(value: t.Expression): t.Expression | null {
 	if (
 		!t.isBinaryExpression(value, { operator: ">" }) ||
@@ -367,11 +400,15 @@ function getInputFromSuppressHint(value: t.Expression): t.Expression | null {
 	return t.isExpression(value.left.object) ? value.left.object : null;
 }
 
-function findDraftState(functionNode: FunctionLike): {
+function findDraftState(
+	functionNode: FunctionLike,
+	fallbackInput: t.Expression,
+): {
 	input: t.Expression;
 	loading: t.Expression;
 } | null {
 	const matches: Array<{ input: t.Expression; loading: t.Expression }> = [];
+	const loadingCandidates: t.Expression[] = [];
 
 	traverse(
 		functionNode,
@@ -383,17 +420,30 @@ function findDraftState(functionNode: FunctionLike): {
 			ObjectExpression(path) {
 				const suppressHint = getObjectPropertyValue(path.node, "suppressHint");
 				const isLoading = getObjectPropertyValue(path.node, "isLoading");
-				if (!suppressHint || !isLoading) return;
-				const input = getInputFromSuppressHint(suppressHint);
-				if (!input) return;
-				matches.push({ input, loading: isLoading });
+				if (suppressHint && isLoading) {
+					const input = getInputFromSuppressHint(suppressHint);
+					if (input) matches.push({ input, loading: isLoading });
+				}
+				if (
+					isLoading &&
+					hasObjectProperty(path.node, "mode") &&
+					hasObjectProperty(path.node, "viewingAgentName") &&
+					!loadingCandidates.some((candidate) =>
+						t.isNodesEquivalent(candidate, isLoading),
+					)
+				) {
+					loadingCandidates.push(isLoading);
+				}
 			},
 		},
 		undefined,
 		undefined,
 	);
 
-	return matches.length === 1 ? matches[0] : null;
+	if (matches.length === 1) return matches[0];
+	return loadingCandidates.length === 1
+		? { input: fallbackInput, loading: loadingCandidates[0] }
+		: null;
 }
 
 function isInputConfigObject(object: t.ObjectExpression): boolean {
@@ -429,6 +479,7 @@ function getDraftQueueTarget(
 	const handlerExpr = getObjectPropertyValue(path.node, "onKeyDownBefore");
 	const submitExpr = getObjectPropertyValue(path.node, "onSubmit");
 	const inputSetter = getObjectPropertyValue(path.node, "onChange");
+	const inputValue = getObjectPropertyValue(path.node, "value");
 	const cursorSetter = getObjectPropertyValue(
 		path.node,
 		"onChangeCursorOffset",
@@ -437,6 +488,7 @@ function getDraftQueueTarget(
 		!t.isIdentifier(handlerExpr) ||
 		!submitExpr ||
 		!inputSetter ||
+		!inputValue ||
 		!cursorSetter
 	) {
 		return null;
@@ -445,13 +497,10 @@ function getDraftQueueTarget(
 	const ownerFunction = findNearestFunction(path);
 	if (!ownerFunction) return null;
 
-	const pattern = getFunctionObjectParam(ownerFunction);
-	const pastedSetter = pattern
-		? getLocalObjectPatternName(pattern, "setPastedContents")
-		: null;
+	const pastedSetter = findPastedSetter(ownerFunction);
 	if (!pastedSetter) return null;
 
-	const draftState = findDraftState(ownerFunction.node);
+	const draftState = findDraftState(ownerFunction.node, inputValue);
 	if (!draftState) return null;
 
 	const handler = findFunctionBinding(path, handlerExpr.name);
@@ -843,30 +892,45 @@ function isPromptSubmitForwardCall(
 	);
 }
 
+function isCurrentPromptSubmitForwardCall(
+	node: t.CallExpression,
+	_inputParam: t.Identifier,
+	_scopePath: NodePath<t.Node>,
+): boolean {
+	if (node.arguments.length < 1 || node.arguments.length > 2) return false;
+	const inputArg = node.arguments[0];
+	if (!t.isConditionalExpression(inputArg)) return false;
+	const branches = [inputArg.consequent, inputArg.alternate];
+	return (
+		branches.some((branch) => t.isStringLiteral(branch, { value: "" })) &&
+		branches.some(
+			(branch) =>
+				(t.isMemberExpression(branch) ||
+					t.isOptionalMemberExpression(branch)) &&
+				t.isIdentifier(branch.object),
+		)
+	);
+}
+
+function isAnyPromptSubmitForwardCall(
+	node: t.CallExpression,
+	inputParam: t.Identifier,
+	scopePath: NodePath<t.Node>,
+): boolean {
+	return (
+		isPromptSubmitForwardCall(node, inputParam, scopePath) ||
+		isCurrentPromptSubmitForwardCall(node, inputParam, scopePath)
+	);
+}
+
 function hasSubmitForwardDeferOption(target: DraftQueueTarget): boolean {
 	const submitFunction = getSubmitForwardFunction(target);
 	if (!submitFunction) return false;
-	const inputParam = getFirstIdentifierParam(submitFunction);
-	if (!inputParam) return false;
-
-	let found = false;
-	submitFunction.traverse({
-		Function(path) {
-			if (path.node !== submitFunction.node) path.skip();
-		},
-		CallExpression(path) {
-			if (found) return;
-			if (!isPromptSubmitForwardCall(path.node, inputParam, submitFunction)) {
-				return;
-			}
-			if (
-				expressionHasBooleanProp(path.node, DEFER_UNTIL_TURN_END_OPTION, true)
-			) {
-				found = true;
-			}
-		},
-	});
-	return found;
+	return expressionHasBooleanProp(
+		submitFunction.node,
+		DEFER_UNTIL_TURN_END_OPTION,
+		true,
+	);
 }
 
 function patchSubmitForward(target: DraftQueueTarget): boolean {
@@ -874,8 +938,13 @@ function patchSubmitForward(target: DraftQueueTarget): boolean {
 	const submitFunction = getSubmitForwardFunction(target);
 	if (!submitFunction) return false;
 	const inputParam = getFirstIdentifierParam(submitFunction);
-	const queueFlagParam = getParamIdentifier(submitFunction, 1);
-	if (!inputParam || !queueFlagParam) return false;
+	if (!inputParam) return false;
+	let queueFlagParam = getParamIdentifier(submitFunction, 1);
+	if (!queueFlagParam && submitFunction.node.params.length === 1) {
+		queueFlagParam = submitFunction.scope.generateUidIdentifier("queueMode");
+		submitFunction.node.params.push(queueFlagParam);
+	}
+	if (!queueFlagParam) return false;
 
 	let patched = false;
 	submitFunction.traverse({
@@ -884,7 +953,36 @@ function patchSubmitForward(target: DraftQueueTarget): boolean {
 		},
 		CallExpression(path) {
 			if (patched) return;
-			if (!isPromptSubmitForwardCall(path.node, inputParam, submitFunction)) {
+			if (
+				!isAnyPromptSubmitForwardCall(path.node, inputParam, submitFunction)
+			) {
+				return;
+			}
+			if (
+				isCurrentPromptSubmitForwardCall(path.node, inputParam, submitFunction)
+			) {
+				const originalOptions = path.node.arguments[1];
+				const queuedOptions = t.objectExpression([
+					...(t.isExpression(originalOptions)
+						? [t.spreadElement(t.cloneNode(originalOptions, true))]
+						: []),
+					t.objectProperty(
+						t.identifier(DEFER_UNTIL_TURN_END_OPTION),
+						t.booleanLiteral(true),
+					),
+				]);
+				path.node.arguments[1] = t.conditionalExpression(
+					t.binaryExpression(
+						"===",
+						t.identifier(queueFlagParam.name),
+						t.stringLiteral(TAB_QUEUE_SENTINEL),
+					),
+					queuedOptions,
+					t.isExpression(originalOptions)
+						? t.cloneNode(originalOptions, true)
+						: t.unaryExpression("void", t.numericLiteral(0)),
+				);
+				patched = true;
 				return;
 			}
 			// The receiver reads its defer signal from the third positional

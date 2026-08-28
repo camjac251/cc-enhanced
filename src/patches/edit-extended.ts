@@ -1040,6 +1040,26 @@ function getStockSingleEditArrayInputName(
 	return { inputName: parsedInputName };
 }
 
+function isStockSingleEditArrayFromBindings(
+	node: t.Node,
+	bindings: Record<"old_string" | "new_string" | "replace_all", string>,
+): boolean {
+	if (!t.isArrayExpression(node) || node.elements.length !== 1) return false;
+	const [entry] = node.elements;
+	if (!t.isObjectExpression(entry)) return false;
+	return Object.entries(bindings).every(([propertyName, bindingName]) => {
+		const property = entry.properties.find(
+			(candidate): candidate is t.ObjectProperty =>
+				t.isObjectProperty(candidate) &&
+				hasObjectKeyName(candidate, propertyName),
+		);
+		return (
+			property !== undefined &&
+			t.isIdentifier(property.value, { name: bindingName })
+		);
+	});
+}
+
 function patchStructuredEditInputNormalization(
 	ast: t.File,
 	toolVarName: string,
@@ -1154,6 +1174,81 @@ function patchStructuredEditInputNormalization(
 			);
 		},
 	});
+}
+
+function patchCurrentStructuredEditApplication(ast: t.File): void {
+	const candidates: Array<{
+		input: t.ObjectPattern;
+		editsProperty: t.ObjectProperty;
+	}> = [];
+
+	traverse(ast, {
+		Function(path) {
+			const [input] = path.node.params;
+			if (!t.isObjectPattern(input)) return;
+			const oldStringName = getObjectPatternBindingName(input, "old_string");
+			const newStringName = getObjectPatternBindingName(input, "new_string");
+			const replaceAllName = getObjectPatternBindingName(input, "replace_all");
+			if (!oldStringName || !newStringName || !replaceAllName) return;
+			const editBindings = {
+				old_string: oldStringName,
+				new_string: newStringName,
+				replace_all: replaceAllName,
+			};
+
+			const editsProperties: t.ObjectProperty[] = [];
+			path.traverse({
+				ObjectExpression(objectPath) {
+					if (!getObjectPropertyByName(objectPath.node, "fileContents")) return;
+					const editsProperty = getObjectPropertyByName(
+						objectPath.node,
+						"edits",
+					);
+					if (
+						editsProperty &&
+						t.isExpression(editsProperty.value) &&
+						isStockSingleEditArrayFromBindings(
+							editsProperty.value,
+							editBindings,
+						)
+					) {
+						editsProperties.push(editsProperty);
+					}
+				},
+			});
+			if (editsProperties.length === 1) {
+				candidates.push({ input, editsProperty: editsProperties[0] });
+			}
+		},
+	});
+
+	if (candidates.length !== 1) return;
+	const candidate = candidates[0];
+	const parsedEditsName = "_claudeEditParsedEdits";
+	if (getObjectPatternBindingName(candidate.input, "edits") === null) {
+		candidate.input.properties.push(
+			t.objectProperty(t.identifier("edits"), t.identifier(parsedEditsName)),
+		);
+	}
+	if (!t.isExpression(candidate.editsProperty.value)) return;
+	const stockSingleEdit = t.cloneNode(candidate.editsProperty.value, true);
+	const parsedEdits = t.identifier(parsedEditsName);
+	candidate.editsProperty.value = t.conditionalExpression(
+		t.logicalExpression(
+			"&&",
+			t.callExpression(
+				t.memberExpression(t.identifier("Array"), t.identifier("isArray")),
+				[t.cloneNode(parsedEdits)],
+			),
+			t.binaryExpression(
+				">",
+				t.memberExpression(t.cloneNode(parsedEdits), t.identifier("length")),
+				t.numericLiteral(0),
+			),
+		),
+		t.cloneNode(parsedEdits),
+		stockSingleEdit,
+	);
 }
 
 function patchEditAutoClassifierInput(editToolObj: t.ObjectExpression): void {
@@ -1427,6 +1522,7 @@ function runEditToolPatch(ast: t.File): void {
 		injectExtendedEditTransportHelpers(ast);
 		patchEditSchemaForBatchEdits(ast);
 		patchStructuredEditInputNormalization(ast, toolVarName);
+		patchCurrentStructuredEditApplication(ast);
 	}
 
 	const newPrompt = `Edit files using string replace or batch mode.
@@ -1732,6 +1828,22 @@ function hasStructuredEditInputNormalization(ast: t.File): {
 	traverse(ast, {
 		ConditionalExpression(path) {
 			const test = path.node.test;
+			if (
+				t.isLogicalExpression(test, { operator: "&&" }) &&
+				t.isCallExpression(test.left) &&
+				t.isMemberExpression(test.left.callee) &&
+				isMemberPropertyName(test.left.callee, "isArray") &&
+				t.isIdentifier(test.left.callee.object, { name: "Array" }) &&
+				test.left.arguments.length === 1 &&
+				t.isIdentifier(test.left.arguments[0]) &&
+				t.isIdentifier(path.node.consequent, {
+					name: test.left.arguments[0].name,
+				})
+			) {
+				prefersParsedEdits = true;
+				returnsStructuredEdits = true;
+				return;
+			}
 			if (
 				!t.isCallExpression(test) ||
 				!t.isIdentifier(test.callee, {

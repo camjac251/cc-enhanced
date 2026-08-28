@@ -2,7 +2,6 @@ import * as t from "@babel/types";
 import { traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
-	getObjectKeyName,
 	hasObjectKeyName,
 	isFalseLike,
 	isMemberPropertyName,
@@ -32,22 +31,9 @@ import {
  * The central result-object factory and its `isCollapsible` property are LEFT INTACT,
  * so the cache tail scanner still sees `isCollapsible: true` for search/read
  * results and can skip them during eviction scanning.
- *
- * Display-path collapse:
- *   - Two path predicates decide whether a file write renders as a summary line
- *     instead of its diff. They are display-only, so both are rewritten to
- *     return false and every write shows its diff. Scratchpad paths are where
- *     nearly all throwaway work lands, which made the summary the common case.
  */
 
 let memoryWritesPatched = 0;
-let displayPredicatesPatched = 0;
-
-// Export-map names for the two path predicates that gate the collapsed render.
-const DISPLAY_COLLAPSE_PREDICATE_EXPORTS = new Set([
-	"isScratchpadDisplayPath",
-	"isWorkshopDisplayPath",
-]);
 
 export interface NoCollapseVerificationInventory {
 	patchedMemoryWriteResultCount: number;
@@ -55,9 +41,6 @@ export interface NoCollapseVerificationInventory {
 	foundOriginalGuard: boolean;
 	foundPatchedGuard: boolean;
 	foundClassificationTail: boolean;
-	displayPredicateNames: string[];
-	neutralizedDisplayPredicates: string[];
-	displayPredicateCallSites: number;
 }
 
 export function collectNoCollapseVerification(
@@ -68,9 +51,6 @@ export function collectNoCollapseVerification(
 	let foundOriginalGuard = false;
 	let foundPatchedGuard = false;
 	let foundClassificationTail = false;
-	const displayPredicateNames = new Set<string>();
-	const neutralizedDisplayPredicates = new Set<string>();
-	let displayPredicateCallSites = 0;
 
 	traverse(ast, {
 		ReturnStatement(path) {
@@ -143,12 +123,11 @@ export function collectNoCollapseVerification(
 		},
 
 		ObjectProperty(path) {
-			const exportName = getObjectKeyName(path.node.key);
-			if (exportName && DISPLAY_COLLAPSE_PREDICATE_EXPORTS.has(exportName)) {
-				const target = getExportThunkIdentifierName(path.node.value);
-				if (target) displayPredicateNames.add(target);
-				return;
-			}
+			const exportName = t.isIdentifier(path.node.key)
+				? path.node.key.name
+				: t.isStringLiteral(path.node.key)
+					? path.node.key.value
+					: null;
 			if (exportName !== "isCollapsible") return;
 			if (!path.parentPath?.isObjectExpression()) return;
 			const value = path.node.value;
@@ -170,54 +149,13 @@ export function collectNoCollapseVerification(
 		noScope: true,
 	});
 
-	// The predicate names only resolve during the pass above, so the bodies and
-	// call sites they name are counted in a second walk.
-	traverse(ast, {
-		FunctionDeclaration(path) {
-			const name = path.node.id?.name;
-			if (!name || !displayPredicateNames.has(name)) return;
-			if (isAlwaysFalseBody(path.node.body)) {
-				neutralizedDisplayPredicates.add(name);
-			}
-		},
-
-		CallExpression(path) {
-			const callee = path.node.callee;
-			if (!t.isIdentifier(callee)) return;
-			if (!displayPredicateNames.has(callee.name)) return;
-			displayPredicateCallSites++;
-		},
-
-		noScope: true,
-	});
-
 	return {
 		patchedMemoryWriteResultCount,
 		unpatchedMemoryWriteResultCount,
 		foundOriginalGuard,
 		foundPatchedGuard,
 		foundClassificationTail,
-		displayPredicateNames: [...displayPredicateNames].sort(),
-		neutralizedDisplayPredicates: [...neutralizedDisplayPredicates].sort(),
-		displayPredicateCallSites,
 	};
-}
-
-/**
- * Read the target identifier out of an export-map thunk (`name: () => target`).
- */
-function getExportThunkIdentifierName(
-	value: t.Node | null | undefined,
-): string | null {
-	if (!t.isArrowFunctionExpression(value)) return null;
-	if (value.params.length !== 0) return null;
-	return t.isIdentifier(value.body) ? value.body.name : null;
-}
-
-function isAlwaysFalseBody(body: t.BlockStatement): boolean {
-	if (body.body.length !== 1) return false;
-	const [only] = body.body;
-	return t.isReturnStatement(only) && isFalseLike(only.argument);
 }
 
 export const noCollapse: Patch = {
@@ -225,13 +163,7 @@ export const noCollapse: Patch = {
 
 	astPasses: () => {
 		memoryWritesPatched = 0;
-		displayPredicatesPatched = 0;
-		const displayPredicateNames = new Set<string>();
 		return [
-			{
-				pass: "discover",
-				visitor: createDisplayPredicateDiscoverer(displayPredicateNames),
-			},
 			{
 				pass: "mutate",
 				visitor: createNoCollapseMutator(),
@@ -239,10 +171,6 @@ export const noCollapse: Patch = {
 			{
 				pass: "mutate",
 				visitor: createMemoryWriteUiMutator(),
-			},
-			{
-				pass: "mutate",
-				visitor: createDisplayPredicateMutator(displayPredicateNames),
 			},
 		];
 	},
@@ -269,74 +197,9 @@ export const noCollapse: Patch = {
 		if (!inventory.foundClassificationTail) {
 			return "Result-object factory isCollapsible tail (isBash-bearing branch) not found. Cache tail eviction broken";
 		}
-		if (
-			inventory.displayPredicateNames.length !==
-			DISPLAY_COLLAPSE_PREDICATE_EXPORTS.size
-		) {
-			return `Expected ${DISPLAY_COLLAPSE_PREDICATE_EXPORTS.size} display-path collapse predicate exports, found ${inventory.displayPredicateNames.length}`;
-		}
-		if (
-			inventory.neutralizedDisplayPredicates.length !==
-			inventory.displayPredicateNames.length
-		) {
-			return "Display-path collapse predicate still reports paths as collapsible; scratchpad and workshop writes would render without a diff";
-		}
-		// A neutralized predicate nobody calls is a silent no-op: it means the
-		// collapsed render now decides some other way and this patch stopped
-		// covering it.
-		if (inventory.displayPredicateCallSites === 0) {
-			return "Display-path collapse predicates are no longer consulted; the collapsed write render moved";
-		}
-		if (
-			context?.phase !== "artifact" &&
-			displayPredicatesPatched !== DISPLAY_COLLAPSE_PREDICATE_EXPORTS.size
-		) {
-			return `Expected ${DISPLAY_COLLAPSE_PREDICATE_EXPORTS.size} display-path predicate mutations this run, found ${displayPredicatesPatched}`;
-		}
 		return true;
 	},
 };
-
-function createDisplayPredicateDiscoverer(names: Set<string>): Visitor {
-	return {
-		ObjectProperty(path) {
-			const exportName = getObjectKeyName(path.node.key);
-			if (!exportName || !DISPLAY_COLLAPSE_PREDICATE_EXPORTS.has(exportName)) {
-				return;
-			}
-			const target = getExportThunkIdentifierName(path.node.value);
-			if (target) names.add(target);
-		},
-	};
-}
-
-function createDisplayPredicateMutator(names: Set<string>): Visitor {
-	return {
-		FunctionDeclaration(path) {
-			const name = path.node.id?.name;
-			if (!name || !names.has(name)) return;
-			// Module-scope only: a minified name can be reused by an unrelated
-			// nested function, and the export map names the top-level one.
-			if (!path.parentPath?.isProgram()) return;
-			if (isAlwaysFalseBody(path.node.body)) return;
-			path.node.body = t.blockStatement([
-				t.returnStatement(t.unaryExpression("!", t.numericLiteral(1))),
-			]);
-			displayPredicatesPatched++;
-		},
-		Program: {
-			exit() {
-				if (
-					displayPredicatesPatched !== DISPLAY_COLLAPSE_PREDICATE_EXPORTS.size
-				) {
-					console.warn(
-						`Disable collapse: patched ${displayPredicatesPatched} display-path predicates, expected ${DISPLAY_COLLAPSE_PREDICATE_EXPORTS.size}`,
-					);
-				}
-			},
-		},
-	};
-}
 
 function createMemoryWriteUiMutator(): Visitor {
 	let patched = false;

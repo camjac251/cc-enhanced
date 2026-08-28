@@ -49,6 +49,23 @@ test("no-autoupdate injects early return and plugin gate bypass", async () => {
 	assert.equal(disableAutoupdater.verify(output, ast), true);
 });
 
+test("no-autoupdate recognizes the current boolean env guard", async () => {
+	const ast = parse(
+		AUTOUPDATER_FIXTURE.replace(
+			"if (envFlags.DISABLE_AUTOUPDATER)",
+			"if (parseBoolean(envFlags.DISABLE_AUTOUPDATER))",
+		).replace(
+			"const envFlags = {};",
+			"const envFlags = {};\nconst parseBoolean = Boolean;",
+		),
+	);
+	await runDisableAutoupdaterViaPasses(ast);
+	const output = print(ast);
+
+	assert.equal(output.includes('return "patched";'), true);
+	assert.equal(disableAutoupdater.verify(output, ast), true);
+});
+
 test("no-autoupdate is idempotent on already-patched code", async () => {
 	const ast = parse(AUTOUPDATER_FIXTURE);
 	await runDisableAutoupdaterViaPasses(ast);

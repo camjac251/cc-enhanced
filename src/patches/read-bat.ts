@@ -169,6 +169,34 @@ function getReadCoerceFunction(
 	return t.isFunctionDeclaration(bindingNode) ? bindingNode : null;
 }
 
+function getReadRenderFunction(
+	readToolPath: NodePath<t.ObjectExpression>,
+): t.Function | null {
+	const property = readToolPath.node.properties.find((candidate) =>
+		hasObjectKeyName(candidate, "renderToolUseMessage"),
+	);
+	if (t.isObjectMethod(property)) return property;
+	if (!t.isObjectProperty(property)) return null;
+	if (
+		t.isFunctionExpression(property.value) ||
+		t.isArrowFunctionExpression(property.value)
+	) {
+		return property.value;
+	}
+	if (!t.isIdentifier(property.value)) return null;
+	const bindingNode = readToolPath.scope.getBinding(property.value.name)?.path
+		.node;
+	if (t.isFunctionDeclaration(bindingNode)) return bindingNode;
+	if (
+		t.isVariableDeclarator(bindingNode) &&
+		(t.isFunctionExpression(bindingNode.init) ||
+			t.isArrowFunctionExpression(bindingNode.init))
+	) {
+		return bindingNode.init;
+	}
+	return null;
+}
+
 function getReadCoerceReturnNames(
 	body: t.BlockStatement,
 ): { normalizedInputName: string; repairListName: string } | null {
@@ -831,7 +859,26 @@ function getFirstObjectPatternParam(
 				: [];
 	if (params.length === 0) return null;
 	const firstParam = params[0];
-	return t.isObjectPattern(firstParam) ? firstParam : null;
+	if (t.isObjectPattern(firstParam)) return firstParam;
+	if (!t.isIdentifier(firstParam)) return null;
+	const body =
+		t.isObjectMethod(method) || t.isFunctionDeclaration(method)
+			? method.body
+			: t.isFunctionExpression(method.value) ||
+					t.isArrowFunctionExpression(method.value)
+				? method.value.body
+				: null;
+	if (!t.isBlockStatement(body)) return null;
+	const candidates = body.body.flatMap((statement) => {
+		if (!t.isVariableDeclaration(statement)) return [];
+		return statement.declarations.flatMap((declaration) =>
+			t.isObjectPattern(declaration.id) &&
+			t.isIdentifier(declaration.init, { name: firstParam.name })
+				? [declaration.id]
+				: [],
+		);
+	});
+	return candidates.length === 1 ? candidates[0] : null;
 }
 
 function getReadCallImplementationPath(
@@ -1840,14 +1887,6 @@ function verifyReadLineAccounting(ctx: ReadVerifyContext): string | null {
 	return null;
 }
 
-function hasMiddleDotLabel(code: string, label: string): boolean {
-	return (
-		code.includes(` · ${label}`) ||
-		code.includes(`\\xB7 ${label}`) ||
-		code.includes(`\\u00b7 ${label}`)
-	);
-}
-
 function verifyReadExamplesAndValidate(ctx: ReadVerifyContext): string | null {
 	const { code, validateKeys, coerceShape } = ctx;
 	if (!coerceShape) {
@@ -1899,15 +1938,6 @@ function verifyReadExamplesAndValidate(ctx: ReadVerifyContext): string | null {
 		!validateKeys.has("pages")
 	) {
 		return "validateInput missing pages parameter (would crash)";
-	}
-	if (!code.includes('opts.push("whitespace")')) {
-		return "renderToolUseMessage not showing whitespace option";
-	}
-	if (!hasMiddleDotLabel(code, "pages ")) {
-		return "renderToolUseMessage missing pages display";
-	}
-	if (!hasMiddleDotLabel(code, "range: ")) {
-		return "renderToolUseMessage not showing range on agent-output reads";
 	}
 	return null;
 }
@@ -2432,9 +2462,8 @@ export const readWithBat: Patch = {
 								// New: async validateInput({ file_path: A, pages: Y, range: R }, G)
 								if (validateMethod) {
 									const rangeId = t.identifier(rangeVarName || "R");
-									const params = validateMethod.params;
-									if (params.length >= 1 && t.isObjectPattern(params[0])) {
-										const objPattern = params[0];
+									const objPattern = getFirstObjectPatternParam(validateMethod);
+									if (objPattern) {
 										let offsetVar: string | null = null;
 										let limitVar: string | null = null;
 										let filePathVar: string | null = null;
@@ -3679,8 +3708,14 @@ export const readWithBat: Patch = {
 						// offset/limit ===
 						// Find: function X({ file_path: A, offset: Q, limit: B }, { verbose: G }) { ... }
 						// Change to show range in the UI display
+						const readRenderFunction = readToolPath
+							? getReadRenderFunction(readToolPath)
+							: null;
 						traverse(ast, {
-							FunctionDeclaration(path) {
+							Function(path) {
+								if (!readRenderFunction || path.node !== readRenderFunction)
+									return;
+								if (!t.isBlockStatement(path.node.body)) return;
 								const params = path.node.params;
 								if (params.length !== 2) return;
 
@@ -3697,8 +3732,16 @@ export const readWithBat: Patch = {
 								const hasLimit = firstParam.properties.some((p) =>
 									hasObjectKeyName(p, "limit"),
 								);
+								const hasEditFields = firstParam.properties.some(
+									(p) =>
+										hasObjectKeyName(p, "old_string") ||
+										hasObjectKeyName(p, "new_string") ||
+										hasObjectKeyName(p, "replace_all") ||
+										hasObjectKeyName(p, "edits"),
+								);
 
-								if (!hasFilePath || !hasOffset || !hasLimit) return;
+								if (!hasFilePath || hasOffset !== hasLimit || hasEditFields)
+									return;
 
 								// Second param must be ObjectPattern with verbose
 								const secondParam = params[1];
@@ -3765,8 +3808,8 @@ export const readWithBat: Patch = {
 								// minified guesses (the old behavior) produced a render that called
 								// a non-existent factory and broke the Read tool chip once upstream
 								// moved rendering to the JSX runtime.
-								let abbrFunc = "j6";
-								let checkFunc = "C51";
+								let abbrFunc: string | null = null;
+								let checkFunc: string | null = null;
 								let filePathComp = "sk";
 								let displayVar = "Z";
 								let fileElementCallee: t.Expression | null = null;
@@ -3864,10 +3907,11 @@ export const readWithBat: Patch = {
 								// instead of emitting a render that calls a non-existent factory.
 								if (
 									!fileElementCallee ||
-									!fragmentElementCallee ||
-									!fragmentType ||
-									!foundDisplay ||
-									!foundCheck
+									((foundDisplay || foundCheck) &&
+										(!fragmentElementCallee ||
+											!fragmentType ||
+											!foundDisplay ||
+											!foundCheck))
 								) {
 									console.warn(
 										"Read with bat: renderToolUseMessage factory/component not found; leaving Read render unpatched",
@@ -3881,11 +3925,12 @@ export const readWithBat: Patch = {
 									fileElementCallee,
 									true,
 								);
-								const resolvedFragmentElementCallee = t.cloneNode(
-									fragmentElementCallee,
-									true,
-								);
-								const resolvedFragmentType = t.cloneNode(fragmentType, true);
+								const resolvedFragmentElementCallee = fragmentElementCallee
+									? t.cloneNode(fragmentElementCallee, true)
+									: null;
+								const resolvedFragmentType = fragmentType
+									? t.cloneNode(fragmentType, true)
+									: null;
 
 								const createFileElement = (): t.CallExpression =>
 									t.callExpression(
@@ -3906,51 +3951,59 @@ export const readWithBat: Patch = {
 									);
 								const createSuffixedElement = (
 									suffix: t.Expression,
-								): t.CallExpression =>
-									t.callExpression(
-										t.cloneNode(resolvedFragmentElementCallee, true),
-										[
-											t.cloneNode(resolvedFragmentType, true),
-											t.objectExpression([
-												t.objectProperty(
-													t.identifier("children"),
-													t.arrayExpression([createFileElement(), suffix]),
-												),
-											]),
-										],
-									);
+								): t.Expression =>
+									resolvedFragmentElementCallee && resolvedFragmentType
+										? t.callExpression(
+												t.cloneNode(resolvedFragmentElementCallee, true),
+												[
+													t.cloneNode(resolvedFragmentType, true),
+													t.objectExpression([
+														t.objectProperty(
+															t.identifier("children"),
+															t.arrayExpression([createFileElement(), suffix]),
+														),
+													]),
+												],
+											)
+										: t.arrayExpression([createFileElement(), suffix]);
 
 								const newBody = t.blockStatement([
 									t.ifStatement(
 										t.unaryExpression("!", t.identifier(filePathVar)),
 										t.returnStatement(t.nullLiteral()),
 									),
-									t.ifStatement(
-										t.callExpression(t.identifier(checkFunc), [
-											t.identifier(filePathVar),
-										]),
-										t.returnStatement(
-											t.conditionalExpression(
-												t.identifier("R"),
-												t.binaryExpression(
-													"+",
-													t.stringLiteral(" · range: "),
-													t.identifier("R"),
+									...(checkFunc
+										? [
+												t.ifStatement(
+													t.callExpression(t.identifier(checkFunc), [
+														t.identifier(filePathVar),
+													]),
+													t.returnStatement(
+														t.conditionalExpression(
+															t.identifier("R"),
+															t.binaryExpression(
+																"+",
+																t.stringLiteral(" · range: "),
+																t.identifier("R"),
+															),
+															t.stringLiteral(""),
+														),
+													),
 												),
-												t.stringLiteral(""),
-											),
-										),
-									),
+											]
+										: []),
 									t.variableDeclaration("let", [
 										t.variableDeclarator(
 											t.identifier(displayVar),
-											t.conditionalExpression(
-												t.identifier(verboseVar),
-												t.identifier(filePathVar),
-												t.callExpression(t.identifier(abbrFunc), [
-													t.identifier(filePathVar),
-												]),
-											),
+											abbrFunc
+												? t.conditionalExpression(
+														t.identifier(verboseVar),
+														t.identifier(filePathVar),
+														t.callExpression(t.identifier(abbrFunc), [
+															t.identifier(filePathVar),
+														]),
+													)
+												: t.identifier(filePathVar),
 										),
 									]),
 									t.ifStatement(

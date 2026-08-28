@@ -8,6 +8,12 @@ const LATIN1_ENCODING = 1;
 const JAVASCRIPT_LOADER = 1;
 const VIRTUAL_ENTRY_SPECIFIER = "cc-enhanced-embedded-entry";
 const VIRTUAL_NAMESPACE = "cc-enhanced-embedded";
+const LAZY_PATCH_SURFACE_ANCHORS = [
+	"the prompt names Claude/Anthropic in any form",
+	"File must be read first",
+	"Error editing file",
+	"Message queued for delivery to",
+] as const;
 
 interface EmbeddedBuildResolveArgs {
 	path: string;
@@ -42,8 +48,8 @@ interface EmbeddedBuildRuntime {
 		treeShaking: false;
 		minify: {
 			whitespace: true;
-			syntax: false;
-			identifiers: false;
+			syntax: boolean;
+			identifiers: boolean;
 		};
 		sourcemap: "none";
 		write: false;
@@ -126,9 +132,19 @@ export async function rebundleEmbeddedJavaScript(
 		path.join(os.tmpdir(), "cc-native-rebundle-"),
 	);
 	const virtualEntryPath = path.join(tempDir, "cc-native-entry.js");
+	const lazyModuleSpecifiers = modules
+		.filter(
+			(module) =>
+				module.index !== entry.index &&
+				isRebundleJavaScriptModule(module) &&
+				LAZY_PATCH_SURFACE_ANCHORS.some((anchor) =>
+					module.contents.includes(anchor),
+				),
+		)
+		.map((module) => JSON.stringify(module.name));
 	await fs.writeFile(
 		virtualEntryPath,
-		`import ${JSON.stringify(VIRTUAL_ENTRY_SPECIFIER)};\nexport * from ${JSON.stringify(VIRTUAL_ENTRY_SPECIFIER)};\n`,
+		`import ${JSON.stringify(VIRTUAL_ENTRY_SPECIFIER)};\nexport * from ${JSON.stringify(VIRTUAL_ENTRY_SPECIFIER)};\nasync function _ccEnhancedRetainLazyModules() {\n  if (globalThis.__ccEnhancedRetainLazyModules === true) {\n    await Promise.all([${lazyModuleSpecifiers.map((specifier) => `import(${specifier})`).join(",")}]);\n  }\n}\nvoid _ccEnhancedRetainLazyModules;\n`,
 		"utf-8",
 	);
 

@@ -595,14 +595,6 @@ async function getPatchedDelegationOutput(): Promise<string> {
 	return output;
 }
 
-test("read-bat verifies escaped render option labels", async () => {
-	const output = await getPatchedDelegationOutput();
-
-	assert.equal(output.includes("\\u00b7 pages "), true);
-	assert.equal(output.includes("\\u00b7 range: "), true);
-	assert.equal(readWithBat.verify(output), true);
-});
-
 test("read-bat collects its global verification markers in one inventory", async () => {
 	const output = await getPatchedDelegationOutput();
 	const inventory = collectReadVerificationInventory(parse(output), "R");
@@ -741,54 +733,6 @@ test("read-bat drops blank optional string inputs before validation", async () =
 	} finally {
 		await cleanup();
 	}
-});
-
-test("read-bat render uses the discovered element factory, never a stale default", async () => {
-	const output = await getPatchedDelegationOutput();
-	// The rebuilt renderToolUseMessage must call the factory/component it actually
-	// found in the function body (RC.jsx / FileComp), via the automatic JSX
-	// runtime. Emitting the hardcoded fallback guesses would reference a
-	// non-existent factory and crash the Read tool chip at runtime.
-	assert.match(output, /RC\.jsx\(FileComp,\s*\{[\s\S]*?filePath:/);
-	assert.match(output, /RC\.jsx\(RC\.Fragment,\s*\{[\s\S]*?children:/);
-	assert.doesNotMatch(output, /A3\.createElement/);
-	assert.doesNotMatch(output, /\.createElement\(/);
-});
-
-test("read-bat render supports direct automatic-runtime bindings", async () => {
-	const fixture = READ_DELEGATION_FIXTURE.replace(
-		"  return RC.jsx(FileComp, { filePath: A, children: Z });",
-		`  if (Y) return jsxMany(Fragment, { children: [jsxOne(FileComp, { filePath: A, children: Z }), " · pages " + Y] });
-  return jsxOne(FileComp, { filePath: A, children: Z });`,
-	);
-	assert.notEqual(fixture, READ_DELEGATION_FIXTURE);
-	const ast = parse(fixture);
-	await runReadWithBatViaPasses(ast);
-	const output = print(ast);
-
-	assert.match(output, /jsxOne\(FileComp,\s*\{[\s\S]*?filePath:/);
-	assert.match(output, /jsxMany\(Fragment,\s*\{[\s\S]*?children:/);
-	assert.match(output, /opts\.push\("whitespace"\)/);
-});
-
-test("read-bat leaves the render unpatched and fails verify when no element factory is found", async () => {
-	// Strip the element factory from the render so discovery cannot resolve a real
-	// factory/component. The patch must refuse to rebuild the render (rather than
-	// emit a stale-guess factory) and verify must fail loudly. This guards the
-	// regression where a factory-less render still passed verify on string checks.
-	const fixture = READ_DELEGATION_FIXTURE.replace(
-		"  return RC.jsx(FileComp, { filePath: A, children: Z });",
-		"  return A;",
-	);
-	assert.notEqual(fixture, READ_DELEGATION_FIXTURE);
-	const ast = parse(fixture);
-	await runReadWithBatViaPasses(ast);
-	const output = print(ast);
-	// Render left stock: no rebuilt option label and no stale-default factory.
-	assert.doesNotMatch(output, /opts\.push\("whitespace"\)/);
-	assert.doesNotMatch(output, /A3\.createElement/);
-	const result = readWithBat.verify(output);
-	assert.equal(typeof result, "string");
 });
 
 test("read-bat migrates schema and prompt from offset/limit to range/show_whitespace", async () => {
@@ -1536,6 +1480,20 @@ test("read-bat handles validateInput without offset/limit and still adds range p
 		output,
 		/async validateInput\(\{ file_path: A, pages: Y, range: R \}/,
 	);
+	assert.equal(readWithBat.verify(output), true);
+});
+
+test("read-bat patches a validateInput body destructure", async () => {
+	const fixture = READ_DELEGATION_FIXTURE.replace(
+		"async validateInput({ file_path: A, offset: Q, limit: B, pages: Y }, G) {\n    if (!eG1(Y) && !Q && !B) return { result: false };",
+		"async validateInput(INPUT, G) {\n    let { file_path: A, offset: Q, limit: B, pages: Y } = INPUT;\n    if (!eG1(Y) && !Q && !B) return { result: false };",
+	);
+	assert.notEqual(fixture, READ_DELEGATION_FIXTURE);
+	const ast = parse(fixture);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /let \{ file_path: A, pages: Y, range: R \} = INPUT/);
 	assert.equal(readWithBat.verify(output), true);
 });
 

@@ -135,7 +135,7 @@ test("PatchRunner prints again after successful signature injection", async () =
 		targetPath,
 		`
 function makeTitle(theme, version) {
-  return \` \${format("product", theme)("Claude Code")} \${format("version", theme)(\`v\${version}\`)} \`;
+  return jsxs(theme, { children: [jsx(theme, { bold: true, children: "Claude Code" }), " ", jsxs(theme, { dimColor: true, children: ["v", version] })] });
 }
 function versionText(version) {
   return \`\${version} (Claude Code)\${suffix()}\`;

@@ -1,5 +1,5 @@
 import * as t from "@babel/types";
-import { traverse } from "../babel.js";
+import { type NodePath, traverse } from "../babel.js";
 import type { Patch } from "../types.js";
 import { getVerifyAst } from "./ast-helpers.js";
 
@@ -49,19 +49,65 @@ function hasPatchedVersionTemplate(node: t.TemplateLiteral): boolean {
  * deliberately avoids matching error-text templates whose first quasi merely
  * starts with "Claude Code v...".
  */
-function isCompositeUiTitleTemplate(node: t.TemplateLiteral): boolean {
-	if (node.expressions.length < 1) return false;
-	return node.expressions.some((expr) => {
-		if (!t.isCallExpression(expr)) return false;
-		if (expr.arguments.length !== 1) return false;
-		const arg = expr.arguments[0];
-		return t.isStringLiteral(arg) && arg.value === TITLE_BRAND_LITERAL;
+function getObjectProperty(
+	object: t.ObjectExpression,
+	name: string,
+): t.ObjectProperty | null {
+	for (const property of object.properties) {
+		if (!t.isObjectProperty(property) || property.computed) continue;
+		if (
+			(t.isIdentifier(property.key) && property.key.name === name) ||
+			(t.isStringLiteral(property.key) && property.key.value === name)
+		) {
+			return property;
+		}
+	}
+	return null;
+}
+
+function isVersionElement(node: t.Node | null | undefined): boolean {
+	if (!t.isCallExpression(node)) return false;
+	return node.arguments.some((argument) => {
+		if (!t.isObjectExpression(argument)) return false;
+		const children = getObjectProperty(argument, "children")?.value;
+		return (
+			t.isArrayExpression(children) &&
+			t.isStringLiteral(children.elements[0], { value: "v" })
+		);
 	});
 }
 
-function hasPatchedCompositeUiTitle(node: t.TemplateLiteral): boolean {
-	return node.quasis.some((q) =>
-		getTemplateText(q).includes(PATCHED_TITLE_MARKER),
+function isUiTitleBrand(path: NodePath<t.StringLiteral>): boolean {
+	if (
+		path.node.value !== TITLE_BRAND_LITERAL &&
+		path.node.value !== TITLE_BRAND_LITERAL + PATCHED_TITLE_MARKER
+	) {
+		return false;
+	}
+	const childrenProperty = path.parentPath;
+	if (
+		!childrenProperty?.isObjectProperty() ||
+		childrenProperty.node.value !== path.node
+	) {
+		return false;
+	}
+	const properties = childrenProperty.parentPath;
+	if (!properties?.isObjectExpression()) return false;
+	if (
+		getObjectProperty(properties.node, "children") !== childrenProperty.node
+	) {
+		return false;
+	}
+	const bold = getObjectProperty(properties.node, "bold")?.value;
+	if (!t.isBooleanLiteral(bold, { value: true })) return false;
+	const titleParts = properties.findParent((candidate) =>
+		candidate.isArrayExpression(),
+	);
+	if (!titleParts?.isArrayExpression()) return false;
+	return (
+		titleParts.node.elements.some((element) =>
+			t.isStringLiteral(element, { value: " " }),
+		) && titleParts.node.elements.some((element) => isVersionElement(element))
 	);
 }
 
@@ -80,6 +126,9 @@ export const signature: Patch = {
 				if (isVersionStringTarget(val)) {
 					path.node.value = replaceVersionSuffix(val, sigFull);
 				}
+				if (isUiTitleBrand(path) && !val.includes(PATCHED_TITLE_MARKER)) {
+					path.node.value += PATCHED_TITLE_MARKER;
+				}
 			},
 			TemplateLiteral(path: any) {
 				const versionIdx = getVersionQuasiIndex(path.node);
@@ -92,16 +141,6 @@ export const signature: Patch = {
 					quasi.value.raw = replaced;
 					quasi.value.cooked = replaced;
 				}
-
-				if (
-					isCompositeUiTitleTemplate(path.node) &&
-					!hasPatchedCompositeUiTitle(path.node)
-				) {
-					const lastQuasi = path.node.quasis[path.node.quasis.length - 1];
-					lastQuasi.value.raw += PATCHED_TITLE_MARKER;
-					lastQuasi.value.cooked =
-						(lastQuasi.value.cooked ?? "") + PATCHED_TITLE_MARKER;
-				}
 			},
 		});
 	},
@@ -112,15 +151,21 @@ export const signature: Patch = {
 
 		let hasPatchedVersion = false;
 		let hasLegacyVersionTemplate = false;
-		let compositeTitleCount = 0;
+		let uiTitleCount = 0;
 		let patchedTitleCount = 0;
-		let nonTitleTemplateDecorated = false;
+		let nonTitleBrandDecorated = false;
 
 		traverse(verifyAst, {
 			StringLiteral(path) {
 				const value = path.node.value;
 				if (hasPatchedVersionString(value)) {
 					hasPatchedVersion = true;
+				}
+				if (isUiTitleBrand(path)) {
+					uiTitleCount++;
+					if (value.includes(PATCHED_TITLE_MARKER)) patchedTitleCount++;
+				} else if (value.includes(PATCHED_TITLE_MARKER)) {
+					nonTitleBrandDecorated = true;
 				}
 			},
 			TemplateLiteral(path) {
@@ -129,17 +174,6 @@ export const signature: Patch = {
 				}
 				if (hasPatchedVersionTemplate(path.node)) {
 					hasPatchedVersion = true;
-				}
-				if (isCompositeUiTitleTemplate(path.node)) {
-					compositeTitleCount++;
-					if (hasPatchedCompositeUiTitle(path.node)) {
-						patchedTitleCount++;
-					}
-				} else if (hasPatchedCompositeUiTitle(path.node)) {
-					// postApply appends the title marker only to composite UI title
-					// templates; the marker in any other template means a wrong anchor
-					// decorated foreign text.
-					nonTitleTemplateDecorated = true;
 				}
 			},
 		});
@@ -150,17 +184,17 @@ export const signature: Patch = {
 		if (!hasPatchedVersion) {
 			return "Did not find patched version output";
 		}
-		if (nonTitleTemplateDecorated) {
-			return "Patched title marker leaked into a non-title template (wrong anchor)";
+		if (nonTitleBrandDecorated) {
+			return "Patched title marker leaked into a non-title string (wrong anchor)";
 		}
-		if (compositeTitleCount === 0) {
-			return "Composite UI title template not found (upstream may have restructured)";
+		if (uiTitleCount === 0) {
+			return "UI title structure not found (upstream may have restructured)";
 		}
 		if (patchedTitleCount === 0) {
-			return "Composite UI title was not decorated with patched marker";
+			return "UI title was not decorated with patched marker";
 		}
-		if (patchedTitleCount !== compositeTitleCount) {
-			return `Patched ${patchedTitleCount} of ${compositeTitleCount} composite UI titles`;
+		if (patchedTitleCount !== uiTitleCount) {
+			return `Patched ${patchedTitleCount} of ${uiTitleCount} UI titles`;
 		}
 		return true;
 	},

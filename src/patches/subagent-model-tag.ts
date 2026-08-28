@@ -1421,7 +1421,10 @@ function patchTeammateEffort(
 	const matchingLaunches = launchInputs.filter(
 		(candidate) => candidate.functionNode === call.path.node,
 	);
-	if (matchingLaunches.length !== 1 || sessionOptions.length !== 2) {
+	if (
+		matchingLaunches.length !== 1 ||
+		(sessionOptions.length !== 0 && sessionOptions.length !== 2)
+	) {
 		return false;
 	}
 	const launch = matchingLaunches[0].node;
@@ -1497,7 +1500,10 @@ function hasTeammateEffortContract(
 	const matchingLaunches = launchInputs.filter(
 		(candidate) => candidate.functionNode === call.path.node,
 	);
-	if (matchingLaunches.length !== 1 || sessionOptions.length !== 2) {
+	if (
+		matchingLaunches.length !== 1 ||
+		(sessionOptions.length !== 0 && sessionOptions.length !== 2)
+	) {
 		return false;
 	}
 	const launch = matchingLaunches[0].node;

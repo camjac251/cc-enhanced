@@ -224,12 +224,67 @@ const CURRENT_TAB_QUEUE_FIXTURE = TAB_QUEUE_FIXTURE.replaceAll(
 		"    const turnEnded = turnGate.end(generation);\n    if (turnEnded) {",
 	);
 
+const SPLIT_DRAFT_STATE_FIXTURE = CURRENT_TAB_QUEUE_FIXTURE.replace(
+	`    jsx(Footer, {
+      suppressHint: input.length > 0,
+      isLoading,
+    })`,
+	`    jsx(Footer, {
+      suppressHint: input.length > 0,
+    }),
+    jsx(Status, {
+      mode: "prompt",
+      isLoading,
+      viewingAgentName: null,
+      viewingAgentColor: null,
+    })`,
+);
+
+const MEMBER_PASTED_SETTER_FIXTURE = SPLIT_DRAFT_STATE_FIXTURE.replace(
+	"function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, setPastedContents }) {",
+	`function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, draft }) {
+  const setPastedContents = draft.setPastedContents;`,
+);
+
+const CURRENT_SUBMIT_FORWARD_FIXTURE = MEMBER_PASTED_SETTER_FIXTURE.replace(
+	`  function submit(value, isSubmittingSlashCommand = false) {
+    let forwardOptions = value.startsWith("/") ? { fromSlash: true } : void 0;
+    return submitPrompt(value, {
+      setCursorOffset,
+      clearBuffer,
+      resetHistory,
+    }, forwardOptions);
+  }`,
+	`  const submit = useCallback((value) => {
+    if (isBlocked(value)) return;
+    submitPrompt(value === "" ? "" : value.value);
+  }, []);`,
+);
+
 test("verify rejects unpatched code", () => {
 	const ast = parse(TAB_QUEUE_FIXTURE);
 	const code = print(ast);
 	const result = tabQueue.verify(code, ast);
 	assert.notEqual(result, true, "verify should reject unpatched code");
 	assert.equal(typeof result, "string");
+});
+
+test("tab-queue resolves the pasted-content setter from current draft state", async () => {
+	const ast = parse(MEMBER_PASTED_SETTER_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /setPastedContents\(\{\}\)/);
+	assert.equal(tabQueue.verify(output, ast), true);
+});
+
+test("tab-queue patches the current compact submit forward", async () => {
+	const ast = parse(CURRENT_SUBMIT_FORWARD_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /deferUntilTurnEnd: true/);
+	assert.equal(tabQueue.verify(output, ast), true);
 });
 
 test("tab-queue adds busy-only Tab queue handler, preview, edit, and footer hint", async () => {
@@ -293,6 +348,17 @@ test("tab-queue supports direct element factories and current queue lifecycle sh
 	assert.match(output, /options && options\.deferUntilTurnEnd/);
 	assert.match(output, /turnEnded[\s\S]*__ccTabQueue/);
 	assert.match(output, /parts\.unshift\([\s\S]*action: "queue"/);
+	assert.equal(tabQueue.verify(output, parse(output)), true);
+});
+
+test("tab-queue resolves loading after prompt state separates from the footer", async () => {
+	assert.notEqual(SPLIT_DRAFT_STATE_FIXTURE, CURRENT_TAB_QUEUE_FIXTURE);
+	const ast = parse(SPLIT_DRAFT_STATE_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /&&\s+isLoading/);
+	assert.match(output, /submit\(input, "__cc_enhanced_tab_queue"\)/);
 	assert.equal(tabQueue.verify(output, parse(output)), true);
 });
 

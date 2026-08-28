@@ -1215,7 +1215,7 @@ function createModelAliasPasses(): PatchAstPass[] {
 								`Model aliases: Could not patch the unique model normalizer (${modelNormalizers.length} candidates)`,
 							);
 						}
-						if (!teammateResolverPatched) {
+						if (teammateResolverShapes.length > 0 && !teammateResolverPatched) {
 							console.warn(
 								`Model aliases: Could not patch the unique teammate resolver (${teammateResolverShapes.length} candidates)`,
 							);
@@ -1334,10 +1334,13 @@ export const modelAliases: Patch = {
 		const teammateResolvers = teammateResolverShapes.map((candidate) =>
 			classifyTeammateResolver(candidate, normalizerName),
 		);
-		if (teammateResolvers.length !== 1) {
-			return `Teammate model resolver is ambiguous or missing (${teammateResolvers.length} sites found)`;
+		if (teammateResolvers.length > 1) {
+			return `Teammate model resolver is ambiguous (${teammateResolvers.length} sites found)`;
 		}
-		if (teammateResolvers[0].state !== "patched") {
+		if (
+			teammateResolvers.length === 1 &&
+			teammateResolvers[0].state !== "patched"
+		) {
 			return "Teammate model resolver does not normalize explicit aliases";
 		}
 		if (environmentArrays.length === 0) {

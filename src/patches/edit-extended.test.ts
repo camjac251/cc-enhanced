@@ -1279,6 +1279,32 @@ test("edit-extended injects structured-edit normalization into exactly one switc
 	);
 });
 
+test("edit-extended preserves parsed edits in the current application helper", async () => {
+	const fixture = EDIT_FIXTURE.replace(
+		/function v58[\s\S]+?(?=function jM_)/,
+		`function applyEdit({ file_path, old_string, new_string, replace_all = false }, fileContents) {
+  return applyEdits({
+    filePath: file_path,
+    fileContents,
+    edits: [{ old_string, new_string, replace_all }],
+  });
+}
+
+`,
+	);
+	assert.notEqual(fixture, EDIT_FIXTURE);
+	const ast = parse(fixture);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(output, /edits: _claudeEditParsedEdits/);
+	assert.match(
+		output,
+		/Array\.isArray\(_claudeEditParsedEdits\) && _claudeEditParsedEdits\.length > 0/,
+	);
+	assert.equal(editTool.verify(output, parse(output)), true);
+});
+
 test("edit-extended approval-dialog preview injection is idempotent", async () => {
 	const ast = parse(EDIT_FIXTURE);
 	await runEditToolViaPasses(ast);
