@@ -261,6 +261,20 @@ const CURRENT_SUBMIT_FORWARD_FIXTURE = MEMBER_PASTED_SETTER_FIXTURE.replace(
   }, []);`,
 );
 
+const CURRENT_FORWARD_RECEIVER_FIXTURE = CURRENT_SUBMIT_FORWARD_FIXTURE.replace(
+	"function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, draft }) {\n  const setPastedContents = draft.setPastedContents;",
+	`function renderInput({ input, isLoading, suggestions, helpOpen, draft }) {
+  const setPastedContents = draft.setPastedContents;
+  async function submitPrompt(value, isSubmittingSlashCommand = false) {
+    let forwardOptions = value ? {
+      inputSource: undefined,
+      pastedContentsOverride: undefined,
+      wait: undefined,
+    } : undefined;
+    return submitPromptRuntime(value, {}, forwardOptions);
+  }`,
+);
+
 test("verify rejects unpatched code", () => {
 	const ast = parse(TAB_QUEUE_FIXTURE);
 	const code = print(ast);
@@ -285,6 +299,39 @@ test("tab-queue patches the current compact submit forward", async () => {
 
 	assert.match(output, /deferUntilTurnEnd: true/);
 	assert.equal(tabQueue.verify(output, ast), true);
+});
+
+test("tab-queue propagates the current compact queue signal to submit options", async () => {
+	const ast = parse(CURRENT_FORWARD_RECEIVER_FIXTURE);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(
+		output,
+		/deferUntilTurnEnd: isSubmittingSlashCommand && isSubmittingSlashCommand\.deferUntilTurnEnd/,
+	);
+	assert.equal(tabQueue.verify(output, ast), true);
+});
+
+test("tab-queue fails closed when the current forward receiver is ambiguous", async () => {
+	const ambiguousFixture = CURRENT_FORWARD_RECEIVER_FIXTURE.replace(
+		"    let forwardOptions = value ? {",
+		`    let decoyOptions = value ? {
+      inputSource: undefined,
+      pastedContentsOverride: undefined,
+      wait: undefined,
+    } : undefined;
+    let forwardOptions = value ? {`,
+	);
+	const ast = parse(ambiguousFixture);
+	await runTabQueueViaPasses(ast);
+	const output = print(ast);
+
+	assert.doesNotMatch(
+		output,
+		/deferUntilTurnEnd: isSubmittingSlashCommand && isSubmittingSlashCommand\.deferUntilTurnEnd/,
+	);
+	assert.notEqual(tabQueue.verify(output, ast), true);
 });
 
 test("tab-queue adds busy-only Tab queue handler, preview, edit, and footer hint", async () => {

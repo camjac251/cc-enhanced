@@ -912,6 +912,61 @@ function isCurrentPromptSubmitForwardCall(
 	);
 }
 
+type CurrentForwardReceiverPatch = "patched" | "not-applicable" | "unsupported";
+
+/**
+ * The current prompt handler forwards through an optional second parameter
+ * before building the options object passed to the submit controller. Reuse that
+ * parameter as the queue signal and copy its defer flag into the controller
+ * options so the receiver guard can observe it.
+ */
+function patchCurrentPromptForwardReceiver(
+	callPath: NodePath<t.CallExpression>,
+): CurrentForwardReceiverPatch {
+	const callee = callPath.node.callee;
+	if (!t.isIdentifier(callee)) return "not-applicable";
+	const receiver = findFunctionBinding(callPath, callee.name);
+	if (!receiver) return "not-applicable";
+	const optionsParam = getParamIdentifier(receiver, 1);
+	if (!optionsParam) return "unsupported";
+
+	const optionsObjects: t.ObjectExpression[] = [];
+	receiver.traverse({
+		Function(path) {
+			if (path.node !== receiver.node) path.skip();
+		},
+		ObjectExpression(path) {
+			if (
+				hasObjectProperty(path.node, "inputSource") &&
+				hasObjectProperty(path.node, "pastedContentsOverride") &&
+				hasObjectProperty(path.node, "wait")
+			) {
+				optionsObjects.push(path.node);
+			}
+		},
+	});
+	if (optionsObjects.length !== 1) return "unsupported";
+	const matchedOptionsObject = optionsObjects[0];
+	if (hasObjectProperty(matchedOptionsObject, DEFER_UNTIL_TURN_END_OPTION)) {
+		return "unsupported";
+	}
+
+	matchedOptionsObject.properties.push(
+		t.objectProperty(
+			t.identifier(DEFER_UNTIL_TURN_END_OPTION),
+			t.logicalExpression(
+				"&&",
+				t.identifier(optionsParam.name),
+				t.memberExpression(
+					t.identifier(optionsParam.name),
+					t.identifier(DEFER_UNTIL_TURN_END_OPTION),
+				),
+			),
+		),
+	);
+	return "patched";
+}
+
 function isAnyPromptSubmitForwardCall(
 	node: t.CallExpression,
 	inputParam: t.Identifier,
@@ -961,6 +1016,8 @@ function patchSubmitForward(target: DraftQueueTarget): boolean {
 			if (
 				isCurrentPromptSubmitForwardCall(path.node, inputParam, submitFunction)
 			) {
+				const receiverPatch = patchCurrentPromptForwardReceiver(path);
+				if (receiverPatch === "unsupported") return;
 				const originalOptions = path.node.arguments[1];
 				const queuedOptions = t.objectExpression([
 					...(t.isExpression(originalOptions)
