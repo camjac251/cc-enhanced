@@ -250,6 +250,7 @@ export function repackNativeLinuxBinary(
 	filePath: string,
 	modifiedClaudeJs: Buffer,
 	outputPath: string = filePath,
+	allowPackedContentsSpan = false,
 ): void {
 	const extracted = extractClaudeJsFromNativeLinux(filePath);
 	emitMemoryCheckpoint("linux-repack.extracted");
@@ -266,6 +267,7 @@ export function repackNativeLinuxBinary(
 		extracted.bunOffsets,
 		extracted.moduleStructSize,
 		modifiedClaudeJs,
+		allowPackedContentsSpan,
 	);
 
 	if (outputPath === filePath) {

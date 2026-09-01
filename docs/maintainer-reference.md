@@ -48,7 +48,7 @@ type AstPassName = "discover" | "mutate" | "finalize";
 
 **Patch-local result presentation boundary**: the Edit patch facade retains its sole public `Patch` export, tag, pass declaration, verifier order, and per-AST idempotence guard. A private rendering module owns result-shape matching, option chip and result-collapse mutation, and their paired verifiers. A private shape module contains only the three pure tree and object-pattern helpers shared with the facade. Neither helper module is a patch registration surface, and rendering mutations remain invoked from the facade's guarded mutation site.
 
-**Tab queue presentation boundary**: the Tab queue facade retains its sole public `Patch` export, path-bearing targets, target discovery, pass-local state, mutation sites, warning order, one verification traversal, and ordered diagnostics. A private presentation module contains only stateless AST builders and node predicates for the queued-draft preview, thinking-hint suppression, and footer queue/edit hints. It receives and returns node values only, performs no traversal, and is not a patch registration surface.
+**Tab queue boundary**: the Tab queue patch adds plain-Tab queue and edit guards to the current prompt key handler, but delegates storage, ordering, display, and draft restoration to the upstream command queue. It discovers the native busy signal, submit callback, and queued-draft editor structurally; it does not maintain a parallel global queue or a separate presentation module.
 
 **Model aliases workflow-display boundary**: the Model aliases facade retains its sole public `Patch` export, scope-derived reference counting, binding lookup, collision-safe identifier generation, insertion and resolver mutation sites, pass-local candidates and flags, warning order, one verification traversal, and ordered diagnostics. A private workflow-display module projects formatter node shapes and builds the alias-label helper and patched resolver expression from facade-supplied scalar names. It receives and returns node values only, owns no scope or traversal state, and is not a patch registration surface.
 
@@ -61,7 +61,7 @@ type AstPassName = "discover" | "mutate" | "finalize";
 1. `unpack`: enumerate embedded JavaScript modules in the ELF/Mach-O/PE binary.
 2. When the entry point spans multiple supported modules, rebundle them into one ESM patch surface with tree shaking and identifier minification disabled.
 3. Run the patch pipeline above.
-4. `repack` in place at the original byte length so all file offsets, virtual addresses, section or segment layouts, and `PT_LOAD` mappings stay valid (see "Bun Standalone Binary Format").
+4. `repack` in place at the original byte length. Single-module builds use a validated bytecode region. Self-contained split bundles are AST-compacted, escaped to ASCII-safe source, written across the packed source span, and reduced to one live module-table entry so all file offsets, virtual addresses, section or segment layouts, and `PT_LOAD` mappings stay valid (see "Bun Standalone Binary Format").
 5. `promote`: atomic symlink swap. `~/.local/bin/claude` -> `~/.local/share/claude/versions/current` -> patched binary in `~/.claude-patcher/native-cache/`.
 
 Mach-O and PE repacking is a structural operation only. Platform signing is a separate fail-closed lifecycle gate; cross-format parsing or repacking on Linux does not prove macOS or Windows launch support.
@@ -87,10 +87,10 @@ Mach-O and PE place the same Bun payload behind a length header inside a bounded
 **Rebundle and repack strategy**:
 
 - A single-module executable uses its entry-point JavaScript directly. A split-module executable is rebundled into one ESM patch surface before parsing.
-- The rebundler resolves embedded relative imports from the module table, preserves external runtime imports, disables splitting and tree shaking, and leaves identifiers unminified.
-- The writer selects the smallest validated embedded bytecode region large enough for the patched JavaScript, preferring the entry point when it fits.
-- Patched JavaScript is written into that bounded region. The entry content pointer and length are updated, and stale bytecode and module-information pointers are cleared so the runtime parses the replacement source.
-- The entry module format remains ESM. If another module donated storage, its stale bytecode pointer is cleared as well.
+- The rebundler resolves embedded relative imports, dynamic imports, and literal `import.meta.require` dependencies from the module table. It preserves external runtime imports, disables splitting and tree shaking, and leaves identifiers unminified.
+- A single-module writer selects the smallest validated embedded bytecode region large enough for the patched JavaScript, preferring the entry point when it fits.
+- A self-contained split bundle is compacted by parsing and printing the same AST without comments, then escaping non-ASCII code units. The writer uses the validated packed source span, updates the entry content pointer and length, and retires the consumed module entries so later extraction does not rebundle the replacement again.
+- The entry module format remains ESM. Stale bytecode and module-information pointers are cleared; packed split candidates must round-trip to the same normalized AST and pass anchor verification before promotion.
 - All module-table, pointer, content, and capacity ranges are validated before mutation.
 - No overlay or section rebuild, no size changes, and no native layout modifications occur. The binary stays exactly the same size, so all offsets, virtual addresses, sections, segments, and mappings remain valid.
 

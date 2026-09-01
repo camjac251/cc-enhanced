@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { File } from "@babel/types";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { tabQueue } from "./tab-queue.js";
 
-async function runTabQueueViaPasses(ast: any): Promise<void> {
+async function runTabQueueViaPasses(ast: File): Promise<void> {
 	const passes = (await tabQueue.astPasses?.(ast)) ?? [];
 	await runCombinedAstPasses(
 		ast,
@@ -17,807 +18,202 @@ async function runTabQueueViaPasses(ast: any): Promise<void> {
 	);
 }
 
-function countOccurrences(value: string, needle: RegExp): number {
-	return value.match(needle)?.length ?? 0;
-}
-
-const TAB_QUEUE_FIXTURE = `
-function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, setPastedContents }) {
-  function submit(value, isSubmittingSlashCommand = false) {
-    let forwardOptions = value.startsWith("/") ? { fromSlash: true } : void 0;
-    return submitPrompt(value, {
-      setCursorOffset,
-      clearBuffer,
-      resetHistory,
-    }, forwardOptions);
+const LATEST_TAB_QUEUE_FIXTURE = `
+function renderInput({ draft, turn, onSubmit, commandQueue, helpOpen = false }) {
+  const {
+    setValue,
+    setCursorOffset,
+    setMode,
+    setPastedContents,
+  } = draft;
+  let editQueued;
+  if (commandQueue) {
+    editQueued = () => {
+      const queued = commandQueue.popAllEditable(
+        draft.value,
+        draft.cursorOffset,
+        draft.pastedContents,
+      );
+      if (!queued) return false;
+      setValue(queued.text);
+      setMode(queued.mode);
+      setCursorOffset(queued.cursorOffset);
+      setPastedContents(queued.pastedContents);
+      return true;
+    };
   }
-  function change(value) {
-    input = value;
+  function footer(event) {
+    return event;
   }
   function typeahead(event) {
-    if (suggestions.length > 0 && event.name === "tab") {
-      event.preventDefault();
-    }
-    if (event.name === "tab" && !event.shift) {
-      if (suggestions.length > 0) return;
-      if (input.trim() === "") {
-        event.preventDefault();
-        addNotification({
-          key: "thinking-toggle-hint",
-          jsx: React.jsx(Text, { dimColor: true, children: "Use ctrl+t to toggle thinking" }),
-          priority: "immediate",
-          timeoutMs: 3000,
-        });
-      }
-      return;
-    }
+    return event;
   }
   function beforeKey(event) {
     if (helpOpen) return;
-    if ((handleFooter(event), event.defaultPrevented || event.didStopImmediatePropagation())) return;
+    if ((footer(event), event.defaultPrevented || event.didStopImmediatePropagation())) return;
     if ((typeahead(event), event.defaultPrevented || event.didStopImmediatePropagation())) return;
-    if (event.name === "escape") cancel();
+    const activeLoading = turn.getSnapshot().isLoading;
+    if (event.name === "escape") return;
   }
-  let inputProps = {
+  const submitAlias = onSubmit;
+  const inputProps = {
     multiline: true,
     onKeyDownBefore: beforeKey,
-    onSubmit: submit,
-    onChange: change,
-    value: input,
-    onHistoryUp: previousHistory,
-    onHistoryDown: nextHistory,
-    onHistoryReset: resetHistory,
-    placeholder: "Try something",
-    onExit: exit,
-    onExitMessage: setExitMessage,
-    onImagePaste: pasteImage,
-    columns: 80,
-    maxVisibleLines: 5,
-    disableCursorMovementForUpDownKeys: suggestions.length > 0,
-    disableEscapeDoublePress: suggestions.length > 0,
-    cursorOffset: 0,
+    onSubmit: submitAlias,
+    onChange: setValue,
+    value: draft.value,
+    disableEscapeDoublePress: false,
+    cursorOffset: draft.cursorOffset,
     onChangeCursorOffset: setCursorOffset,
-    onPaste: pasteText,
-    onIsPastingChange: setIsPasting,
-    focus: true,
-    showCursor: true,
-    argumentHint: undefined,
-    onUndo: undo,
-    highlights: [],
-    inlineGhostText: undefined,
-    inputFilter: filterInput,
+    inputFilter: (value) => value,
   };
-  if (isExternalEditorActive) {
-    return React.jsx(Box, { flexDirection: "row", borderStyle: "round",
-      children: React.jsx(Text, { dimColor: true, italic: true, children: "Save and close editor to continue..." })
-    });
-  }
-  let textInputElement = isVimModeEnabled()
-    ? React.jsx(VimTextInput, { ...inputProps, initialMode: vimMode, onModeChange: setVimMode })
-    : React.jsx(TextInput, { ...inputProps });
-  return React.jsxs(Box, { flexDirection: "column", children: [
-    React.jsxs(Box, { borderColor: "promptBorder", borderStyle: "round", width: "100%", children: [
-      React.jsx(ModeIndicator, { mode: "prompt", isLoading }),
-      React.jsx(Box, { flexGrow: 1, flexShrink: 1, onClick: handleInputClick, children: textInputElement })
-    ] }),
-    React.jsx(Footer, {
-      suppressHint: input.length > 0,
-      isLoading,
-    })
-  ] });
-}
-
-function renderFooterLeft(footerProps) {
-  let { showHint, isInputEmpty, isLoading, leftArrowPending } = footerProps;
-  let parts = [];
-  let escShortcut = "esc";
-  let toggleShortcut = "ctrl+t";
-  let hasToggle = false;
-  let mode = "none";
-  let hasRunningAgent = false;
-  let hintParts = showHint ? getHintParts(isLoading, escShortcut, toggleShortcut, hasToggle, mode) : [];
-  if (viewingCompletedTeammate) {
-    parts.push(React.jsx(
-      Text,
-      { dimColor: true, key: "esc-return",
-        children: React.jsx(KeyboardShortcutHint, {
-          chord: escShortcut,
-          action: "return to team lead",
-          format: { keyCase: "lower" },
-        }),
-      },
-    ));
-  } else if (showHint) {
-    parts.push(...hintParts);
-  }
-  if (!isLoading && isInputEmpty && leftArrowPending) {
-    parts.push(React.jsx(Text, { dimColor: true, key: "fg-agents", children: "left for agents" }));
-  }
-  return React.jsx(Box, { children: parts });
-}
-
-async function replSubmit(input, helpers, options) {
-  addToHistory({ display: input, pastedContents });
-  await submitPromptRuntime({
-    input,
-    helpers,
-    turn: turnController,
-    queue: promptQueue,
-    mode: inputMode,
-    commands,
-    onInputChange: setInputValue,
-    setPastedContents,
-    onQuery: runPrompt,
-    setMessages,
-    suppressWorkflowKeyword: options?.suppressWorkflowKeyword,
-  });
-}
-
-async function runPrompt(newMessages, abortController) {
-  const generation = turnGate.tryStart();
-  if (generation === null) {
-    logEvent("concurrent query detected", {});
-    for (const message of newMessages) {
-      const value = getContentText(message);
-      enqueue({
-        value,
-        mode: getQueuedMessageMode(message),
-        agentId: getCurrentAgentId(),
-        priority: message.priority,
-      });
-      logEvent("concurrent query enqueued", {});
-    }
-    return;
-  }
-  try {
-    await queryImpl();
-  } finally {
-    if (turnGate.end(generation)) {
-      setLastQueryCompletionTime(Date.now());
-      resetLoadingState();
-      await onTurnComplete(messagesRef.current);
-      sendBridgeResultRef.current();
-      const turnDurationMs = Date.now() - loadingStartTimeRef.current;
-      if (turnDurationMs > 30000 && !abortController.signal.aborted) {
-        setMessages(prev => [...prev, createTurnDurationMessage(turnDurationMs)]);
-      }
-      setAbortController(null);
-    }
-  }
+  return inputProps;
 }
 `;
 
-const DIRECT_FOOTER_FIXTURE = `function renderFooterLeft({ showHint, isInputEmpty, isLoading }) {
-  let parts = [];
-  if (viewingCompletedTeammate) {
-    parts.push(jsx(Text, {
-      dimColor: true,
-      children: jsx(KeyboardShortcutHint, {
-        chord: "esc",
-        action: "return to team lead",
-        format: { keyCase: "lower" },
-      }),
-    }));
-  }
-  if (showHint) parts.push(jsx(Text, { children: "? for shortcuts" }));
-  return jsx(Box, { children: parts });
-}`;
+async function patchFixture(source = LATEST_TAB_QUEUE_FIXTURE): Promise<{
+	ast: File;
+	output: string;
+}> {
+	const ast = parse(source);
+	await runTabQueueViaPasses(ast);
+	return { ast, output: print(ast) };
+}
 
-const CURRENT_TAB_QUEUE_FIXTURE = TAB_QUEUE_FIXTURE.replaceAll(
-	"React.jsx",
-	"jsx",
-)
-	.replace(
-		/function renderFooterLeft[\s\S]*?\n}\n\nasync function replSubmit/,
-		`${DIRECT_FOOTER_FIXTURE}\n\nasync function replSubmit`,
-	)
-	.replace(
-		"    onQuery: runPrompt,\n    setMessages,",
-		`    messages: messagesRef.current,
-    mainLoopModel,
-    getAppState,
-    setAppState,
-    setMessages,`,
-	)
-	.replace(
-		"    if (turnGate.end(generation)) {",
-		"    const turnEnded = turnGate.end(generation);\n    if (turnEnded) {",
+interface TabRuntimeInput {
+	onKeyDownBefore(event: Record<string, unknown>): void;
+}
+
+interface TabRuntimeModule {
+	renderInput(options: Record<string, unknown>): TabRuntimeInput;
+}
+
+function isTabRuntimeModule(value: unknown): value is TabRuntimeModule {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"renderInput" in value &&
+		typeof value.renderInput === "function"
 	);
+}
 
-const SPLIT_DRAFT_STATE_FIXTURE = CURRENT_TAB_QUEUE_FIXTURE.replace(
-	`    jsx(Footer, {
-      suppressHint: input.length > 0,
-      isLoading,
-    })`,
-	`    jsx(Footer, {
-      suppressHint: input.length > 0,
-    }),
-    jsx(Status, {
-      mode: "prompt",
-      isLoading,
-      viewingAgentName: null,
-      viewingAgentColor: null,
-    })`,
-);
-
-const MEMBER_PASTED_SETTER_FIXTURE = SPLIT_DRAFT_STATE_FIXTURE.replace(
-	"function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, setPastedContents }) {",
-	`function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, draft }) {
-  const setPastedContents = draft.setPastedContents;`,
-);
-
-const CURRENT_SUBMIT_FORWARD_FIXTURE = MEMBER_PASTED_SETTER_FIXTURE.replace(
-	`  function submit(value, isSubmittingSlashCommand = false) {
-    let forwardOptions = value.startsWith("/") ? { fromSlash: true } : void 0;
-    return submitPrompt(value, {
-      setCursorOffset,
-      clearBuffer,
-      resetHistory,
-    }, forwardOptions);
-  }`,
-	`  const submit = useCallback((value) => {
-    if (isBlocked(value)) return;
-    submitPrompt(value === "" ? "" : value.value);
-  }, []);`,
-);
-
-const CURRENT_FORWARD_RECEIVER_FIXTURE = CURRENT_SUBMIT_FORWARD_FIXTURE.replace(
-	"function renderInput({ input, isLoading, suggestions, helpOpen, submitPrompt, draft }) {\n  const setPastedContents = draft.setPastedContents;",
-	`function renderInput({ input, isLoading, suggestions, helpOpen, draft }) {
-  const setPastedContents = draft.setPastedContents;
-  async function submitPrompt(value, isSubmittingSlashCommand = false) {
-    let forwardOptions = value ? {
-      inputSource: undefined,
-      pastedContentsOverride: undefined,
-      wait: undefined,
-    } : undefined;
-    return submitPromptRuntime(value, {}, forwardOptions);
-  }`,
-);
-
-test("verify rejects unpatched code", () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	const code = print(ast);
-	const result = tabQueue.verify(code, ast);
-	assert.notEqual(result, true, "verify should reject unpatched code");
-	assert.equal(typeof result, "string");
+test("verify rejects an unpatched latest prompt input", () => {
+	const ast = parse(LATEST_TAB_QUEUE_FIXTURE);
+	assert.equal(typeof tabQueue.verify(print(ast), ast), "string");
 });
 
-test("tab-queue resolves the pasted-content setter from current draft state", async () => {
-	const ast = parse(MEMBER_PASTED_SETTER_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-
-	assert.match(output, /setPastedContents\(\{\}\)/);
-	assert.equal(tabQueue.verify(output, ast), true);
-});
-
-test("tab-queue patches the current compact submit forward", async () => {
-	const ast = parse(CURRENT_SUBMIT_FORWARD_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-
-	assert.match(output, /deferUntilTurnEnd: true/);
-	assert.equal(tabQueue.verify(output, ast), true);
-});
-
-test("tab-queue propagates the current compact queue signal to submit options", async () => {
-	const ast = parse(CURRENT_FORWARD_RECEIVER_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-
-	assert.match(
-		output,
-		/deferUntilTurnEnd: isSubmittingSlashCommand && isSubmittingSlashCommand\.deferUntilTurnEnd/,
-	);
-	assert.equal(tabQueue.verify(output, ast), true);
-});
-
-test("tab-queue fails closed when the current forward receiver is ambiguous", async () => {
-	const ambiguousFixture = CURRENT_FORWARD_RECEIVER_FIXTURE.replace(
-		"    let forwardOptions = value ? {",
-		`    let decoyOptions = value ? {
-      inputSource: undefined,
-      pastedContentsOverride: undefined,
-      wait: undefined,
-    } : undefined;
-    let forwardOptions = value ? {`,
-	);
-	const ast = parse(ambiguousFixture);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-
-	assert.doesNotMatch(
-		output,
-		/deferUntilTurnEnd: isSubmittingSlashCommand && isSubmittingSlashCommand\.deferUntilTurnEnd/,
-	);
-	assert.notEqual(tabQueue.verify(output, ast), true);
-});
-
-test("tab-queue adds busy-only Tab queue handler, preview, edit, and footer hint", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
+test("tab-queue routes Tab through the native command queue", async () => {
+	const { ast, output } = await patchFixture();
 
 	assert.match(output, /event\.name === "tab"/);
 	assert.match(output, /!event\.shift/);
 	assert.match(output, /!event\.ctrl/);
 	assert.match(output, /!event\.meta/);
-	assert.match(output, /&&\s+isLoading/);
-	assert.match(output, /input\.trim\(\) === ""/);
-	assert.match(output, /input\.trim\(\) !== ""/);
-	assert.match(output, /event\.preventDefault\(\)/);
-	assert.match(output, /globalThis\.__ccEnhancedTabQueue\.pop\(\)/);
-	assert.match(output, /typeof __ccQueuedDraft === "string"/);
-	assert.match(output, /change\(__ccQueuedDraft\)/);
-	assert.match(output, /setCursorOffset\(__ccQueuedDraft\.length\)/);
-	assert.match(output, /setPastedContents/);
-	assert.match(output, /setPastedContents\({}\)/);
-	assert.match(output, /submit\(input, "__cc_enhanced_tab_queue"\)/);
-	assert.match(output, /deferUntilTurnEnd: true/);
-	assert.match(output, /globalThis\.__ccEnhancedTabQueue/);
-	assert.match(output, /!abortController\.signal\.aborted/);
-	assert.match(
-		output,
-		/enqueue\({ value: __ccQueuedInput, mode: "prompt", priority: "later", agentId: getCurrentAgentId\(\) }\)/,
-	);
-	assert.match(output, /key: "tab-queue-status"/);
-	assert.match(output, /Queued follow-up/);
-	assert.match(output, /Tab to edit/);
-	assert.match(output, /key: "tab-queue-draft"/);
-	assert.match(output, /> /);
-	assert.match(output, /let textInputElement = __ccTabQueuedPreview \?/);
-	assert.match(output, /key: "thinking-toggle-hint"/);
-	assert.match(
-		output,
-		/input\.trim\(\) === "" && !\(Array\.isArray\(globalThis\.__ccEnhancedTabQueue\) && globalThis\.__ccEnhancedTabQueue\.length > 0\)/,
-	);
-	assert.doesNotMatch(
-		output,
-		/__ccTabQueuedDraft = isLoading && Array\.isArray\(__ccTabQueuedDrafts\)/,
-	);
-	assert.match(output, /key: "queue-draft"/);
-	assert.match(output, /chord: "tab"/);
-	assert.match(output, /action: "queue"/);
-	assert.match(output, /key: "edit-queued-draft"/);
-	assert.match(output, /action: "edit queued"/);
-	assert.match(output, /showHint \|\| hintParts\.length > 0/);
+	assert.match(output, /turn\.getSnapshot\(\)\.isLoading/);
+	assert.match(output, /submitAlias\(draft\.value\)/);
+	assert.match(output, /editQueued\(\)/);
+	assert.doesNotMatch(output, /__ccEnhancedTabQueue/);
+	assert.doesNotMatch(output, /deferUntilTurnEnd/);
 	assert.equal(tabQueue.verify(output, ast), true);
 });
 
-test("tab-queue supports direct element factories and current queue lifecycle shapes", async () => {
-	assert.notEqual(CURRENT_TAB_QUEUE_FIXTURE, TAB_QUEUE_FIXTURE);
-	const ast = parse(CURRENT_TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
+test("tab-queue preserves built-in key-handler precedence", async () => {
+	const { output } = await patchFixture();
+	const footerIndex = output.indexOf("footer(event)");
+	const typeaheadIndex = output.indexOf("typeahead(event)");
+	const tabIndex = output.indexOf('event.name === "tab"');
 
-	assert.match(output, /jsx\(Box, \{[\s\S]*key: "tab-queue-status"/);
-	assert.match(output, /options && options\.deferUntilTurnEnd/);
-	assert.match(output, /turnEnded[\s\S]*__ccTabQueue/);
-	assert.match(output, /parts\.unshift\([\s\S]*action: "queue"/);
-	assert.equal(tabQueue.verify(output, parse(output)), true);
+	assert.ok(footerIndex >= 0);
+	assert.ok(typeaheadIndex > footerIndex);
+	assert.ok(tabIndex > typeaheadIndex);
 });
 
-test("tab-queue resolves loading after prompt state separates from the footer", async () => {
-	assert.notEqual(SPLIT_DRAFT_STATE_FIXTURE, CURRENT_TAB_QUEUE_FIXTURE);
-	const ast = parse(SPLIT_DRAFT_STATE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
+test("tab-queue queues and edits through native callbacks", async () => {
+	const { output } = await patchFixture();
+	const evaluated: unknown = new Function(
+		`${output}; return { renderInput };`,
+	)();
+	assert.ok(isTabRuntimeModule(evaluated));
+	const runtime = evaluated;
+	const submitted: string[] = [];
+	const updates: Array<[string, unknown]> = [];
+	const draft = {
+		value: "ship it",
+		cursorOffset: 7,
+		pastedContents: {},
+		setValue: (value: unknown) => updates.push(["value", value]),
+		setCursorOffset: (value: unknown) => updates.push(["cursor", value]),
+		setMode: (value: unknown) => updates.push(["mode", value]),
+		setPastedContents: (value: unknown) => updates.push(["pasted", value]),
+	};
+	const commandQueue = {
+		popAllEditable: () => ({
+			text: "queued draft",
+			mode: "prompt",
+			cursorOffset: 12,
+			pastedContents: { image: true },
+		}),
+	};
+	const input = runtime.renderInput({
+		draft,
+		turn: { getSnapshot: () => ({ isLoading: true }) },
+		onSubmit: (value: string) => submitted.push(value),
+		commandQueue,
+	});
+	const busyEvent = {
+		name: "tab",
+		shift: false,
+		ctrl: false,
+		meta: false,
+		defaultPrevented: false,
+		didStopImmediatePropagation: () => false,
+		preventDefault() {
+			this.defaultPrevented = true;
+		},
+	};
+	input.onKeyDownBefore(busyEvent);
+	assert.deepEqual(submitted, ["ship it"]);
+	assert.equal(busyEvent.defaultPrevented, true);
 
-	assert.match(output, /&&\s+isLoading/);
-	assert.match(output, /submit\(input, "__cc_enhanced_tab_queue"\)/);
-	assert.equal(tabQueue.verify(output, parse(output)), true);
-});
-
-test("tab-queue public Patch preserves the presentation boundary", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const firstOutput = print(ast);
-
-	assert.match(firstOutput, /key: "tab-queue-status"/);
-	assert.match(firstOutput, /key: "tab-queue-draft"/);
-	assert.match(firstOutput, /let textInputElement = __ccTabQueuedPreview \?/);
-	assert.match(
-		firstOutput,
-		/input\.trim\(\) === "" && !\(Array\.isArray\(globalThis\.__ccEnhancedTabQueue\) && globalThis\.__ccEnhancedTabQueue\.length > 0\)/,
-	);
-	assert.match(firstOutput, /key: "queue-draft"/);
-	assert.match(firstOutput, /chord: "tab"/);
-	assert.match(firstOutput, /action: "queue"/);
-	assert.match(firstOutput, /key: "edit-queued-draft"/);
-	assert.match(firstOutput, /action: "edit queued"/);
-	assert.equal(tabQueue.verify(firstOutput, ast), true);
-
-	await runTabQueueViaPasses(ast);
-	const repeatedOutput = print(ast);
-	assert.equal(repeatedOutput, firstOutput);
-	assert.equal(tabQueue.verify(repeatedOutput, ast), true);
-
-	const ambiguousAst = parse(`${TAB_QUEUE_FIXTURE}
-function renderSecondFooter({ showHint, isInputEmpty, isLoading }) {
-  let parts = showHint ? getHintParts(isLoading) : [];
-  if (viewingCompletedTeammate) {
-    parts.push(React.jsx(Text, { dimColor: true, key: "esc-return",
-      children: React.jsx(KeyboardShortcutHint, { chord: "esc", action: "return to team lead", format: { keyCase: "lower" } }) }));
-  } else if (showHint) { parts.push(...parts); }
-  return React.jsx(Box, { children: parts });
-}
-`);
-	await runTabQueueViaPasses(ambiguousAst);
-	const ambiguousOutput = print(ambiguousAst);
-	assert.doesNotMatch(ambiguousOutput, /action: "queue"/);
-	assert.doesNotMatch(ambiguousOutput, /action: "edit queued"/);
-	assert.equal(
-		tabQueue.verify(ambiguousOutput, ambiguousAst),
-		"Draft Tab queue footer hint not found",
-	);
-});
-
-test("tab-queue receiver guard pushes the trimmed draft and resets the buffer", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	assert.match(output, /globalThis\.__ccEnhancedTabQueue \?\?/);
-	assert.match(output, /\.push\(input\.trim\(\)\)/);
-	assert.match(output, /helpers\.setCursorOffset\(0\)/);
-	assert.match(output, /helpers\.clearBuffer\(\)/);
-	assert.equal(tabQueue.verify(output, ast), true);
-});
-
-test("tab-queue injects the queue producer against a three-param submit receiver", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	// The receiver caller takes (input, helpers, options); the injected producer
-	// must read the options param and push the trimmed draft onto the queue.
-	assert.match(
-		output,
-		/if \(options && options\.deferUntilTurnEnd && input\.trim\(\) !== ""\)/,
-	);
-	assert.match(output, /globalThis\.__ccEnhancedTabQueue \?\?/);
-	assert.match(output, /\.push\(input\.trim\(\)\)/);
-	assert.equal(tabQueue.verify(output, ast), true);
-});
-
-test("tab-queue merges the defer flag into the forward options argument", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	// The flag rides in the third positional argument (input, helpers, options),
-	// the same slot the receiver reads its options from, so the two sides agree.
-	assert.match(
-		output,
-		/isSubmittingSlashCommand === "__cc_enhanced_tab_queue" \? \{ \.\.\.forwardOptions, deferUntilTurnEnd: true \} : forwardOptions/,
-	);
-	assert.equal(tabQueue.verify(output, ast), true);
-});
-
-test("tab-queue merges the defer flag when the forward goes through a local alias", async () => {
-	// The submit handler can bind its input to a local before forwarding, so a
-	// branch can substitute a different prompt. Matching only the parameter
-	// identifier misses that forward and silently drops the queue flag.
-	const aliased = TAB_QUEUE_FIXTURE.replace(
-		`    let forwardOptions = value.startsWith("/") ? { fromSlash: true } : void 0;
-    return submitPrompt(value, {`,
-		`    let forwarded = value;
-    if (forwarded.trim() === "") forwarded = resumeStaleDraft();
-    let forwardOptions = forwarded.startsWith("/") ? { fromSlash: true } : void 0;
-    return submitPrompt(forwarded, {`,
-	);
-	assert.notEqual(aliased, TAB_QUEUE_FIXTURE);
-	const ast = parse(aliased);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	assert.match(
-		output,
-		/isSubmittingSlashCommand === "__cc_enhanced_tab_queue" \? \{ \.\.\.forwardOptions, deferUntilTurnEnd: true \} : forwardOptions/,
-	);
-	assert.equal(tabQueue.verify(output, ast), true);
-});
-
-test("tab-queue verify fails when the submit receiver has no options param", async () => {
-	const noOptions = TAB_QUEUE_FIXTURE.replace(
-		"async function replSubmit(input, helpers, options) {",
-		"async function replSubmit(input, helpers) {",
-	);
-	assert.notEqual(noOptions, TAB_QUEUE_FIXTURE);
-	const ast = parse(noOptions);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	// Without an options param the sole queue producer can never be injected, so
-	// verify must refuse the build rather than tolerate a silent no-op.
-	assert.doesNotMatch(output, /globalThis\.__ccEnhancedTabQueue \?\?/);
-	const result = tabQueue.verify(output);
-	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("submit receiver not found"), true);
-});
-
-test("tab-queue widens the footer push without dropping the showHint branch", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	assert.match(output, /showHint \|\| hintParts\.length > 0/);
-	assert.doesNotMatch(output, /else if \(hintParts\.length > 0\) parts\.push/);
-});
-
-test("tab-queue end-turn drain is inserted once and stays once", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const firstOutput = print(ast);
-	const reparsed = parse(firstOutput);
-	await runTabQueueViaPasses(reparsed);
-	const secondOutput = print(reparsed);
-	assert.equal(
-		countOccurrences(firstOutput, /mode: "prompt", priority: "later"/g),
-		1,
-	);
-	assert.equal(
-		countOccurrences(secondOutput, /mode: "prompt", priority: "later"/g),
-		1,
-	);
-});
-
-test("tab-queue keeps autocomplete ahead of queue handling", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-
-	const typeaheadGuardIndex = output.indexOf("typeahead(event)");
-	const queueGuardIndex = output.indexOf('event.name === "tab"');
-	assert.notEqual(typeaheadGuardIndex, -1);
-	assert.notEqual(queueGuardIndex, -1);
-	assert.equal(typeaheadGuardIndex < queueGuardIndex, true);
-});
-
-test("tab-queue lets queued draft edit bypass the thinking hint", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-
-	const thinkingHintIndex = output.indexOf('key: "thinking-toggle-hint"');
-	const queueBypassIndex = output.indexOf(
-		"Array.isArray(globalThis.__ccEnhancedTabQueue)",
-		thinkingHintIndex - 240,
-	);
-	const editGuardIndex = output.indexOf(
-		"globalThis.__ccEnhancedTabQueue.pop()",
-	);
-	assert.notEqual(thinkingHintIndex, -1);
-	assert.notEqual(queueBypassIndex, -1);
-	assert.notEqual(editGuardIndex, -1);
-	assert.equal(queueBypassIndex < thinkingHintIndex, true);
-	assert.equal(thinkingHintIndex < editGuardIndex, true);
-	assert.equal(tabQueue.verify(output, ast), true);
+	draft.value = "";
+	busyEvent.defaultPrevented = false;
+	input.onKeyDownBefore(busyEvent);
+	assert.deepEqual(updates, [
+		["value", "queued draft"],
+		["mode", "prompt"],
+		["cursor", 12],
+		["pasted", { image: true }],
+	]);
+	assert.equal(busyEvent.defaultPrevented, true);
 });
 
 test("tab-queue is idempotent", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
+	const ast = parse(LATEST_TAB_QUEUE_FIXTURE);
 	await runTabQueueViaPasses(ast);
-	const firstOutput = print(ast);
+	const once = print(ast);
+	await runTabQueueViaPasses(ast);
+	const twice = print(ast);
 
-	const reparsed = parse(firstOutput);
-	await runTabQueueViaPasses(reparsed);
-	const secondOutput = print(reparsed);
+	assert.equal(twice, once);
+	assert.equal(tabQueue.verify(twice, ast), true);
+});
 
-	assert.equal(countOccurrences(firstOutput, /"__cc_enhanced_tab_queue"/g), 2);
-	assert.equal(countOccurrences(secondOutput, /"__cc_enhanced_tab_queue"/g), 2);
-	assert.equal(countOccurrences(firstOutput, /key: "queue-draft"/g), 1);
-	assert.equal(countOccurrences(secondOutput, /key: "queue-draft"/g), 1);
-	assert.equal(countOccurrences(firstOutput, /key: "edit-queued-draft"/g), 1);
-	assert.equal(countOccurrences(secondOutput, /key: "edit-queued-draft"/g), 1);
-	assert.equal(countOccurrences(firstOutput, /key: "tab-queue-status"/g), 1);
-	assert.equal(countOccurrences(secondOutput, /key: "tab-queue-status"/g), 1);
-	assert.equal(countOccurrences(firstOutput, /key: "tab-queue-draft"/g), 1);
-	assert.equal(countOccurrences(secondOutput, /key: "tab-queue-draft"/g), 1);
-	assert.equal(
-		countOccurrences(firstOutput, /globalThis\.__ccEnhancedTabQueue/g),
-		countOccurrences(secondOutput, /globalThis\.__ccEnhancedTabQueue/g),
+test("tab-queue verify rejects a missing busy gate", async () => {
+	const { output } = await patchFixture();
+	const mutated = output.replace("turn.getSnapshot().isLoading &&", "true &&");
+	assert.notEqual(mutated, output);
+	assert.equal(typeof tabQueue.verify(mutated), "string");
+});
+
+test("tab-queue fails closed when prompt input targets are ambiguous", async () => {
+	const second = LATEST_TAB_QUEUE_FIXTURE.replace(
+		"function renderInput",
+		"function renderSecondInput",
 	);
-	assert.equal(countOccurrences(firstOutput, /hintParts\.length > 0/g), 1);
-	assert.equal(countOccurrences(secondOutput, /hintParts\.length > 0/g), 1);
-	assert.equal(tabQueue.verify(secondOutput, reparsed), true);
-});
-
-test("tab-queue verify fails when the loading gate is removed", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	const mutated = output.replace(/&&\s+isLoading/g, "&& true");
-	assert.notEqual(mutated, output);
-
-	const result = tabQueue.verify(mutated);
-	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("key handler not found"), true);
-});
-
-test("tab-queue verify fails when the non-empty draft gate is removed", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	const mutated = output.replace(/&&\s+input\.trim\(\) !== ""/, "&& true");
-	assert.notEqual(mutated, output);
-
-	const result = tabQueue.verify(mutated);
-	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("key handler not found"), true);
-});
-
-test("tab-queue verify fails when the edit path is removed", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	const mutated = output.replace(/change\(__ccQueuedDraft\);/, "");
-	assert.notEqual(mutated, output);
-
-	const result = tabQueue.verify(mutated);
-	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("edit handler not found"), true);
-});
-
-test("tab-queue verify fails when the edit queue-length gate is removed", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	const mutated = output.replace(
-		/&&\s+Array\.isArray\(globalThis\.__ccEnhancedTabQueue\) &&\s+globalThis\.__ccEnhancedTabQueue\.length > 0/,
-		"",
+	const { ast, output } = await patchFixture(
+		`${LATEST_TAB_QUEUE_FIXTURE}\n${second}`,
 	);
-	assert.notEqual(mutated, output);
 
-	const result = tabQueue.verify(mutated);
-	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("edit handler not found"), true);
-});
-
-test("tab-queue verify fails when the prompt bar preview is removed", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	const mutated = output.replace(
-		/key: "tab-queue-status"/,
-		'key: "tab-queue-missing"',
-	);
-	assert.notEqual(mutated, output);
-
-	const result = tabQueue.verify(mutated);
-	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("prompt bar preview not found"), true);
-});
-
-test("tab-queue verify fails when the typeahead bypass is removed", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	const mutated = output.replace(
-		/ && !\(Array\.isArray\(globalThis\.__ccEnhancedTabQueue\) && globalThis\.__ccEnhancedTabQueue\.length > 0\)/,
-		"",
-	);
-	assert.notEqual(mutated, output);
-
-	const result = tabQueue.verify(mutated);
-	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("typeahead bypass not found"), true);
-});
-
-test("tab-queue verify fails when the typeahead bypass polarity is flipped", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	// Drop only the negation so the queue member still appears in the test but
-	// the bypass no longer suppresses on a non-empty queue. A presence-only
-	// check would accept this; the polarity-aware check must reject it.
-	const mutated = output.replace(
-		" && !(Array.isArray(globalThis.__ccEnhancedTabQueue) && globalThis.__ccEnhancedTabQueue.length > 0)",
-		" && (Array.isArray(globalThis.__ccEnhancedTabQueue) && globalThis.__ccEnhancedTabQueue.length > 0)",
-	);
-	assert.notEqual(mutated, output);
-
-	const result = tabQueue.verify(mutated);
-	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("typeahead bypass not found"), true);
-});
-
-test("tab-queue verify fails when the end-turn abort guard is removed", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	const mutated = output.replace(
-		/if \(!abortController\.signal\.aborted && Array\.isArray\(__ccTabQueue\)/,
-		"if (Array.isArray(__ccTabQueue)",
-	);
-	assert.notEqual(mutated, output);
-
-	const result = tabQueue.verify(mutated);
-	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("end-turn drain not found"), true);
-});
-
-test("tab-queue end-turn drain routes the resubmit to the current agent", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	// The resubmit must carry the agentId captured from upstream's own enqueue,
-	// otherwise the per-agent queue drainer never picks the command up.
-	assert.match(
-		output,
-		/mode: "prompt", priority: "later", agentId: getCurrentAgentId\(\)/,
-	);
-	assert.equal(tabQueue.verify(output, ast), true);
-});
-
-test("tab-queue verify fails when the end-turn agentId routing is removed", async () => {
-	const ast = parse(TAB_QUEUE_FIXTURE);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-	const mutated = output.replace(/, agentId: getCurrentAgentId\(\) }\)/, " })");
-	assert.notEqual(mutated, output);
-
-	const result = tabQueue.verify(mutated);
-	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("end-turn drain not found"), true);
-});
-
-test("tab-queue fails closed when draft key targets are ambiguous", async () => {
-	const input = `${TAB_QUEUE_FIXTURE}
-function renderSecondInput({ input, isLoading, setPastedContents }) {
-  function submit(value) {
-    return send(value);
-  }
-  function change(value) {
-    input = value;
-  }
-  function beforeKey(event) {
-    if ((noop(event), event.defaultPrevented || event.didStopImmediatePropagation())) return;
-    if ((noop(event), event.defaultPrevented || event.didStopImmediatePropagation())) return;
-  }
-  let inputProps = {
-    multiline: true,
-    onKeyDownBefore: beforeKey,
-    onSubmit: submit,
-    onChange: change,
-    value: input,
-    onChangeCursorOffset: setCursorOffset,
-    disableEscapeDoublePress: false,
-    inputFilter: filterInput,
-  };
-  return React.jsx(Footer, {
-    suppressHint: input.length > 0,
-    isLoading,
-    children: React.jsx(TextInput, inputProps),
-  });
-}
-`;
-	const ast = parse(input);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-
-	assert.equal(
-		output.includes('submit(input, "__cc_enhanced_tab_queue")'),
-		false,
-	);
-	const result = tabQueue.verify(output, ast);
-	assert.equal(typeof result, "string");
-});
-
-test("tab-queue fails closed when footer hint targets are ambiguous", async () => {
-	const input = `${TAB_QUEUE_FIXTURE}
-function renderSecondFooter({ showHint, isInputEmpty, isLoading }) {
-  let parts = showHint ? getHintParts(isLoading) : [];
-  if (viewingCompletedTeammate) {
-    parts.push(React.jsx(Text, { dimColor: true, key: "esc-return",
-      children: React.jsx(KeyboardShortcutHint, { chord: "esc", action: "return to team lead", format: { keyCase: "lower" } }) }));
-  } else if (showHint) { parts.push(...parts); }
-  return React.jsx(Box, { children: parts });
-}
-`;
-	const ast = parse(input);
-	await runTabQueueViaPasses(ast);
-	const output = print(ast);
-
-	// Two footer targets gate the mutator off (it only fires on exactly one),
-	// so neither footer is widened and verify must refuse the write instead of
-	// silently patching the wrong one.
-	assert.equal(output.includes('action: "queue"'), false);
-	const result = tabQueue.verify(output, ast);
-	assert.equal(typeof result, "string");
+	assert.doesNotMatch(output, /submitAlias\(draft\.value\)/);
+	assert.match(String(tabQueue.verify(output, ast)), /ambiguous|not found/);
 });

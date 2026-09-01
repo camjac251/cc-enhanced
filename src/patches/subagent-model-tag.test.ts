@@ -27,9 +27,11 @@ async function patchSource(source: string): Promise<string> {
 // React key ("model") is the third positional argument of the element-factory
 // call, with the dimColor signal carried on a nested text element.
 const AGENT_SCHEMA_FIXTURE = String.raw`
+const AGENT_DESCRIPTION_TEXT = "A short (3-5 word) description of the task";
+const AGENT_PROMPT_TEXT = "The task for the agent to perform";
 const agentInputSchema = A.object({
-  description: A.string().describe("A short (3-5 word) description of the task"),
-  prompt: A.string().describe("The task for the agent to perform"),
+  description: A.string().describe(AGENT_DESCRIPTION_TEXT),
+  prompt: A.string().describe(AGENT_PROMPT_TEXT),
   subagent_type: A.string().optional().describe("The type of specialized agent to use for this task"),
   model: A.enum(["sonnet", "opus", "haiku", "fable"]).optional().describe('Optional model override for this agent. Takes precedence over the agent definition\'s model frontmatter. Ignored for subagent_type: "fork"; forks always inherit the parent model.'),
   run_in_background: A.boolean().optional(),
@@ -75,17 +77,18 @@ const agentTool = {
         use_splitpane: true,
         plan_mode_required: false,
         model,
-        agent_type: subagent_type,
+        agent_type: configuredAgent?.agentType ?? subagent_type,
         invokingRequestId,
       }, context);
     }
     let selectedAgent;
     if (isFork) selectedAgent = forkAgent;
     else selectedAgent = configuredAgent;
+    const selectedModel = isFork ? "inherit" : model;
     const resolvedModel = resolveAgentModel(
       getAgentModel(selectedAgent, parentModel),
       parentModel,
-      isFork ? void 0 : model,
+      selectedModel,
       permissionMode,
     );
     if (isRemote) {
@@ -108,7 +111,7 @@ const agentTool = {
       isAsync: run_in_background,
       querySource,
       spawnedBySkill,
-      model: isFork ? void 0 : model,
+      model: selectedModel,
       override,
       availableTools,
       description,
@@ -251,18 +254,6 @@ const SUBAGENT_FIXTURE_EFFORT_WRAPPED = SUBAGENT_FIXTURE.replace(
 	"const resolvedModel = resolveAgentModel(getAgentModel(effortAgent, parentModel), parentModel, metadata?.isObserver ? void 0 : metadata?.model, permissionMode);",
 );
 
-const SUBAGENT_FIXTURE_LAUNCH_OVERRIDE_ALIAS = SUBAGENT_FIXTURE.replace(
-	`    const resolvedModel = resolveAgentModel(
-      getAgentModel(selectedAgent, parentModel),
-      parentModel,
-      isFork ? void 0 : model,`,
-	`    const launchModelOverride = isFork ? undefined : model;
-    const resolvedModel = resolveAgentModel(
-      getAgentModel(selectedAgent, parentModel),
-      parentModel,
-      launchModelOverride,`,
-);
-
 test("verify rejects unpatched code", () => {
 	const ast = parse(SUBAGENT_FIXTURE);
 	const code = print(ast);
@@ -384,7 +375,7 @@ test("subagent-model-tag routes named teammates without replacing agent_type", a
 	const output = await patchSource(SUBAGENT_FIXTURE);
 
 	assert.equal(
-		output.includes("agent_type: subagent_type"),
+		output.includes("agent_type: configuredAgent?.agentType ?? subagent_type"),
 		true,
 		"the selected teammate agent type must remain unchanged",
 	);
@@ -403,7 +394,10 @@ test("subagent-model-tag routes named teammates without replacing agent_type", a
 test("subagent-model-tag routes effort through the unified teammate launch", async () => {
 	const output = await patchSource(CURRENT_SUBAGENT_FIXTURE);
 
-	assert.equal(output.includes("agent_type: subagent_type"), true);
+	assert.equal(
+		output.includes("agent_type: configuredAgent?.agentType ?? subagent_type"),
+		true,
+	);
 	assert.equal(
 		output.includes("effort: __claudeCodeAgentEffortOverride"),
 		true,
@@ -480,23 +474,17 @@ test("subagent-model-tag recognizes a compound Agent model description", async (
 	assert.equal(subagentModelTag.verify(output, parse(output)), true);
 });
 
-test("subagent-model-tag follows a local fork model override alias", async () => {
-	assert.notEqual(SUBAGENT_FIXTURE_LAUNCH_OVERRIDE_ALIAS, SUBAGENT_FIXTURE);
-	const output = await patchSource(SUBAGENT_FIXTURE_LAUNCH_OVERRIDE_ALIAS);
-
-	assert.equal(
-		output.split("isFork ? parentModel : resolveAgentModel").length - 1,
-		2,
-	);
-	assert.equal(subagentModelTag.verify(output, parse(output)), true);
-});
-
 test("subagent-model-tag keeps fork launches and resumes on the parent model", async () => {
 	const output = await patchSource(SUBAGENT_FIXTURE);
 	assert.equal(
+		output.includes('isFork ? "inherit" : model'),
+		true,
+		"initial forks must use the upstream inherit model token",
+	);
+	assert.equal(
 		output.split("isFork ? parentModel : resolveAgentModel").length - 1,
-		2,
-		"both initial and resumed forks must bypass the global subagent model override",
+		1,
+		"resumed forks must bypass the global subagent model override",
 	);
 	assert.equal(subagentModelTag.verify(output, parse(output)), true);
 });
@@ -505,8 +493,8 @@ test("verify rejects partial fork inheritance", async () => {
 	const output = await patchSource(SUBAGENT_FIXTURE);
 
 	const missingForkLaunch = output.replace(
-		"isFork ? parentModel : resolveAgentModel",
-		"resolveAgentModel",
+		'isFork ? "inherit" : model',
+		"model",
 	);
 	assert.notEqual(missingForkLaunch, output);
 	const forkResult = subagentModelTag.verify(
@@ -526,9 +514,14 @@ test("subagent-model-tag resolves fork resume through an effort-wrapper alias", 
 	const output = await patchSource(SUBAGENT_FIXTURE_EFFORT_WRAPPED);
 
 	assert.equal(
+		output.includes('isFork ? "inherit" : model'),
+		true,
+		"initial forks must use the upstream inherit model token",
+	);
+	assert.equal(
 		output.split("isFork ? parentModel : resolveAgentModel").length - 1,
-		2,
-		"launch and wrapper-fed resume forks must both bypass the global subagent model override",
+		1,
+		"wrapper-fed resume forks must bypass the global subagent model override",
 	);
 	assert.equal(
 		output.includes(
@@ -661,7 +654,9 @@ test("subagent-model-tag refuses ambiguous Agent input schemas", async () => {
 	const duplicateSchema = AGENT_SCHEMA_FIXTURE.replace(
 		"agentInputSchema",
 		"duplicateAgentInputSchema",
-	);
+	)
+		.replaceAll("AGENT_DESCRIPTION_TEXT", "DUPLICATE_AGENT_DESCRIPTION_TEXT")
+		.replaceAll("AGENT_PROMPT_TEXT", "DUPLICATE_AGENT_PROMPT_TEXT");
 	const ast = parse(`${SUBAGENT_FIXTURE}\n${duplicateSchema}`);
 	await runSubagentModelTagViaPasses(ast);
 	const output = print(ast);

@@ -309,6 +309,10 @@ async function readCallImplementation(
 }
 
 async function helperRead(input) {
+  return await readBody({ ...input, io: () => {} });
+}
+
+async function readBody(input) {
   let {
       file_path: A,
       fullFilePath: F,

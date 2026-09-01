@@ -12,7 +12,7 @@ The primary supported workflow patches the latest Claude Code native executable 
 - A working **Claude Code** installation.
 - A local policy file at `/etc/claude-code/system-prompt.md`, or `CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE` set to the prompt file that should be appended automatically.
 
-The current validated upstream target is **Claude Code 2.1.245**. cc-enhanced supports the latest upstream form only; older releases do not receive compatibility fallbacks.
+The current validated upstream target is **Claude Code 2.1.257**. cc-enhanced supports the latest upstream form only; older releases do not receive compatibility fallbacks.
 
 ## Install the repository tooling
 

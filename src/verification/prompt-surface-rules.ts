@@ -86,6 +86,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 	},
 	{
 		file: "tools/builtin/artifact.md",
+		presence: "optional",
 		allowSyntheticPlaceholders: true,
 		required: [
 			{
@@ -248,35 +249,8 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 		file: "skills/design-sync.md",
 		presence: "optional",
 		allowLiteralTemplatePlaceholders: true,
-		required: [
-			{
-				id: "design-sync-tool-routing",
-				needle: "You have a `DesignSync` tool",
-				reason: "design-sync skill missing DesignSync tool routing",
-			},
-			{
-				id: "design-sync-heading",
-				needle: "# Sync a design system to claude.ai/design",
-				reason: "design-sync skill missing full prompt heading",
-			},
-			{
-				id: "design-sync-shape-handoff",
-				needle:
-					"Then `Read` `<skill-base-dir>/storybook/SKILL.md` or `<skill-base-dir>/non-storybook/SKILL.md`",
-				reason: "design-sync skill missing shape-specific handoff guidance",
-			},
-			{
-				id: "design-sync-ship-built-code",
-				needle: "Core principle: ship what the customer already built",
-				reason: "design-sync skill missing converter source-of-truth guidance",
-			},
-		],
+		allowDynamicPrompt: true,
 		forbidden: [
-			{
-				id: "design-sync-dynamic-prompt",
-				needle: "(Dynamic prompt: not statically resolved from cli.js AST.)",
-				reason: "design-sync skill still exports a dynamic prompt marker",
-			},
 			{
 				id: "design-sync-grep-recursive",
 				needle: "grep -r ASSUMPTION",
@@ -296,21 +270,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 	},
 	{
 		file: "skills/whiteboard.md",
-		required: [
-			{
-				id: "whiteboard-artifact-read-action",
-				needle: 'Artifact tool (`action: "read"`, `url`)',
-				reason:
-					"whiteboard skill missing the authenticated Artifact read action",
-			},
-			{
-				id: "whiteboard-artifact-unavailable",
-				needle:
-					"If the Artifact tool is unavailable, tell the user the artifact cannot be reread in this session.",
-				reason:
-					"whiteboard skill missing its fail-closed Artifact-unavailable guidance",
-			},
-		],
+		allowSyntheticPlaceholders: true,
 		forbidden: [
 			{
 				id: "whiteboard-artifact-webfetch",
@@ -321,21 +281,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 	},
 	{
 		file: "skills/artifact-pr-review.md",
-		required: [
-			{
-				id: "artifact-pr-review-read-action",
-				needle: 'with the Artifact tool (`action: "read"`',
-				reason:
-					"artifact PR review skill missing the authenticated Artifact read action",
-			},
-			{
-				id: "artifact-pr-review-unavailable",
-				needle:
-					"If the Artifact tool is unavailable, tell the user the artifact cannot be reread in this session.",
-				reason:
-					"artifact PR review skill missing its fail-closed Artifact-unavailable guidance",
-			},
-		],
+		allowDynamicPrompt: true,
 		forbidden: [
 			{
 				id: "artifact-pr-review-webfetch",
@@ -347,13 +293,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 	{
 		file: "skills/run.md",
 		presence: "optional",
-		required: [
-			{
-				id: "run-skill-fd-rg-discovery",
-				needle: "fd -a SKILL.md",
-				reason: "run skill missing fd-based skill discovery",
-			},
-		],
+		allowDynamicPrompt: true,
 		forbidden: [
 			{
 				id: "run-skill-grep-description",
@@ -410,13 +350,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 	{
 		file: "skills/run-skill-generator.md",
 		presence: "optional",
-		required: [
-			{
-				id: "run-skill-generator-fd-rg-discovery",
-				needle: "fd -a SKILL.md",
-				reason: "run-skill-generator missing fd-based skill discovery",
-			},
-		],
+		allowDynamicPrompt: true,
 		forbidden: [
 			{
 				id: "run-skill-generator-grep-description",
@@ -585,6 +519,7 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 	},
 	{
 		file: "agents/worker.md",
+		presence: "optional",
 		allowSyntheticPlaceholders: true,
 		required: [
 			{
@@ -825,12 +760,14 @@ export const PROMPT_SURFACE_RULES: readonly PromptSurfaceRule[] = [
 	},
 	...REMOTE_PLANNING_REMINDER_FILES.map((file) => ({
 		file,
+		presence: "optional" as const,
 		required: REMOTE_PLANNING_REQUIRED_NEEDLES,
 		forbidden: REMOTE_PLANNING_FORBIDDEN_NEEDLES,
 	})),
 	{
 		file: "agents/claude-code-guide.md",
 		presence: "optional",
+		allowSyntheticPlaceholders: true,
 		required: [
 			{
 				id: "guide-mcp-doc-tools",

@@ -35,7 +35,7 @@ The patch contract is in `src/types.ts`. Execution is:
 
 Memory cleanup in `src/types.ts`, `src/patch-runner.ts`, `src/babel.ts`, `src/diff.ts`, `scripts/export-prompts.ts`, and the update path in `src/index.ts` is load-bearing. Removing dropped ASTs, traverse-cache cleanup, the large-verifier-set midpoint release, or pre-verification GC reintroduces update-time OOMs.
 
-Native repacking must preserve the original byte length and virtual-address layout. Promotion is an atomic symlink swap; rollback swaps current and previous.
+Native repacking must preserve the original byte length and virtual-address layout. Split bundles are rebundled into one self-contained patch surface, compacted by printing the same AST with ASCII-safe escapes, stored in the validated packed source span, and reduced to one live module before promotion verification. Promotion is an atomic symlink swap; rollback swaps current and previous.
 
 ## Find the right surface
 

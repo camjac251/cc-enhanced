@@ -32,7 +32,7 @@ const GENERATOR_OPTIONS = {
 	compact: false,
 } satisfies GeneratorOptions;
 
-function escapeNonAsciiForBundle(code: string): string {
+export function escapeNonAsciiForBundle(code: string): string {
 	let result = "";
 	let segmentStart = 0;
 

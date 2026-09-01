@@ -13,8 +13,6 @@ import {
 const BUILTIN_MODEL_ALIASES = ["sonnet", "opus", "haiku", "fable"] as const;
 const AGENT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 const AGENT_EFFORT_BINDING = "__claudeCodeAgentEffortOverride";
-const AGENT_DESCRIPTION = "A short (3-5 word) description of the task";
-const AGENT_PROMPT = "The task for the agent to perform";
 const AGENT_TYPE = "The type of specialized agent to use for this task";
 const AGENT_MODEL_DESCRIPTION =
 	'Optional model override for this agent. Accepts a built-in model alias (for example, "fable", "opus", "sonnet", or "haiku"), "inherit", or a full model ID available through /model and exposed by the active provider. Takes precedence over the agent definition\'s model frontmatter. If omitted, uses the agent definition\'s model or inherits from the parent; "inherit" always uses the parent model. Ignored for subagent_type: "fork"; forks always inherit the parent model.';
@@ -104,8 +102,8 @@ function isAgentModelDescription(description: string | null): boolean {
 
 function isAgentInputSchemaObject(node: t.ObjectExpression): boolean {
 	return (
-		isDescribedWith(node, "description", AGENT_DESCRIPTION) &&
-		isDescribedWith(node, "prompt", AGENT_PROMPT) &&
+		getObjectPropertyByName(node, "description") !== null &&
+		getObjectPropertyByName(node, "prompt") !== null &&
 		isDescribedWith(node, "subagent_type", AGENT_TYPE) &&
 		isAgentModelDescription(getPropertyDescription(node, "model")) &&
 		getObjectPropertyByName(node, "run_in_background") !== null
@@ -448,7 +446,8 @@ function getForkLaunchCallShape(
 		!parentModelName ||
 		!t.isConditionalExpression(override) ||
 		!t.isIdentifier(override.test) ||
-		!isVoidZero(override.consequent)
+		!t.isStringLiteral(override.consequent, { value: "inherit" }) ||
+		!t.isIdentifier(override.alternate)
 	) {
 		return null;
 	}
@@ -459,27 +458,10 @@ function classifyForkLaunchResolution(
 	path: NodePath<t.VariableDeclarator>,
 ): ForkResolutionCandidate | null {
 	const initializer = path.node.init;
-	if (t.isCallExpression(initializer)) {
-		const shape = getForkLaunchCallShape(path, initializer);
-		if (!shape || !hasResolvedAgentModelReference(path)) return null;
-		return { path, resolverCall: initializer, state: "unpatched", ...shape };
-	}
-	if (
-		!t.isConditionalExpression(initializer) ||
-		!t.isIdentifier(initializer.test) ||
-		!t.isIdentifier(initializer.consequent) ||
-		!t.isCallExpression(initializer.alternate)
-	) {
-		return null;
-	}
-	const shape = getForkLaunchCallShape(path, initializer.alternate);
+	if (!t.isCallExpression(initializer)) return null;
+	const shape = getForkLaunchCallShape(path, initializer);
 	if (!shape || !hasResolvedAgentModelReference(path)) return null;
-	const state: PatchSiteState =
-		initializer.test.name === shape.forkName &&
-		initializer.consequent.name === shape.parentModelName
-			? "patched"
-			: "other";
-	return { path, resolverCall: initializer.alternate, state, ...shape };
+	return { path, resolverCall: initializer, state: "patched", ...shape };
 }
 
 /**
@@ -1433,7 +1415,9 @@ function patchTeammateEffort(
 	if (
 		!subagentTypeName ||
 		!agentType ||
-		!t.isIdentifier(agentType.value, { name: subagentTypeName })
+		countMatchingNodes(agentType.value, (node) =>
+			t.isIdentifier(node, { name: subagentTypeName }),
+		) !== 1
 	) {
 		return false;
 	}
@@ -1513,7 +1497,9 @@ function hasTeammateEffortContract(
 	return (
 		subagentTypeName !== null &&
 		agentType !== null &&
-		t.isIdentifier(agentType.value, { name: subagentTypeName }) &&
+		countMatchingNodes(agentType.value, (node) =>
+			t.isIdentifier(node, { name: subagentTypeName }),
+		) === 1 &&
 		launchEffort !== null &&
 		t.isIdentifier(launchEffort.value, { name: effortName }) &&
 		sessionOptions.every((candidate) => {

@@ -881,6 +881,61 @@ function getFirstObjectPatternParam(
 	return candidates.length === 1 ? candidates[0] : null;
 }
 
+function resolveNestedReadResultHelper(
+	initialPath: NodePath<t.Function>,
+	isReadResultPattern: (pattern: t.ObjectPattern) => boolean,
+): NodePath<t.Function> | null {
+	const containsReadResult = (path: NodePath<t.Function>): boolean => {
+		let found = false;
+		path.traverse({
+			ObjectPattern(patternPath) {
+				if (!isReadResultPattern(patternPath.node)) return;
+				found = true;
+				patternPath.stop();
+			},
+		});
+		return found;
+	};
+
+	if (containsReadResult(initialPath)) return initialPath;
+	const candidates: NodePath<t.Function>[] = [];
+	initialPath.traverse({
+		AwaitExpression(awaitPath) {
+			const call = awaitPath.node.argument;
+			if (!t.isCallExpression(call) || !t.isIdentifier(call.callee)) return;
+			if (call.arguments.length !== 1) return;
+			const [payload] = call.arguments;
+			if (!t.isObjectExpression(payload)) return;
+			if (!payload.properties.some((property) => t.isSpreadElement(property))) {
+				return;
+			}
+			const binding = awaitPath.scope.getBinding(call.callee.name);
+			if (!binding) return;
+			let candidate: NodePath<t.Function> | null = null;
+			if (binding.path.isFunctionDeclaration()) {
+				candidate = binding.path as NodePath<t.Function>;
+			} else if (binding.path.isVariableDeclarator()) {
+				const initPath = binding.path.get("init");
+				if (
+					!Array.isArray(initPath) &&
+					(initPath.isFunctionExpression() ||
+						initPath.isArrowFunctionExpression())
+				) {
+					candidate = initPath as NodePath<t.Function>;
+				}
+			}
+			if (
+				candidate &&
+				containsReadResult(candidate) &&
+				!candidates.some((existing) => existing.node === candidate?.node)
+			) {
+				candidates.push(candidate);
+			}
+		},
+	});
+	return candidates.length === 1 ? candidates[0] : null;
+}
+
 function getReadCallImplementationPath(
 	readToolPath: NodePath<t.ObjectExpression>,
 ): NodePath<t.FunctionDeclaration> | null {
@@ -3020,13 +3075,19 @@ export const readWithBat: Patch = {
 												}
 											}
 
-											const helperFn = objectHelperFnPath?.node ?? null;
+											const readHelperFnPath = objectHelperFnPath
+												? resolveNestedReadResultHelper(
+														objectHelperFnPath,
+														isD2IDestructuring,
+													)
+												: null;
+											const helperFn = readHelperFnPath?.node ?? null;
 											if (
-												objectHelperFnPath &&
+												readHelperFnPath &&
 												helperFn &&
 												t.isBlockStatement(helperFn.body)
 											) {
-												const helperBodyPath = objectHelperFnPath.get(
+												const helperBodyPath = readHelperFnPath.get(
 													"body",
 												) as NodePath<t.BlockStatement>;
 												let d2iFound = false;

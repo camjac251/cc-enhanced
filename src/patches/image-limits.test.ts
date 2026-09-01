@@ -63,6 +63,7 @@ function zWn() {
 function CVf(e, t) {
   return { messagesPreNormalize: e, messagesForAPI: e, midConvFallback: () => e };
 }
+function measured(callback) { return callback(); }
 function Wq(x) {
   return x;
 }
@@ -75,11 +76,7 @@ async function* query(e, s) {
     $ = false,
     _ = false,
     y = void 0;
-  let {
-      messagesPreNormalize: L,
-      messagesForAPI: O,
-      midConvFallback: j,
-    } = CVf(e, {
+  let requestOptions = {
       model: s.model,
       bodyModel: h,
       tools: S,
@@ -87,10 +84,15 @@ async function* query(e, s) {
       midConvLatchedOff: $,
       useToolSearch: _,
       advisorModel: y,
-    }),
-    N = O,
-    M = j;
-  let Ct = null,
+    },
+    {
+      messagesPreNormalize: L,
+      messagesForAPI: O,
+      midConvFallback: j,
+    } = measured(() => CVf(e, requestOptions)),
+    N = O;
+  let M = j,
+    Ct = null,
     el = (Qo) => {
       let Fo = zWn(Qo),
         lo = p.includes("z") && !Fo;

@@ -500,7 +500,7 @@ function buildPatchedUltracodeActiveGate(
 }
 
 function patchRawUltracodeFlagFunction(fn: t.Function): boolean | null {
-	if (fn.params.length !== 2 || !t.isBlockStatement(fn.body)) return null;
+	if (fn.params.length !== 1 || !t.isBlockStatement(fn.body)) return null;
 	for (const stmt of fn.body.body) {
 		if (!t.isVariableDeclaration(stmt)) continue;
 		for (const declaration of stmt.declarations) {
@@ -523,7 +523,7 @@ function patchRawUltracodeFlagFunction(fn: t.Function): boolean | null {
 }
 
 function hasPatchedRawUltracodeFlagFunction(fn: t.Function): boolean {
-	if (fn.params.length !== 2 || !t.isBlockStatement(fn.body)) return false;
+	if (fn.params.length !== 1 || !t.isBlockStatement(fn.body)) return false;
 	for (const stmt of fn.body.body) {
 		if (!t.isVariableDeclaration(stmt)) continue;
 		for (const declaration of stmt.declarations) {

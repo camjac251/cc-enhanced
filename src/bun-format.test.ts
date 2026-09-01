@@ -167,6 +167,50 @@ test("uses another module's bytecode region when the entry-point region is too s
 	assert.equal(bunBlob[result.bytecodeOffset + replacement.length], 0);
 });
 
+test("uses a packed contents span for a self-contained split bundle", () => {
+	const { bunBlob, bunOffsets } = buildBunBlob(
+		[
+			{
+				name: Buffer.alloc(1),
+				contents: Buffer.alloc(8, 0x31),
+				bytecode: Buffer.alloc(0),
+			},
+			{
+				name: Buffer.alloc(1),
+				contents: Buffer.alloc(8, 0x32),
+				bytecode: Buffer.alloc(0),
+			},
+		],
+		0,
+	);
+	const replacement = Buffer.alloc(16, 0x61);
+
+	const result = replaceEntryPointModuleInPlace(
+		bunBlob,
+		bunOffsets,
+		SIZEOF_MODULE_NEW,
+		replacement,
+		true,
+	);
+	const entry = parseModule(
+		bunBlob,
+		bunOffsets.modulesPtr.offset,
+		SIZEOF_MODULE_NEW,
+	);
+	const retired = parseModule(
+		bunBlob,
+		bunOffsets.modulesPtr.offset + SIZEOF_MODULE_NEW,
+		SIZEOF_MODULE_NEW,
+	);
+
+	assert.equal(result.bytecodeCapacity, 17);
+	assert.deepEqual(getPointerContent(bunBlob, entry.contents), replacement);
+	assert.deepEqual(entry.bytecode, { offset: 0, length: 0 });
+	assert.deepEqual(retired.contents, { offset: 0, length: 0 });
+	assert.deepEqual(retired.bytecode, { offset: 0, length: 0 });
+	assert.equal(retired.moduleFormat, 0);
+});
+
 test("clears stale entry module metadata when replacing source", () => {
 	const donorModuleInfo = Buffer.from("donor metadata");
 	const { bunBlob, bunOffsets } = buildBunBlob(

@@ -510,11 +510,30 @@ function findRequestDownscaleTarget(
 		for (const decl of stmt.declarations) {
 			if (!t.isObjectPattern(decl.id)) continue;
 			if (!t.isCallExpression(decl.init)) continue;
-			const optionsArg = decl.init.arguments[1];
-			if (!t.isObjectExpression(optionsArg)) continue;
+			const [callback] = decl.init.arguments;
+			if (
+				!t.isArrowFunctionExpression(callback) ||
+				callback.params.length !== 0 ||
+				!t.isCallExpression(callback.body)
+			) {
+				continue;
+			}
+			const optionsArg = callback.body.arguments[1];
+			if (!t.isIdentifier(optionsArg)) continue;
+			const optionsDeclaration = stmt.declarations.find(
+				(candidate) =>
+					t.isIdentifier(candidate.id, { name: optionsArg.name }) &&
+					t.isObjectExpression(candidate.init),
+			);
+			if (
+				!optionsDeclaration ||
+				!t.isObjectExpression(optionsDeclaration.init)
+			) {
+				continue;
+			}
 			modelExpr =
-				getObjectExpressionPropValue(optionsArg, "model") ??
-				getObjectExpressionPropValue(optionsArg, "bodyModel");
+				getObjectExpressionPropValue(optionsDeclaration.init, "model") ??
+				getObjectExpressionPropValue(optionsDeclaration.init, "bodyModel");
 			if (!modelExpr) continue;
 
 			for (const prop of decl.id.properties) {
@@ -534,27 +553,32 @@ function findRequestDownscaleTarget(
 		if (!messagesForApiAlias || !fallbackAlias || !modelExpr) continue;
 		let messagesName: string | null = null;
 		let fallbackName: string | null = null;
-		for (const decl of stmt.declarations) {
-			if (
-				t.isIdentifier(decl.id) &&
-				t.isIdentifier(decl.init, { name: messagesForApiAlias })
-			) {
-				messagesName = decl.id.name;
+		for (let aliasIndex = index; aliasIndex < body.body.length; aliasIndex++) {
+			const aliasStatement = body.body[aliasIndex];
+			if (!t.isVariableDeclaration(aliasStatement)) continue;
+			for (const decl of aliasStatement.declarations) {
+				if (
+					t.isIdentifier(decl.id) &&
+					t.isIdentifier(decl.init, { name: messagesForApiAlias })
+				) {
+					messagesName = decl.id.name;
+				}
+				if (
+					t.isIdentifier(decl.id) &&
+					t.isIdentifier(decl.init, { name: fallbackAlias })
+				) {
+					fallbackName = decl.id.name;
+				}
 			}
-			if (
-				t.isIdentifier(decl.id) &&
-				t.isIdentifier(decl.init, { name: fallbackAlias })
-			) {
-				fallbackName = decl.id.name;
+			if (messagesName && fallbackName) {
+				return {
+					declarationIndex: aliasIndex,
+					messagesName,
+					fallbackName,
+					modelExpr,
+				};
 			}
 		}
-		if (!messagesName || !fallbackName) continue;
-		return {
-			declarationIndex: index,
-			messagesName,
-			fallbackName,
-			modelExpr,
-		};
 	}
 
 	return null;

@@ -1,21 +1,17 @@
 {
-  "version": "2.1.245",
+  "version": "2.1.257",
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
     "agents/background-job.md": "622e75bdfc61ce9a7ac59b19ff22609ed9a21b4c0acdfb55cd2e5ac87e44bdad",
     "agents/explore.md": "f52e7c49ad9570b112513e12dbbd714636d80a321a049121498c2e0c45557a2e",
     "agents/plan.md": "6ab8ca239ed87d3d7913ca1f601f69622200430c3e7a1686b8c252eb1ff7cef1",
-    "agents/worker.md": "6aab1480076dbaa735a7ed4617af1c55963bb9dfea1de7010c59ba61e14ff364",
     "agents/workflow-subagent.md": "4d42d7653bf4878a61943b50c54e4c95a62e6cb47f004c5aa0b2227c01932d91",
-    "skills/artifact-pr-review.md": "1cdbec7cca47079d3268ce8cdfffca0a4c1a61935a09f468838f7c0bba77e5e7",
-    "skills/whiteboard.md": "b85d706162504882f3cfa9557c2385e670637d9a9cbff73e01f29e9775ef8137",
-    "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge-2.md": "32b836727d8a1d3cbb4504b82bb4be8f40dc6b026cab4be7f59c85304adfa93a",
-    "system/reminders/you-re-running-in-a-remote-planning-session-the-user-trigge.md": "141a4f92666641720d5f8b253247992dbc23f4c17fa9a565c207653caa84bbd7",
-    "system/sections/dream-memory-consolidation.md": "6719a5dc253c10e8ff5b0e6499a7130ee919fb6c217eb8b740c0e8962b80ab61",
-    "system/sections/session-specific-guidance.md": "5eda14154b7ab1e9a62d5639481f8e1c49b13af3a7ed5e4c3a3601e672bdab6a",
+    "skills/artifact-pr-review.md": "bdda0d4ce2e087b4ed1a4174cc121da62e0ce195759a7a5b899906b2203f48d8",
+    "skills/whiteboard.md": "0719e5df9951929a331c9147d30ed7145130f33fe06e021620b9ee6edae38036",
+    "system/sections/dream-memory-consolidation.md": "cab5b2dd84f7f3361931f62f1373b6d07c17b10cf1fbbf397a1c4916dbca189d",
+    "system/sections/session-specific-guidance.md": "f2cfef1db00c1af26fc7976d3877975569ce25fb151315662cba935070ca1eee",
     "system/sections/using-your-tools.md": "9f7e7a7321436c63b1a06629cfb11caefa722e8ab81b87ad744c8598b375ea7c",
-    "tools/builtin/agent.md": "3a4e517f45aec455586b60f201cdec5b673ab085a9156e2a8bf78790eb27b7d3",
-    "tools/builtin/artifact.md": "3855747e9a69e7d92c05b23c54b5a9bc0121971c6441478eb893dd2ef8b37252"
+    "tools/builtin/agent.md": "3a4e517f45aec455586b60f201cdec5b673ab085a9156e2a8bf78790eb27b7d3"
   }
 }

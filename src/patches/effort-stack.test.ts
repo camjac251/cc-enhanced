@@ -23,9 +23,9 @@ function resolveEffortLevel(H) {
   return H.settings.effortLevel ?? "high";
 }
 
-function readUltracodeFlag(e, scope) {
+function readUltracodeFlag(e) {
   let enabled = settings().ultracode === !0 || parseEffortAlias(e) === "ultracode";
-  if (enabled) unpinLaunchEffort(scope);
+  if (enabled) unpinLaunchEffort();
   return enabled;
 }
 

@@ -262,11 +262,104 @@ export function listEmbeddedModules(
 	});
 }
 
+interface BunModuleEntry {
+	index: number;
+	entryOffset: number;
+	module: BunModule;
+}
+
+function replaceEntryPointAcrossPackedContents(
+	bunBlob: Buffer,
+	bunOffsets: BunOffsets,
+	moduleStructSize: number,
+	modules: BunModuleEntry[],
+	moduleIndex: number,
+	modifiedClaudeJs: Buffer,
+): BunEntryPointReplacement | null {
+	const populated = modules
+		.filter((candidate) => candidate.module.contents.length > 0)
+		.sort(
+			(left, right) =>
+				left.module.contents.offset - right.module.contents.offset,
+		);
+	if (populated.length < 2) return null;
+	const storageOffset = populated[0].module.contents.offset;
+	const storageEnd = populated.reduce(
+		(end, candidate) =>
+			Math.max(
+				end,
+				candidate.module.contents.offset + candidate.module.contents.length,
+			),
+		storageOffset,
+	);
+	const storageCapacity = storageEnd - storageOffset;
+	if (modifiedClaudeJs.length > storageCapacity) return null;
+	const moduleTableStart = bunOffsets.modulesPtr.offset;
+	const moduleTableEnd = moduleTableStart + bunOffsets.modulesPtr.length;
+	if (storageOffset < moduleTableEnd && storageEnd > moduleTableStart) {
+		return null;
+	}
+	for (let index = 1; index < populated.length; index += 1) {
+		const previous = populated[index - 1].module.contents;
+		const current = populated[index].module.contents;
+		const previousEnd = previous.offset + previous.length;
+		if (current.offset < previousEnd) return null;
+		const gap = bunBlob.subarray(previousEnd, current.offset);
+		if (!gap.every((byte) => byte === 0)) return null;
+	}
+	if (storageOffset > 0xffff_ffff || modifiedClaudeJs.length > 0xffff_ffff) {
+		return null;
+	}
+
+	modifiedClaudeJs.copy(bunBlob, storageOffset);
+	if (modifiedClaudeJs.length < storageCapacity) {
+		bunBlob[storageOffset + modifiedClaudeJs.length] = 0;
+	}
+	for (const candidate of modules) {
+		if (candidate.index === moduleIndex) {
+			bunBlob.writeUInt32LE(storageOffset, candidate.entryOffset + 8);
+			bunBlob.writeUInt32LE(
+				modifiedClaudeJs.length,
+				candidate.entryOffset + 12,
+			);
+		} else {
+			bunBlob.writeUInt32LE(0, candidate.entryOffset + 8);
+			bunBlob.writeUInt32LE(0, candidate.entryOffset + 12);
+		}
+		bunBlob.writeUInt32LE(0, candidate.entryOffset + 16);
+		bunBlob.writeUInt32LE(0, candidate.entryOffset + 20);
+		bunBlob.writeUInt32LE(0, candidate.entryOffset + 24);
+		bunBlob.writeUInt32LE(0, candidate.entryOffset + 28);
+		if (moduleStructSize === SIZEOF_MODULE_NEW) {
+			bunBlob.writeUInt32LE(0, candidate.entryOffset + 32);
+			bunBlob.writeUInt32LE(0, candidate.entryOffset + 36);
+			bunBlob.writeUInt32LE(0, candidate.entryOffset + 40);
+			bunBlob.writeUInt32LE(0, candidate.entryOffset + 44);
+		}
+		if (candidate.index !== moduleIndex) {
+			const flagsOffset = moduleStructSize === SIZEOF_MODULE_NEW ? 48 : 32;
+			bunBlob.fill(
+				0,
+				candidate.entryOffset + flagsOffset,
+				candidate.entryOffset + flagsOffset + 4,
+			);
+		}
+	}
+	return {
+		moduleIndex,
+		storageModuleIndex: moduleIndex,
+		moduleEntryOffset: modules[moduleIndex].entryOffset,
+		bytecodeOffset: storageOffset,
+		bytecodeCapacity: storageCapacity,
+	};
+}
+
 export function replaceEntryPointModuleInPlace(
 	bunBlob: Buffer,
 	bunOffsets: BunOffsets,
 	moduleStructSize: number,
 	modifiedClaudeJs: Buffer,
+	allowPackedContentsSpan = false,
 ): BunEntryPointReplacement {
 	assertBoundedRange(
 		"Module table",
@@ -326,6 +419,17 @@ export function replaceEntryPointModuleInPlace(
 		})[0];
 
 	if (!storage) {
+		if (allowPackedContentsSpan) {
+			const replacement = replaceEntryPointAcrossPackedContents(
+				bunBlob,
+				bunOffsets,
+				moduleStructSize,
+				modules,
+				moduleIndex,
+				modifiedClaudeJs,
+			);
+			if (replacement) return replacement;
+		}
 		const largestCapacity = modules.reduce(
 			(largest, candidate) =>
 				Math.max(largest, candidate.module.bytecode.length),

@@ -251,10 +251,16 @@ export function repackNativeBinary(
 	filePath: string,
 	modifiedClaudeJs: Buffer,
 	outputPath: string = filePath,
+	allowPackedContentsSpan = false,
 ): void {
 	const kind = detectNativeBinaryKind(filePath);
 	if (kind === "elf") {
-		repackNativeLinuxBinary(filePath, modifiedClaudeJs, outputPath);
+		repackNativeLinuxBinary(
+			filePath,
+			modifiedClaudeJs,
+			outputPath,
+			allowPackedContentsSpan,
+		);
 		return;
 	}
 	if (kind !== "macho" && kind !== "pe") {
@@ -278,6 +284,7 @@ export function repackNativeBinary(
 		extracted.bunOffsets,
 		extracted.moduleStructSize,
 		modifiedClaudeJs,
+		allowPackedContentsSpan,
 	);
 	const roundTrip = extractClaudeJsFromBunBlob(
 		patchedBunBlob,

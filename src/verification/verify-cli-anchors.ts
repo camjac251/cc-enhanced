@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import * as t from "@babel/types";
 import { clearTraverseCache } from "../babel.js";
 import { parse } from "../loader.js";
 import { hasStrongClaudeMdDisclaimer } from "../patches/claudemd-strong.js";
@@ -271,15 +272,60 @@ function checkClaudeMdMarkers(
 
 function checkWorkflowSubagentRouting(
 	patchedCode: string,
+	patchedAst: ReturnType<typeof parse> | null,
 	failures: AnchorFailure[],
 ): number {
 	const hasWorkflowSubagentDefinition = patchedCode.includes(
 		'agentType: "workflow-subagent"',
 	);
-	const routesWorkflowAgentsThroughSharedRunner =
-		/for\s+await\s*\(\s*let\s+[A-Za-z_$][A-Za-z0-9_$]*\s+of\s+[A-Za-z_$][A-Za-z0-9_$]*\(\{[\s\S]{0,2200}agentDefinition:\s*[A-Za-z_$][A-Za-z0-9_$]*,[\s\S]{0,2200}transcriptSubdir:\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\?\s*`workflows\/\$\{[A-Za-z_$][A-Za-z0-9_$]*\}`\s*:\s*void 0,[\s\S]{0,400}spawnedByWorkflowRunId:\s*[A-Za-z_$][A-Za-z0-9_$]*/.test(
-			patchedCode,
-		);
+	let routesWorkflowAgentsThroughSharedRunner = false;
+	if (patchedAst) {
+		t.traverseFast(patchedAst, (node) => {
+			if (
+				routesWorkflowAgentsThroughSharedRunner ||
+				!t.isForOfStatement(node) ||
+				!node.await
+			) {
+				return;
+			}
+			t.traverseFast(node, (candidate) => {
+				if (
+					routesWorkflowAgentsThroughSharedRunner ||
+					!t.isObjectExpression(candidate)
+				) {
+					return;
+				}
+				const property = (name: string): t.ObjectProperty | null =>
+					candidate.properties.find(
+						(value): value is t.ObjectProperty =>
+							t.isObjectProperty(value) &&
+							((t.isIdentifier(value.key) && value.key.name === name) ||
+								(t.isStringLiteral(value.key) && value.key.value === name)),
+					) ?? null;
+				const agentDefinition = property("agentDefinition");
+				const transcriptSubdir = property("transcriptSubdir");
+				const spawnedByWorkflowRunId = property("spawnedByWorkflowRunId");
+				if (!agentDefinition || !transcriptSubdir || !spawnedByWorkflowRunId)
+					return;
+				const transcript = transcriptSubdir.value;
+				if (
+					!t.isConditionalExpression(transcript) ||
+					!t.isTemplateLiteral(transcript.consequent) ||
+					!transcript.consequent.quasis.some((quasi) =>
+						(quasi.value.cooked ?? quasi.value.raw).includes("workflows/"),
+					) ||
+					!(
+						t.isIdentifier(transcript.alternate, { name: "undefined" }) ||
+						(t.isUnaryExpression(transcript.alternate, { operator: "void" }) &&
+							t.isNumericLiteral(transcript.alternate.argument, { value: 0 }))
+					)
+				) {
+					return;
+				}
+				routesWorkflowAgentsThroughSharedRunner = true;
+			});
+		});
+	}
 	if (
 		!hasWorkflowSubagentDefinition ||
 		!routesWorkflowAgentsThroughSharedRunner
@@ -523,7 +569,11 @@ export async function verifyCliAnchors(
 			);
 		}
 		checksRun += checkClaudeMdMarkers(patchedCode, failures);
-		checksRun += checkWorkflowSubagentRouting(patchedCode, failures);
+		checksRun += checkWorkflowSubagentRouting(
+			patchedCode,
+			patchedAst ?? null,
+			failures,
+		);
 		checksRun += checkPromptPolicyContract(patchedCode, failures);
 		if (!input.skipPatchVerifiers) {
 			if (patchedAst) {

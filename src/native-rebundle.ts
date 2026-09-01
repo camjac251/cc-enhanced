@@ -1,7 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { clearTraverseCache, generator } from "./babel.js";
 import { BUN_MODULE_FORMAT_ESM, type BunEmbeddedModule } from "./bun-format.js";
+import { escapeNonAsciiForBundle, parse } from "./loader.js";
 import { extractEmbeddedModulesFromNativeBinary } from "./native.js";
 
 const LATIN1_ENCODING = 1;
@@ -90,6 +92,15 @@ function resolveEmbeddedImport(
 	if (!importerName || !specifier.startsWith(".")) return undefined;
 	return modulesByName.get(
 		path.posix.resolve(path.posix.dirname(importerName), specifier),
+	);
+}
+
+function rewriteEmbeddedRequireCalls(contents: Buffer): Buffer {
+	const source = contents.toString("utf8");
+	if (!source.includes("import.meta.require")) return contents;
+	return Buffer.from(
+		source.replace(/import\.meta\.require(?=\(\s*["'])/g, "require"),
+		"utf8",
 	);
 }
 
@@ -199,7 +210,10 @@ export async function rebundleEmbeddedJavaScript(
 							(args) => {
 								const module = moduleBySyntheticName.get(args.path);
 								if (!module) return undefined;
-								return { contents: module.contents, loader: "js" };
+								return {
+									contents: rewriteEmbeddedRequireCalls(module.contents),
+									loader: "js",
+								};
 							},
 						);
 					},
@@ -218,6 +232,28 @@ export async function rebundleEmbeddedJavaScript(
 		syntheticByIndex.clear();
 		moduleBySyntheticName.clear();
 		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+}
+
+export function compactRebundledJavaScript(source: Buffer): Buffer {
+	if (source.includes("/$bunfs/root/chunk-")) {
+		throw new Error(
+			"Rebundled JavaScript compaction left embedded module dependencies",
+		);
+	}
+	const ast = parse(source.toString("utf8"));
+	try {
+		const compacted = generator(ast, {
+			compact: true,
+			comments: false,
+			minified: false,
+		}).code;
+		return Buffer.from(
+			escapeNonAsciiForBundle(`// @bun\n${compacted}`),
+			"utf8",
+		);
+	} finally {
+		clearTraverseCache();
 	}
 }
 

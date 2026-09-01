@@ -21,6 +21,7 @@ import {
 	wrapBunCjsModuleBuffer,
 } from "./native.js";
 import {
+	compactRebundledJavaScript,
 	extractPatchableJavaScriptFromNativeBinary,
 	type PatchableNativeJavaScript,
 } from "./native-rebundle.js";
@@ -461,6 +462,7 @@ export class Manager {
 				),
 			);
 		}
+		const sourceMode = extraction.sourceMode;
 		let extractedCliText: string | null = extraction.code.toString("utf-8");
 		extraction = null;
 		forceGarbageCollection();
@@ -525,17 +527,25 @@ export class Manager {
 				!patched.error
 			) {
 				let patchedBody: Buffer | null = await fs.readFile(tempCliPath);
-				const patchedJs = wrapperEnvelope
+				let patchedJs = wrapperEnvelope
 					? wrapBunCjsModuleBuffer(wrapperEnvelope, patchedBody)
 					: patchedBody;
 				patchedBody = null;
+				if (sourceMode === "rebundled") {
+					patchedJs = compactRebundledJavaScript(patchedJs);
+				}
 				emitMemoryCheckpoint("native.repack-input");
 				console.log(
 					chalk.blue(
 						`→ Repacking patched JS into native binary ${outputPath === targetPath ? "(in-place)" : ""}`,
 					),
 				);
-				repackNativeBinary(targetPath, patchedJs, outputPath);
+				repackNativeBinary(
+					targetPath,
+					patchedJs,
+					outputPath,
+					sourceMode === "rebundled",
+				);
 				emitMemoryCheckpoint("native.repack-complete");
 			}
 
@@ -831,7 +841,7 @@ export class Manager {
 				});
 				forceGarbageCollection();
 				await this.unpackNativeTarget(patchOutputPath, patchedCliPath, {
-					normalize: false,
+					normalize: true,
 				});
 				const anchorResult = await verifyCliAnchors({
 					patchedCliPath,

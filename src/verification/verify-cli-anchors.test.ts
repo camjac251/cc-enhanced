@@ -304,7 +304,24 @@ if (
   limit: normalizedLimit,
 });
 }`;
-	const patchedFixture = [`/*\n${anchorText}\n*/`, readStateGuard].join("\n");
+	const workflowRouting = [
+		'const workflowSubagent = { agentType: "workflow-subagent" };',
+		"for await (let item of runAgent({",
+		"  agentDefinition: Me,",
+		"  promptMessages: [Mr({ content: Lt })],",
+		"  toolUseContext: Ko,",
+		"  querySource: IDe(Me.agentType, Yb(Me)),",
+		"  transcriptSubdir: n ? `workflows/${n}` : void 0,",
+		"  spawnedByWorkflowRunId: n,",
+		"})) {",
+		"  consume(item);",
+		"}",
+	].join("\n");
+	const patchedFixture = [
+		`/*\n${anchorText}\n*/`,
+		readStateGuard,
+		workflowRouting,
+	].join("\n");
 
 	try {
 		await fs.writeFile(patchedCliPath, patchedFixture, "utf-8");

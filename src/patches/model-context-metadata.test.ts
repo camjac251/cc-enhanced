@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import * as t from "@babel/types";
+import type { File } from "@babel/types";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
-import { traverse } from "../babel.js";
 import { parse, print } from "../loader.js";
 import { modelContextMetadata } from "./model-context-metadata.js";
 
-async function runModelContextMetadataViaPasses(ast: any): Promise<void> {
+async function runModelContextMetadataViaPasses(ast: File): Promise<void> {
 	const passes = (await modelContextMetadata.astPasses?.(ast)) ?? [];
 	await runCombinedAstPasses(
 		ast,
@@ -19,398 +18,260 @@ async function runModelContextMetadataViaPasses(ast: any): Promise<void> {
 	);
 }
 
-function removeMetadataEligibilityBranch(code: string): string {
-	const ast = parse(code);
-	let changed = 0;
-	traverse(ast, {
-		ReturnStatement(path) {
-			if (
-				!t.isLogicalExpression(path.node.argument, { operator: "||" }) ||
-				!t.isBinaryExpression(path.node.argument.left, { operator: "!==" }) ||
-				!t.isStringLiteral(path.node.argument.left.right, { value: "auto" })
-			) {
-				return;
-			}
-			path.node.argument = path.node.argument.left;
-			changed++;
-		},
-	});
-	assert.equal(changed, 1);
-	return print(ast);
+const LATEST_MODEL_METADATA_FIXTURE = `
+function configuredCatalog() {
+  const raw = process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG;
+  if (raw === void 0) return [];
+  return JSON.parse(raw);
 }
-
-function weakenMetadataRecognitionGuard(code: string): string {
-	const ast = parse(code);
-	let changed = 0;
-	traverse(ast, {
-		IfStatement(path) {
-			if (!t.isLogicalExpression(path.node.test, { operator: "&&" })) return;
-			const consequent = t.isBlockStatement(path.node.consequent)
-				? path.node.consequent.body[0]
-				: path.node.consequent;
-			if (
-				!t.isReturnStatement(consequent) ||
-				!t.isObjectExpression(consequent.argument) ||
-				!consequent.argument.properties.some(
-					(property) =>
-						t.isObjectProperty(property) &&
-						t.isIdentifier(property.key, { name: "source" }) &&
-						t.isStringLiteral(property.value, { value: "auto" }),
-				)
-			) {
-				return;
-			}
-			path.node.test = t.booleanLiteral(false);
-			changed++;
-		},
-	});
-	assert.equal(changed, 1);
-	return print(ast);
+function catalogModels(catalog) {
+  return catalog.config.models ?? [];
 }
-
-const MODEL_CONTEXT_FIXTURE = `
-const env = {
-  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: true,
-  CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: false,
-  CLAUDE_CODE_MAX_CONTEXT_TOKENS: 333000,
-};
-let cachedModels = [];
-function cacheDir() { return "/tmp/cache"; }
-function modelCapabilitiesPath() { return join(cacheDir(), "model-capabilities.json"); }
-function capabilitiesEnabled() { return !1; }
-function sortCapabilities(models) {
-  return [...models].sort((left, right) => right.id.length - left.id.length);
+function findModel(catalog, model) {
+  const normalized = String(model).trim().toLowerCase();
+  return catalogModels(catalog).find((entry) => entry.id.toLowerCase() === normalized);
 }
-function readCapabilities() { return sortCapabilities(cachedModels); }
-function getModelCapability(model) {
-  if (!capabilitiesEnabled()) return;
-  const models = readCapabilities(modelCapabilitiesPath());
-  if (!models || models.length === 0) return;
-  const normalized = model.toLowerCase();
-  const exact = models.find((entry) => entry.id.toLowerCase() === normalized);
-  if (exact) return exact;
-  return models.find((entry) => normalized.includes(entry.id.toLowerCase()));
+function contextWindow(catalog, model) {
+  const entry = findModel(catalog, model);
+  return entry?.runtime?.max_input_tokens ?? entry?.context_window ?? 333000;
 }
-const capabilitySchema = schema.object({
-  id: schema.string(),
-  max_input_tokens: schema.number().optional(),
-  max_tokens: schema.number().optional(),
-}).strip();
-function nativeOneMillion(model) { return model === "native-1m"; }
-function providerWindow() { return null; }
-function normalizeModel(model) { return model; }
-function contextWindow(model, betas) {
-  if (model.endsWith("[1m]")) return 1e6;
-  if (betas?.includes("context-1m") && nativeOneMillion(model)) return 1e6;
-  if (nativeOneMillion(model)) return 1e6;
-  const provider = providerWindow(model);
-  if (provider !== null) return provider;
-  const fallback = env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
-  if (fallback !== undefined && fallback > 0 && !normalizeModel(model).startsWith("claude-")) return fallback;
-  return 200000;
+function outputLimit(catalog, model) {
+  return findModel(catalog, model)?.runtime?.max_output_tokens;
 }
-function autoCompactConfig(model, configured) {
-  const window = contextWindow(model);
-  if (configured !== undefined) {
-    return { window: Math.min(window, configured), configured, source: "settings" };
+function effortLevels(catalog, model) {
+  return findModel(catalog, model)?.runtime?.effort_levels;
+}
+function defaultEffort(catalog, model) {
+  return findModel(catalog, model)?.runtime?.default_effort;
+}
+function capabilities(catalog, model) {
+  return findModel(catalog, model)?.runtime?.capabilities;
+}
+function resolveAutoCompactWindow(model, configuredWindow, catalog) {
+  const contextCeiling = contextWindow(catalog, model);
+  if (process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW) {
+    const environmentWindow = Number(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW);
+    return { window: Math.min(contextCeiling, environmentWindow), configured: environmentWindow, source: "env" };
   }
-  if (
-    !env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT &&
-    !normalizeModel(model).startsWith("claude-") &&
-    !model.includes("application-inference-profile") &&
-    !nativeOneMillion(model)
-  ) {
-    return { window, configured: window, source: "unknown-model" };
+  if (configuredWindow !== undefined) {
+    return { window: Math.min(contextCeiling, configuredWindow), configured: configuredWindow, source: "settings" };
   }
-  return { window, configured: window, source: "auto" };
-}
-function hasConfiguredAutoCompactWindow(model, configured) {
-  return autoCompactConfig(model, configured).source !== "auto";
-}
-function outputLimit(model) {
-  let upper = 32000;
-  const capability = getModelCapability(model);
-  if (capability?.max_tokens && capability.max_tokens >= 4096) upper = capability.max_tokens;
-  return upper;
+  return { window: contextCeiling, configured: contextCeiling, source: "auto" };
 }
 `;
 
-function evaluatePatched(code: string): {
-	setModels: (models: unknown[]) => void;
-	setDiscovery: (enabled: boolean) => void;
-	setUnknownModelEnforcementDisabled: (disabled: boolean) => void;
-	contextWindow: (model: string, betas?: string[]) => number;
-	autoCompactSource: (model: string, configured?: number) => string;
-	autoCompactWindow: (model: string, configured?: number) => number;
-	hasConfiguredAutoCompactWindow: (
+async function patchFixture(source = LATEST_MODEL_METADATA_FIXTURE): Promise<{
+	ast: File;
+	output: string;
+}> {
+	const ast = parse(source);
+	await runModelContextMetadataViaPasses(ast);
+	return { ast, output: print(ast) };
+}
+
+interface ModelMetadataRuntime {
+	catalogModels(
+		catalog: Record<string, unknown>,
+	): Array<Record<string, unknown>>;
+	contextWindow(catalog: Record<string, unknown>, model: string): number;
+	outputLimit(
+		catalog: Record<string, unknown>,
 		model: string,
-		configured?: number,
-	) => boolean;
-	outputLimit: (model: string) => number;
-} {
-	return Function(
-		"join",
-		"schema",
-		`${code}
-return {
-  setModels(models) { cachedModels = models; },
-  setDiscovery(enabled) { env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = enabled; },
-  setUnknownModelEnforcementDisabled(disabled) { env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT = disabled; },
-  contextWindow,
-  autoCompactSource(model, configured) { return autoCompactConfig(model, configured).source; },
-  autoCompactWindow(model, configured) { return autoCompactConfig(model, configured).window; },
-  hasConfiguredAutoCompactWindow,
-  outputLimit,
-};`,
-	)((...parts: string[]) => parts.join("/"), {
-		object: (value: unknown) => ({ strip: () => value }),
-		string: () => "string",
-		number: () => ({ optional: () => "number" }),
-	});
+	): number | undefined;
+	effortLevels(
+		catalog: Record<string, unknown>,
+		model: string,
+	): string[] | undefined;
+	defaultEffort(
+		catalog: Record<string, unknown>,
+		model: string,
+	): string | undefined;
+	capabilities(
+		catalog: Record<string, unknown>,
+		model: string,
+	): string[] | undefined;
+	resolveAutoCompactWindow(
+		model: string,
+		configuredWindow: number | undefined,
+		catalog: Record<string, unknown>,
+	): { window: number; configured: number; source: string };
 }
 
-test("verify rejects dormant capability metadata", () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
-	const result = modelContextMetadata.verify(print(ast), ast);
-	assert.equal(typeof result, "string");
+function isModelMetadataRuntime(value: unknown): value is ModelMetadataRuntime {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"catalogModels" in value &&
+		typeof value.catalogModels === "function" &&
+		"contextWindow" in value &&
+		typeof value.contextWindow === "function" &&
+		"resolveAutoCompactWindow" in value &&
+		typeof value.resolveAutoCompactWindow === "function"
+	);
+}
+
+function evaluatePatched(output: string): ModelMetadataRuntime {
+	const value: unknown = new Function(
+		`${output}; return { catalogModels, contextWindow, outputLimit, effortLevels, defaultEffort, capabilities, resolveAutoCompactWindow };`,
+	)();
+	assert.ok(isModelMetadataRuntime(value));
+	return value;
+}
+
+const nativeCatalog = {
+	config: {
+		models: [
+			{
+				id: "native/model",
+				name: "Native",
+				runtime: { max_input_tokens: 200000 },
+			},
+		],
+	},
+};
+
+test("verify rejects unpatched catalog metadata", () => {
+	const ast = parse(LATEST_MODEL_METADATA_FIXTURE);
+	assert.equal(typeof modelContextMetadata.verify(print(ast), ast), "string");
 });
 
-test("uses discovered model context before the global custom-model fallback", async () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
-	await runModelContextMetadataViaPasses(ast);
-	const output = print(ast);
+test("model-context-metadata feeds configured models into native runtime metadata", async () => {
+	const { ast, output } = await patchFixture();
 	const runtime = evaluatePatched(output);
-	runtime.setModels([
+	const previous = process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG;
+	process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG = JSON.stringify([
 		{
-			id: "provider/worker-258k",
-			max_input_tokens: 258400,
+			id: "provider/custom",
+			display_name: "Custom",
+			description: "Configured model",
+			max_input_tokens: 828400,
 			max_tokens: 128000,
-		},
-	]);
-
-	assert.equal(runtime.contextWindow("provider/worker-258k"), 258400);
-	assert.equal(
-		runtime.contextWindow("prefix/provider/worker-258k/suffix"),
-		258400,
-	);
-	assert.equal(runtime.contextWindow("provider/unknown"), 333000);
-	assert.equal(runtime.outputLimit("provider/worker-258k"), 128000);
-	assert.equal(modelContextMetadata.verify(output, ast), true);
-});
-
-test("uses a per-model auto-compact window without disturbing other models", async () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
-	await runModelContextMetadataViaPasses(ast);
-	const runtime = evaluatePatched(print(ast));
-	runtime.setModels([
-		{
-			id: "provider/big",
-			max_input_tokens: 828400,
 			auto_compact_window: 745560,
-		},
-		{ id: "provider/plain", max_input_tokens: 258400 },
-	]);
-
-	assert.equal(runtime.autoCompactWindow("provider/big"), 745560);
-	assert.equal(runtime.autoCompactSource("provider/big"), "model-default");
-
-	// A catalog entry without the field keeps whatever the stock resolver decided.
-	assert.notEqual(runtime.autoCompactSource("provider/plain"), "model-default");
-	assert.equal(runtime.autoCompactWindow("provider/plain"), 258400);
-});
-
-test("per-model auto-compact window yields to an explicit setting", async () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
-	await runModelContextMetadataViaPasses(ast);
-	const runtime = evaluatePatched(print(ast));
-	runtime.setModels([
-		{
-			id: "provider/big",
-			max_input_tokens: 828400,
-			auto_compact_window: 745560,
+			capabilities: ["effort", "xhigh_effort", "max_effort"],
+			default_effort: "max",
 		},
 	]);
-
-	assert.equal(runtime.autoCompactSource("provider/big", 400000), "settings");
-	assert.equal(runtime.autoCompactWindow("provider/big", 400000), 400000);
-});
-
-test("per-model auto-compact window is clamped to the model window", async () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
-	await runModelContextMetadataViaPasses(ast);
-	const runtime = evaluatePatched(print(ast));
-	runtime.setModels([
-		{
-			id: "provider/small",
-			max_input_tokens: 200000,
-			auto_compact_window: 900000,
-		},
-	]);
-
-	assert.equal(runtime.autoCompactWindow("provider/small"), 200000);
-});
-
-test("ignores an unusable per-model auto-compact window", async () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
-	await runModelContextMetadataViaPasses(ast);
-	const runtime = evaluatePatched(print(ast));
-
-	for (const auto_compact_window of [0, -1, 1.5, "745560", null]) {
-		runtime.setModels([
-			{ id: "provider/big", max_input_tokens: 828400, auto_compact_window },
-		]);
-		assert.notEqual(runtime.autoCompactSource("provider/big"), "model-default");
-		assert.equal(runtime.autoCompactWindow("provider/big"), 828400);
-	}
-});
-
-test("treats discovered context metadata as configured for auto compaction", async () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
-	await runModelContextMetadataViaPasses(ast);
-	const output = print(ast);
-	const runtime = evaluatePatched(output);
-	runtime.setUnknownModelEnforcementDisabled(true);
-
-	runtime.setModels([{ id: "provider/worker-258k", max_input_tokens: 258400 }]);
-	assert.equal(
-		runtime.hasConfiguredAutoCompactWindow("provider/worker-258k"),
-		true,
-	);
-	assert.equal(
-		runtime.hasConfiguredAutoCompactWindow("provider/unknown", 200000),
-		true,
-	);
-
-	runtime.setDiscovery(false);
-	assert.equal(
-		runtime.hasConfiguredAutoCompactWindow("provider/worker-258k"),
-		false,
-	);
-	assert.equal(
-		runtime.hasConfiguredAutoCompactWindow("provider/unknown", 200000),
-		true,
-	);
-	runtime.setDiscovery(true);
-	for (const value of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
-		runtime.setModels([{ id: "provider/invalid", max_input_tokens: value }]);
+	try {
 		assert.equal(
-			runtime.hasConfiguredAutoCompactWindow("provider/invalid"),
-			false,
+			runtime.contextWindow(nativeCatalog, "provider/custom"),
+			828400,
 		);
+		assert.equal(runtime.outputLimit(nativeCatalog, "provider/custom"), 128000);
+		assert.deepEqual(runtime.effortLevels(nativeCatalog, "provider/custom"), [
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
+		assert.equal(
+			runtime.defaultEffort(nativeCatalog, "provider/custom"),
+			"max",
+		);
+		assert.deepEqual(runtime.capabilities(nativeCatalog, "provider/custom"), [
+			"effort",
+			"xhigh_effort",
+			"max_effort",
+		]);
+		assert.deepEqual(
+			runtime.resolveAutoCompactWindow(
+				"provider/custom",
+				undefined,
+				nativeCatalog,
+			),
+			{ window: 745560, configured: 745560, source: "model-default" },
+		);
+		assert.equal(runtime.contextWindow(nativeCatalog, "native/model"), 200000);
+		assert.equal(modelContextMetadata.verify(output, ast), true);
+	} finally {
+		if (previous === undefined) {
+			delete process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG;
+		} else {
+			process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG = previous;
+		}
 	}
-	runtime.setModels([{ id: "provider/missing" }]);
-	assert.equal(
-		runtime.hasConfiguredAutoCompactWindow("provider/missing"),
-		false,
-	);
-	runtime.setModels([]);
-	assert.equal(
-		runtime.hasConfiguredAutoCompactWindow("provider/unknown"),
-		false,
-	);
-
-	const weakened = removeMetadataEligibilityBranch(output);
-	assert.match(
-		String(modelContextMetadata.verify(weakened)),
-		/Auto-compact eligibility/,
-	);
 });
 
-test("treats valid discovered context metadata as a recognized model window", async () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
-	await runModelContextMetadataViaPasses(ast);
-	const output = print(ast);
+test("model-context-metadata gives explicit settings precedence", async () => {
+	const { output } = await patchFixture();
 	const runtime = evaluatePatched(output);
-
-	runtime.setModels([{ id: "provider/worker-258k", max_input_tokens: 258400 }]);
-	assert.equal(runtime.autoCompactSource("provider/worker-258k"), "auto");
-
-	runtime.setModels([{ id: "provider/invalid", max_input_tokens: 0 }]);
-	assert.equal(runtime.autoCompactSource("provider/invalid"), "unknown-model");
-
-	const weakened = weakenMetadataRecognitionGuard(output);
-	assert.match(
-		String(modelContextMetadata.verify(weakened)),
-		/Unknown-model enforcement/,
-	);
-});
-
-test("validates and caps discovered context windows", async () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
-	await runModelContextMetadataViaPasses(ast);
-	const runtime = evaluatePatched(print(ast));
-
-	for (const value of [128000, 258400, 500000, 1000000]) {
-		runtime.setModels([{ id: "provider/model", max_input_tokens: value }]);
-		assert.equal(runtime.contextWindow("provider/model"), value);
-	}
-	runtime.setModels([{ id: "provider/model", max_input_tokens: 1500000 }]);
-	assert.equal(runtime.contextWindow("provider/model"), 1000000);
-
-	for (const value of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
-		runtime.setModels([{ id: "provider/model", max_input_tokens: value }]);
-		assert.equal(runtime.contextWindow("provider/model"), 333000);
-	}
-});
-
-test("keeps native one-million handling ahead of discovered metadata", async () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
-	await runModelContextMetadataViaPasses(ast);
-	const runtime = evaluatePatched(print(ast));
-	runtime.setModels([{ id: "native-1m", max_input_tokens: 258400 }]);
-
-	assert.equal(runtime.contextWindow("native-1m"), 1000000);
-});
-
-test("uses the global fallback while gateway discovery is disabled", async () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
-	await runModelContextMetadataViaPasses(ast);
-	const runtime = evaluatePatched(print(ast));
-	runtime.setModels([{ id: "provider/model", max_input_tokens: 258400 }]);
-	runtime.setDiscovery(false);
-
-	assert.equal(runtime.contextWindow("provider/model"), 333000);
-});
-
-test("verifies a configured catalog prelude before the gateway gate", async () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
-	await runModelContextMetadataViaPasses(ast);
-	const preludeAst = parse(`
-function configuredLookup(model) {
-  {
-    const models = configuredModelCatalog();
-    const normalized = String(model).trim().toLowerCase();
-    const match = models.find((entry) => entry.id.toLowerCase() === normalized);
-    if (match) return match;
-  }
-}
-`);
-	const preludeFunction = preludeAst.program.body[0];
-	assert.equal(t.isFunctionDeclaration(preludeFunction), true);
-	if (!t.isFunctionDeclaration(preludeFunction)) return;
-	const prelude = preludeFunction.body.body[0];
-	assert.equal(t.isBlockStatement(prelude), true);
-	if (!t.isBlockStatement(prelude)) return;
-	let changed = 0;
-	traverse(ast, {
-		FunctionDeclaration(path) {
-			if (path.node.id?.name !== "getModelCapability") return;
-			path.node.body.body.unshift(t.cloneNode(prelude, true));
-			changed++;
+	const previous = process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG;
+	process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG = JSON.stringify([
+		{
+			id: "provider/custom",
+			display_name: "Custom",
+			description: "Configured model",
+			max_input_tokens: 828400,
+			auto_compact_window: 745560,
 		},
-	});
-	assert.equal(changed, 1);
+	]);
+	try {
+		assert.deepEqual(
+			runtime.resolveAutoCompactWindow(
+				"provider/custom",
+				700000,
+				nativeCatalog,
+			),
+			{ window: 700000, configured: 700000, source: "settings" },
+		);
+	} finally {
+		if (previous === undefined) {
+			delete process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG;
+		} else {
+			process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG = previous;
+		}
+	}
+});
 
-	assert.equal(modelContextMetadata.verify(print(ast), ast), true);
+test("model-context-metadata lets configured entries override duplicate native ids", async () => {
+	const { output } = await patchFixture();
+	const runtime = evaluatePatched(output);
+	const previous = process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG;
+	process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG = JSON.stringify([
+		{
+			id: "native/model",
+			display_name: "Configured Native",
+			description: "Override",
+			max_input_tokens: 500000,
+		},
+	]);
+	try {
+		const models = runtime.catalogModels(nativeCatalog);
+		assert.equal(
+			models.filter((model) => model.id === "native/model").length,
+			1,
+		);
+		assert.equal(runtime.contextWindow(nativeCatalog, "native/model"), 500000);
+	} finally {
+		if (previous === undefined) {
+			delete process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG;
+		} else {
+			process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG = previous;
+		}
+	}
 });
 
 test("model-context-metadata is idempotent", async () => {
-	const ast = parse(MODEL_CONTEXT_FIXTURE);
+	const ast = parse(LATEST_MODEL_METADATA_FIXTURE);
 	await runModelContextMetadataViaPasses(ast);
 	const once = print(ast);
 	await runModelContextMetadataViaPasses(ast);
 	const twice = print(ast);
-
 	assert.equal(twice, once);
 	assert.equal(modelContextMetadata.verify(twice, ast), true);
+});
+
+test("model-context-metadata fails closed on ambiguous catalog accessors", async () => {
+	const duplicate = LATEST_MODEL_METADATA_FIXTURE.replace(
+		"function catalogModels",
+		"function duplicateCatalogModels",
+	);
+	const { ast, output } = await patchFixture(
+		`${LATEST_MODEL_METADATA_FIXTURE}\n${duplicate}`,
+	);
+	assert.doesNotMatch(output, /__ccConfiguredModelIds/);
+	assert.match(
+		String(modelContextMetadata.verify(output, ast)),
+		/ambiguous|missing/,
+	);
 });

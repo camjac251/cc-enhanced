@@ -20,28 +20,29 @@ async function runChildNetworkEnvViaPasses(ast: any): Promise<void> {
 const CHILD_ENV_FIXTURE = `
 let sessionEnv = {};
 let toolEnv = {};
-function readSessionEnv() { return sessionEnv; }
+const host = { getAgentProxyEnv() { return sessionEnv; } };
+function hasAuthEnvironment() {
+  return process.env.CLAUDE_CODE_SUBSCRIPTION_TYPE !== void 0 ||
+    process.env.CLAUDE_CODE_RATE_LIMIT_TIER !== void 0;
+}
 function isEnabled(value) { return value === "1"; }
 function buildRemoteEnv() { return {}; }
 function scrubbedKeys() { return []; }
 function hasToolEnv() { return false; }
-const authKeys = [];
+const authKeys = ["CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_ARTIFACTS_API_TOKEN"];
 function buildChildEnvironment() {
-  let extra = readSessionEnv(),
+  let extra = host.getAgentProxyEnv?.() ?? {},
     hasExtra = Object.keys(extra).length > 0,
     hasToolOverrides = Object.keys(toolEnv).length > 0,
     remote = isEnabled(process.env.CLAUDE_CODE_REMOTE) ? buildRemoteEnv() : {},
     hasRemote = Object.keys(remote).length > 0,
     scrubTools = hasToolEnv(),
-    hasAuth = process.env.CLAUDE_CODE_OAUTH_TOKEN !== void 0 ||
-      process.env.CLAUDE_CODE_ARTIFACTS_API_TOKEN !== void 0 ||
+    hasAuth = authKeys.some((key) => process.env[key] !== void 0) ||
       process.env.CLAUDE_CODE_SUBSCRIPTION_TYPE !== void 0 ||
       process.env.CLAUDE_CODE_RATE_LIMIT_TIER !== void 0,
     scrubbed = scrubbedKeys(process.env);
   if (!hasExtra && !hasToolOverrides && !hasRemote && !scrubTools && !hasAuth && !scrubbed.length) return process.env;
   let child = { ...process.env, ...toolEnv, ...extra, ...remote };
-  delete child.CLAUDE_CODE_OAUTH_TOKEN;
-  delete child.CLAUDE_CODE_ARTIFACTS_API_TOKEN;
   for (const key of authKeys) delete child[key];
   return child;
 }
