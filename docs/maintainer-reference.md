@@ -200,8 +200,6 @@ Build-time and maintainer-tool env vars: `CLAUDE_PATCHER_INCLUDE_TAGS`, `CLAUDE_
 
 `registeredPatches` is the public `cli-full` execution roster and patch-count anchor. A surface-only variant belongs in `profilePatchCatalog`, needs its own metadata and capability record, and must not enter `registeredPatches`, `allPatches`, the README badge, or the default signature unless that surface is explicitly selected. `tools-off-desktop` is the reference implementation.
 
-The `/new-patch` slash skill scaffolds steps 1-4. Use it when starting from scratch. Recommend it by name; do not improvise the scaffold by hand.
-
 Implement and verify the patch against the newest clean bundle only. The immediately previous bundle is useful for release-diff evidence, but it is not a supported matcher, fixture, matrix, or promotion target.
 
 When implementing the visitor:
@@ -465,12 +463,7 @@ Focus on patcher correctness and drift detection, not brittle minified internals
 
 Lefthook (`lefthook.yml`) gates pre-commit on Biome format, Biome lint, and `bun run typecheck`. Commit-msg enforces Conventional Commits. Do not bypass these hooks unless the user explicitly requests it.
 
-## Skills and Agents
-
-Local slash skills (`disable-model-invocation: true`, recommend by name when context matches):
-
-- `/new-patch <tag>`: scaffolds `src/patches/<tag>.ts`, the test file, the export barrel entry, and the `BY_TAG` metadata record. Scaffold-only; the rest of the procedure lives in "Adding Patches" above.
-- `/update [version]`: resolves the newest live target and runs the requested inspect, repair, or promote lane. Write-side work is latest-only; an older explicit version is comparison-only. Full updates include post-update patch, prompt-surface, and prompt-drift verification.
+## Agents and workflows
 
 Local subagent (`.claude/agents/patch-verifier.md`): stateless adversarial verification of patch anchors against the assigned latest clean `cli.js`. Read-only (Write and Edit are denied). Returns per-patch OK / DRIFT / BROKEN status with line numbers and sanitized behavioral evidence. Never runs the patcher itself.
 
