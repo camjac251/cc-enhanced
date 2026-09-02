@@ -5,7 +5,6 @@ import type { Patch, PatchResult } from "../types.js";
 import { getObjectKeyName, isMemberPropertyName } from "./ast-helpers.js";
 
 const NEW_LINES_CAP = 5000;
-const NEW_LINE_CHARS = 5000;
 const NEW_BYTE_CEILING = 1048576;
 // Persistence cap: controls when formatted results get disk-persisted.
 // 120K chars ~ 30K tokens. The token budget (50K raw) remains the primary gate;
@@ -141,14 +140,12 @@ function resolveResultSizeCapBinding(path: any): {
 
 function collectCurrentLimits(ast: t.File): {
 	linesCap?: number;
-	lineChars?: number;
 	byteCeiling?: number;
 	resultSizeCap?: number;
 	readMaxResultSize?: number;
 } {
 	const current: {
 		linesCap?: number;
-		lineChars?: number;
 		byteCeiling?: number;
 		resultSizeCap?: number;
 		readMaxResultSize?: number;
@@ -159,8 +156,7 @@ function collectCurrentLimits(ast: t.File): {
 	// five separate traverses plus an env-ref check produced before.
 	traverse(ast, {
 		TemplateLiteral(path: any) {
-			if (current.linesCap !== undefined && current.lineChars !== undefined)
-				return;
+			if (current.linesCap !== undefined) return;
 			const quasis = path.node.quasis;
 			const hasTrigger = isReadPromptTemplate(quasis);
 			if (!hasTrigger) return;
@@ -179,7 +175,6 @@ function collectCurrentLimits(ast: t.File): {
 
 				const text = quasis[i].value.raw;
 				if (text.includes("reads up to ")) current.linesCap = init.value;
-				if (text.includes("longer than ")) current.lineChars = init.value;
 			}
 		},
 		Function(path: any) {
@@ -312,9 +307,6 @@ function runLimitsPatch(ast: t.File): void {
 					const expression = exprs[i];
 					if (q.includes("reads up to ") && t.isIdentifier(expression)) {
 						updateVarValue(path, expression, NEW_LINES_CAP, "linesCap");
-					}
-					if (q.includes("longer than ") && t.isIdentifier(expression)) {
-						updateVarValue(path, expression, NEW_LINE_CHARS, "lineChars");
 					}
 				}
 			}
@@ -515,7 +507,6 @@ export const limits: Patch = {
 			["byteCeiling", NEW_BYTE_CEILING, current.byteCeiling],
 			["resultSizeCap", NEW_RESULT_SIZE_CAP, current.resultSizeCap],
 			["linesCap", NEW_LINES_CAP, current.linesCap],
-			["lineChars", NEW_LINE_CHARS, current.lineChars],
 		];
 		for (const [key, expected, actual] of requiredChecks) {
 			if (actual === undefined) return `Could not resolve limit ${key}`;

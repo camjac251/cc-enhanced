@@ -24,12 +24,11 @@ async function runLimitsViaPasses(ast: any): Promise<void> {
 // - byteCeiling: async function(file, limit = VAR) with inline stat(file).size <= limit
 // - resultSizeCap: helper with third param defaulting to VAR and returning Math.min(secondParam, thirdParam)
 // - readMaxResultSize: object with name:"Read" and maxResultSizeChars:100000
-// - linesCap/lineChars: template literal with "Reads a file" trigger + interpolated vars
+// - linesCap: template literal with "Reads a file" trigger + interpolated var
 const LIMITS_FIXTURE = `
 var bYC = 262144;
 var ZPA = 50000;
 var lNC = 2000;
-var lCC = 500;
 
 async function checkFileSize(filePath, maxSize = bYC) {
   if ((await require("fs").stat(filePath)).size <= maxSize) {
@@ -50,8 +49,7 @@ function getPersistenceThreshold(toolName, maxResultSizeChars, persistenceThresh
 }
 
 var readPromptText = \`Reads a file from the local filesystem.
-The file reads up to \${lNC} lines of content.
-Lines longer than \${lCC} characters are truncated.\`;
+The file reads up to \${lNC} lines of content.\`;
 `;
 
 test("limits patch modifies the current numeric targets via combined AST passes", async () => {
@@ -107,33 +105,21 @@ test("limits patch modifies the current numeric targets via combined AST passes"
 		"new linesCap should be present",
 	);
 
-	// lineChars: 500 -> 5000 (use word boundary to avoid substring match with 5000)
-	assert.equal(
-		output.includes("lCC = 500;"),
-		false,
-		"old lineChars should be gone",
-	);
-	assert.equal(
-		output.includes("lCC = 5000"),
-		true,
-		"new lineChars should be present",
-	);
 	assert.deepEqual(getLimitsChanged(), {
 		byteCeiling: ["262144", "1048576"],
 		resultSizeCap: ["50000", "120000"],
 		readMaxResultSize: ["100000", "250000"],
 		linesCap: ["2000", "5000"],
-		lineChars: ["500", "5000"],
 	});
 });
 
-test("limits patches the Read prompt's lexical bindings", async () => {
+test("limits patches the Read prompt's lexical binding", async () => {
 	const scopedFixture = LIMITS_FIXTURE.replace(
-		"var lNC = 2000;\nvar lCC = 500;",
-		"function unrelated() {\n  var lNC = 123;\n  var lCC = 456;\n  return lNC + lCC;\n}",
+		"var lNC = 2000;",
+		"function unrelated() {\n  var lNC = 123;\n  return lNC;\n}",
 	).replace(
-		"var readPromptText = `Reads a file from the local filesystem.\nThe file reads up to ${lNC} lines of content.\nLines longer than ${lCC} characters are truncated.`;",
-		"function buildReadPrompt() {\n  var lNC = 2000;\n  var lCC = 500;\n  return `Reads a file from the local filesystem.\nThe file reads up to ${lNC} lines of content.\nLines longer than ${lCC} characters are truncated.`;\n}",
+		"var readPromptText = `Reads a file from the local filesystem.\nThe file reads up to ${lNC} lines of content.`;",
+		"function buildReadPrompt() {\n  var lNC = 2000;\n  return `Reads a file from the local filesystem.\nThe file reads up to ${lNC} lines of content.`;\n}",
 	);
 	assert.notEqual(scopedFixture, LIMITS_FIXTURE);
 
@@ -141,14 +127,8 @@ test("limits patches the Read prompt's lexical bindings", async () => {
 	await runLimitsViaPasses(ast);
 	const output = print(ast);
 
-	assert.match(
-		output,
-		/function unrelated\(\) \{\s*var lNC = 123;\s*var lCC = 456;/,
-	);
-	assert.match(
-		output,
-		/function buildReadPrompt\(\) \{\s*var lNC = 5000;\s*var lCC = 5000;/,
-	);
+	assert.match(output, /function unrelated\(\) \{\s*var lNC = 123;/);
+	assert.match(output, /function buildReadPrompt\(\) \{\s*var lNC = 5000;/);
 	assert.equal(limits.verify(output, ast), true);
 });
 
@@ -302,6 +282,9 @@ test("limits leaves an already-Infinity maxResultSizeChars untouched and still v
 	const infinityFixture = `
 var bYC = 262144;
 var ZPA = 50000;
+var lNC = 2000;
+var readPromptText = \`Reads a file from the local filesystem.
+The file reads up to \${lNC} lines of content.\`;
 function getMaxOutputTokens() {
   let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
   if (env) { let p = Number(env); if (!Number.isNaN(p) && p > 0) return p; }
@@ -345,8 +328,8 @@ function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
 	);
 });
 
-test("limits verify rejects a Read prompt without lineChars", async () => {
-	const noLineCharsFixture = `
+test("limits supports the current Read prompt without a per-line character limit", async () => {
+	const currentReadPromptFixture = `
 var bYC = 262144;
 var ZPA = 50000;
 var lNC = 2000;
@@ -367,28 +350,20 @@ function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
 var readPromptText = \`Reads a file from the local filesystem.
 The file reads up to \${lNC} lines of content.\`;
 `;
-	const ast = parse(noLineCharsFixture);
+	const ast = parse(currentReadPromptFixture);
 	await runLimitsViaPasses(ast);
 	const output = print(ast);
-	// linesCap still rewritten
-	assert.equal(
-		output.includes("lNC = 5000"),
-		true,
-		"linesCap should still be patched",
-	);
-	assert.equal("lineChars" in getLimitsChanged(), false);
-	const result = limits.verify(output, ast);
-	assert.equal(typeof result, "string");
-	assert.equal(
-		String(result).includes("Could not resolve limit lineChars"),
-		true,
-	);
+	assert.equal(output.includes("lNC = 5000"), true);
+	assert.equal(limits.verify(output, ast), true);
 });
 
 test("limits resultSizeCap ignores a 50000-default function that is not a Math.min clamp", async () => {
 	const decoyFixture = `
 var bYC = 262144;
 var ZPA = 50000;
+var lNC = 2000;
+var readPromptText = \`Reads a file from the local filesystem.
+The file reads up to \${lNC} lines of content.\`;
 var DEC = 50000;
 function getMaxOutputTokens() {
   let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
@@ -489,6 +464,9 @@ test("limits raises the shared byteCeiling constant so a second consumer sees th
 	const sharedCeilingFixture = `
 var bYC = 262144;
 var ZPA = 50000;
+var lNC = 2000;
+var readPromptText = \`Reads a file from the local filesystem.
+The file reads up to \${lNC} lines of content.\`;
 function getMaxOutputTokens() {
   let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
   if (env) { let p = Number(env); if (!Number.isNaN(p) && p > 0) return p; }
@@ -548,6 +526,9 @@ test("limits byteCeiling ignores an unrelated synchronous size check", async () 
 var bYC = 262144;
 var GHI = 262144;
 var ZPA = 50000;
+var lNC = 2000;
+var readPromptText = \`Reads a file from the local filesystem.
+The file reads up to \${lNC} lines of content.\`;
 function getMaxOutputTokens() {
   let env = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
   if (env) { let p = Number(env); if (!Number.isNaN(p) && p > 0) return p; }
