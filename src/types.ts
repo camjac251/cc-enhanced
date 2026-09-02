@@ -192,7 +192,6 @@ export interface PatchResult {
 	/** Limit changes (old -> new values) */
 	limits?: {
 		linesCap?: [string, string];
-		lineChars?: [string, string];
 		byteCeiling?: [string, string];
 		tokenBudget?: [string, string];
 		resultSizeCap?: [string, string];
