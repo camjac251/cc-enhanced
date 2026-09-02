@@ -46,15 +46,6 @@ export const sessionGuidance: Patch = {
 		const hasModernFull = MODERN_BROAD_EXPLORATION_FULL.test(code);
 		const hasModernFindGrepFull = MODERN_FIND_GREP_TOOL_FULL.test(code);
 
-		const touchesGuidanceSurface =
-			hasLegacyOtherwiseTail ||
-			hasLegacyFindGrepTool ||
-			hasModernFull ||
-			hasModernFindGrepFull;
-		if (!touchesGuidanceSurface) {
-			return true;
-		}
-
 		if (hasLegacyFindGrepTool) {
 			return "Session guidance still routes fallback exploration through find/grep";
 		}

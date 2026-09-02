@@ -119,13 +119,16 @@ test("tab-queue routes Tab through the native command queue", async () => {
 
 test("tab-queue preserves built-in key-handler precedence", async () => {
 	const { output } = await patchFixture();
-	const footerIndex = output.indexOf("footer(event)");
-	const typeaheadIndex = output.indexOf("typeahead(event)");
+	assert.equal(output.split("footer(event)").length - 1, 2);
+	assert.equal(output.split("typeahead(event)").length - 1, 2);
+
+	const footerCallIndex = output.lastIndexOf("footer(event)");
+	const typeaheadCallIndex = output.lastIndexOf("typeahead(event)");
 	const tabIndex = output.indexOf('event.name === "tab"');
 
-	assert.ok(footerIndex >= 0);
-	assert.ok(typeaheadIndex > footerIndex);
-	assert.ok(tabIndex > typeaheadIndex);
+	assert.ok(footerCallIndex >= 0);
+	assert.ok(typeaheadCallIndex > footerCallIndex);
+	assert.ok(tabIndex > typeaheadCallIndex);
 });
 
 test("tab-queue queues and edits through native callbacks", async () => {

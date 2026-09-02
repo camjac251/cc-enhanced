@@ -56,9 +56,14 @@ test("session-guidance verify rejects unpatched fixture with legacy phrasing", (
 	assert.notEqual(result, true);
 });
 
-test("session-guidance verify accepts unrelated code with no exploration sentence", () => {
+test("session-guidance verify rejects a missing guidance surface", () => {
 	const unrelated = `function unrelated() { return "no exploration sentence here"; }`;
-	assert.equal(sessionGuidance.verify(unrelated), true);
+	const result = sessionGuidance.verify(unrelated);
+	assert.equal(typeof result, "string");
+	assert.match(
+		String(result),
+		/missing modern code-search routing helper text/,
+	);
 });
 
 test("session-guidance is idempotent across runs", () => {

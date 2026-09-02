@@ -135,6 +135,38 @@ test("verify rejects unpatched catalog metadata", () => {
 	assert.equal(typeof modelContextMetadata.verify(print(ast), ast), "string");
 });
 
+test("model-context-metadata rejects inert generated markers", () => {
+	const decoy = LATEST_MODEL_METADATA_FIXTURE.replace(
+		"return catalog.config.models ?? [];",
+		"const __ccConfiguredModelIds = new Set(); return catalog.config.models ?? [];",
+	).replace(
+		"const contextCeiling = contextWindow(catalog, model);",
+		"const __ccConfiguredAutoCompactWindow = 1; const contextCeiling = contextWindow(catalog, model);",
+	);
+	assert.notEqual(decoy, LATEST_MODEL_METADATA_FIXTURE);
+	const ast = parse(decoy);
+	assert.equal(typeof modelContextMetadata.verify(print(ast), ast), "string");
+});
+
+test("model-context-metadata rejects a partial catalog merge", async () => {
+	const { output } = await patchFixture();
+	const broken = output.replace("...__ccConfiguredModels", "...[]");
+	assert.notEqual(broken, output);
+	const ast = parse(broken);
+	assert.equal(typeof modelContextMetadata.verify(broken, ast), "string");
+});
+
+test("model-context-metadata rejects a partial auto-compact default", async () => {
+	const { output } = await patchFixture();
+	const broken = output.replace(
+		'source: "model-default"',
+		'source: "settings"',
+	);
+	assert.notEqual(broken, output);
+	const ast = parse(broken);
+	assert.equal(typeof modelContextMetadata.verify(broken, ast), "string");
+});
+
 test("model-context-metadata feeds configured models into native runtime metadata", async () => {
 	const { ast, output } = await patchFixture();
 	const runtime = evaluatePatched(output);

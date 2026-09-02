@@ -331,40 +331,71 @@ test("image-limits downscales high-resolution many-image requests before API sub
 		/__ccEnhancedImageBlocks\.some\(__ccEnhancedImageTooLargeForManyImage\)/,
 	);
 	assert.match(output, /__ccEnhancedBlock\.type === "tool_result"/);
-	assert.match(output, /Array\.isArray\(__ccEnhancedBlock\.content\)/);
-	assert.match(
-		output,
-		/Buffer\.from\(source\.data\.slice\(0,\s*87400\),\s*"base64"\)/,
-	);
-	assert.match(output, /parsed\.width > 2000/);
-	assert.match(output, /parsed\.height > 2000/);
-	assert.match(output, /maxWidth:\s*2000/);
-	assert.match(output, /maxHeight:\s*2000/);
-	assert.match(output, /await _na\(block,\s*limits\)/);
 	assert.match(output, /normalized\?\.block \?\? block/);
-	assert.match(output, /\.\.\.cy\(s\.model\)/);
-	assert.doesNotMatch(output, /\.\.\.cy\(h\)/);
-	assert.match(
-		output,
-		/N = await __ccEnhancedDownscaleManyImageMessages\(N,\s*__ccEnhancedManyImageLimits\)/,
-	);
-	assert.match(
-		output,
-		/let __ccEnhancedDownscaledMidConvFallback = await __ccEnhancedDownscaleManyImageMessages\(\s*M\(\),/,
-	);
-	assert.match(output, /M = \(\) => __ccEnhancedDownscaledMidConvFallback/);
-	assert.doesNotMatch(output, /M = async \(\)/);
-	assert.match(output, /N = Fo \? M\(\) : Wq\(N\)/);
-	assert.doesNotMatch(output, /await M\(\)/);
 	assert.doesNotMatch(output, /\[media removed: request limit\]/);
 
-	const guardIndex = output.indexOf("__ccEnhancedVisualBlockCount");
-	const normalizeEndIndex = output.indexOf('q("tengu_api_after_normalize"');
-	assert.ok(guardIndex >= 0, "many-image guard not found");
-	assert.ok(
-		normalizeEndIndex > guardIndex,
-		"guard must run before the API request proceeds",
-	);
+	const runtime = new Function(`${output}; return { query };`)() as {
+		query(
+			messages: any[],
+			context: { model: string },
+		): AsyncGenerator<unknown, any[], unknown>;
+	};
+	const execute = async (messages: any[]): Promise<any[]> => {
+		const result = await runtime
+			.query(messages, { model: "claude-opus-5" })
+			.next();
+		assert.equal(result.done, true);
+		return result.value as any[];
+	};
+	const image = (dimensions: string) => ({
+		type: "image",
+		source: {
+			type: "base64",
+			media_type: "image/png",
+			data: Buffer.from(dimensions).toString("base64"),
+		},
+	});
+
+	const underLimit = [
+		{
+			message: {
+				content: [
+					image("3000x3000"),
+					...Array.from({ length: 19 }, () => ({ type: "document" })),
+				],
+			},
+		},
+	];
+	assert.equal(await execute(underLimit), underLimit);
+
+	const manyWithoutLargeImage = [
+		{
+			message: {
+				content: Array.from({ length: 21 }, () => ({ type: "document" })),
+			},
+		},
+	];
+	assert.equal(await execute(manyWithoutLargeImage), manyWithoutLargeImage);
+
+	const smallImage = image("100x100");
+	const overLimit = [
+		{
+			message: {
+				content: [
+					image("3000x3000"),
+					smallImage,
+					{ type: "tool_result", content: [image("4000x3000")] },
+					...Array.from({ length: 19 }, () => ({ type: "document" })),
+				],
+			},
+		},
+	];
+	const rewritten = await execute(overLimit);
+	assert.notEqual(rewritten, overLimit);
+	const rewrittenContent = rewritten[0].message.content;
+	assert.equal(rewrittenContent[0].source.data, "downscaled");
+	assert.equal(rewrittenContent[1], smallImage);
+	assert.equal(rewrittenContent[2].content[0].source.data, "downscaled");
 });
 
 test("verify rejects a fallback wrapper that returns a promise", async () => {

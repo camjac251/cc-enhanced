@@ -147,6 +147,12 @@ test("built-in-agent-prompt verifies after prompt dash normalization", async () 
 		`function buildExplorePrompt() {${builtInAgentPrompt.string?.(EXPLORE_FIXTURE) ?? EXPLORE_FIXTURE}}`,
 		`function buildPlanPrompt() {${builtInAgentPrompt.string?.(PLAN_FIXTURE) ?? PLAN_FIXTURE}}`,
 		generalPrompt,
+		builtInAgentPrompt.string?.(WORKER_AGENT_FIXTURE) ?? WORKER_AGENT_FIXTURE,
+		builtInAgentPrompt.string?.(WORKFLOW_SUBAGENT_FIXTURE) ??
+			WORKFLOW_SUBAGENT_FIXTURE,
+		builtInAgentPrompt.string?.(AGENT_TOOL_LOOKUP_FIXTURE) ??
+			AGENT_TOOL_LOOKUP_FIXTURE,
+		builtInAgentPrompt.string?.(CLAUDE_NOISY_FIXTURE) ?? CLAUDE_NOISY_FIXTURE,
 	].join("\n");
 	const ast = parse(source);
 	const passes = (await promptDashStyle.astPasses?.(ast)) ?? [];
@@ -220,7 +226,7 @@ test("built-in-agent-prompt rewrites Explore prompt and whenToUse", () => {
 	);
 	assert.equal(output.includes(MODERN_STDOUT_CAP), true);
 	assert.equal(output.includes("Complete the user's research request"), true);
-	assert.equal(builtInAgentPrompt.verify(patchedCombinedAgentFixture()), true);
+	assert.equal(builtInAgentPrompt.verify(patchedSubagentSurfaces()), true);
 });
 
 test("built-in-agent-prompt rewrites the Explore whenToUse despite the bundle's escaped em dash", () => {
@@ -289,7 +295,7 @@ test("built-in-agent-prompt rewrites Plan prompt and whenToUse", () => {
 		output.includes("test engineer should shape the verification plan"),
 		true,
 	);
-	assert.equal(builtInAgentPrompt.verify(patchedCombinedAgentFixture()), true);
+	assert.equal(builtInAgentPrompt.verify(patchedSubagentSurfaces()), true);
 });
 
 test("built-in-agent-prompt rewrites general-purpose strengths and guidelines", () => {
@@ -347,7 +353,7 @@ test("built-in-agent-prompt rewrites general-purpose strengths and guidelines", 
 		),
 		true,
 	);
-	assert.equal(builtInAgentPrompt.verify(patchedCombinedAgentFixture()), true);
+	assert.equal(builtInAgentPrompt.verify(patchedSubagentSurfaces()), true);
 });
 
 test("built-in-agent-prompt rewrites placeholder-backed read-only bash guidance", () => {
@@ -407,7 +413,7 @@ test("built-in-agent-prompt verify rejects unpatched built-in prompt text", () =
 });
 
 test("built-in-agent-prompt verify ignores unrelated legacy guidance elsewhere in bundle", () => {
-	const output = patchedCombinedAgentFixture();
+	const output = patchedSubagentSurfaces();
 	const withUnrelatedLegacyText = `${output}\nconst unrelated = "Use Bash ONLY for read-only operations (ls, git status, git log, git diff, find${'${conditional(", grep" | "")}'} , cat, head, tail)";`;
 	assert.equal(builtInAgentPrompt.verify(withUnrelatedLegacyText), true);
 });
@@ -463,9 +469,6 @@ test("built-in-agent-prompt verify rejects a surviving tail -50 corpus example",
 
 const WORKER_AGENT_FIXTURE =
 	'return `You are a worker agent executing a task assigned by the coordinator.\n\n## Scope\n\n- If you changed any files, commit your changes when done. Use a clear, descriptive commit message. Only stage files you actually changed \\u2014 never use \\`git add .\\` or \\`git add -A\\`. Report the commit hash in your summary.\n\nGood summary: "Added Redis cache implementation. Tests pass, typecheck clean. Committed abc123."`;';
-
-const WORKER_AGENT_ROUTING_ONLY_FIXTURE =
-	"return `You are a worker agent executing a task assigned by the coordinator. Report back to the coordinator.`;";
 
 const WORKFLOW_SUBAGENT_FIXTURE =
 	"g0_ = `You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task. Return verbatim.`; l0_ = `You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task. Call the tool.`;";
@@ -646,14 +649,23 @@ test("built-in-agent-prompt verify flags missing claude background-task routing"
 });
 
 test("built-in-agent-prompt verify flags a reworded Explore whenToUse surface", () => {
-	// The exact source is reworded away and the replacement never landed, but the
-	// durable anchor survives. The hardened neither-present branch must fail loudly
-	// rather than silently pass the reworded surface.
 	const rewordedButUnpatched =
 		"A blazing read-only search agent for locating code across the tree.";
 	const result = builtInAgentPrompt.verify(rewordedButUnpatched);
 	assert.equal(typeof result, "string");
 	assert.equal(String(result).includes("Explore agent whenToUse"), true);
+});
+
+test("built-in-agent-prompt verify flags a reworded Plan whenToUse surface", () => {
+	const patched = patchedSubagentSurfaces();
+	const drifted = patched.replace(
+		"Architecture and planning agent for turning exploration results into concrete implementation blueprints.",
+		"Planning agent.",
+	);
+	assert.notEqual(drifted, patched);
+	const result = builtInAgentPrompt.verify(drifted);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("Plan agent whenToUse"), true);
 });
 
 test("built-in-agent-prompt softens the Workflow grep example to search", () => {
@@ -670,20 +682,34 @@ test("built-in-agent-prompt verify passes with patched sub-agent surfaces", () =
 	assert.equal(builtInAgentPrompt.verify(patchedSubagentSurfaces()), true);
 });
 
-test("built-in-agent-prompt verify flags an unpatched worker prompt", () => {
-	const broken = `${patchedSubagentSurfaces()}\n${WORKER_AGENT_ROUTING_ONLY_FIXTURE}`;
+test("built-in-agent-prompt verify flags missing worker routing", () => {
+	const patched = patchedSubagentSurfaces();
+	const broken = patched.replace(MODERN_SUBAGENT_CODE_ROUTING, "");
+	assert.notEqual(broken, patched);
 	const result = builtInAgentPrompt.verify(broken);
 	assert.equal(typeof result, "string");
 	assert.equal(String(result).includes("missing modern-tooling routing"), true);
 });
 
-test("built-in-agent-prompt verify flags worker auto-commit guidance", () => {
-	const badWorker = [
-		"You are a worker agent executing a task assigned by the coordinator.",
-		MODERN_SUBAGENT_CODE_ROUTING,
-		"- If you changed any files, commit your changes when done. Use a clear, descriptive commit message. Only stage files you actually changed \\u2014 never use \\`git add .\\` or \\`git add -A\\`. Report the commit hash in your summary.",
-	].join("\n\n");
-	const broken = `${patchedSubagentSurfaces()}\n${badWorker}`;
+test("built-in-agent-prompt verify flags missing workflow routing surfaces", () => {
+	const patched = patchedSubagentSurfaces();
+	const broken = patched.replace(
+		"You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task.",
+		"You are a workflow subagent.",
+	);
+	assert.notEqual(broken, patched);
+	const result = builtInAgentPrompt.verify(broken);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("routing surface count drifted"), true);
+});
+
+test("built-in-agent-prompt verify flags missing worker commit guidance", () => {
+	const patched = patchedSubagentSurfaces();
+	const broken = patched.replace(
+		"Do not commit unless the coordinator explicitly asked you to commit.",
+		"Follow the coordinator's commit instructions.",
+	);
+	assert.notEqual(broken, patched);
 	const result = builtInAgentPrompt.verify(broken);
 	assert.equal(typeof result, "string");
 	assert.equal(String(result).includes("worker no-auto-commit guidance"), true);

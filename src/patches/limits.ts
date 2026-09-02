@@ -309,17 +309,12 @@ function runLimitsPatch(ast: t.File): void {
 
 				for (let i = 0; i < quasis.length; i++) {
 					const q = quasis[i].value.raw;
-					if (q.includes("reads up to ")) {
-						if (i < exprs.length && t.isIdentifier(exprs[i])) {
-							const linesVarName = (exprs[i] as any).name;
-							updateVarValue(ast, linesVarName, NEW_LINES_CAP, "linesCap");
-						}
+					const expression = exprs[i];
+					if (q.includes("reads up to ") && t.isIdentifier(expression)) {
+						updateVarValue(path, expression, NEW_LINES_CAP, "linesCap");
 					}
-					if (q.includes("longer than ")) {
-						if (i < exprs.length && t.isIdentifier(exprs[i])) {
-							const charsVarName = (exprs[i] as any).name;
-							updateVarValue(ast, charsVarName, NEW_LINE_CHARS, "lineChars");
-						}
+					if (q.includes("longer than ") && t.isIdentifier(expression)) {
+						updateVarValue(path, expression, NEW_LINE_CHARS, "lineChars");
 					}
 				}
 			}
@@ -479,23 +474,18 @@ function runLimitsPatch(ast: t.File): void {
 	}
 
 	function updateVarValue(
-		ast: any,
-		varName: string,
+		referencePath: any,
+		identifier: t.Identifier,
 		newValue: number,
 		limitKey: keyof NonNullable<PatchResult["limits"]>,
-	) {
-		traverse(ast, {
-			VariableDeclarator(path: any) {
-				if (t.isIdentifier(path.node.id) && path.node.id.name === varName) {
-					const oldValue = t.isNumericLiteral(path.node.init)
-						? String(path.node.init.value)
-						: "unknown";
-					path.node.init = t.numericLiteral(newValue);
-					limitsChanged[limitKey] = [oldValue, String(newValue)];
-					path.stop();
-				}
-			},
-		});
+	): void {
+		const binding = referencePath.scope.getBinding(identifier.name);
+		if (!binding || !t.isVariableDeclarator(binding.path.node)) return;
+		const init = binding.path.node.init;
+		if (!t.isNumericLiteral(init)) return;
+
+		binding.path.node.init = t.numericLiteral(newValue);
+		limitsChanged[limitKey] = [String(init.value), String(newValue)];
 	}
 }
 
@@ -524,6 +514,8 @@ export const limits: Patch = {
 		> = [
 			["byteCeiling", NEW_BYTE_CEILING, current.byteCeiling],
 			["resultSizeCap", NEW_RESULT_SIZE_CAP, current.resultSizeCap],
+			["linesCap", NEW_LINES_CAP, current.linesCap],
+			["lineChars", NEW_LINE_CHARS, current.lineChars],
 		];
 		for (const [key, expected, actual] of requiredChecks) {
 			if (actual === undefined) return `Could not resolve limit ${key}`;
@@ -537,18 +529,6 @@ export const limits: Patch = {
 		}
 		if (current.readMaxResultSize < NEW_READ_MAX_RESULT_SIZE) {
 			return `Limit readMaxResultSize has unexpected value: ${current.readMaxResultSize} (expected >= ${NEW_READ_MAX_RESULT_SIZE})`;
-		}
-		const optionalPromptChecks: Array<
-			[keyof NonNullable<PatchResult["limits"]>, number, number | undefined]
-		> = [
-			["linesCap", NEW_LINES_CAP, current.linesCap],
-			["lineChars", NEW_LINE_CHARS, current.lineChars],
-		];
-		for (const [key, expected, actual] of optionalPromptChecks) {
-			if (actual === undefined) continue;
-			if (actual !== expected) {
-				return `Limit ${key} has unexpected value: ${actual} (expected ${expected})`;
-			}
 		}
 
 		// Structural integrity: persistence cap must be less than maxResultSizeChars
@@ -565,6 +545,6 @@ export const limits: Patch = {
 	},
 };
 
-export function getLimitsChanged(): PatchResult["limits"] {
+export function getLimitsChanged(): NonNullable<PatchResult["limits"]> {
 	return limitsChanged;
 }

@@ -256,9 +256,9 @@ const WORKER_AGENT_OPENER =
 const WORKFLOW_SUBAGENT_OPENER =
 	"You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task.";
 
-const SUBAGENT_ROUTING_ANCHORS = [
-	WORKER_AGENT_OPENER,
-	WORKFLOW_SUBAGENT_OPENER,
+const SUBAGENT_ROUTING_SURFACES = [
+	[WORKER_AGENT_OPENER, 1],
+	[WORKFLOW_SUBAGENT_OPENER, 2],
 ] as const;
 
 const WORKER_AGENT_AUTO_COMMIT_SOURCE =
@@ -581,7 +581,7 @@ export const builtInAgentPrompt: Patch = {
 			WORKER_AGENT_COMMIT_SUMMARY_SOURCE,
 			WORKER_AGENT_COMMIT_SUMMARY_REPLACEMENT,
 		);
-		for (const anchor of SUBAGENT_ROUTING_ANCHORS) {
+		for (const [anchor] of SUBAGENT_ROUTING_SURFACES) {
 			const injected = subagentRoutingInjection(anchor);
 			if (!result.includes(injected)) {
 				result = result.replaceAll(escapeNonAscii(anchor), injected);
@@ -662,6 +662,7 @@ export const builtInAgentPrompt: Patch = {
 			PLAN_WHEN_TO_USE_SOURCE,
 			PLAN_WHEN_TO_USE_REPLACEMENT,
 			"Plan agent whenToUse",
+			PLAN_PROMPT_REPLACEMENT,
 		);
 		if (planWhenToUseResult !== true) return planWhenToUseResult;
 
@@ -844,18 +845,22 @@ export const builtInAgentPrompt: Patch = {
 			WORKER_AGENT_AUTO_COMMIT_SOURCE,
 			WORKER_AGENT_AUTO_COMMIT_REPLACEMENT,
 			"worker no-auto-commit guidance",
+			WORKER_AGENT_OPENER,
 		);
 		if (workerCommitResult !== true) return workerCommitResult;
 		const workerCommitSummaryResult = verifyExactReplacement(
 			WORKER_AGENT_COMMIT_SUMMARY_SOURCE,
 			WORKER_AGENT_COMMIT_SUMMARY_REPLACEMENT,
 			"worker no-auto-commit summary example",
+			WORKER_AGENT_OPENER,
 		);
 		if (workerCommitSummaryResult !== true) return workerCommitSummaryResult;
 
-		for (const anchor of SUBAGENT_ROUTING_ANCHORS) {
+		for (const [anchor, expectedCount] of SUBAGENT_ROUTING_SURFACES) {
 			const anchorCount = countOccurrences(code, anchor);
-			if (anchorCount === 0) continue;
+			if (anchorCount !== expectedCount) {
+				return `Sub-agent prompt routing surface count drifted: found ${anchorCount} occurrence(s) of "${anchor.slice(0, 32)}", expected ${expectedCount}`;
+			}
 			const injectedCount = countOccurrences(
 				code,
 				subagentRoutingInjection(anchor),

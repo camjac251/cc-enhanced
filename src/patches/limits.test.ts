@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
-import { limits } from "./limits.js";
+import { getLimitsChanged, limits } from "./limits.js";
 
 async function runLimitsViaPasses(ast: any): Promise<void> {
 	const passes = (await limits.astPasses?.(ast)) ?? [];
@@ -118,6 +118,38 @@ test("limits patch modifies the current numeric targets via combined AST passes"
 		true,
 		"new lineChars should be present",
 	);
+	assert.deepEqual(getLimitsChanged(), {
+		byteCeiling: ["262144", "1048576"],
+		resultSizeCap: ["50000", "120000"],
+		readMaxResultSize: ["100000", "250000"],
+		linesCap: ["2000", "5000"],
+		lineChars: ["500", "5000"],
+	});
+});
+
+test("limits patches the Read prompt's lexical bindings", async () => {
+	const scopedFixture = LIMITS_FIXTURE.replace(
+		"var lNC = 2000;\nvar lCC = 500;",
+		"function unrelated() {\n  var lNC = 123;\n  var lCC = 456;\n  return lNC + lCC;\n}",
+	).replace(
+		"var readPromptText = `Reads a file from the local filesystem.\nThe file reads up to ${lNC} lines of content.\nLines longer than ${lCC} characters are truncated.`;",
+		"function buildReadPrompt() {\n  var lNC = 2000;\n  var lCC = 500;\n  return `Reads a file from the local filesystem.\nThe file reads up to ${lNC} lines of content.\nLines longer than ${lCC} characters are truncated.`;\n}",
+	);
+	assert.notEqual(scopedFixture, LIMITS_FIXTURE);
+
+	const ast = parse(scopedFixture);
+	await runLimitsViaPasses(ast);
+	const output = print(ast);
+
+	assert.match(
+		output,
+		/function unrelated\(\) \{\s*var lNC = 123;\s*var lCC = 456;/,
+	);
+	assert.match(
+		output,
+		/function buildReadPrompt\(\) \{\s*var lNC = 5000;\s*var lCC = 5000;/,
+	);
+	assert.equal(limits.verify(output, ast), true);
 });
 
 test("limits verify returns true on patched AST", async () => {
@@ -313,7 +345,7 @@ function getPersistenceThreshold(toolName, maxResultSizeChars, ceiling = ZPA) {
 	);
 });
 
-test("limits verify passes when the Read prompt has no lineChars phrase", async () => {
+test("limits verify rejects a Read prompt without lineChars", async () => {
 	const noLineCharsFixture = `
 var bYC = 262144;
 var ZPA = 50000;
@@ -344,11 +376,12 @@ The file reads up to \${lNC} lines of content.\`;
 		true,
 		"linesCap should still be patched",
 	);
-	// verify must pass even though lineChars never resolved (optional-skip)
+	assert.equal("lineChars" in getLimitsChanged(), false);
+	const result = limits.verify(output, ast);
+	assert.equal(typeof result, "string");
 	assert.equal(
-		limits.verify(output, ast),
+		String(result).includes("Could not resolve limit lineChars"),
 		true,
-		"verify should pass with lineChars absent",
 	);
 });
 

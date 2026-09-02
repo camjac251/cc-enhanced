@@ -57,8 +57,71 @@ function nodeContains(
 	return found;
 }
 
-function nodeHasIdentifier(node: t.Node, name: string): boolean {
-	return nodeContains(node, (candidate) => t.isIdentifier(candidate, { name }));
+function isPatchedCatalogBody(body: t.BlockStatement): boolean {
+	const hasMarkerBinding = nodeContains(
+		body,
+		(candidate) =>
+			t.isVariableDeclarator(candidate) &&
+			t.isIdentifier(candidate.id, { name: CATALOG_MARKER }) &&
+			t.isNewExpression(candidate.init) &&
+			t.isIdentifier(candidate.init.callee, { name: "Set" }) &&
+			candidate.init.arguments.length === 1,
+	);
+	if (!hasMarkerBinding) return false;
+
+	const requiredRuntimeKeys = [
+		"max_input_tokens",
+		"max_output_tokens",
+		"effort_levels",
+		"default_effort",
+		"capabilities",
+		"auto_compact_window",
+	];
+	if (
+		!requiredRuntimeKeys.every((key) =>
+			nodeContains(
+				body,
+				(candidate) =>
+					t.isObjectProperty(candidate) &&
+					((t.isIdentifier(candidate.key) && candidate.key.name === key) ||
+						(t.isStringLiteral(candidate.key) && candidate.key.value === key)),
+			),
+		)
+	) {
+		return false;
+	}
+
+	const result = body.body.at(-1);
+	if (
+		!t.isReturnStatement(result) ||
+		!t.isArrayExpression(result.argument) ||
+		result.argument.elements.length !== 2
+	) {
+		return false;
+	}
+	const [nativeModels, configuredModels] = result.argument.elements;
+	if (
+		!t.isSpreadElement(nativeModels) ||
+		!t.isCallExpression(nativeModels.argument) ||
+		!t.isMemberExpression(nativeModels.argument.callee) ||
+		getMemberName(nativeModels.argument.callee) !== "filter" ||
+		!t.isIdentifier(nativeModels.argument.callee.object, {
+			name: "__ccNativeModels",
+		}) ||
+		!t.isSpreadElement(configuredModels) ||
+		!t.isIdentifier(configuredModels.argument, { name: "__ccConfiguredModels" })
+	) {
+		return false;
+	}
+
+	return nodeContains(
+		nativeModels.argument,
+		(candidate) =>
+			t.isCallExpression(candidate) &&
+			t.isMemberExpression(candidate.callee) &&
+			t.isIdentifier(candidate.callee.object, { name: CATALOG_MARKER }) &&
+			getMemberName(candidate.callee) === "has",
+	);
 }
 
 function isConfiguredCatalogHelper(
@@ -116,8 +179,13 @@ function classifyCatalogAccessor(
 	if (!path.node.id || path.node.params.length !== 1) return null;
 	const [parameter] = path.node.params;
 	if (!t.isIdentifier(parameter)) return null;
-	if (nodeHasIdentifier(path.node.body, CATALOG_MARKER)) {
-		return { path, catalogName: parameter.name, state: "patched" };
+	const hasPatchMarker = nodeContains(path.node.body, (candidate) =>
+		t.isIdentifier(candidate, { name: CATALOG_MARKER }),
+	);
+	if (hasPatchMarker) {
+		return isPatchedCatalogBody(path.node.body)
+			? { path, catalogName: parameter.name, state: "patched" }
+			: null;
 	}
 	if (path.node.body.body.length !== 1) return null;
 	const statement = path.node.body.body[0];
@@ -189,6 +257,69 @@ function getSettingsCeiling(
 	return call.arguments[0].name;
 }
 
+function isPatchedAutoCompactBody(
+	body: t.BlockStatement,
+	ceilingName: string,
+): boolean {
+	const hasMarkerBinding = nodeContains(
+		body,
+		(candidate) =>
+			t.isVariableDeclarator(candidate) &&
+			t.isIdentifier(candidate.id, { name: AUTO_COMPACT_MARKER }) &&
+			(t.isMemberExpression(candidate.init) ||
+				t.isOptionalMemberExpression(candidate.init)) &&
+			getMemberName(candidate.init) === "auto_compact_window",
+	);
+	const hasSafeIntegerGuard = nodeContains(
+		body,
+		(candidate) =>
+			t.isCallExpression(candidate) &&
+			t.isMemberExpression(candidate.callee) &&
+			t.isIdentifier(candidate.callee.object, { name: "Number" }) &&
+			getMemberName(candidate.callee) === "isSafeInteger" &&
+			candidate.arguments.length === 1 &&
+			t.isIdentifier(candidate.arguments[0], { name: AUTO_COMPACT_MARKER }),
+	);
+	const hasPositiveGuard = nodeContains(
+		body,
+		(candidate) =>
+			t.isBinaryExpression(candidate, { operator: ">" }) &&
+			t.isIdentifier(candidate.left, { name: AUTO_COMPACT_MARKER }) &&
+			t.isNumericLiteral(candidate.right, { value: 0 }),
+	);
+	if (!hasMarkerBinding || !hasSafeIntegerGuard || !hasPositiveGuard)
+		return false;
+
+	let resultObject: t.ObjectExpression | null = null;
+	t.traverseFast(body, (candidate) => {
+		if (
+			resultObject === null &&
+			t.isReturnStatement(candidate) &&
+			t.isObjectExpression(candidate.argument) &&
+			getSourceValue(candidate.argument) === "model-default"
+		) {
+			resultObject = candidate.argument;
+		}
+	});
+	const patchedResult = resultObject as t.ObjectExpression | null;
+	if (patchedResult === null) return false;
+
+	const configured = getObjectPropertyByName(patchedResult, "configured");
+	const window = getObjectPropertyByName(patchedResult, "window");
+	return (
+		configured !== null &&
+		t.isIdentifier(configured.value, { name: AUTO_COMPACT_MARKER }) &&
+		window !== null &&
+		t.isCallExpression(window.value) &&
+		t.isMemberExpression(window.value.callee) &&
+		t.isIdentifier(window.value.callee.object, { name: "Math" }) &&
+		getMemberName(window.value.callee) === "min" &&
+		window.value.arguments.length === 2 &&
+		t.isIdentifier(window.value.arguments[0], { name: ceilingName }) &&
+		t.isIdentifier(window.value.arguments[1], { name: AUTO_COMPACT_MARKER })
+	);
+}
+
 function classifyAutoCompactResolver(
 	path: NodePath<t.FunctionDeclaration>,
 ): AutoCompactCandidate | null {
@@ -216,7 +347,7 @@ function classifyAutoCompactResolver(
 			modelName: model.name,
 			ceilingName,
 			settingsIndex: index,
-			state: nodeHasIdentifier(path.node.body, AUTO_COMPACT_MARKER)
+			state: isPatchedAutoCompactBody(path.node.body, ceilingName)
 				? "patched"
 				: "stock",
 		};
