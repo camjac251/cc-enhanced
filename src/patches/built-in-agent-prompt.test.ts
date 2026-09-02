@@ -147,12 +147,14 @@ test("built-in-agent-prompt verifies after prompt dash normalization", async () 
 		`function buildExplorePrompt() {${builtInAgentPrompt.string?.(EXPLORE_FIXTURE) ?? EXPLORE_FIXTURE}}`,
 		`function buildPlanPrompt() {${builtInAgentPrompt.string?.(PLAN_FIXTURE) ?? PLAN_FIXTURE}}`,
 		generalPrompt,
-		builtInAgentPrompt.string?.(WORKER_AGENT_FIXTURE) ?? WORKER_AGENT_FIXTURE,
+		`function buildWorkerPrompt() {${builtInAgentPrompt.string?.(WORKER_AGENT_FIXTURE) ?? WORKER_AGENT_FIXTURE}}`,
 		builtInAgentPrompt.string?.(WORKFLOW_SUBAGENT_FIXTURE) ??
 			WORKFLOW_SUBAGENT_FIXTURE,
-		builtInAgentPrompt.string?.(AGENT_TOOL_LOOKUP_FIXTURE) ??
-			AGENT_TOOL_LOOKUP_FIXTURE,
-		builtInAgentPrompt.string?.(CLAUDE_NOISY_FIXTURE) ?? CLAUDE_NOISY_FIXTURE,
+		`const agentToolLookup = ${JSON.stringify(builtInAgentPrompt.string?.(AGENT_TOOL_LOOKUP_FIXTURE) ?? AGENT_TOOL_LOOKUP_FIXTURE)};`,
+		"const noisyInvestigation = `" +
+			(builtInAgentPrompt.string?.(CLAUDE_NOISY_FIXTURE) ??
+				CLAUDE_NOISY_FIXTURE) +
+			"`;",
 	].join("\n");
 	const ast = parse(source);
 	const passes = (await promptDashStyle.astPasses?.(ast)) ?? [];
