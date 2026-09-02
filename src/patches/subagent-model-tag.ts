@@ -985,7 +985,6 @@ const REMOTE_AGENT_REQUEST_KEYS = [
 	"initialMessage",
 	"source",
 	"model",
-	"permissionMode",
 	"branchName",
 	"signal",
 	"storageV5",

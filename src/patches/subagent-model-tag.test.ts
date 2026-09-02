@@ -96,7 +96,7 @@ const agentTool = {
         initialMessage: prompt,
         source: "remote_agent",
         model: resolvedModel,
-        permissionMode,
+        ...withProactivity(permissionMode, state.proactivityLevel),
         branchName,
         signal,
         storageV5,
