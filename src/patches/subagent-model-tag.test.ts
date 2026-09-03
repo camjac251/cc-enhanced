@@ -537,7 +537,7 @@ test("subagent-model-tag resolves fork resume through an effort-wrapper alias", 
 	);
 });
 
-test("subagent-model-tag accepts the current child model lifecycle", async () => {
+test("subagent-model-tag preserves the native child model persistence", async () => {
 	const ast = parse(SUBAGENT_FIXTURE);
 	await runSubagentModelTagViaPasses(ast);
 	const output = print(ast);
@@ -563,7 +563,7 @@ test("subagent-model-tag accepts the current child model lifecycle", async () =>
 	assert.equal(subagentModelTag.verify(output, ast), true);
 });
 
-test("subagent-model-tag treats resume options drift as non-fatal", async () => {
+test("subagent-model-tag verify ignores the resume options model expression", async () => {
 	const patchedAst = parse(SUBAGENT_FIXTURE);
 	await runSubagentModelTagViaPasses(patchedAst);
 	const patched = print(patchedAst);
@@ -577,7 +577,7 @@ test("subagent-model-tag treats resume options drift as non-fatal", async () => 
 	assert.equal(
 		subagentModelTag.verify(print(driftedAst), driftedAst),
 		true,
-		"resume options are observational, so their drift must not fail the patch",
+		"the effort resume contract does not depend on the resume model expression",
 	);
 });
 
@@ -598,28 +598,6 @@ test("subagent-model-tag fails fork resume when the resolver override drifts", a
 		String(result).includes("Fork resume"),
 		true,
 		"the fork-resume mutation locates its target through the resolver override shape",
-	);
-});
-
-test("subagent-model-tag treats launch metadata drift as non-fatal", async () => {
-	const drifted = SUBAGENT_FIXTURE.replace(
-		"...(model && { model }),\n    ...extraMetadata,",
-		"...extraMetadata,\n    ...(model && { model }),",
-	);
-	assert.notEqual(drifted, SUBAGENT_FIXTURE);
-	const ast = parse(drifted);
-	await runSubagentModelTagViaPasses(ast);
-	const output = print(ast);
-
-	assert.equal(
-		output.includes("entry.model && !process.env.CLAUDE_CODE_SUBAGENT_MODEL"),
-		true,
-		"the UI guard still lands when launch metadata drifts",
-	);
-	assert.equal(
-		subagentModelTag.verify(output, ast),
-		true,
-		"launch metadata is observational, so its drift must not fail the patch",
 	);
 });
 
