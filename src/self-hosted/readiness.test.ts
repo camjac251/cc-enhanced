@@ -14,9 +14,9 @@ test("self-hosted readiness separates candidate construction from live support",
 	assert.equal(plan.surface, "self-hosted-runner");
 	assert.equal(plan.profile.profile, "self-hosted-runner");
 	assert.deepEqual(plan.profile.summary, {
-		total: 46,
+		total: 45,
 		supported: 0,
-		probeRequired: 31,
+		probeRequired: 30,
 		excluded: 15,
 		notAssessed: 0,
 	});

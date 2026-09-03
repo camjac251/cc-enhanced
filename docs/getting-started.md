@@ -46,7 +46,7 @@ Rollback atomically exchanges the `current` and `previous` symlink targets. It d
 
 ## Select a patch subset
 
-The default `cli-full` profile selects all 45 registered patches. Use per-invocation environment variables when a build needs an explicit subset:
+The default `cli-full` profile selects all 44 registered patches. Use per-invocation environment variables when a build needs an explicit subset:
 
 ```bash
 CLAUDE_PATCHER_INCLUDE_TAGS=read-bat,limits,edit-extended mise run native:update

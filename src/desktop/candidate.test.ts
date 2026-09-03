@@ -104,7 +104,7 @@ test("Desktop candidate build verifies a distinct path-free offline copy", async
 			buildNative: async (request): Promise<NativeBuildResult> => {
 				assert.equal(request.version, "2.1.999");
 				assert.equal(request.platform, "win32-x64");
-				assert.equal(request.patchSelection.patches.length, 30);
+				assert.equal(request.patchSelection.patches.length, 29);
 				assert.equal(
 					request.patchSelection.patches.some(
 						({ tag }) => tag === "effort-stack",
@@ -143,7 +143,7 @@ test("Desktop candidate build verifies a distinct path-free offline copy", async
 			output.artifactReceipt.targetId,
 			"desktop-local:win32-x64:2.1.999",
 		);
-		assert.equal(output.evidence.profile.selectedTags.length, 30);
+		assert.equal(output.evidence.profile.selectedTags.length, 29);
 		assert.equal(output.evidence.profile.exclusions.length, 16);
 		assert.deepEqual(
 			output.evidence.profile.exclusions.find(

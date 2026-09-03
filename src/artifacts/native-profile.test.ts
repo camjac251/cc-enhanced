@@ -27,12 +27,12 @@ test("native artifact profiles preserve cli-full and isolate Remote Control", ()
 		cli.receipt.selectedTags,
 		registeredPatches.map(({ tag }) => tag),
 	);
-	assert.equal(cli.receipt.selectedTags.length, 45);
+	assert.equal(cli.receipt.selectedTags.length, 44);
 
 	const remote = resolveNativeArtifactPatchSelection("remote-control");
 	assert.equal(remote.receipt.name, remoteControlCandidateProfile.name);
 	assert.deepEqual(remote.receipt.selectedTags, REMOTE_CONTROL_CANDIDATE_TAGS);
-	assert.equal(remote.patches.length, 31);
+	assert.equal(remote.patches.length, 30);
 	assert.ok(remote.receipt.selectedTags.includes("tools-off-desktop"));
 	assert.ok(!remote.receipt.selectedTags.includes("tools-off"));
 	assert.ok(
@@ -49,7 +49,7 @@ test("native artifact profiles preserve cli-full and isolate Remote Control", ()
 		selfHosted.receipt.selectedTags,
 		SELF_HOSTED_RUNNER_CANDIDATE_TAGS,
 	);
-	assert.equal(selfHosted.patches.length, 31);
+	assert.equal(selfHosted.patches.length, 30);
 	assert.ok(selfHosted.receipt.selectedTags.includes("tools-off-desktop"));
 	assert.ok(!selfHosted.receipt.selectedTags.includes("tools-off"));
 	assert.ok(

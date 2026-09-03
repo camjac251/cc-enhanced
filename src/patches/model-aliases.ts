@@ -45,19 +45,6 @@ interface ModelNormalizerCandidate {
 	state: PatchSiteState;
 }
 
-interface TeammateResolverCandidate {
-	path: NodePath<t.FunctionDeclaration>;
-	explicitModelName: string;
-	validationIndex: number;
-	state: PatchSiteState;
-}
-
-interface TeammateResolverShape {
-	path: NodePath<t.FunctionDeclaration>;
-	explicitModelName: string;
-	validationIndex: number;
-}
-
 interface WorkflowModelFormatterCandidate {
 	path: NodePath<t.FunctionDeclaration>;
 	displayResolver: t.ArrowFunctionExpression;
@@ -133,15 +120,6 @@ function isProcessEnvMember(node: t.Node, envName: string): boolean {
 		t.isIdentifier(processObject.object, { name: "globalThis" }) &&
 		getObjectKeyName(processObject.property as t.Expression | t.Identifier) ===
 			"process"
-	);
-}
-
-function isParsedEnvironmentMember(node: t.Node, envName: string): boolean {
-	return (
-		t.isMemberExpression(node) &&
-		!node.computed &&
-		t.isIdentifier(node.object) &&
-		getObjectKeyName(node.property as t.Expression | t.Identifier) === envName
 	);
 }
 
@@ -779,173 +757,6 @@ function isVoidZero(node: t.Node | null | undefined): boolean {
 	);
 }
 
-function flattenLogicalAnd(node: t.Expression): t.Expression[] {
-	if (t.isLogicalExpression(node, { operator: "&&" })) {
-		return [...flattenLogicalAnd(node.left), ...flattenLogicalAnd(node.right)];
-	}
-	return [node];
-}
-
-function isUndefinedComparison(
-	node: t.Node,
-	identifierName: string,
-	operator: "!==" | "!=",
-): boolean {
-	if (!t.isBinaryExpression(node, { operator })) return false;
-	return (
-		(t.isIdentifier(node.left, { name: identifierName }) &&
-			isVoidZero(node.right)) ||
-		(t.isIdentifier(node.right, { name: identifierName }) &&
-			isVoidZero(node.left))
-	);
-}
-
-function isNegatedSingleArgumentCall(
-	node: t.Node,
-	identifierName: string,
-): boolean {
-	return (
-		t.isUnaryExpression(node, { operator: "!" }) &&
-		t.isCallExpression(node.argument) &&
-		node.argument.arguments.length >= 1 &&
-		t.isIdentifier(node.argument.arguments[0], { name: identifierName })
-	);
-}
-
-function isExplicitModelValidation(
-	node: t.Node,
-	identifierName: string,
-): boolean {
-	if (!t.isLogicalExpression(node, { operator: "&&" })) return false;
-	const operands = flattenLogicalAnd(node);
-	return (
-		operands.some(
-			(operand) =>
-				isUndefinedComparison(operand, identifierName, "!==") ||
-				isUndefinedComparison(operand, identifierName, "!="),
-		) &&
-		operands.some((operand) =>
-			isNegatedSingleArgumentCall(operand, identifierName),
-		)
-	);
-}
-
-function isInheritBranch(node: t.Node, identifierName: string): boolean {
-	if (!t.isIfStatement(node) || !t.isBinaryExpression(node.test)) return false;
-	if (node.test.operator !== "===" && node.test.operator !== "==") return false;
-	return (
-		(t.isIdentifier(node.test.left, { name: identifierName }) &&
-			getStaticString(node.test.right) === "inherit") ||
-		(t.isIdentifier(node.test.right, { name: identifierName }) &&
-			getStaticString(node.test.left) === "inherit")
-	);
-}
-
-function isExplicitModelNormalization(
-	node: t.Node | null | undefined,
-	explicitModelName: string,
-	normalizerName: string,
-): boolean {
-	if (!t.isIfStatement(node)) return false;
-	if (
-		!t.isBinaryExpression(node.test, { operator: "===" }) ||
-		!t.isUnaryExpression(node.test.left, { operator: "typeof" }) ||
-		!t.isIdentifier(node.test.left.argument, { name: explicitModelName }) ||
-		!t.isStringLiteral(node.test.right, { value: "string" })
-	) {
-		return false;
-	}
-	const statement = t.isBlockStatement(node.consequent)
-		? node.consequent.body[0]
-		: node.consequent;
-	if (!t.isExpressionStatement(statement)) return false;
-	const assignment = statement.expression;
-	return (
-		t.isAssignmentExpression(assignment, { operator: "=" }) &&
-		t.isIdentifier(assignment.left, { name: explicitModelName }) &&
-		t.isCallExpression(assignment.right) &&
-		t.isIdentifier(assignment.right.callee, { name: normalizerName }) &&
-		assignment.right.arguments.length === 1 &&
-		t.isIdentifier(assignment.right.arguments[0], {
-			name: explicitModelName,
-		})
-	);
-}
-
-function getTeammateResolverShape(
-	path: NodePath<t.FunctionDeclaration>,
-): TeammateResolverShape | null {
-	const firstParameter = path.node.params[0];
-	if (!t.isIdentifier(firstParameter) || path.node.params.length < 2) {
-		return null;
-	}
-	const explicitModelName = firstParameter.name;
-	if (
-		!nodeContains(path.node.body, (child) =>
-			isParsedEnvironmentMember(child, SUBAGENT_MODEL_ENV),
-		)
-	) {
-		return null;
-	}
-	const statements = path.node.body.body;
-	if (
-		!statements.some((statement) =>
-			isInheritBranch(statement, explicitModelName),
-		)
-	) {
-		return null;
-	}
-	const validationIndexes = statements
-		.map((statement, index) =>
-			t.isIfStatement(statement) &&
-			isExplicitModelValidation(statement.test, explicitModelName)
-				? index
-				: -1,
-		)
-		.filter((index) => index >= 0);
-	if (validationIndexes.length !== 1) return null;
-	return {
-		path,
-		explicitModelName,
-		validationIndex: validationIndexes[0],
-	};
-}
-
-function classifyTeammateResolver(
-	shape: TeammateResolverShape,
-	normalizerName: string,
-): TeammateResolverCandidate {
-	const { path, explicitModelName, validationIndex } = shape;
-	return {
-		path,
-		explicitModelName,
-		validationIndex,
-		state: isExplicitModelNormalization(
-			path.node.body.body[validationIndex - 1],
-			explicitModelName,
-			normalizerName,
-		)
-			? "patched"
-			: "unpatched",
-	};
-}
-
-function buildExplicitModelNormalization(
-	explicitModelName: string,
-	normalizerName: string,
-): t.IfStatement {
-	const program = parse(`
-if (typeof ${explicitModelName} === "string") {
-  ${explicitModelName} = ${normalizerName}(${explicitModelName});
-}
-`);
-	const statement = program.program.body[0];
-	if (!t.isIfStatement(statement)) {
-		throw new Error("model-aliases: failed to build teammate normalization");
-	}
-	return statement;
-}
-
 function getEnvironmentArrayState(node: t.ArrayExpression): PatchSiteState {
 	const subagentIndexes: number[] = [];
 	const aliasIndexes: number[] = [];
@@ -1050,12 +861,10 @@ function getFunctionBinding(
 
 function createModelAliasPasses(): PatchAstPass[] {
 	const modelNormalizers: ModelNormalizerCandidate[] = [];
-	const teammateResolverShapes: TeammateResolverShape[] = [];
 	const environmentArrays: t.ArrayExpression[] = [];
 	const workflowModelFormatters: WorkflowModelFormatterCandidate[] = [];
 	const autoModeRequestObjects: t.ObjectExpression[] = [];
 	let normalizerPatched = false;
-	let teammateResolverPatched = false;
 	let environmentForwardingPatched = false;
 	let workflowModelFormatterPatched = false;
 	let autoModeRequestsPatched = false;
@@ -1084,26 +893,6 @@ function createModelAliasPasses(): PatchAstPass[] {
 						)
 					) {
 						modelNormalizers.push(candidate);
-					}
-				},
-				MemberExpression(path) {
-					if (!isParsedEnvironmentMember(path.node, SUBAGENT_MODEL_ENV)) {
-						return;
-					}
-					const functionPath = path.getFunctionParent();
-					if (!functionPath || !t.isFunctionDeclaration(functionPath.node)) {
-						return;
-					}
-					const candidate = getTeammateResolverShape(
-						functionPath as NodePath<t.FunctionDeclaration>,
-					);
-					if (
-						candidate &&
-						!teammateResolverShapes.some(
-							(existing) => existing.path.node === candidate.path.node,
-						)
-					) {
-						teammateResolverShapes.push(candidate);
 					}
 				},
 				ArrayExpression(path) {
@@ -1153,26 +942,6 @@ function createModelAliasPasses(): PatchAstPass[] {
 								autoModeRequests.every((candidate) =>
 									patchAutoModeRequest(candidate, normalizerName),
 								);
-
-							const teammateResolvers = teammateResolverShapes.map(
-								(candidate) =>
-									classifyTeammateResolver(candidate, normalizerName),
-							);
-							if (teammateResolvers.length === 1) {
-								const teammate = teammateResolvers[0];
-								if (teammate.state === "unpatched") {
-									teammate.path.node.body.body.splice(
-										teammate.validationIndex,
-										0,
-										buildExplicitModelNormalization(
-											teammate.explicitModelName,
-											normalizerName,
-										),
-									);
-									teammate.state = "patched";
-								}
-								teammateResolverPatched = teammate.state === "patched";
-							}
 						}
 
 						environmentForwardingPatched =
@@ -1215,11 +984,6 @@ function createModelAliasPasses(): PatchAstPass[] {
 								`Model aliases: Could not patch the unique model normalizer (${modelNormalizers.length} candidates)`,
 							);
 						}
-						if (teammateResolverShapes.length > 0 && !teammateResolverPatched) {
-							console.warn(
-								`Model aliases: Could not patch the unique teammate resolver (${teammateResolverShapes.length} candidates)`,
-							);
-						}
 						if (!environmentForwardingPatched) {
 							console.warn(
 								`Model aliases: Could not forward the alias map to every subagent environment array (${environmentArrays.length} found)`,
@@ -1250,7 +1014,6 @@ export const modelAliases: Patch = {
 		if (!verifyAst)
 			return "Unable to parse AST during model-aliases verification";
 		const candidates: ModelNormalizerCandidate[] = [];
-		const teammateResolverShapes: TeammateResolverShape[] = [];
 		const environmentArrays = collectSubagentModelEnvArrays(verifyAst);
 		const workflowModelFormatters: WorkflowModelFormatterCandidate[] = [];
 		const autoModeRequestObjects: t.ObjectExpression[] = [];
@@ -1275,26 +1038,6 @@ export const modelAliases: Patch = {
 					)
 				) {
 					candidates.push(candidate);
-				}
-			},
-			MemberExpression(path) {
-				if (!isParsedEnvironmentMember(path.node, SUBAGENT_MODEL_ENV)) {
-					return;
-				}
-				const functionPath = path.getFunctionParent();
-				if (!functionPath || !t.isFunctionDeclaration(functionPath.node)) {
-					return;
-				}
-				const candidate = getTeammateResolverShape(
-					functionPath as NodePath<t.FunctionDeclaration>,
-				);
-				if (
-					candidate &&
-					!teammateResolverShapes.some(
-						(existing) => existing.path.node === candidate.path.node,
-					)
-				) {
-					teammateResolverShapes.push(candidate);
 				}
 			},
 			ObjectExpression(path) {
@@ -1330,18 +1073,6 @@ export const modelAliases: Patch = {
 		}
 		if (autoModeRequests.some((candidate) => candidate.state !== "patched")) {
 			return "Auto-mode model requests do not resolve the configured override";
-		}
-		const teammateResolvers = teammateResolverShapes.map((candidate) =>
-			classifyTeammateResolver(candidate, normalizerName),
-		);
-		if (teammateResolvers.length > 1) {
-			return `Teammate model resolver is ambiguous (${teammateResolvers.length} sites found)`;
-		}
-		if (
-			teammateResolvers.length === 1 &&
-			teammateResolvers[0].state !== "patched"
-		) {
-			return "Teammate model resolver does not normalize explicit aliases";
 		}
 		if (environmentArrays.length === 0) {
 			return "Subagent environment forwarding not found";

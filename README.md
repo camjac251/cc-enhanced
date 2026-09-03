@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Tested with Claude Code 2.1.259" src="https://img.shields.io/badge/tested-Claude_Code_2.1.259-8A2BE2">
-  <img alt="45 patches" src="https://img.shields.io/badge/patches-45-f97316">
+  <img alt="44 patches" src="https://img.shields.io/badge/patches-44-f97316">
   <img alt="Bun 1.4.0" src="https://img.shields.io/badge/Bun-1.4.0-fbf0df?logo=bun&logoColor=000">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2563eb"></a>
 </p>
@@ -35,7 +35,7 @@ cc-enhanced extracts the JavaScript embedded in an official Claude Code native e
 | Terminal UX | Visible patch signatures, expanded results, plan diffs, queued follow-ups, skill and agent notices, and configurable file links. |
 | Native lifecycle | Official artifact fetching, split-module rebundling, fixed-layout repacking, receipt-bound verification, atomic promotion, rollback, and guarded cross-platform candidate workflows. |
 
-The complete behavior and source link for every tag lives in the [45-patch catalog](docs/patches.md).
+The complete behavior and source link for every tag lives in the [44-patch catalog](docs/patches.md).
 
 ## Quick start
 
@@ -78,14 +78,14 @@ Structural patches share one parsed AST and run in registration order. Each patc
 
 | Surface | Patch policy | Selection state | What is still required |
 | --- | --: | --- | --- |
-| Standalone CLI (`cli-full`) | 45 registered patches | Supported and selectable | A real latest-bundle verification before release or promotion claims. |
-| Desktop-local | 31 probe-required candidates, 15 exclusions | Reserved and build-only | Exact target receipts plus stock and patched Read/Edit/tool approval and presentation probes. |
-| Remote Control | 31 probe-required candidates, 15 exclusions | Reserved and build-only | Matching-host proof and separate web, mobile, and Desktop client compatibility evidence. |
-| Self-hosted runner | 31 probe-required candidates, 15 exclusions | Reserved and build-only | Runner registration, child execution, deployment, and client qualification. |
+| Standalone CLI (`cli-full`) | 44 registered patches | Supported and selectable | A real latest-bundle verification before release or promotion claims. |
+| Desktop-local | 30 probe-required candidates, 15 exclusions | Reserved and build-only | Exact target receipts plus stock and patched Read/Edit/tool approval and presentation probes. |
+| Remote Control | 30 probe-required candidates, 15 exclusions | Reserved and build-only | Matching-host proof and separate web, mobile, and Desktop client compatibility evidence. |
+| Self-hosted runner | 30 probe-required candidates, 15 exclusions | Reserved and build-only | Runner registration, child execution, deployment, and client qualification. |
 
 > [!NOTE]
 >
-> The target work did not remove or minimize the CLI patch roster. `cli-full` remains the exact ordered 45-patch profile. The surface catalog contains one additional profile-only `tools-off-desktop` variant, making 46 classified entries for Desktop, Remote Control, and self-hosted planning.
+> The target work did not remove or minimize the CLI patch roster. `cli-full` remains the exact ordered 44-patch profile. The surface catalog contains one additional profile-only `tools-off-desktop` variant, making 46 classified entries for Desktop, Remote Control, and self-hosted planning.
 
 Offline construction, matching-host execution, stock-client rendering, and live control-plane operation are separate proof levels. A passing earlier level never promotes a reserved profile or establishes later compatibility. The [target workflow guide](docs/target-workflows.md) explains the commands, client UI risks, Remote Control path, self-hosted path, and upkeep model.
 

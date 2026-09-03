@@ -272,6 +272,14 @@ const GUIDE_REWRITES: Array<{ pattern: RegExp; replacement: string }> = [
 		replacement:
 			"6. Use MCP search (perplexity) if official docs don't cover the topic",
 	},
+	{
+		pattern: new RegExp(
+			`If \\$\\{${VAR}\\} or \\$\\{${VAR}\\} fail or you cannot reach the documentation`,
+			"g",
+		),
+		replacement:
+			"If the MCP doc and search tools fail or you cannot reach the documentation",
+	},
 ];
 
 const ACTIONABLE_PROMPT_REWRITES: Array<{
@@ -333,6 +341,12 @@ gh pr create --title "${title}" --body-file "$pr_body"`,
 	);
 }
 
+// The Explore agent prompt carries the search bullets this patch rewrites. Its
+// read-only banner survives every other patch, so it anchors the requirement
+// that the neutral bullets are present even if upstream rewords the originals.
+const AGENT_SEARCH_PROMPT_ANCHOR =
+	"=== CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===";
+
 const PROMPT_REWRITE_SOURCE_SIGNALS = [
 	"for broad file pattern matching",
 	"for searching file contents with regex",
@@ -354,8 +368,16 @@ const DISABLED_TOOL_PROMPT_LEAKS = [
 		reason: "Disabled Grep tool prompt still tells the model to use Grep",
 	},
 	{
-		needle: "const { filenames } = await Glob({ pattern: 'src/**/*.ts' })",
+		// Prefix only: the demonstrated glob pattern varies between REPL examples.
+		needle: "const { filenames } = await Glob({ pattern: '",
 		reason: "REPL prompt still demonstrates disabled Glob",
+	},
+	{
+		// The stock sentence runs straight into "If you see"; the patched form
+		// inserts the permission-classification caveat between them.
+		needle: "they never prompt. If you see any of these",
+		reason:
+			"Permission skill prompt still carries the stock allowlist guidance",
 	},
 	{
 		needle: "All tools work as async functions:",
@@ -399,6 +421,10 @@ const ACTIONABLE_LEGACY_COMMAND_PROMPT_LEAKS = [
 	{
 		needle: "grep -Hm1 '^description:'",
 		reason: "Bundled skill prompt still uses grep to discover skills",
+	},
+	{
+		needle: "grep for [ERROR] and [WARN] lines",
+		reason: "Debug command prompt still tells the model to grep log lines",
 	},
 	{
 		needle: "grep -r ASSUMPTION",
@@ -866,6 +892,15 @@ function createDisableToolsPatch(policy: ToolDisablePolicy): Patch {
 			if (taskOutputLeak) {
 				return `Prompt text still interpolates the disabled task-output tool name (${taskOutputLeak})`;
 			}
+			// WebFetch keeps upstream's own web-reading agent routing, which
+			// legitimately names the tool it replaces, so only WebSearch has a
+			// zero-leak invariant.
+			const webSearchLeak = disabledTools.has("WebSearch")
+				? findInterpolatedToolNameLeak(ast, "WebSearch")
+				: null;
+			if (webSearchLeak) {
+				return `Prompt text still interpolates the disabled web-search tool name (${webSearchLeak})`;
+			}
 
 			for (const { trigger, required } of CONDITIONAL_REWRITE_MARKERS) {
 				if (code.includes(trigger) && !code.includes(required)) {
@@ -900,6 +935,7 @@ export const disableToolsDesktop = createDisableToolsPatch(
 
 function verifyPromptRewrite(code: string): true | string {
 	const hasAgentSectionSignal =
+		code.includes(AGENT_SEARCH_PROMPT_ANCHOR) ||
 		PROMPT_REWRITE_SOURCE_SIGNALS.some((s) => code.includes(s)) ||
 		PROMPT_REWRITE_PATCHED_SIGNALS.some((s) => code.includes(s));
 	if (hasAgentSectionSignal) {
@@ -976,15 +1012,27 @@ function verifyPromptRewrite(code: string): true | string {
 		}
 	}
 	if (code.includes("You are the Claude guide agent")) {
-		if (code.includes("to fetch the appropriate docs map")) {
-			if (!code.includes("MCP doc tools (context7 or ref)")) {
-				return "Guide approach still references WebFetch for docs map";
-			}
+		// Each guide rewrite must have landed: the stock wording must be gone and
+		// the neutral wording present, so a renumbered or reworded line cannot
+		// pass on the strength of the others.
+		if (
+			code.includes("to fetch the appropriate docs map") ||
+			!code.includes("MCP doc tools (context7 or ref)")
+		) {
+			return "Guide approach still references WebFetch for docs map";
 		}
-		if (code.includes("if official docs don't cover the topic")) {
-			if (!code.includes("MCP search (perplexity)")) {
-				return "Guide approach still references WebSearch as fallback";
-			}
+		if (
+			code.includes("if docs don't cover the topic") ||
+			!code.includes("MCP search (perplexity)")
+		) {
+			return "Guide approach still references WebSearch as fallback";
+		}
+		if (
+			!code.includes(
+				"If the MCP doc and search tools fail or you cannot reach the documentation",
+			)
+		) {
+			return "Guide fallback guideline still references disabled web tools";
 		}
 	}
 

@@ -250,7 +250,7 @@ function profileBinding(): RemoteControlReadinessProfile {
 		support.readiness !== "blocked" ||
 		support.selectable ||
 		support.summary.supported !== 0 ||
-		support.summary.probeRequired !== 31 ||
+		support.summary.probeRequired !== 30 ||
 		support.summary.excluded !== 15 ||
 		support.summary.notAssessed !== 0
 	) {

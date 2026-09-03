@@ -32,7 +32,6 @@ export { promptDashStyle } from "./prompt-dash-style.js";
 export { readWithBat } from "./read-bat.js";
 export { sessionGuidance } from "./session-guidance.js";
 export { sessionMemory } from "./session-mem.js";
-export { shellQuoteFix } from "./shell-quote-fix.js";
 export { signature } from "./signature.js";
 export { skillActivationNotice } from "./skill-activation-notice.js";
 export { skillGlobalPaths } from "./skill-global-paths.js";
@@ -80,7 +79,6 @@ import { promptDashStyle } from "./prompt-dash-style.js";
 import { readWithBat } from "./read-bat.js";
 import { sessionGuidance } from "./session-guidance.js";
 import { sessionMemory } from "./session-mem.js";
-import { shellQuoteFix } from "./shell-quote-fix.js";
 import { signature } from "./signature.js";
 import { skillActivationNotice } from "./skill-activation-notice.js";
 import { skillGlobalPaths } from "./skill-global-paths.js";
@@ -97,7 +95,6 @@ import { workflowSafety } from "./workflow-safety.js";
 // Order matters: string patches run first, then AST, signature last.
 export const registeredPatches: Patch[] = [
 	// String-based patches (fast, run before AST parsing)
-	shellQuoteFix,
 	bashPrompt,
 	builtInAgentPrompt,
 	claudeApiScope,

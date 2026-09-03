@@ -12,7 +12,7 @@ import type { PatchCapability } from "./contract.js";
 test("every registered patch has one ordered capability record", () => {
 	validatePatchCapabilityCatalog(registeredPatches, patchCapabilities);
 
-	assert.equal(patchCapabilities.length, 45);
+	assert.equal(patchCapabilities.length, 44);
 	assert.deepEqual(
 		patchCapabilities.map(({ tag }) => tag),
 		registeredPatches.map(({ tag }) => tag),
@@ -28,7 +28,7 @@ test("every registered patch has one ordered capability record", () => {
 test("the profile catalog adds one ordered Desktop tool-policy variant", () => {
 	validatePatchCapabilityCatalog(profilePatchCatalog, profilePatchCapabilities);
 
-	assert.equal(profilePatchCapabilities.length, 46);
+	assert.equal(profilePatchCapabilities.length, 45);
 	assert.deepEqual(
 		profilePatchCapabilities.map(({ tag }) => tag),
 		profilePatchCatalog.map(({ tag }) => tag),
@@ -83,7 +83,7 @@ test("Desktop-local classifications are complete and conservative", () => {
 	);
 	assert.equal(
 		desktop.filter((support) => support?.level === "probe-required").length,
-		31,
+		30,
 	);
 	assert.equal(
 		desktop.filter((support) => support?.level === "excluded").length,
@@ -102,7 +102,7 @@ test("Remote Control classifications are complete and conservative", () => {
 	);
 	assert.equal(
 		remote.filter((support) => support?.level === "probe-required").length,
-		31,
+		30,
 	);
 	assert.equal(
 		remote.filter((support) => support?.level === "excluded").length,
@@ -121,7 +121,7 @@ test("self-hosted classifications are complete and conservative", () => {
 	);
 	assert.equal(
 		runner.filter((support) => support?.level === "probe-required").length,
-		31,
+		30,
 	);
 	assert.equal(
 		runner.filter((support) => support?.level === "excluded").length,

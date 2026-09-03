@@ -17,7 +17,7 @@ cc-enhanced uses the same patch catalog and native build machinery for the stand
 | Remote Control | Eight official native host formats through a build-only profile, plus matching-host finalization and an explicit foreground launcher | Reserved | Every stock web, mobile, or Desktop client needs its own tool-input, approval, rendering, and reconnect evidence. |
 | Self-hosted runner | Six Linux/macOS native formats, Linux x64 image construction, optional exec wrapper, and wrapper-image binding | Reserved | Organization eligibility, registration, runner-provided binary binding, child execution, deployment, and client qualification remain separate live gates. |
 
-The surface catalog contains 46 classified entries: the 45 exact `cli-full` patches plus the profile-only `tools-off-desktop` variant. Desktop-local, Remote Control, and self-hosted each classify 31 entries as probe-required candidates and 15 as exclusions. None is silently promoted into the ordinary CLI registry.
+The surface catalog contains 45 classified entries: the 44 exact `cli-full` patches plus the profile-only `tools-off-desktop` variant. Desktop-local, Remote Control, and self-hosted each classify 30 entries as probe-required candidates and 15 as exclusions. None is silently promoted into the ordinary CLI registry.
 
 ## Evidence ladder
 
@@ -41,7 +41,7 @@ Desktop discovery has adapters for Windows, macOS, and Linux. Candidate construc
 | `mise run desktop:status -- <args...>` | Produce a sanitized inventory of the selected Desktop installation and cached Code artifacts. |
 | `mise run desktop:compare -- <args...>` | Compare two inventories and classify package, cache, selection, and replacement drift. |
 | `mise run desktop:inspect -- <args...>` | Bind one cached artifact to inventory and official-release provenance without executing it. |
-| `mise run profile:support -- --surface desktop-local --evidence` | Render the deterministic 31-candidate/15-exclusion support plan. |
+| `mise run profile:support -- --surface desktop-local --evidence` | Render the deterministic 30-candidate/15-exclusion support plan. |
 
 ### 2. Audit the public SDK and permission surface
 
@@ -144,7 +144,7 @@ The launcher uses an argv array with `shell: false`, inherited stdio, and foregr
 
 ## Self-hosted runner workflow
 
-The self-hosted profile uses the same 31-candidate/15-exclusion stock-client policy but limits its structural native matrix to the six Linux and macOS runner formats. Windows deployment uses a Linux container rather than a native Windows runner artifact.
+The self-hosted profile uses the same 30-candidate/15-exclusion stock-client policy but limits its structural native matrix to the six Linux and macOS runner formats. Windows deployment uses a Linux container rather than a native Windows runner artifact.
 
 ```bash
 mise run profile:support -- --surface self-hosted-runner --evidence
@@ -220,7 +220,7 @@ For the original native Desktop app in local mode, the app must actually select 
 ## Upkeep checklist
 
 1. Update only to the latest upstream release and use the immediately previous clean bundle solely as a diff baseline.
-2. Re-run surface classification tests; keep `cli-full` at the exact ordered 45-patch roster and reserved profiles at an ordered, duplicate-free 31/15 partition of all 46 catalog entries.
+2. Re-run surface classification tests; keep `cli-full` at the exact ordered 44-patch roster and reserved profiles at an ordered, duplicate-free 30/15 partition of all 45 catalog entries.
 3. Build the relevant structural matrix and finalize each claimed platform on a matching host with its signing policy.
 4. Re-run the exact Read, Edit, Write, tools, prompt, approval, restart, and reconnect probes for every claimed stock client.
 5. Keep receipts private and ephemeral unless a sanitized artifact has a specific review purpose; never make a historical receipt a runtime baseline or test oracle.

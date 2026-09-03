@@ -461,9 +461,9 @@ function assertInputChain(
 		profile.profile !== "desktop-local" ||
 		profile.selectable ||
 		profile.readiness !== "blocked" ||
-		profile.summary.total !== 46 ||
+		profile.summary.total !== 45 ||
 		profile.summary.supported !== 0 ||
-		profile.summary.probeRequired !== 31 ||
+		profile.summary.probeRequired !== 30 ||
 		profile.summary.excluded !== 15 ||
 		profile.summary.notAssessed !== 0
 	) {

@@ -64,67 +64,61 @@ export const todo: Patch = {
 	},
 
 	verify: (code) => {
-		if (code.includes(TRIGGER)) {
-			if (!code.includes(EXPECTED_USE_FIRST_BULLET)) {
-				return "Missing condensed Todo use first bullet";
+		// Both example headings are present on the latest bundle. Requiring them
+		// outright means a reworded heading is reported instead of silently
+		// skipping every check that hangs off it.
+		if (!code.includes(TRIGGER)) {
+			return "Todo use-section heading not found (bundle drift)";
+		}
+		if (!code.includes(SKIP_HEADING)) {
+			return "Todo NOT-to-use heading not found (bundle drift)";
+		}
+		if (!code.includes(EXPECTED_USE_FIRST_BULLET)) {
+			return "Missing condensed Todo use first bullet";
+		}
+		if (!code.includes(EXPECTED_USE_SECOND_BULLET)) {
+			return "Missing condensed Todo use second bullet";
+		}
+		// Symmetric surviving-content guard for the USE section: the
+		// condensed use bullets must live BETWEEN the use heading and the
+		// skip heading, and no verbose <example> block may survive there.
+		// Scanning the use slice (rather than the whole bundle) catches a
+		// partial use-section rewrite without tripping on prose elsewhere.
+		const useIndex = code.indexOf(TRIGGER);
+		const skipAfterUseIndex = code.indexOf(SKIP_HEADING, useIndex);
+		if (skipAfterUseIndex !== -1) {
+			const useSectionBody = code.slice(useIndex, skipAfterUseIndex);
+			if (!useSectionBody.includes(EXPECTED_USE_FIRST_BULLET)) {
+				return "Condensed Todo use bullet not located inside the use section";
 			}
-			if (!code.includes(EXPECTED_USE_SECOND_BULLET)) {
-				return "Missing condensed Todo use second bullet";
-			}
-			// Symmetric surviving-content guard for the USE section: the
-			// condensed use bullets must live BETWEEN the use heading and the
-			// skip heading, and no verbose <example> block may survive there.
-			// Scanning the use slice (rather than the whole bundle) catches a
-			// partial use-section rewrite without tripping on prose elsewhere.
-			const useIndex = code.indexOf(TRIGGER);
-			const skipAfterUseIndex = code.indexOf(SKIP_HEADING, useIndex);
-			if (skipAfterUseIndex !== -1) {
-				const useSectionBody = code.slice(useIndex, skipAfterUseIndex);
-				if (!useSectionBody.includes(EXPECTED_USE_FIRST_BULLET)) {
-					return "Condensed Todo use bullet not located inside the use section";
-				}
-				if (useSectionBody.includes("<example>")) {
-					return "Stale <example> blocks survived in Todo use section";
-				}
+			if (useSectionBody.includes("<example>")) {
+				return "Stale <example> blocks survived in Todo use section";
 			}
 		}
-		if (code.includes(SKIP_HEADING)) {
-			if (!code.includes(EXPECTED_SKIP_FIRST_BULLET)) {
-				return "Missing condensed Todo NOT-to-use first bullet";
-			}
-			if (!code.includes(EXPECTED_SKIP_SECOND_BULLET)) {
-				return "Missing condensed Todo NOT-to-use second bullet";
-			}
-			const skipIndex = code.indexOf(SKIP_HEADING);
-			const nextHeadingIndex = code.indexOf(NEXT_SECTION_HEADING, skipIndex);
-			if (nextHeadingIndex === -1) {
-				return "Could not locate next section heading after NOT-to-use section";
-			}
-			// Scope the stale-prose and <example> scans to the skip-section
-			// body slice. The signals (and any verbose example dialogue) the
-			// patch removes only matter inside this section; scanning the whole
-			// bundle would false-positive when the same phrasing appears in an
-			// unrelated prompt surface.
-			const sectionBody = code.slice(skipIndex, nextHeadingIndex);
-			for (const stale of STALE_PROSE_SIGNALS) {
-				if (sectionBody.includes(stale)) {
-					return `Stale upstream prose survived in Todo NOT-to-use section: ${stale.slice(0, 40)}...`;
-				}
-			}
-			if (sectionBody.includes("<example>")) {
-				return "Stale <example> blocks survived in Todo NOT-to-use section";
+		if (!code.includes(EXPECTED_SKIP_FIRST_BULLET)) {
+			return "Missing condensed Todo NOT-to-use first bullet";
+		}
+		if (!code.includes(EXPECTED_SKIP_SECOND_BULLET)) {
+			return "Missing condensed Todo NOT-to-use second bullet";
+		}
+		const skipIndex = code.indexOf(SKIP_HEADING);
+		const nextHeadingIndex = code.indexOf(NEXT_SECTION_HEADING, skipIndex);
+		if (nextHeadingIndex === -1) {
+			return "Could not locate next section heading after NOT-to-use section";
+		}
+		// Scope the stale-prose and <example> scans to the skip-section
+		// body slice. The signals (and any verbose example dialogue) the
+		// patch removes only matter inside this section; scanning the whole
+		// bundle would false-positive when the same phrasing appears in an
+		// unrelated prompt surface.
+		const sectionBody = code.slice(skipIndex, nextHeadingIndex);
+		for (const stale of STALE_PROSE_SIGNALS) {
+			if (sectionBody.includes(stale)) {
+				return `Stale upstream prose survived in Todo NOT-to-use section: ${stale.slice(0, 40)}...`;
 			}
 		}
-		// The Task States heading co-locates with the example sections in the
-		// Todo prompt. Its presence without either example heading means the
-		// sections were reworded out from under the patch, so the heading-gated
-		// checks above never ran.
-		if (
-			!code.includes(TRIGGER) &&
-			!code.includes(SKIP_HEADING) &&
-			code.includes(NEXT_SECTION_HEADING)
-		) {
-			return "Todo prompt present but example headings are missing (bundle drift)";
+		if (sectionBody.includes("<example>")) {
+			return "Stale <example> blocks survived in Todo NOT-to-use section";
 		}
 		return true;
 	},

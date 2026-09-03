@@ -1,7 +1,6 @@
 import type { PatchProfileExclusion } from "./contract.js";
 
 export const STOCK_CLIENT_POLICY_CANDIDATE_TAGS = [
-	"shell-quote-fix",
 	"bash-prompt",
 	"built-in-agent-prompt",
 	"claude-api-scope",

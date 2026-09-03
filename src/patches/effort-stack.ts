@@ -1164,10 +1164,11 @@ export const effortStack: Patch = {
 		let hasPatchedCommandEffortValue = false;
 		let hasLegacyByz = false;
 		// The effort-command and session-only picker messages patch to identical
-		// wording, so they cannot be told apart post-patch and share one flag. The
-		// auto/unset message patches to distinct wording and is tracked separately
-		// so a silent auto-form miss cannot be masked by the other forms.
-		let hasPatchedUyzNonAuto = false;
+		// wording, so they cannot be told apart post-patch. The bundle carries
+		// exactly one of each original, so the patched form must appear exactly
+		// twice; a single drifted original cannot hide behind the other. The
+		// auto/unset message patches to distinct wording and is tracked separately.
+		let patchedUyzNonAutoCount = 0;
 		let hasPatchedUyzAuto = false;
 		let hasLegacyUyz = false;
 		let hasPatchedHy8 = false;
@@ -1220,15 +1221,7 @@ export const effortStack: Patch = {
 						EFFORT_COMMAND_ENV_OVERRIDE_PATCHED_QUASIS,
 					)
 				) {
-					hasPatchedUyzNonAuto = true;
-				}
-				if (
-					templateMatchesQuasiPattern(
-						path.node,
-						EFFORT_SESSION_ONLY_ENV_OVERRIDE_PATCHED_QUASIS,
-					)
-				) {
-					hasPatchedUyzNonAuto = true;
+					patchedUyzNonAutoCount += 1;
 				}
 				if (
 					templateMatchesQuasiPattern(
@@ -1364,8 +1357,8 @@ export const effortStack: Patch = {
 		if (hasLegacyUyz) {
 			return "Effort command env-override message still claims env controls this session";
 		}
-		if (!hasPatchedUyzNonAuto) {
-			return "Did not find session-aware effort command env override message";
+		if (patchedUyzNonAutoCount !== 2) {
+			return `Expected the session-aware effort env override message on both the command and session-only paths, found ${patchedUyzNonAutoCount}`;
 		}
 		if (!hasPatchedUyzAuto) {
 			return "Did not find session-aware effort auto/unset env override message";

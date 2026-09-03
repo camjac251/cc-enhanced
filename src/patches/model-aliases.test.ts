@@ -67,20 +67,29 @@ const parsedEnvironment = {
   CLAUDE_CODE_SUBAGENT_MODEL: process.env.CLAUDE_CODE_SUBAGENT_MODEL,
 };
 
-function resolveTeammateModel(explicitModel, parentModel) {
+function globalTeammateModel() {
   const globalModel = parsedEnvironment.CLAUDE_CODE_SUBAGENT_MODEL;
-  if (globalModel && globalModel !== "inherit") {
+  return globalModel && globalModel !== "inherit" ? globalModel : "inherit";
+}
+
+function resolveTeammateModel(explicitModel, parentModel) {
+  const globalModel = globalTeammateModel();
+  if (globalModel !== "inherit") {
     const normalized = normalizeModel(globalModel);
     if (isAllowed(normalized)) return normalized;
     warnTeammate(globalModel);
     return defaultTeammate(parentModel);
   }
   if (explicitModel === "inherit") return parentModel ?? defaultTeammate(parentModel);
-  if (explicitModel !== void 0 && !isAllowed(explicitModel)) {
-    warnTeammate(explicitModel);
-    return defaultTeammate(parentModel);
+  if (explicitModel !== void 0) {
+    const normalized = normalizeModel(explicitModel);
+    if (!isAllowed(normalized)) {
+      warnTeammate(explicitModel);
+      return defaultTeammate(parentModel);
+    }
+    return normalized;
   }
-  return explicitModel ?? defaultTeammate(parentModel);
+  return defaultTeammate(parentModel);
 }
 
 function canonicalModel(model) {
@@ -409,31 +418,13 @@ test("model-aliases resolves an explicit auto-mode model only when configured", 
 	assert.equal(stock.buildAutoModeRetry("sonnet-model").model, "sonnet-model");
 });
 
-test("model-aliases normalizes explicit teammate models and forwards the alias map", async () => {
+test("model-aliases forwards the alias map to every subagent environment registry", async () => {
 	const output = await patchSource(MODEL_ROUTING_FIXTURE);
 
-	assert.equal(
-		output.includes("explicitModel = normalizeModel(explicitModel)"),
-		true,
-	);
 	assert.equal(
 		output.split('"CLAUDE_CODE_MODEL_ALIASES"').length - 1,
 		3,
 		"every subagent environment registry must forward the alias map",
-	);
-});
-
-test("model-aliases recognizes explicit undefined in teammate validation", async () => {
-	const fixture = MODEL_ROUTING_FIXTURE.replace(
-		"explicitModel !== void 0",
-		"explicitModel !== undefined",
-	);
-	assert.notEqual(fixture, MODEL_ROUTING_FIXTURE);
-	const output = await patchSource(fixture);
-
-	assert.equal(
-		output.includes("explicitModel = normalizeModel(explicitModel)"),
-		true,
 	);
 	assert.equal(modelAliases.verify(output), true);
 });
@@ -553,7 +544,7 @@ test("model-aliases resolves the current map on every model-normalization call",
 	env.CLAUDE_CODE_MODEL_ALIASES = JSON.stringify({ sol: "openai/second" });
 	assert.equal(normalizeModel("sol"), "sanitized:openai/second");
 	assert.equal(
-		output.includes("explicitModel !== void 0 && !isAllowed(explicitModel)"),
+		output.includes("if (!isAllowed(normalized)) {"),
 		true,
 		"resolved teammate IDs must still pass the stock allowlist check",
 	);
@@ -601,16 +592,6 @@ test("model-aliases forwards the alias map to four subagent environment arrays",
 test("model-aliases verifier rejects partial routing integration", async () => {
 	const patched = await patchSource(MODEL_ROUTING_FIXTURE);
 	assert.equal(modelAliases.verify(patched), true);
-
-	const missingTeammateNormalization = patched.replace(
-		"explicitModel = normalizeModel(explicitModel);",
-		"explicitModel = explicitModel;",
-	);
-	assert.notEqual(missingTeammateNormalization, patched);
-	assert.match(
-		String(modelAliases.verify(missingTeammateNormalization)),
-		/Teammate model resolver/,
-	);
 
 	const missingForwarding = patched.replace('"CLAUDE_CODE_MODEL_ALIASES",', "");
 	assert.notEqual(missingForwarding, patched);

@@ -156,6 +156,7 @@ test("todo-use no-ops and verify fails if the use-section heading is renamed", (
 		false,
 		"condensed bullets must not appear when the trigger heading drifted",
 	);
+	assert.match(String(todo.verify(output)), /use-section heading not found/);
 });
 
 test("todo-use leaves stale skip examples and verify fails if the next-section heading is renamed", () => {
@@ -231,21 +232,22 @@ test("todo-use fixture headings are unique (drift guard)", () => {
 	assert.equal(count(TODO_FIXTURE, "## Task States and Management"), 1);
 });
 
-test("todo-use verify flags neighbor-present-but-headings-missing as drift", () => {
-	// The durable neighbor heading survives, but both example headings were
-	// reworded away, so every heading-gated check would be skipped.
+test("todo-use verify flags missing example headings as drift", () => {
+	// Both example headings were reworded away. Nothing about the sections can
+	// be checked, so verify must report the drift rather than pass vacuously.
 	const noSection = `## Task Rules
 Some prose.
 ## Task States and Management
 More prose.`;
-	const result = todo.verify(noSection);
-	assert.notEqual(
-		result,
-		true,
-		"verify must flag bundle drift when the example headings vanished",
+	assert.match(String(todo.verify(noSection)), /use-section heading not found/);
+
+	const noSkipSection = TODO_FIXTURE.replace(
+		"## Examples of When NOT to Use the Todo List",
+		"## When the Todo List Is Overkill",
 	);
-	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("example headings are missing"), true);
+	assert.notEqual(noSkipSection, TODO_FIXTURE);
+	const output = todo.string?.(noSkipSection) ?? noSkipSection;
+	assert.match(String(todo.verify(output)), /NOT-to-use heading not found/);
 });
 
 test("todo-use stale-prose guard matches the upstream npm-install line despite trailing period", () => {

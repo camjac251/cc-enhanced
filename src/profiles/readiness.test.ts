@@ -17,13 +17,13 @@ test("Desktop-local readiness is blocked without manufacturing support", () => {
 	assert.equal(report.selectable, false);
 	assert.equal(report.readiness, "blocked");
 	assert.deepEqual(report.summary, {
-		total: 46,
+		total: 45,
 		supported: 0,
-		probeRequired: 31,
+		probeRequired: 30,
 		excluded: 15,
 		notAssessed: 0,
 	});
-	assert.equal(report.candidateTags.length, 31);
+	assert.equal(report.candidateTags.length, 30);
 	assert.equal(report.candidateTags.includes("tools-off-desktop"), true);
 	assert.equal(report.candidateTags.includes("tools-off"), false);
 	assert.equal(report.requiredProbes.length > 0, true);
@@ -41,8 +41,8 @@ test("cli-full readiness remains selectable and preserves all tags", () => {
 	assert.equal(report.selectable, true);
 	assert.equal(report.readiness, "ready");
 	assert.deepEqual(report.summary, {
-		total: 45,
-		supported: 45,
+		total: 44,
+		supported: 44,
 		probeRequired: 0,
 		excluded: 0,
 		notAssessed: 0,
@@ -57,9 +57,9 @@ test("Remote Control readiness is classified but remains non-selectable", () => 
 	assert.equal(report.selectable, false);
 	assert.equal(report.readiness, "blocked");
 	assert.deepEqual(report.summary, {
-		total: 46,
+		total: 45,
 		supported: 0,
-		probeRequired: 31,
+		probeRequired: 30,
 		excluded: 15,
 		notAssessed: 0,
 	});
@@ -98,9 +98,9 @@ test("self-hosted runner readiness is classified but remains non-selectable", ()
 	assert.equal(report.selectable, false);
 	assert.equal(report.readiness, "blocked");
 	assert.deepEqual(report.summary, {
-		total: 46,
+		total: 45,
 		supported: 0,
-		probeRequired: 31,
+		probeRequired: 30,
 		excluded: 15,
 		notAssessed: 0,
 	});

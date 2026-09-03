@@ -36,7 +36,7 @@ test("Remote Control presentation separates probe launch from support and client
 	);
 	assert.match(output, /Probe launch:\s+blocked/i);
 	assert.match(output, /Profile support:\s+blocked.*non-selectable/i);
-	assert.match(output, /0 supported; 31 probe-required; 15 excluded/i);
+	assert.match(output, /0 supported; 30 probe-required; 15 excluded/i);
 	assert.match(output, /Live execution:\s+not run/i);
 	assert.match(output, /transcript storage.*required at start/i);
 	assert.match(output, /Web:\s+not-run/i);

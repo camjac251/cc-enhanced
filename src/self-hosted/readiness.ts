@@ -208,9 +208,9 @@ export function createSelfHostedReadinessPlan(): SelfHostedReadinessPlan {
 	const profile = createPatchSurfaceReadiness("self-hosted-runner");
 	const readyForCandidateConstruction =
 		profile.profile === "self-hosted-runner" &&
-		profile.summary.total === 46 &&
+		profile.summary.total === 45 &&
 		profile.summary.supported === 0 &&
-		profile.summary.probeRequired === 31 &&
+		profile.summary.probeRequired === 30 &&
 		profile.summary.excluded === 15 &&
 		profile.summary.notAssessed === 0 &&
 		!profile.selectable;

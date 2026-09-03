@@ -111,7 +111,7 @@ function successfulEngine(): SelfHostedImageEngine {
 			];
 		},
 		async runDefault() {
-			return `9.9.9 (Claude Code; patched: shell-quote-fix, bash-prompt, built-in-agent-prompt, claude-api-scope, claudemd-strong, memory-prompt-soften, mcp-server-name, session-guidance, todo-use, cache-tail-policy, edit-extended, effort-stack, feature-flags, image-limits, tools-off-desktop, no-autoupdate, read-bat, agents-off, commands-off, lsp-multi-server, lsp-filename-schema, skill-paths-invoke, skill-global-paths, skill-listing-ui, subagent-system-prompt, session-mem, sys-prompt-file, limits, prompt-dash-style, workflow-safety)\n`;
+			return `9.9.9 (Claude Code; patched: bash-prompt, built-in-agent-prompt, claude-api-scope, claudemd-strong, memory-prompt-soften, mcp-server-name, session-guidance, todo-use, cache-tail-policy, edit-extended, effort-stack, feature-flags, image-limits, tools-off-desktop, no-autoupdate, read-bat, agents-off, commands-off, lsp-multi-server, lsp-filename-schema, skill-paths-invoke, skill-global-paths, skill-listing-ui, subagent-system-prompt, session-mem, sys-prompt-file, limits, prompt-dash-style, workflow-safety)\n`;
 		},
 		async probeDependencies() {
 			return {
@@ -156,7 +156,7 @@ test("image operation constructs an untagged receipt-bound inert image", async (
 		assert.deepEqual(result.data.image.tags, []);
 		assert.deepEqual(result.data.image.defaultCommand, ["--version"]);
 		assert.equal(result.data.runtime.version, "9.9.9");
-		assert.equal(result.data.runtime.tags.length, 30);
+		assert.equal(result.data.runtime.tags.length, 29);
 		assert.equal(result.data.boundaries.runnerStart, "not-run");
 		assert.deepEqual((await fs.readdir(inputs.contextPath)).sort(), [
 			"Dockerfile",

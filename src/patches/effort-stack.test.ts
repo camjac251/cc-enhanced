@@ -629,6 +629,26 @@ test("effort-stack verify rejects regression where env guard is dropped", async 
 	assert.equal(String(result).includes("patched ultracode resolver"), true);
 });
 
+test("effort-stack verify rejects a bundle that patched only one env override message", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const output = print(ast);
+	const patchedMessage =
+		"CLAUDE_CODE_EFFORT_LEVEL=${Y} remains the launch default for new sessions. Set effort level to ${labelFor(H)} for this session.";
+	assert.equal(output.split(patchedMessage).length - 1, 2);
+	// Drop one of the two identical rewrites; the wording alone cannot say which
+	// path lost its patch, so the verifier must count rather than flag.
+	const partiallyPatched = output.replace(patchedMessage, "Effort unchanged.");
+	assert.notEqual(partiallyPatched, output);
+
+	const result = effortStack.verify(partiallyPatched);
+	assert.equal(typeof result, "string");
+	assert.equal(
+		String(result).includes("both the command and session-only paths, found 1"),
+		true,
+	);
+});
+
 test("effort-stack verify fails hard on ultracode command UI drift", async () => {
 	const ast = parse(EFFORT_STACK_FIXTURE);
 	await runEffortStackViaPasses(ast);

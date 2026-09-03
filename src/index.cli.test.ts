@@ -86,7 +86,7 @@ test("--list resolves environment patch selection overrides at runtime", async (
 
 	assert.match(stdout, /read-bat/);
 	assert.match(stdout, /signature/);
-	assert.doesNotMatch(stdout, /shell-quote-fix/);
+	assert.doesNotMatch(stdout, /bash-prompt/);
 	assert.doesNotMatch(stdout, /tools-off-desktop/);
 	assert.match(stdout, /Total: 2 patches/);
 });
@@ -116,7 +116,7 @@ test("--list rejects an unknown environment patch tag", async () => {
 	);
 });
 
-test("--list keeps the cli-full roster at 45 patches", async () => {
+test("--list keeps the cli-full roster at 44 patches", async () => {
 	const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
 	delete env.CLAUDE_PATCHER_INCLUDE_TAGS;
 	delete env.CLAUDE_PATCHER_EXCLUDE_TAGS;
@@ -133,7 +133,7 @@ test("--list keeps the cli-full roster at 45 patches", async () => {
 
 	assert.match(stdout, /tools-off/);
 	assert.doesNotMatch(stdout, /tools-off-desktop/);
-	assert.match(stdout, /Total: 45 patches/);
+	assert.match(stdout, /Total: 44 patches/);
 });
 
 test("CLI rejects profiles that do not have a verified implementation", async () => {

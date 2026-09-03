@@ -757,50 +757,6 @@ function isAlreadyWrappedWithExtendedBypass(test: any): boolean {
 	return false;
 }
 
-function patchIdeDiffConfigGuards(ast: t.File): void {
-	traverse(ast, {
-		ConditionalExpression(path: any) {
-			if (!t.isNullLiteral(path.node.alternate)) return;
-			if (!t.isCallExpression(path.node.consequent)) return;
-			if (!t.isMemberExpression(path.node.consequent.callee)) return;
-			if (
-				!t.isIdentifier(path.node.consequent.callee.property, {
-					name: "getConfig",
-				})
-			) {
-				return;
-			}
-			if (path.node.consequent.arguments.length !== 1) return;
-			const [parsedInput] = path.node.consequent.arguments;
-			if (!t.isExpression(parsedInput)) return;
-
-			const diffSupportRef = path.node.consequent.callee.object;
-			if (
-				!t.isIdentifier(diffSupportRef) ||
-				!t.isIdentifier(path.node.test, { name: diffSupportRef.name })
-			) {
-				return;
-			}
-
-			path.node.consequent = t.conditionalExpression(
-				t.callExpression(t.identifier("_claudeEditHasExtendedFields"), [
-					t.callExpression(t.identifier(EXTENDED_EDIT_TRANSPORT_DECODE), [
-						t.cloneNode(parsedInput),
-					]),
-				]),
-				t.nullLiteral(),
-				t.callExpression(
-					t.memberExpression(
-						t.cloneNode(diffSupportRef),
-						t.identifier("getConfig"),
-					),
-					[t.cloneNode(parsedInput)],
-				),
-			);
-		},
-	});
-}
-
 function injectExtendedEditTransportHelpers(ast: t.File): void {
 	const existing = ast.program.body.some(
 		(stmt) =>
@@ -1563,7 +1519,6 @@ Error recovery:
 	patchReadStateGuards(ast);
 	patchReadStateHelper(ast);
 	patchWriteReadStateGuards(ast);
-	patchIdeDiffConfigGuards(ast);
 
 	traverse(ast, {
 		StringLiteral(path: any) {
@@ -1718,106 +1673,6 @@ function hasFunctionDeclaration(ast: t.File, name: string): boolean {
 	return found;
 }
 
-function hasUnprotectedIdeDiffConfigCall(ast: t.File): boolean {
-	let found = false;
-
-	traverse(ast, {
-		ConditionalExpression(path) {
-			if (found) {
-				path.stop();
-				return;
-			}
-			if (!t.isNullLiteral(path.node.alternate)) return;
-			if (!t.isCallExpression(path.node.consequent)) return;
-			if (!t.isMemberExpression(path.node.consequent.callee)) return;
-			if (
-				!t.isIdentifier(path.node.consequent.callee.property, {
-					name: "getConfig",
-				})
-			) {
-				return;
-			}
-			if (path.node.consequent.arguments.length !== 1) return;
-			const diffSupportRef = path.node.consequent.callee.object;
-			if (!t.isIdentifier(diffSupportRef)) return;
-			if (!t.isIdentifier(path.node.test, { name: diffSupportRef.name })) {
-				return;
-			}
-
-			found = true;
-			path.stop();
-		},
-	});
-
-	return found;
-}
-
-function inspectIdeDiffConfigGuard(
-	ast: t.File,
-): "current" | "pre-decoder" | null {
-	let found: "current" | "pre-decoder" | null = null;
-
-	traverse(ast, {
-		ConditionalExpression(path) {
-			if (found !== null) {
-				path.stop();
-				return;
-			}
-			if (!t.isNullLiteral(path.node.alternate)) return;
-			if (!t.isConditionalExpression(path.node.consequent)) return;
-
-			const nested = path.node.consequent;
-			if (!t.isCallExpression(nested.test)) return;
-			if (
-				!t.isIdentifier(nested.test.callee, {
-					name: "_claudeEditHasExtendedFields",
-				})
-			) {
-				return;
-			}
-			if (nested.test.arguments.length !== 1) return;
-			const [guardArg] = nested.test.arguments;
-			const guardStatus =
-				t.isCallExpression(guardArg) &&
-				t.isIdentifier(guardArg.callee, {
-					name: EXTENDED_EDIT_TRANSPORT_DECODE,
-				}) &&
-				guardArg.arguments.length === 1
-					? "current"
-					: t.isIdentifier(guardArg)
-						? "pre-decoder"
-						: null;
-			if (!guardStatus) return;
-			if (!t.isNullLiteral(nested.consequent)) return;
-			if (!t.isCallExpression(nested.alternate)) return;
-			if (!t.isMemberExpression(nested.alternate.callee)) return;
-			if (
-				!t.isIdentifier(nested.alternate.callee.property, {
-					name: "getConfig",
-				})
-			) {
-				return;
-			}
-			if (nested.alternate.arguments.length !== 1) return;
-
-			found = guardStatus;
-			path.stop();
-		},
-	});
-
-	return found;
-}
-
-function hasIdeDiffConfigGuard(ast: t.File): boolean {
-	const guardStatus = inspectIdeDiffConfigGuard(ast);
-	if (guardStatus === "current") return true;
-	if (guardStatus === "pre-decoder") return false;
-	// A present unpatched getConfig ternary is a real miss. Otherwise either our
-	// nested guard is in place or upstream has no such routing at all, and
-	// extended payloads are not sent to ideDiff.getConfig.
-	return !hasUnprotectedIdeDiffConfigCall(ast);
-}
-
 function hasStructuredEditInputNormalization(ast: t.File): {
 	prefersParsedEdits: boolean;
 	returnsStructuredEdits: boolean;
@@ -1939,13 +1794,6 @@ function verifyStructuredEditInputWiring(
 	);
 	if (!methodCallsHelper(autoClassifierMethod, "_claudeEditNormalizeEdits")) {
 		return "Edit.toAutoClassifierInput does not handle structured edits";
-	}
-	return null;
-}
-
-function verifyIdeDiffConfigGuard(ctx: EditVerifyContext): string | null {
-	if (!hasIdeDiffConfigGuard(ctx.ast)) {
-		return "Extended edit confirmation still routes structured payloads through ideDiffSupport.getConfig";
 	}
 	return null;
 }
@@ -2407,7 +2255,6 @@ export const editTool: Patch = {
 			verifyStructuredEditInputWiring,
 			verifyEditValidateAndCallFlow,
 			verifyEditAliasNormalization,
-			verifyIdeDiffConfigGuard,
 			verifyReadStateGuards,
 			verifyReadStateHelper,
 			verifyWriteReadStateGuards,

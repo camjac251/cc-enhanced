@@ -503,6 +503,7 @@ test("tools-off rewrites actionable legacy command examples in bundled skills", 
 		'const designSync = "after the sub-skill stages the scripts: \\`grep -r ASSUMPTION .ds-sync/*.mjs .ds-sync/lib/*.mjs\\` lists them.\\ngrep classes/tokens against the compiled stylesheets in the output dir.";',
 		"const permissionSkill = \"These don't need an allowlist entry \\u2014 they never prompt. If you see any of these in the transcripts, skip them; don't suggest them to the user.\\nIf the user is in this repo and you're unsure whether a command is covered, grep these files rather than guessing.\";",
 		'const sendUserFile = "When unsure of a path, verify with ls first; absolute paths avoid ambiguity about the working directory.";',
+		"const debugPrompt = `For additional context, grep for [ERROR] and [WARN] lines across the full file.`;",
 		`const prPrompt = \`gh pr create --title "Short, descriptive title" --body "$(cat <<'EOF'
 ## Summary
 <1-3 bullet points>
@@ -529,6 +530,11 @@ EOF
 	assert.equal(output.includes("grep classes/tokens"), false);
 	assert.equal(output.includes("grep these files rather than guessing"), false);
 	assert.equal(output.includes("verify with ls first"), false);
+	assert.equal(output.includes("grep for [ERROR] and [WARN] lines"), false);
+	assert.equal(
+		output.includes("use Bash content search for [ERROR] and [WARN] lines"),
+		true,
+	);
 	assert.equal(output.includes("--body \"$(cat <<'EOF'"), false);
 	assert.equal(
 		output.includes(
@@ -882,6 +888,92 @@ test("tools-off rewrites task-status guidance off the disabled task-output tool"
 		true,
 	);
 	assert.equal(disableTools.verify(output, ast), true);
+});
+
+test("tools-off rewrites every guide agent reference to disabled web tools", async () => {
+	const guide = [
+		'const webFetchName = "WebFetch";',
+		'const webSearchName = "WebSearch";',
+		"const guidePrompt = `You are the Claude guide agent.",
+		"2. Use ${webFetchName} to fetch the appropriate docs map",
+		"6. Use ${webSearchName} if docs don't cover the topic",
+		"- If ${webFetchName} or ${webSearchName} fail or you cannot reach the documentation, do not silently answer from memory.`;",
+	].join("\n");
+	const { output, ast } = await applyFullPatch(`${TOOL_FIXTURE}\n${guide}`);
+
+	assert.equal(output.includes("to fetch the appropriate docs map"), false);
+	assert.equal(output.includes("if docs don't cover the topic"), false);
+	assert.equal(output.includes("${webSearchName}"), false);
+	assert.equal(output.includes("MCP doc tools (context7 or ref)"), true);
+	assert.equal(output.includes("MCP search (perplexity)"), true);
+	assert.equal(
+		output.includes(
+			"If the MCP doc and search tools fail or you cannot reach the documentation",
+		),
+		true,
+	);
+	assert.equal(disableTools.verify(output, ast), true);
+});
+
+test("tools-off verify rejects a guide agent that still routes its fallback through WebSearch", async () => {
+	// A literal tool name carries no binding for the structural leak guard, so
+	// the wording branch is the only thing standing between this and a pass.
+	const guide = [
+		"const guidePrompt = `You are the Claude guide agent.",
+		"2. Fetch the appropriate docs map URL using MCP doc tools (context7 or ref)",
+		"6. Use web search if docs don't cover the topic",
+		"- If the MCP doc and search tools fail or you cannot reach the documentation, do not silently answer from memory.`;",
+	].join("\n");
+	const { output, ast } = await applyFullPatch(`${TOOL_FIXTURE}\n${guide}`);
+	const result = disableTools.verify(output, ast);
+
+	assert.notEqual(result, true);
+	assert.match(String(result), /WebSearch as fallback/);
+});
+
+test("tools-off verify catches prompt text that still interpolates the web-search tool name", async () => {
+	const reworded = [
+		'const webSearchName = "WebSearch";',
+		"const note = `Reworded upstream copy naming the ${webSearchName} tool.`;",
+	].join("\n");
+	const { output, ast } = await applyFullPatch(`${TOOL_FIXTURE}\n${reworded}`);
+	const result = disableTools.verify(output, ast);
+
+	assert.notEqual(result, true);
+	assert.match(String(result), /still interpolates the disabled web-search/);
+});
+
+test("tools-off verify requires neutral search bullets whenever the Explore banner is present", async () => {
+	// Upstream reworded both search bullets: neither the stock nor the patched
+	// wording exists, but the Explore prompt does, so the rewrite must be missed.
+	const reworded = [
+		"const explore = `=== CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===",
+		"- Use ${qV} to match file patterns",
+		"- Use ${OX} to search file contents`;",
+	].join("\n");
+	const { output, ast } = await applyFullPatch(`${TOOL_FIXTURE}\n${reworded}`);
+	const result = disableTools.verify(output, ast);
+
+	assert.notEqual(result, true);
+	assert.match(String(result), /neutral replacements for agent search prompts/);
+});
+
+test("tools-off verify rejects surviving REPL Glob demos and stock allowlist guidance", async () => {
+	const globDemo = await applyFullPatch(
+		`${TOOL_FIXTURE}\nconst repl = "const { filenames } = await Glob({ pattern: 'lib/*.js' })";`,
+	);
+	assert.match(
+		String(disableTools.verify(globDemo.output, globDemo.ast)),
+		/still demonstrates disabled Glob/,
+	);
+
+	const allowlist = await applyFullPatch(
+		`${TOOL_FIXTURE}\nconst skill = "These don't need an allowlist entry, they never prompt. If you see any of these in the transcripts, skip them.";`,
+	);
+	assert.match(
+		String(disableTools.verify(allowlist.output, allowlist.ast)),
+		/stock allowlist guidance/,
+	);
 });
 
 test("tools-off verify catches prompt text that still interpolates the tool name", async () => {

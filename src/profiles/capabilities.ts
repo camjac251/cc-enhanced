@@ -157,10 +157,6 @@ function capability(
 }
 
 const CAPABILITY_DEFINITIONS: Record<string, PatchCapabilityDefinition> = {
-	"shell-quote-fix": capability(
-		["runtime"],
-		probeRequired("desktop-tool-runtime"),
-	),
 	"bash-prompt": capability(
 		["prompt"],
 		probeRequired("desktop-prompt-surface"),

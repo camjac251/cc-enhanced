@@ -231,12 +231,6 @@ function renderCurrentEditDescriptor(tool, input, theme) {
   return null;
 }
 
-function renderGenericToolConfirm(toolUseConfirm, ideDiffSupport, parseInput, context) {
-  const parsed = parseInput(toolUseConfirm.input);
-  const diffConfig = ideDiffSupport ? ideDiffSupport.getConfig(parsed) : null;
-  return { parsed, diffConfig, context };
-}
-
 function dEH(list) {
   return list;
 }
@@ -503,31 +497,6 @@ test("edit-extended keeps Edit identity while preserving structured edits throug
 	assert.equal(output.includes("_claudeEditInputsEquivalent"), true);
 	assert.equal(output.includes("JSON.stringify(_leftInput)"), false);
 	assert.equal(output.includes("return EditTool.inputSchema.parse(H);"), true);
-});
-
-test("edit-extended bypasses ideDiffSupport.getConfig for structured edit confirmations", async () => {
-	const ast = parse(EDIT_FIXTURE);
-	await runEditToolViaPasses(ast);
-	const output = print(ast);
-
-	assert.equal(
-		output.includes(
-			"ideDiffSupport ? _claudeEditHasExtendedFields(_claudeDecodeExtendedEditTransport(parsed)) ? null : ideDiffSupport.getConfig(parsed) : null",
-		),
-		true,
-	);
-});
-
-test("edit-extended verify rejects the pre-decoder IDE diff guard", async () => {
-	const ast = parse(EDIT_FIXTURE);
-	await runEditToolViaPasses(ast);
-	const output = print(ast);
-	const obsolete = output.replace(
-		"_claudeEditHasExtendedFields(_claudeDecodeExtendedEditTransport(parsed))",
-		"_claudeEditHasExtendedFields(parsed)",
-	);
-	assert.notEqual(obsolete, output);
-	assert.notEqual(editTool.verify(obsolete, parse(obsolete)), true);
 });
 
 test("edit-extended neutralizes the relocated read-state helper's not-read throw", async () => {
@@ -1232,27 +1201,6 @@ test("edit-extended verifier survives plan UI rewriting the preview hint", async
 
 	assert.match(output, /previewHint: void 0/);
 	assert.match(output, /collapsed: false/);
-	assert.equal(editTool.verify(output, parse(output)), true);
-});
-
-test("edit-extended verify passes when no ideDiff getConfig ternary exists (live-bundle shape)", async () => {
-	const fixtureWithoutTernary = EDIT_FIXTURE.replace(
-		"const diffConfig = ideDiffSupport ? ideDiffSupport.getConfig(parsed) : null;",
-		"const diffConfig = null;",
-	);
-	assert.notEqual(fixtureWithoutTernary, EDIT_FIXTURE);
-	const ast = parse(fixtureWithoutTernary);
-	await runEditToolViaPasses(ast);
-	const output = print(ast);
-	// Mutator must be a no-op: no patched guard string is produced.
-	assert.equal(
-		output.includes(
-			"_claudeEditHasExtendedFields(_claudeDecodeExtendedEditTransport(parsed))",
-		),
-		false,
-		"no getConfig ternary present means no ideDiff guard should be injected",
-	);
-	// And verify still accepts the result via the absent-routing branch.
 	assert.equal(editTool.verify(output, parse(output)), true);
 });
 

@@ -146,6 +146,22 @@ test("plan-diff-ui removes plan-specific label and preview suppression", async (
 	assert.equal(planDiffUi.verify(output), true);
 });
 
+test("verify fails when the preview-hint surface is absent even though the other groups are patched", async () => {
+	const withoutPreviewHint = PLAN_DIFF_FIXTURE.replace(
+		/\n\s*previewHint:[^\n]*\n/g,
+		"\n",
+	);
+	assert.notEqual(withoutPreviewHint, PLAN_DIFF_FIXTURE);
+	const ast = parse(withoutPreviewHint);
+	await runPlanDiffUiViaPasses(ast);
+	const output = print(ast);
+	assert.equal(output.includes("Updated plan"), false);
+	assert.equal(output.includes('if (false) return "";'), true);
+	const result = planDiffUi.verify(output, ast);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("preview hint anchor not found"), true);
+});
+
 test("plan-diff-ui verify fails closed when plan anchors are absent", () => {
 	const drifted = `
 function unrelated() {

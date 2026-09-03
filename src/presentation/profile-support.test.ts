@@ -14,7 +14,7 @@ test("human profile support output makes Desktop blockers explicit", () => {
 
 	assert.match(rendered, /Desktop Local Patch Support/);
 	assert.match(rendered, /not selectable/i);
-	assert.match(rendered, /31 probe-required/);
+	assert.match(rendered, /30 probe-required/);
 	assert.match(rendered, /15 excluded/);
 	assert.match(rendered, /desktop-edit-batch-approval/);
 	assert.match(rendered, /desktop-read-card: not-run \(1 patch\)/);
@@ -33,5 +33,5 @@ test("human profile support output reports cli-full ready", () => {
 
 	assert.match(rendered, /CLI Full Patch Support/);
 	assert.match(rendered, /ready and selectable/i);
-	assert.match(rendered, /45 supported/);
+	assert.match(rendered, /44 supported/);
 });

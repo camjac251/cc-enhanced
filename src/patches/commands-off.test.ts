@@ -105,8 +105,8 @@ test("commands-off is idempotent against the registry shape", async () => {
 	assert.equal(commandsOff.verify(secondPass, ast2), true);
 });
 
-test("commands-off passes when the current bundle already omits those commands", () => {
-	const alreadyAbsentFixture = `
+test("commands-off verify rejects a bundle where no disabled command definition matched", () => {
+	const renamedFixture = `
 const COMMANDS = memoize(() => [
   {
     type: "prompt",
@@ -117,8 +117,10 @@ const COMMANDS = memoize(() => [
 ]);
 `;
 
-	const ast = parse(alreadyAbsentFixture);
-	assert.equal(commandsOff.verify(alreadyAbsentFixture, ast), true);
+	const ast = parse(renamedFixture);
+	const result = commandsOff.verify(renamedFixture, ast);
+	assert.notEqual(result, true);
+	assert.match(String(result), /No disabled built-in command definition found/);
 });
 
 test("commands-off removes a command whose binding is assigned via a constant violation (var + later assignment)", async () => {

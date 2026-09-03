@@ -24,9 +24,9 @@ test("Desktop-local candidate profile preserves policy and records exact-target 
 	assert.equal(readiness.selectable, false);
 	assert.equal(readiness.readiness, "blocked");
 	assert.deepEqual(readiness.summary, {
-		total: 46,
+		total: 45,
 		supported: 0,
-		probeRequired: 31,
+		probeRequired: 30,
 		excluded: 15,
 		notAssessed: 0,
 	});
@@ -51,7 +51,7 @@ test("Desktop-local candidate profile preserves policy and records exact-target 
 		selection.patches.map(({ tag }) => tag),
 		DESKTOP_LOCAL_CANDIDATE_TAGS,
 	);
-	assert.equal(selection.receipt.selectedTags.length, 30);
+	assert.equal(selection.receipt.selectedTags.length, 29);
 	assert.equal(selection.receipt.exclusions.length, 16);
 	assert.deepEqual(selection.receipt.exclusions, DESKTOP_LOCAL_EXCLUSIONS);
 	assert.deepEqual(DESKTOP_LOCAL_TARGET_EXCLUSIONS, [

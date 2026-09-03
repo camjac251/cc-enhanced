@@ -347,19 +347,15 @@ export const planDiffUi: Patch = {
 			},
 		];
 
-		let patchedGroups = 0;
+		// The mutator rewrites four independent surfaces; every one must show
+		// patched evidence on the latest target, so a single surface that
+		// upstream renamed cannot hide behind the others.
 		for (const group of groups) {
-			if (group.hasCandidate && !group.patched) {
-				return `Plan diff UI: ${group.name} anchor found but not patched`;
+			if (!group.patched) {
+				return group.hasCandidate
+					? `Plan diff UI: ${group.name} anchor found but not patched`
+					: `Plan diff UI: ${group.name} anchor not found`;
 			}
-			if (group.patched) patchedGroups++;
-		}
-		// Positive-presence floor: if none of the four anchored surfaces show
-		// patched evidence, the patch silently no-oped against this bundle.
-		// The previous logic accepted "all groups absent" as success because
-		// each group's check was skipped, masking a complete failure.
-		if (patchedGroups === 0) {
-			return "Plan diff UI: no patched evidence in any of plan-labels, preview-hint, preview-guard, or tool-use-hide groups";
 		}
 		return true;
 	},

@@ -17,7 +17,7 @@ test("self-hosted presentation separates construction, deployment, and clients",
 	assert.match(output, /image receipt:\s+not-bound/i);
 	assert.match(output, /deployment:\s+blocked/i);
 	assert.match(output, /profile support:\s+blocked.*non-selectable/i);
-	assert.match(output, /0 supported; 31 probe-required; 15 excluded/i);
+	assert.match(output, /0 supported; 30 probe-required; 15 excluded/i);
 	assert.match(output, /linux and macos.*windows.*linux container/i);
 	assert.match(output, /runner-pinned/i);
 	assert.match(output, /stdin.*file descriptor 3.*not run/i);

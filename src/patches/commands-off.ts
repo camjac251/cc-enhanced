@@ -209,7 +209,10 @@ function verifyCommandRegistry(ast: t.File, code: string): true | string {
 				return `Command content for "${name}" is present but no definition matched its name (renamed or reshaped)`;
 			}
 		}
-		return true;
+		// The latest bundle defines every disabled command, so finding none means
+		// upstream renamed and reworded them together; the registry was never
+		// inspected and nothing can be claimed about it.
+		return "No disabled built-in command definition found (renamed or reshaped)";
 	}
 	if (!foundRegistry) {
 		return "Built-in command registry not found";

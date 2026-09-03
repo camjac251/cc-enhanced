@@ -587,9 +587,9 @@ function assertProfileSupport(context: DesktopCandidateContext): void {
 		support.profile !== "desktop-local" ||
 		support.selectable ||
 		support.readiness !== "blocked" ||
-		support.summary.total !== 46 ||
+		support.summary.total !== 45 ||
 		support.summary.supported !== 0 ||
-		support.summary.probeRequired !== 31 ||
+		support.summary.probeRequired !== 30 ||
 		support.summary.excluded !== 15 ||
 		support.summary.notAssessed !== 0
 	) {

@@ -29,7 +29,7 @@ test("self-hosted runner uses the exact ordered stock-client partition", () => {
 		SELF_HOSTED_RUNNER_EXCLUSIONS,
 		STOCK_CLIENT_POLICY_EXCLUSIONS,
 	);
-	assert.equal(candidateSet.size, 31);
+	assert.equal(candidateSet.size, 30);
 	assert.equal(exclusionSet.size, 15);
 	assert.ok(
 		SELF_HOSTED_RUNNER_CANDIDATE_TAGS.every((tag) => !exclusionSet.has(tag)),
@@ -50,9 +50,9 @@ test("self-hosted runner has one conservative reserved candidate profile", () =>
 	assert.equal(readiness.selectable, false);
 	assert.equal(readiness.readiness, "blocked");
 	assert.deepEqual(readiness.summary, {
-		total: 46,
+		total: 45,
 		supported: 0,
-		probeRequired: 31,
+		probeRequired: 30,
 		excluded: 15,
 		notAssessed: 0,
 	});
@@ -74,7 +74,7 @@ test("self-hosted runner has one conservative reserved candidate profile", () =>
 		selection.receipt.selectedTags,
 		SELF_HOSTED_RUNNER_CANDIDATE_TAGS,
 	);
-	assert.equal(selection.patches.length, 31);
+	assert.equal(selection.patches.length, 30);
 	assert.equal(selection.patches.at(-1)?.tag, "signature");
 	assert.equal(selection.receipt.selectedTags.includes("tools-off"), false);
 	assert.equal(

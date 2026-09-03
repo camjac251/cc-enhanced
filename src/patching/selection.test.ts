@@ -16,7 +16,6 @@ import {
 } from "./selection.js";
 
 const BASELINE_CLI_FULL_TAGS = [
-	"shell-quote-fix",
 	"bash-prompt",
 	"built-in-agent-prompt",
 	"claude-api-scope",
@@ -90,14 +89,14 @@ test("cli-full selection preserves the current patch registration order", () => 
 		profile: cliFullProfile,
 	});
 
-	assert.equal(registeredPatches.length, 45);
-	assert.equal(profilePatchCatalog.length, 46);
+	assert.equal(registeredPatches.length, 44);
+	assert.equal(profilePatchCatalog.length, 45);
 	assert.equal(
 		registeredPatches.some(({ tag }) => tag === "tools-off-desktop"),
 		false,
 	);
 	assert.deepEqual(
-		profilePatchCatalog.slice(19, 21).map(({ tag }) => tag),
+		profilePatchCatalog.slice(18, 20).map(({ tag }) => tag),
 		["tools-off", "tools-off-desktop"],
 	);
 	assert.deepEqual(cliFullProfile.includes, BASELINE_CLI_FULL_TAGS);
@@ -116,7 +115,7 @@ test("Desktop-local candidate selection uses only the reserved profile catalog",
 
 	assert.equal(selection.receipt.name, "desktop-local");
 	assert.equal(selection.receipt.surface, "desktop-local");
-	assert.equal(selection.receipt.selectedTags.length, 30);
+	assert.equal(selection.receipt.selectedTags.length, 29);
 	assert.equal(selection.receipt.exclusions.length, 16);
 	assert.equal(selection.receipt.requiredProbes.length, 17);
 	assert.equal(selection.receipt.selectedTags.includes("tools-off"), false);
@@ -142,7 +141,7 @@ test("Remote Control candidate does not change the exact cli-full roster", () =>
 	});
 
 	assert.equal(remoteSelection.receipt.name, "remote-control");
-	assert.equal(remoteSelection.receipt.selectedTags.length, 31);
+	assert.equal(remoteSelection.receipt.selectedTags.length, 30);
 	assert.equal(remoteSelection.receipt.exclusions.length, 15);
 	assert.deepEqual(
 		cliSelection.patches.map(({ tag }) => tag),

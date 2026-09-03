@@ -216,11 +216,6 @@ const BY_TAG: Record<string, PatchMetadata> = {
 		label: "Session memory",
 		group: "System",
 	},
-	"shell-quote-fix": {
-		tag: "shell-quote-fix",
-		label: "Shell quote fix",
-		group: "Tooling",
-	},
 	"sys-prompt-file": {
 		tag: "sys-prompt-file",
 		label: "System prompt file",
