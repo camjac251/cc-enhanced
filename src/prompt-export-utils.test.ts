@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import {
 	buildFrontmatterPromptMap,
+	createFilesystemSlug,
 	createUniqueSlug,
 	extractFrontmatterName,
 	selectPromptCorpusText,
@@ -17,7 +18,34 @@ test("createUniqueSlug suffixes duplicates", () => {
 	assert.equal(createUniqueSlug("agent", seen), "agent-2");
 	assert.equal(createUniqueSlug("", seen), "artifact");
 });
+test("createFilesystemSlug keeps long artifact names writable and distinct", async () => {
+	const sharedPrefix = "long prompt section ".repeat(40);
+	const first = createFilesystemSlug(`${sharedPrefix}alpha`);
+	const second = createFilesystemSlug(`${sharedPrefix}beta`);
+	assert.notEqual(first, second);
 
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "prompt-export-slug-"),
+	);
+	try {
+		const written = new Set<string>();
+		writeArtifact(
+			tempDir,
+			written,
+			path.join("system", "sections", `${first}.md`),
+			"first",
+		);
+		writeArtifact(
+			tempDir,
+			written,
+			path.join("system", "sections", `${second}.md`),
+			"second",
+		);
+		assert.equal(written.size, 2);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
 test("writeArtifact rejects duplicate manifest paths", async () => {
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "prompt-export-utils-"),

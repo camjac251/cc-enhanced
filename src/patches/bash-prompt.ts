@@ -81,8 +81,14 @@ const MODERN_LEAN_BASH_GUIDANCE = [
 	`- ${MODERN_CODE_SEARCH_POLICY}`,
 ].join("\n");
 
-const LEGACY_BASH_FIRST_NUDGE_PATTERN =
+const STRICT_BASH_FIRST_NUDGE_PATTERN =
 	"Do your work through the ${} tool wherever it can accomplish the job: read files with cat, head, or sed -n, search with grep and find, and make file changes with sed, heredocs, or short scripts, rather than using the dedicated ${}, ${}, or ${} tools. Fall back to a dedicated tool only when ${} genuinely cannot do the job.";
+const RELAXED_BASH_FIRST_NUDGE_PATTERN =
+	"You can do much of your work through the ${} tool when it is the simpler route: read files with cat, head, or sed -n, search with grep and find, and make small, mechanical file changes with sed, heredocs, or short scripts instead of the dedicated ${}, ${}, or ${} tools. The choice is yours: prefer ${} or ${} when a shell edit would be fragile, such as exact or multi-line replacements, or sed/awk flags that differ between GNU and BSD/macOS.";
+const BASH_FIRST_NUDGE_SOURCE_PATTERNS = [
+	STRICT_BASH_FIRST_NUDGE_PATTERN,
+	RELAXED_BASH_FIRST_NUDGE_PATTERN,
+] as const;
 const LEGACY_BASH_FIRST_NUDGE_SIGNAL =
 	"read files with cat, head, or sed -n, search with grep and find";
 const BASH_FIRST_NUDGE_SURFACE_ANCHOR = "While auto mode is active:";
@@ -747,22 +753,44 @@ function sourceIncludesPromptText(code: string, text: string): boolean {
 	);
 }
 
-/** Rewrite the auto-mode and bypass-mode bash-first nudge so it names the shell tools that beat the built-ins; the upstream Bash, Read, Edit, Write, Bash expressions are reused in place. */
+/** Rewrite both current bash-first variants to one dedicated-tool policy. */
 function rewriteBashFirstNudge(path: NodePath<t.TemplateLiteral>): boolean {
-	if (templatePattern(path.node) !== LEGACY_BASH_FIRST_NUDGE_PATTERN) {
-		return false;
-	}
+	const pattern = templatePattern(path.node);
 	const expressions = path.node.expressions;
-	if (expressions.length !== MODERN_DEDICATED_TOOLS_NUDGE_PARTS.length - 1) {
+	let replacementExpressions: Array<t.Expression | t.TSType>;
+	if (pattern === STRICT_BASH_FIRST_NUDGE_PATTERN) {
+		if (
+			expressions.length !== 5 ||
+			!t.isNodesEquivalent(expressions[0], expressions[4])
+		) {
+			return false;
+		}
+		replacementExpressions = expressions;
+	} else if (pattern === RELAXED_BASH_FIRST_NUDGE_PATTERN) {
+		if (
+			expressions.length !== 6 ||
+			!t.isNodesEquivalent(expressions[2], expressions[4]) ||
+			!t.isNodesEquivalent(expressions[3], expressions[5])
+		) {
+			return false;
+		}
+		replacementExpressions = [...expressions.slice(0, 4), expressions[0]];
+	} else {
 		return false;
 	}
+
 	const quasis = MODERN_DEDICATED_TOOLS_NUDGE_PARTS.map((part, index) =>
 		t.templateElement(
 			{ raw: escapeTemplateRaw(part), cooked: part },
 			index === MODERN_DEDICATED_TOOLS_NUDGE_PARTS.length - 1,
 		),
 	);
-	path.replaceWith(t.templateLiteral(quasis, [...expressions]));
+	path.replaceWith(
+		t.templateLiteral(
+			quasis,
+			replacementExpressions.map((expression) => t.cloneNode(expression, true)),
+		),
+	);
 	return true;
 }
 
@@ -775,8 +803,13 @@ function inspectBashFirstNudge(ast: t.File): {
 	traverse(ast, {
 		TemplateLiteral(path) {
 			const pattern = templatePattern(path.node);
-			if (pattern === LEGACY_BASH_FIRST_NUDGE_PATTERN) legacy += 1;
-			else if (pattern === MODERN_DEDICATED_TOOLS_NUDGE_PATTERN) modern += 1;
+			if (
+				BASH_FIRST_NUDGE_SOURCE_PATTERNS.some((source) => source === pattern)
+			) {
+				legacy += 1;
+			} else if (pattern === MODERN_DEDICATED_TOOLS_NUDGE_PATTERN) {
+				modern += 1;
+			}
 		},
 	});
 	return { legacy, modern };
@@ -890,11 +923,11 @@ export const bashPrompt: Patch = {
 		if (nudge.legacy > 0 || code.includes(LEGACY_BASH_FIRST_NUDGE_SIGNAL)) {
 			return "Legacy bash-first auto-mode guidance still present";
 		}
-		if (code.includes(BASH_FIRST_NUDGE_SURFACE_ANCHOR) && nudge.modern === 0) {
-			return "Expected dedicated-tools auto-mode guidance missing";
-		}
-		if (nudge.modern > 1) {
-			return `Expected one dedicated-tools auto-mode guidance template, found ${nudge.modern}`;
+		if (
+			code.includes(BASH_FIRST_NUDGE_SURFACE_ANCHOR) &&
+			nudge.modern !== BASH_FIRST_NUDGE_SOURCE_PATTERNS.length
+		) {
+			return `Expected ${BASH_FIRST_NUDGE_SOURCE_PATTERNS.length} dedicated-tools auto-mode guidance templates, found ${nudge.modern}`;
 		}
 		if (code.includes(LEAN_BASH_PROMPT_SURFACE)) {
 			const lean = inspectLeanBuilderGuidance(verifyAst);

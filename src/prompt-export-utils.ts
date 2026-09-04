@@ -1,6 +1,33 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+const MAX_PROMPT_ARTIFACT_SLUG_LENGTH = 180;
+const PROMPT_ARTIFACT_SLUG_HASH_LENGTH = 12;
+
+export function createFilesystemSlug(value: string): string {
+	const normalized = value
+		.toLowerCase()
+		.trim()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.replace(/-+/g, "-");
+	if (normalized.length <= MAX_PROMPT_ARTIFACT_SLUG_LENGTH) {
+		return normalized;
+	}
+
+	const digest = createHash("sha256")
+		.update(normalized)
+		.digest("hex")
+		.slice(0, PROMPT_ARTIFACT_SLUG_HASH_LENGTH);
+	const prefix = normalized
+		.slice(
+			0,
+			MAX_PROMPT_ARTIFACT_SLUG_LENGTH - PROMPT_ARTIFACT_SLUG_HASH_LENGTH - 1,
+		)
+		.replace(/-+$/g, "");
+	return `${prefix}-${digest}`;
+}
 export function createUniqueSlug(base: string, seen: Set<string>): string {
 	const safeBase = base || "artifact";
 	let candidate = safeBase;

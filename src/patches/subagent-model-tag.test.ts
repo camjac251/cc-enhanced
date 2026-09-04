@@ -54,19 +54,10 @@ const agentInputSchema = objectSchema({
 
 const AGENT_LIFECYCLE_FIXTURE = `
 const agentTool = {
-  async call(
-    {
-      prompt,
-      subagent_type,
-      description,
-      model,
-      run_in_background,
-      name,
-      isolation,
-      cwd,
-    },
-    context,
-  ) {
+  async call(input, context) {
+    let { subagent_type, run_in_background, name, isolation } = input,
+      { prompt, description, cwd } = input,
+      model = input.model;
     const parentModel = getParentModel(context);
     const isFork = subagent_type === "fork";
     if (name) {

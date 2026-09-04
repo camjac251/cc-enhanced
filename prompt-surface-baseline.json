@@ -1,5 +1,5 @@
 {
-  "version": "2.1.259",
+  "version": "2.1.260",
   "algorithm": "sha256",
   "normalization": "prompt-surface-v1",
   "surfaces": {
@@ -8,8 +8,8 @@
     "agents/plan.md": "6ab8ca239ed87d3d7913ca1f601f69622200430c3e7a1686b8c252eb1ff7cef1",
     "agents/workflow-subagent.md": "4d42d7653bf4878a61943b50c54e4c95a62e6cb47f004c5aa0b2227c01932d91",
     "skills/artifact-pr-review.md": "bdda0d4ce2e087b4ed1a4174cc121da62e0ce195759a7a5b899906b2203f48d8",
-    "skills/whiteboard.md": "ff9121d98cb27b0cd2039f25950afde162d895fe482ce300a986464255181e17",
-    "system/sections/dream-memory-consolidation.md": "1b1b3b81b968e901946b64677594937b03d2ac7e7fbba89389b20b5e04b2859d",
+    "skills/whiteboard.md": "7cb35501d38abc987e65c58b4e65ffa949ff1774392edc1ed45fbe11236547f2",
+    "system/sections/dream-memory-consolidation.md": "6719a5dc253c10e8ff5b0e6499a7130ee919fb6c217eb8b740c0e8962b80ab61",
     "system/sections/session-specific-guidance.md": "f2cfef1db00c1af26fc7976d3877975569ce25fb151315662cba935070ca1eee",
     "system/sections/using-your-tools.md": "9f7e7a7321436c63b1a06629cfb11caefa722e8ab81b87ad744c8598b375ea7c",
     "tools/builtin/agent.md": "3a4e517f45aec455586b60f201cdec5b673ab085a9156e2a8bf78790eb27b7d3"

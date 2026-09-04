@@ -749,12 +749,14 @@ function renderLeanBashPrompt() {
 	assert.equal(output.includes("appropriate dedicated tool"), false);
 });
 
-test("bash-prompt rewrites the auto-mode bash-first nudge to the dedicated-tool policy", async () => {
+test("bash-prompt rewrites both current bash-first nudges to the dedicated-tool policy", async () => {
 	const fixture = `
 function renderAutoMode(e) {
-  let i = \`Do your work through the \${B} tool wherever it can accomplish the job: read files with cat, head, or sed -n, search with grep and find, and make file changes with sed, heredocs, or short scripts, rather than using the dedicated \${R}, \${E}, or \${W} tools. Fall back to a dedicated tool only when \${B} genuinely cannot do the job.\`,
-    s = e.bypass ? \`While bypass permissions mode is active:\\n\\n\${i}\` : e.steerOnly ? \`While auto mode is active:\\n\\n\${i}\` : i;
-  return s;
+  let strict = \`Do your work through the \${B} tool wherever it can accomplish the job: read files with cat, head, or sed -n, search with grep and find, and make file changes with sed, heredocs, or short scripts, rather than using the dedicated \${R}, \${E}, or \${W} tools. Fall back to a dedicated tool only when \${B} genuinely cannot do the job.\`,
+    relaxed = \`You can do much of your work through the \${B} tool when it is the simpler route: read files with cat, head, or sed -n, search with grep and find, and make small, mechanical file changes with sed, heredocs, or short scripts instead of the dedicated \${R}, \${E}, or \${W} tools. The choice is yours: prefer \${E} or \${W} when a shell edit would be fragile, such as exact or multi-line replacements, or sed/awk flags that differ between GNU and BSD/macOS.\`,
+    selected = e.bashFirstSteer === "relaxed" ? relaxed : strict,
+    output = e.bypass ? \`While bypass permissions mode is active:\\n\\n\${selected}\` : e.steerOnly ? \`While auto mode is active:\\n\\n\${selected}\` : selected;
+  return output;
 }
 `;
 	const ast = parse(fixture);
@@ -762,12 +764,9 @@ function renderAutoMode(e) {
 	const output = print(ast);
 	assert.equal(output.includes("read files with cat, head, or sed -n"), false);
 	assert.equal(output.includes("genuinely cannot do the job"), false);
-	assert.equal(
-		output.includes(
-			"Work through ${B} wherever the shell has the better tool: fd for file discovery, eza for directory listings, bat -r for ranged reads, rg for exact lexical text, ast-grep run for syntax shapes and repeated rewrites (preview, then -U), comby for malformed or mixed syntax, sd for non-code text, and jq or yq for structured data. Keep ${R} for files you need whole in context, ${E} for a single known site, and ${W} for new files; route everything else through ${B}. For source code, choose by intent:",
-		),
-		true,
-	);
+	const modern =
+		"Work through ${B} wherever the shell has the better tool: fd for file discovery, eza for directory listings, bat -r for ranged reads, rg for exact lexical text, ast-grep run for syntax shapes and repeated rewrites (preview, then -U), comby for malformed or mixed syntax, sd for non-code text, and jq or yq for structured data. Keep ${R} for files you need whole in context, ${E} for a single known site, and ${W} for new files; route everything else through ${B}. For source code, choose by intent:";
+	assert.equal(output.split(modern).length - 1, 2);
 });
 
 test("bash-prompt verify rejects a bundle that still carries the bash-first nudge", async () => {

@@ -43,6 +43,7 @@ import {
 } from "../src/prompt-corpus.js";
 import {
 	buildFrontmatterPromptMap,
+	createFilesystemSlug,
 	createUniqueSlug,
 	selectPromptCorpusText,
 	writeArtifact,
@@ -228,15 +229,6 @@ function getSyntheticLabel(
 
 function isLikelyMinifiedSymbol(name: string): boolean {
 	return /^[A-Za-z_$][A-Za-z0-9_$]{0,2}$/.test(name);
-}
-
-function slugify(value: string): string {
-	return value
-		.toLowerCase()
-		.trim()
-		.replace(/[^a-z0-9]+/g, "-")
-		.replace(/^-+|-+$/g, "")
-		.replace(/-+/g, "-");
 }
 
 function compareSemverLike(a: string, b: string): number {
@@ -1562,6 +1554,7 @@ function withLocalBindings<T>(
 	for (const [name, expr] of localExprs) {
 		saved.set(name, context.stringBindings.get(name));
 		savedExpressions.set(name, context.expressionBindings.get(name));
+		context.stringBindings.delete(name);
 		context.expressionBindings.set(name, expr);
 	}
 	for (const [name, expr] of localExprs) {
@@ -1593,7 +1586,33 @@ function withLocalBindings<T>(
 		}
 	}
 }
+function withUnboundFunctionParameters<T>(
+	context: RenderContext,
+	node: t.Function,
+	fn: () => T,
+): T {
+	const shadowed = new Map<string, t.Expression>();
+	const savedAliases = new Map<string, string | undefined>();
+	for (const parameter of node.params) {
+		for (const name of Object.keys(t.getBindingIdentifiers(parameter))) {
+			shadowed.set(name, t.identifier(name));
+			savedAliases.set(name, context.aliases.get(name));
+			context.aliases.delete(name);
+		}
+	}
 
+	try {
+		return withLocalBindings(context, shadowed, new Set<string>(), fn);
+	} finally {
+		for (const [name, original] of savedAliases) {
+			if (original === undefined) {
+				context.aliases.delete(name);
+			} else {
+				context.aliases.set(name, original);
+			}
+		}
+	}
+}
 function collectVisibleLocalBindingLayers(
 	pathRef: NodePath,
 ): Array<Map<string, t.Expression>> {
@@ -1781,22 +1800,24 @@ function collectPromptSnippetsFromFunction(
 	const localExprs = t.isBlockStatement(pathRef.node.body)
 		? collectLocalBindings(pathRef.node.body.body)
 		: new Map<string, t.Expression>();
-	withLocalBindings(context, localExprs, new Set<string>(), () => {
-		pathRef.traverse({
-			Function(inner) {
-				if (inner !== pathRef) inner.skip();
-			},
-			StringLiteral(inner) {
-				const value = inner.node.value.trim();
-				if (isPromptSnippet(value)) snippets.set(value, value);
-			},
-			TemplateLiteral(inner) {
-				const value = renderTemplateLiteral(inner.node, context).trim();
-				if (isPromptSnippet(value)) snippets.set(value, value);
-			},
-		});
-		return null;
-	});
+	withUnboundFunctionParameters(context, pathRef.node, () =>
+		withLocalBindings(context, localExprs, new Set<string>(), () => {
+			pathRef.traverse({
+				Function(inner) {
+					if (inner !== pathRef) inner.skip();
+				},
+				StringLiteral(inner) {
+					const value = inner.node.value.trim();
+					if (isPromptSnippet(value)) snippets.set(value, value);
+				},
+				TemplateLiteral(inner) {
+					const value = renderTemplateLiteral(inner.node, context).trim();
+					if (isPromptSnippet(value)) snippets.set(value, value);
+				},
+			});
+			return null;
+		}),
+	);
 	return [...snippets.values()];
 }
 
@@ -1833,6 +1854,14 @@ function getFunctionFromPromptProperty(
 		return property.value;
 	}
 	if (t.isIdentifier(property.value) && context) {
+		const boundExpression = context.expressionBindings.get(property.value.name);
+		if (
+			t.isFunctionExpression(boundExpression) ||
+			t.isArrowFunctionExpression(boundExpression)
+		) {
+			return boundExpression;
+		}
+		if (boundExpression) return null;
 		return context.functionBindings.get(property.value.name) ?? null;
 	}
 	return null;
@@ -1885,7 +1914,9 @@ function collectBuiltInTools(
 
 				const candidate: ToolPrompt = {
 					name,
-					slug: existing?.slug ?? createUniqueSlug(slugify(name), usedSlugs),
+					slug:
+						existing?.slug ??
+						createUniqueSlug(createFilesystemSlug(name), usedSlugs),
 					sourceSymbol,
 					description,
 					prompt: prompt || null,
@@ -1950,7 +1981,9 @@ function collectSchemaTools(
 				const existing = byName.get(name);
 				const candidate: SchemaTool = {
 					name,
-					slug: existing?.slug ?? createUniqueSlug(slugify(name), usedSlugs),
+					slug:
+						existing?.slug ??
+						createUniqueSlug(createFilesystemSlug(name), usedSlugs),
 					sourceSymbol,
 					title,
 					description,
@@ -1986,7 +2019,7 @@ function collectAgentPrompts(
 				if (!agentType) return;
 
 				const sourceSymbol = inferAssignedSymbol(pathRef);
-				const slug = slugify(agentType);
+				const slug = createFilesystemSlug(agentType);
 				if (sourceSymbol) {
 					context.aliases.set(sourceSymbol, `agent.${slug}`);
 				}
@@ -2033,7 +2066,7 @@ function collectSectionPrompts(
 			const normalizedHeading = normalizeHeading(heading);
 			if (/^#\s*value_\d+$/i.test(normalizedHeading)) return;
 			if (isExcludedSectionHeading(normalizedHeading)) return;
-			const slug = slugify(normalizedHeading.replace(/^#\s*/, ""));
+			const slug = createFilesystemSlug(normalizedHeading.replace(/^#\s*/, ""));
 			if (sourceSymbol) {
 				context.aliases.set(sourceSymbol, `section.${slug}`);
 			}
@@ -2273,7 +2306,9 @@ function collectSystemPromptVariants(
 			suffix += 1;
 		}
 		usedNames.add(uniqueName);
-		const baseSlug = slugify(uniqueName.slice(0, 80) || "system-prompt");
+		const baseSlug = createFilesystemSlug(
+			uniqueName.slice(0, 80) || "system-prompt",
+		);
 		const slug = createUniqueSlug(baseSlug, usedSlugs);
 		byText.set(text, {
 			name: uniqueName,
@@ -2661,7 +2696,9 @@ function collectSkillPrompts(
 				const existing = byName.get(name);
 				const candidate: SkillPrompt = {
 					name,
-					slug: existing?.slug ?? createUniqueSlug(slugify(name), usedSlugs),
+					slug:
+						existing?.slug ??
+						createUniqueSlug(createFilesystemSlug(name), usedSlugs),
 					sourceSymbol,
 					description,
 					whenToUse,
@@ -2784,7 +2821,7 @@ function collectSystemReminders(
 				seen.add(content);
 				const firstLine = content.split("\n")[0].trim().slice(0, 60);
 				const slug = createUniqueSlug(
-					slugify(firstLine) || "reminder",
+					createFilesystemSlug(firstLine) || "reminder",
 					usedSlugs,
 				);
 				const isDynamic = content.includes("${");
@@ -2816,7 +2853,7 @@ function collectSystemReminders(
 			seen.add(content);
 			const firstLine = content.split("\n")[0].trim().slice(0, 60);
 			const slug = createUniqueSlug(
-				slugify(firstLine) || "reminder",
+				createFilesystemSlug(firstLine) || "reminder",
 				usedSlugs,
 			);
 			reminders.push({
@@ -2859,7 +2896,7 @@ function collectSystemReminders(
 			seen.add(resolved);
 			const firstLine = resolved.split("\n")[0].trim().slice(0, 60);
 			const slug = createUniqueSlug(
-				slugify(firstLine) || "reminder",
+				createFilesystemSlug(firstLine) || "reminder",
 				usedSlugs,
 			);
 			reminders.push({
@@ -2889,7 +2926,10 @@ function decomposeToolSubSections(prompt: string): ToolSubSection[] {
 				if (text.length > 0) {
 					sections.push({
 						heading: currentHeading,
-						slug: createUniqueSlug(slugify(currentHeading), usedSlugs),
+						slug: createUniqueSlug(
+							createFilesystemSlug(currentHeading),
+							usedSlugs,
+						),
 						text,
 					});
 				}
@@ -2905,7 +2945,7 @@ function decomposeToolSubSections(prompt: string): ToolSubSection[] {
 		if (text.length > 0) {
 			sections.push({
 				heading: currentHeading,
-				slug: createUniqueSlug(slugify(currentHeading), usedSlugs),
+				slug: createUniqueSlug(createFilesystemSlug(currentHeading), usedSlugs),
 				text,
 			});
 		}
@@ -3828,7 +3868,7 @@ export async function runPromptExport(argvInput = process.argv): Promise<void> {
 			const usedInternalAgentSlugs = new Set<string>();
 			for (const ia of internalAgents) {
 				const iaSlug = createUniqueSlug(
-					slugify(ia.name.slice(0, 80)) || ia.id,
+					createFilesystemSlug(ia.name.slice(0, 80)) || ia.id,
 					usedInternalAgentSlugs,
 				);
 				writeArtifact(

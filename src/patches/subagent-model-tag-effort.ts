@@ -199,16 +199,48 @@ function getPatternBindingName(
 export function classifyAgentCall(
 	path: NodePath<t.ObjectMethod>,
 ): AgentCallCandidate | null {
-	if (getObjectKeyName(path.node.key) !== "call" || !path.node.async)
-		return null;
-	const input = path.node.params[0];
-	if (!t.isObjectPattern(input)) return null;
-	if (
-		!AGENT_CALL_INPUT_KEYS.every((key) => getObjectPatternProperty(input, key))
-	) {
+	if (getObjectKeyName(path.node.key) !== "call" || !path.node.async) {
 		return null;
 	}
-	return { path, input };
+	const inputParameter = path.node.params[0];
+	if (!t.isIdentifier(inputParameter)) return null;
+
+	const leading = path.node.body.body[0];
+	if (!t.isVariableDeclaration(leading)) return null;
+	const inputPatterns: t.ObjectPattern[] = [];
+	const inputKeys = new Set<string>();
+	for (const declaration of leading.declarations) {
+		if (
+			t.isObjectPattern(declaration.id) &&
+			t.isIdentifier(declaration.init, { name: inputParameter.name })
+		) {
+			inputPatterns.push(declaration.id);
+			for (const property of declaration.id.properties) {
+				if (t.isObjectProperty(property)) {
+					const key = getObjectKeyName(property.key);
+					if (key) inputKeys.add(key);
+				}
+			}
+			continue;
+		}
+		if (
+			t.isIdentifier(declaration.id) &&
+			t.isMemberExpression(declaration.init) &&
+			t.isIdentifier(declaration.init.object, { name: inputParameter.name })
+		) {
+			const key = getMemberPropertyName(declaration.init);
+			if (key) inputKeys.add(key);
+		}
+	}
+
+	if (!AGENT_CALL_INPUT_KEYS.every((key) => inputKeys.has(key))) {
+		return null;
+	}
+	const bindingPatterns = inputPatterns.filter((pattern) =>
+		Boolean(getObjectPatternProperty(pattern, "subagent_type")),
+	);
+	if (bindingPatterns.length !== 1) return null;
+	return { path, input: bindingPatterns[0] };
 }
 
 export function classifyAgentLaunchOptions(
@@ -688,15 +720,15 @@ export function patchAgentCallEffort(
 
 	let effortName = getPatternBindingName(call.input, "effort");
 	if (!effortName) {
-		const modelIndex = call.input.properties.findIndex(
+		const backgroundIndex = call.input.properties.findIndex(
 			(property) =>
 				t.isObjectProperty(property) &&
-				getObjectKeyName(property.key) === "model",
+				getObjectKeyName(property.key) === "run_in_background",
 		);
-		if (modelIndex < 0) return false;
+		if (backgroundIndex < 0) return false;
 		effortName = AGENT_EFFORT_BINDING;
 		call.input.properties.splice(
-			modelIndex + 1,
+			backgroundIndex + 1,
 			0,
 			t.objectProperty(t.identifier("effort"), t.identifier(effortName)),
 		);

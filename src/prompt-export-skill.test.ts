@@ -157,7 +157,12 @@ test("prompt exporter resolves bindings from enclosing module initializers", asy
 const initializeModule = setup(() => {
   const taskToolName = "TaskCreate";
   const shellToolName = "Bash";
+  const runtimeToolName = "/wrong/outer/value";
   const agentToolName = "Agent";
+  function unrelatedFactory() {
+    const agentToolName = () => true;
+    return agentToolName;
+  }
   const agentToolPrompt = "Launch a new agent to handle complex, multi-step tasks. Use the current agent catalog and pass an explicit agent type when delegating work.";
   const apiScopeCorpus = "TRIGGER - read before opening the target file whenever the task is about an application that directly calls the Claude API or uses an Anthropic SDK. API request parameters, model IDs, pricing, limits, streaming, and tool use are in scope. DO NOT TRIGGER merely because a task mentions Claude Code or local session JSONL/transcripts. Client-only work remains out of scope unless API calls are involved.";
   const backgroundJobCorpus = "This session is a background job. The user may be live or away. A classifier reads only your message text, so narrate the work and restate important results. You should choose execution mode by intent, keep command output inspectable, and provide a self-contained completion summary after running a sanity check. Continue useful work while independent operations run.";
@@ -225,6 +230,44 @@ initializeModule();
 			"utf8",
 		);
 		assert.match(backgroundJob, /A classifier reads only your message text/);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("prompt exporter bounds generated section filenames for long headings", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "prompt-export-long-heading-"),
+	);
+	const cliPath = path.join(tempDir, "cli.js");
+	const outputDir = path.join(tempDir, "exported");
+	const longHeading = `# ${"long-heading-segment-".repeat(20)}end`;
+	const body =
+		"Keep the complete section body available after export so the generated artifact remains usable.";
+	try {
+		await fs.writeFile(
+			cliPath,
+			`function buildLongSection() { return ${JSON.stringify(`${longHeading}\n\n${body}`)}; }\nregisterSection(buildLongSection);\n`,
+			"utf8",
+		);
+
+		const stderr = await exportFixture(cliPath, outputDir);
+		assert.doesNotMatch(stderr, /Failed to export prompts/);
+
+		const sectionFiles = await fs.readdir(
+			path.join(outputDir, "system", "sections"),
+		);
+		assert.equal(sectionFiles.length, 1);
+		const [sectionFilename] = sectionFiles;
+		assert.ok(sectionFilename);
+		assert.ok(Buffer.byteLength(sectionFilename, "utf8") <= 255);
+
+		const exportedSection = await fs.readFile(
+			path.join(outputDir, "system", "sections", sectionFilename),
+			"utf8",
+		);
+		assert.ok(exportedSection.includes(longHeading));
+		assert.ok(exportedSection.includes(body));
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}
