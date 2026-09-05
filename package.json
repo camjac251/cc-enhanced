@@ -70,7 +70,7 @@
 	"keywords": [],
 	"author": "",
 	"license": "MIT",
-	"packageManager": "bun@1.4.0",
+	"packageManager": "bun@1.4.2",
 	"devDependencies": {
 		"@babel/template": "^8.0.0",
 		"@biomejs/biome": "^2.4.16",
