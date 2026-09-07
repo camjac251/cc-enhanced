@@ -177,7 +177,46 @@ async function runInProcess(input) {
     permissionMode: "default",
     ...(agentDefinition?.model && { model: agentDefinition.model }),
   };
-  return useAgent({ agentDefinition: definition, model });
+	const teammateMetadata = {
+		taskKind: "in_process_teammate",
+		teamName: "team",
+		color: "blue",
+		planModeRequired: false,
+		...(model && { model }),
+	};
+	return useAgent({
+		agentDefinition: definition,
+		model,
+		extraMetadata: { ...teammateMetadata, permissionMode: "default" },
+	});
+}
+
+async function resumeInProcessTeammate({ resumableAgentId, prompt, meta, toolUseContext }) {
+	const spawned = await spawnInProcessTeammate({
+		name: meta.name,
+		teamName: meta.teamName,
+		prompt,
+		description: meta.description,
+		color: meta.color,
+		planModeRequired: meta.planModeRequired ?? false,
+		model: meta.model,
+		permissionMode: meta.permissionMode,
+		resumableAgentId,
+	}, toolUseContext);
+	return startInProcessTeammate({
+		identity: spawned.identity,
+		taskId: spawned.taskId,
+		prompt,
+		initialFrom: undefined,
+		description: meta.description,
+		agentDefinition: meta.agentDefinition,
+		model: meta.model,
+		teammateContext: spawned.teammateContext,
+		toolUseContext,
+		abortController: spawned.abortController,
+		resumeMessages: [],
+		resumeReplacementState: {},
+	}, toolUseContext);
 }
 async function* runChild({ agentDefinition, model, extraMetadata }) {
   saveAgentMetadata(agentId, model !== undefined || extraMetadata !== undefined, {
@@ -983,4 +1022,119 @@ return spawnInProcessTeammate;`)();
 	assert.equal(definition.effort, "low");
 	assert.equal(definition.agentType, "worker");
 	assert.equal(subagentModelTag.verify(print(ast), ast), true);
+});
+test("in-process effort persists in metadata and resumes through start input", async () => {
+	const input = SUBAGENT_FIXTURE;
+	const output = await patchSource(input);
+
+	assert.equal(
+		output.includes(
+			"...(__ccTeammateEffort !== void 0 && { effort: __ccTeammateEffort })",
+		),
+		true,
+		"in-process metadata must persist only an explicit effort",
+	);
+	assert.equal(
+		output.includes("effort: meta.effort"),
+		true,
+		"in-process resume must restore effort through both launch inputs",
+	);
+	assert.equal(subagentModelTag.verify(output, parse(output)), true);
+	const ast = parse(output);
+	const functions = ast.program.body.filter(
+		(node): node is t.FunctionDeclaration =>
+			t.isFunctionDeclaration(node) &&
+			["runInProcess", "resumeInProcessTeammate"].includes(node.id?.name ?? ""),
+	);
+	assert.equal(functions.length, 2);
+	const runtime = new Function(
+		print(t.file(t.program(functions))) +
+			"\nfunction useAgent(options) { return options; }" +
+			'\nasync function spawnInProcessTeammate(input) { return { identity: {}, taskId: "task", teammateContext: {}, abortController: new AbortController() }; }' +
+			"\nasync function startInProcessTeammate(input) { return input; }" +
+			"\nreturn { runInProcess, resumeInProcessTeammate };",
+	)();
+	const runWithEffort = await runtime.runInProcess({
+		identity: { agentName: "worker" },
+		taskId: "task",
+		teammateContext: {},
+		toolUseContext: {},
+		abortController: new AbortController(),
+		effort: "low",
+		model: "provider/model",
+		agentDefinition: { model: "provider/model", effort: "high" },
+		prompt: "work",
+		description: "worker",
+		invokingRequestId: "request",
+	});
+	assert.equal(runWithEffort.agentDefinition.effort, "low");
+	assert.equal(runWithEffort.extraMetadata.effort, "low");
+	const runWithoutEffort = await runtime.runInProcess({
+		identity: { agentName: "worker" },
+		taskId: "task",
+		teammateContext: {},
+		toolUseContext: {},
+		abortController: new AbortController(),
+		model: "provider/model",
+		agentDefinition: { model: "provider/model", effort: "high" },
+		prompt: "work",
+		description: "worker",
+		invokingRequestId: "request",
+	});
+	assert.equal(Object.hasOwn(runWithoutEffort.extraMetadata, "effort"), false);
+	const resumed = await runtime.resumeInProcessTeammate({
+		resumableAgentId: "agent",
+		prompt: "resume",
+		meta: {
+			name: "worker",
+			teamName: "team",
+			description: "worker",
+			color: "blue",
+			planModeRequired: false,
+			model: "provider/model",
+			permissionMode: "default",
+			effort: "max",
+			agentDefinition: {},
+		},
+		toolUseContext: {},
+	});
+	assert.equal(resumed.effort, "max");
+	const resumedWithoutEffort = await runtime.resumeInProcessTeammate({
+		resumableAgentId: "agent",
+		prompt: "resume",
+		meta: {
+			name: "worker",
+			teamName: "team",
+			description: "worker",
+			color: "blue",
+			planModeRequired: false,
+			model: "provider/model",
+			permissionMode: "default",
+			agentDefinition: {},
+		},
+		toolUseContext: {},
+	});
+	assert.equal(resumedWithoutEffort.effort, undefined);
+});
+
+test("subagent-model-tag verifier rejects in-process effort persistence drift", async () => {
+	const output = await patchSource(SUBAGENT_FIXTURE);
+	const metadataDrift = output.replace(
+		"...(__ccTeammateEffort !== void 0 && { effort: __ccTeammateEffort })",
+		"...(__ccTeammateEffort !== void 0 && { model: __ccTeammateEffort })",
+	);
+	assert.notEqual(metadataDrift, output);
+	assert.notEqual(
+		subagentModelTag.verify(metadataDrift, parse(metadataDrift)),
+		true,
+	);
+	const resumeDrift = output.replace(
+		"effort: meta.effort",
+		"effort: meta.model",
+	);
+	assert.notEqual(resumeDrift, output);
+	assert.notEqual(
+		subagentModelTag.verify(resumeDrift, parse(resumeDrift)),
+		true,
+	);
 });

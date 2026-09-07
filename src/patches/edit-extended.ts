@@ -738,8 +738,8 @@ function patchWriteReadStateGuards(ast: any): void {
 
 // The current Write implementation delegates its existing-file precondition
 // to a top-level helper rather than keeping it on the tool object. Bypass only
-// that helper's missing/partial-read rejection; its stale-read check remains
-// authoritative.
+// the helper's missing-read rejection; partial-read state remains subject to
+// the authoritative stale-read timestamp check.
 function patchWriteReadStateHelper(ast: t.File): { bypassed: number } {
 	let bypassed = 0;
 
@@ -773,6 +773,10 @@ function patchWriteReadStateHelper(ast: t.File): { bypassed: number } {
 				) {
 					continue;
 				}
+				stmt.test = t.unaryExpression(
+					"!",
+					t.cloneNode(stmt.test.left.argument),
+				);
 				stmt.consequent = t.returnStatement();
 				bypassed++;
 				break;
@@ -2217,6 +2221,7 @@ function verifyWriteReadStateHelper(ctx: EditVerifyContext): string | null {
 	let helperFound = false;
 	let bypassedMissingRead = false;
 	let hasStaleReadCheck = false;
+	let staleReadCheckAfterMissingRead = false;
 
 	traverse(ctx.ast, {
 		FunctionDeclaration(path: any) {
@@ -2236,20 +2241,21 @@ function verifyWriteReadStateHelper(ctx: EditVerifyContext): string | null {
 			if (!lastReadBinding) return;
 			helperFound = true;
 
-			for (const stmt of path.node.body.body) {
+			let missingReadGuardIndex = -1;
+			for (const [stmtIndex, stmt] of path.node.body.body.entries()) {
 				const missingStateGuard =
 					t.isIfStatement(stmt) &&
-					t.isLogicalExpression(stmt.test, { operator: "||" }) &&
-					t.isUnaryExpression(stmt.test.left, { operator: "!" }) &&
-					t.isIdentifier(stmt.test.left.argument, { name: lastReadBinding }) &&
-					t.isMemberExpression(stmt.test.right) &&
-					t.isIdentifier(stmt.test.right.object, { name: lastReadBinding }) &&
-					isMemberPropertyName(stmt.test.right, "isPartialView");
+					t.isUnaryExpression(stmt.test, { operator: "!" }) &&
+					t.isIdentifier(stmt.test.argument, { name: lastReadBinding });
 				if (missingStateGuard && t.isReturnStatement(stmt.consequent)) {
 					bypassedMissingRead = true;
+					missingReadGuardIndex = stmtIndex;
 				}
 				if (nodeContainsTimestampRead(stmt, lastReadBinding)) {
 					hasStaleReadCheck = true;
+					if (missingReadGuardIndex >= 0 && stmtIndex > missingReadGuardIndex) {
+						staleReadCheckAfterMissingRead = true;
+					}
 				}
 			}
 		},
@@ -2259,10 +2265,13 @@ function verifyWriteReadStateHelper(ctx: EditVerifyContext): string | null {
 		return "Write read-state precondition helper not found (expected fullFilePath/diskContent/lastRead options)";
 	}
 	if (!bypassedMissingRead) {
-		return "Write read-state helper still rejects missing or partial read state";
+		return "Write read-state helper still rejects missing read state";
 	}
 	if (!hasStaleReadCheck) {
 		return "Write read-state helper lost its stale-read timestamp check";
+	}
+	if (!staleReadCheckAfterMissingRead) {
+		return "Write read-state helper stale-read check no longer follows the missing-state bypass";
 	}
 	return null;
 }

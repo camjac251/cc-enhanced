@@ -405,6 +405,21 @@ test("verify rejects unpatched code", () => {
 	assert.equal(typeof result, "string");
 });
 
+test("edit-extended verifier rejects a partial-read bypass", async () => {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+	const regressed = output.replace(
+		"if (!lastRead) return;",
+		"if (!lastRead || lastRead.isPartialView) return;",
+	);
+
+	assert.notEqual(regressed, output);
+	assert.match(
+		String(editTool.verify(regressed, parse(regressed))),
+		/Write read-state helper still rejects missing read state/,
+	);
+});
 test("edit-extended injects unified preview via normalize+apply pipeline", async () => {
 	const ast = parse(EDIT_FIXTURE);
 	await runEditToolViaPasses(ast);
@@ -810,6 +825,44 @@ test("edit-extended preserves Write stale-read protection when state exists", as
 			() => mod.WriteTool.call(input, context),
 			/File content has changed since it was last read\./,
 		);
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended preserves Write stale-read protection for partial state", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const input = { file_path: "/tmp/example.txt", content: "replacement" };
+		const context = {
+			readFileState: new Map([
+				[input.file_path, { timestamp: 0, isPartialView: true }],
+			]),
+		};
+
+		assert.throws(
+			() => mod.WriteTool.call(input, context),
+			/File content has changed since it was last read\./,
+		);
+	} finally {
+		await cleanup();
+	}
+});
+
+test("edit-extended allows fresh partial Write state", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	try {
+		const input = { file_path: "/tmp/example.txt", content: "replacement" };
+		const context = {
+			readFileState: new Map([
+				[
+					input.file_path,
+					{ timestamp: Date.now() + 60_000, isPartialView: true },
+				],
+			]),
+		};
+
+		assert.deepEqual(mod.WriteTool.call(input, context), input);
 	} finally {
 		await cleanup();
 	}
