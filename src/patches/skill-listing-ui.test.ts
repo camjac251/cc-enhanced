@@ -41,7 +41,7 @@ async function spawnAgent(messages) {
       (error) => (recordSkillListingError(error), []),
     );
   if (!hasSkillListing)
-    for (let attachment of currentSkillListing) messages.push(attachment);
+    for (let attachment of currentSkillListing) messages.push({type: "attachment", attachment});
   return messages;
 }
 
@@ -257,7 +257,9 @@ test("skill-listing-ui replaces inherited listings after a successful refresh", 
 	const spawnAgent = Function(
 		"buildCurrentSkillListing",
 		`${output}; return spawnAgent;`,
-	)(async () => [current]) as (messages: unknown[]) => Promise<unknown[]>;
+	)(async () => [current.attachment]) as (
+		messages: unknown[],
+	) => Promise<unknown[]>;
 	const inherited = {
 		type: "attachment",
 		attachment: { type: "skill_listing", marker: "inherited" },
@@ -552,4 +554,16 @@ function buildAttachment(H) {`,
 		"only the skill_listing producer gets the injected skillNames; dynamic_skill object untouched",
 	);
 	assert.equal(skillListingUi.verify(output, ast), true);
+});
+
+test("skill summary verifier rejects a dead helper with surviving markers", async () => {
+	const ast = parse(SKILL_LISTING_FIXTURE);
+	await runSkillListingUiViaPasses(ast);
+	const output = print(ast);
+	const dead = output.replace(
+		"function _claudePatchFormatSkillListingSummary(attachment) {",
+		'function _claudePatchFormatSkillListingSummary(attachment) { return "";',
+	);
+	assert.notEqual(dead, output);
+	assert.equal(typeof skillListingUi.verify(dead), "string");
 });

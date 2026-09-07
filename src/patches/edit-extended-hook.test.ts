@@ -121,11 +121,12 @@ test("a dollar-backtick replacement does not splice the file prefix back in", ()
 	assert.equal(updated.includes(newString), true);
 });
 
-test("the hook keeps no string-form replacement call", () => {
-	const source = fs.readFileSync(templatePath, "utf-8");
-	assert.equal(
-		/\.replace\(\s*searchStr\s*,\s*replacementString\s*\)/.test(source),
-		false,
-		"string-form replace reintroduces dollar-sequence expansion",
-	);
+test("whitespace-normalized multiline edits replace the complete original span", () => {
+	const { applyString } = loadEditHook();
+	const outcome = applyString("prefix\na  \nb\nsuffix\n", {
+		oldString: "a\nb",
+		newString: "replacement",
+	});
+	assert.equal(outcome.error, undefined);
+	assert.equal(outcome.content, "prefix\nreplacement\nsuffix\n");
 });

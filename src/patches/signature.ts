@@ -110,6 +110,54 @@ function isUiTitleBrand(path: NodePath<t.StringLiteral>): boolean {
 		) && titleParts.node.elements.some((element) => isVersionElement(element))
 	);
 }
+function isMemoizedUiTitleBrand(path: NodePath<t.StringLiteral>): boolean {
+	if (
+		path.node.value !== TITLE_BRAND_LITERAL &&
+		path.node.value !== TITLE_BRAND_LITERAL + PATCHED_TITLE_MARKER
+	)
+		return false;
+	const children = path.parentPath;
+	if (
+		!children?.isObjectProperty() ||
+		children.node.key.type !== "Identifier" ||
+		children.node.key.name !== "children"
+	)
+		return false;
+	const properties = children.parentPath;
+	if (!properties?.isObjectExpression()) return false;
+	if (
+		!t.isBooleanLiteral(getObjectProperty(properties.node, "bold")?.value, {
+			value: true,
+		})
+	)
+		return false;
+	const assignment = path.findParent(
+		(candidate) =>
+			candidate.isAssignmentExpression() && t.isIdentifier(candidate.node.left),
+	);
+	if (
+		!assignment?.isAssignmentExpression() ||
+		!t.isIdentifier(assignment.node.left)
+	)
+		return false;
+	const binding = path.scope.getBinding(assignment.node.left.name);
+	if (!binding) return false;
+	return binding.referencePaths.some((reference) => {
+		const array = reference.findParent((candidate) =>
+			candidate.isArrayExpression(),
+		);
+		if (
+			!array?.isArrayExpression() ||
+			!array.node.elements.some((element) => element === reference.node)
+		)
+			return false;
+		return (
+			array.node.elements.some((element) =>
+				t.isStringLiteral(element, { value: " " }),
+			) && array.node.elements.some((element) => isVersionElement(element))
+		);
+	});
+}
 
 export const signature: Patch = {
 	tag: "signature",
@@ -123,10 +171,12 @@ export const signature: Patch = {
 		traverse(ast, {
 			StringLiteral(path: any) {
 				const val = path.node.value;
-				if (isVersionStringTarget(val)) {
+				if (isVersionStringTarget(val))
 					path.node.value = replaceVersionSuffix(val, sigFull);
-				}
-				if (isUiTitleBrand(path) && !val.includes(PATCHED_TITLE_MARKER)) {
+				if (
+					(isUiTitleBrand(path) || isMemoizedUiTitleBrand(path)) &&
+					!val.includes(PATCHED_TITLE_MARKER)
+				) {
 					path.node.value += PATCHED_TITLE_MARKER;
 				}
 			},
@@ -161,7 +211,7 @@ export const signature: Patch = {
 				if (hasPatchedVersionString(value)) {
 					hasPatchedVersion = true;
 				}
-				if (isUiTitleBrand(path)) {
+				if (isUiTitleBrand(path) || isMemoizedUiTitleBrand(path)) {
 					uiTitleCount++;
 					if (value.includes(PATCHED_TITLE_MARKER)) patchedTitleCount++;
 				} else if (value.includes(PATCHED_TITLE_MARKER)) {
@@ -169,21 +219,14 @@ export const signature: Patch = {
 				}
 			},
 			TemplateLiteral(path) {
-				if (isVersionTemplateTarget(path.node)) {
-					hasLegacyVersionTemplate = true;
-				}
-				if (hasPatchedVersionTemplate(path.node)) {
-					hasPatchedVersion = true;
-				}
+				if (isVersionTemplateTarget(path.node)) hasLegacyVersionTemplate = true;
+				if (hasPatchedVersionTemplate(path.node)) hasPatchedVersion = true;
 			},
 		});
-
-		if (hasLegacyVersionTemplate) {
-			return "Missing patched version signature in version output";
-		}
 		if (!hasPatchedVersion) {
 			return "Did not find patched version output";
 		}
+		if (hasLegacyVersionTemplate) return "Unsigned version template remains";
 		if (nonTitleBrandDecorated) {
 			return "Patched title marker leaked into a non-title string (wrong anchor)";
 		}

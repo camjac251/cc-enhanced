@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as t from "@babel/types";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
+import { traverse } from "../babel.js";
 import { parse, print } from "../loader.js";
 import { imageLimits } from "./image-limits.js";
 
@@ -41,7 +43,7 @@ async function U$({ data, mediaType, limits }) {
   return {
     block: {
       type: "image",
-      source: { type: "base64", media_type: mediaType, data: "downscaled" },
+      source: { type: "base64", media_type: mediaType, data: Buffer.from(String(limits.maxWidth) + "x" + String(limits.maxHeight)).toString("base64") },
     },
     dimensions: { displayWidth: limits.maxWidth, displayHeight: limits.maxHeight },
   };
@@ -61,7 +63,7 @@ function zWn(value) {
   return value != null;
 }
 function CVf(e, t) {
-  return { messagesPreNormalize: e, messagesForAPI: e, midConvFallback: () => e };
+  return { messagesPreNormalize: e, messagesForAPI: e, midConvFallback: () => e, toolChangeFallback: () => e };
 }
 function measured(callback) { return callback(); }
 function Wq(x) {
@@ -89,9 +91,11 @@ async function* query(e, s) {
       messagesPreNormalize: L,
       messagesForAPI: O,
       midConvFallback: j,
+      toolChangeFallback: toolFallback,
     } = measured(() => CVf(e, requestOptions)),
     N = O;
   let M = j,
+    T = toolFallback,
     Ct = null,
     el = (Qo) => {
       let Fo = zWn(Qo),
@@ -103,6 +107,14 @@ async function* query(e, s) {
       }
       return;
     };
+  if (s.prefix) {
+    const rebuilt = measured(() => CVf(e, { ...requestOptions, traceSources: false }));
+    N = rebuilt.messagesForAPI;
+    M = rebuilt.midConvFallback;
+    T = rebuilt.toolChangeFallback;
+  }
+  if (s.fallback === "tool") N = T();
+  if (s.fallback === "mid") N = M();
   q("tengu_api_after_normalize", { postNormalizedMessageCount: N.length });
   let Pi = el(Ct);
   if (Pi) return Pi;
@@ -286,14 +298,12 @@ test("image-limits leaves the base default limits untouched", async () => {
 });
 
 test("image-limits is idempotent", async () => {
-	const { ast, output } = await patchImageLimitsFixture(
+	const first = await patchImageLimitsFixture(
 		withRequestPipeline(ALREADY_RESTORED_FIXTURE),
 	);
-
-	for (const key of TARGET_KEYS) {
-		assertPinnedTo2576(output, key);
-	}
-	assert.equal(imageLimits.verify(output, ast), true);
+	const second = await patchImageLimitsFixture(first.output);
+	assert.equal(second.output, first.output);
+	assert.equal(imageLimits.verify(second.output, second.ast), true);
 });
 
 test("image-limits leaves non-target model metadata untouched", async () => {
@@ -324,15 +334,6 @@ test("image-limits downscales high-resolution many-image requests before API sub
 	);
 
 	assert.equal(imageLimits.verify(output, ast), true);
-	assert.match(output, /__ccEnhancedVisualBlockCount <= 20/);
-	assert.match(output, /block\.type === "document"/);
-	assert.match(
-		output,
-		/__ccEnhancedImageBlocks\.some\(__ccEnhancedImageTooLargeForManyImage\)/,
-	);
-	assert.match(output, /__ccEnhancedBlock\.type === "tool_result"/);
-	assert.match(output, /normalized\?\.block \?\? block/);
-	assert.doesNotMatch(output, /\[media removed: request limit\]/);
 
 	const runtime = new Function(`${output}; return { query };`)() as {
 		query(
@@ -393,9 +394,18 @@ test("image-limits downscales high-resolution many-image requests before API sub
 	const rewritten = await execute(overLimit);
 	assert.notEqual(rewritten, overLimit);
 	const rewrittenContent = rewritten[0].message.content;
-	assert.equal(rewrittenContent[0].source.data, "downscaled");
+	assert.equal(
+		Buffer.from(rewrittenContent[0].source.data, "base64").toString(),
+		"2000x2000",
+	);
 	assert.equal(rewrittenContent[1], smallImage);
-	assert.equal(rewrittenContent[2].content[0].source.data, "downscaled");
+	assert.equal(
+		Buffer.from(
+			rewrittenContent[2].content[0].source.data,
+			"base64",
+		).toString(),
+		"2000x2000",
+	);
 });
 
 test("verify rejects a fallback wrapper that returns a promise", async () => {
@@ -403,13 +413,118 @@ test("verify rejects a fallback wrapper that returns a promise", async () => {
 		withRequestPipeline(ALREADY_RESTORED_FIXTURE),
 	);
 	const broken = output.replace(
-		"M = () => __ccEnhancedDownscaledMidConvFallback",
-		"M = async () => __ccEnhancedDownscaledMidConvFallback",
+		"normalized[key] = () => messages",
+		"normalized[key] = async () => messages",
 	);
 	assert.notEqual(broken, output);
 	const ast = parse(broken);
 	const result = imageLimits.verify(broken, ast);
 	assert.notEqual(result, true);
+});
+
+test("all rebuilt submissions and synchronous fallbacks retain many-image limits", async () => {
+	const { output } = await patchImageLimitsFixture(
+		withRequestPipeline(ALREADY_RESTORED_FIXTURE),
+	);
+	const runtime = Function(`${output}; return { query };`)();
+	const image = {
+		type: "image",
+		source: {
+			type: "base64",
+			media_type: "image/png",
+			data: Buffer.from("2576x2576").toString("base64"),
+		},
+	};
+	const source = [
+		{
+			message: {
+				content: [
+					image,
+					...Array.from({ length: 20 }, () => ({ type: "document" })),
+				],
+			},
+		},
+	];
+	for (const prefix of [false, true]) {
+		for (const fallback of [undefined, "mid", "tool"]) {
+			const result = await runtime
+				.query(source, { model: "claude-opus-5", prefix, fallback })
+				.next();
+			assert.equal(result.done, true);
+			assert.ok(
+				Array.isArray(result.value),
+				"fallback contracts remain synchronous arrays",
+			);
+			assert.equal(
+				Buffer.from(
+					result.value[0].message.content[0].source.data,
+					"base64",
+				).toString(),
+				"2000x2000",
+				`${prefix ? "prefix" : "initial"} ${fallback ?? "submission"}`,
+			);
+		}
+	}
+	assert.equal(
+		Buffer.from(image.source.data, "base64").toString(),
+		"2576x2576",
+	);
+});
+
+test("verification rejects bypassing either normalization boundary", async () => {
+	const { output } = await patchImageLimitsFixture(
+		withRequestPipeline(ALREADY_RESTORED_FIXTURE),
+	);
+	for (const removedBoundary of [0, 1]) {
+		const ast = parse(output);
+		let index = 0;
+		let changed = false;
+		traverse(ast, {
+			AwaitExpression(path) {
+				const call = path.node.argument;
+				if (
+					!t.isCallExpression(call) ||
+					!t.isIdentifier(call.callee, {
+						name: "__ccEnhancedDownscaleNormalizationResult",
+					})
+				)
+					return;
+				const original = call.arguments[0];
+				if (index++ !== removedBoundary || !t.isExpression(original)) return;
+				path.replaceWith(t.cloneNode(original, true));
+				changed = true;
+			},
+		});
+		assert.equal(changed, true);
+		assert.notEqual(imageLimits.verify(print(ast), ast), true);
+	}
+});
+
+test("verification rejects an unscaled tool-change fallback", async () => {
+	const { output } = await patchImageLimitsFixture(
+		withRequestPipeline(ALREADY_RESTORED_FIXTURE),
+	);
+	const ast = parse(output);
+	let changed = false;
+	traverse(ast, {
+		ArrayExpression(path) {
+			if (
+				!path.node.elements.some((item) =>
+					t.isStringLiteral(item, { value: "midConvFallback" }),
+				) ||
+				!path.node.elements.some((item) =>
+					t.isStringLiteral(item, { value: "toolChangeFallback" }),
+				)
+			)
+				return;
+			path.node.elements = path.node.elements.filter(
+				(item) => !t.isStringLiteral(item, { value: "toolChangeFallback" }),
+			);
+			changed = true;
+		},
+	});
+	assert.equal(changed, true);
+	assert.notEqual(imageLimits.verify(print(ast), ast), true);
 });
 
 test("verify treats a non-literal override value as a missing entry", () => {

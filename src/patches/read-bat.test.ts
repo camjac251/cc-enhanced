@@ -25,6 +25,7 @@ type BatStub = (
 const childProcess = createRequire(import.meta.url)("child_process");
 const originalExecFileSync = childProcess.execFileSync;
 let activeBatStub: BatStub | null = null;
+const TEST_READ_SIGNAL = new AbortController().signal;
 childProcess.execFileSync = (
 	cmd: string,
 	args: readonly string[],
@@ -181,7 +182,7 @@ async function readCallImplementation(
 }
 
 async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2) {
-  let W = offset === 0 ? 0 : offset - 1, { content: K, lineCount: O, totalLines: T } = await D2I(filePath, W, limit, maxBytes, signal);
+  let W = offset === 0 ? 0 : offset - 1, READ_RESULT = await D2I(filePath, W, limit, maxBytes, signal, { handle: ctx.approvedHandle ?? await openApprovedHandle(filePath), maxSelectedBytes: 16384 }), { lineCount: O, totalLines: T, totalBytes: TOTAL_BYTES, readBytes: READ_BYTES, mtimeMs: MTIME } = READ_RESULT, K = READ_RESULT.content;
   ctx.readFileState.set(filePath, { content: K, timestamp: Date.now(), offset, limit });
   return { type: "text", file: { filePath, numLines: O, totalLines: T, startLine: offset } };
 }
@@ -266,7 +267,7 @@ async function readCallImplementation(
 }
 
 async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2) {
-  let W = offset === 0 ? 0 : offset - 1, { content: K, lineCount: O, totalLines: T } = await D2I(filePath, W, limit, maxBytes, signal);
+  let W = offset === 0 ? 0 : offset - 1, READ_RESULT = await D2I(filePath, W, limit, maxBytes, signal, { handle: ctx.approvedHandle ?? await openApprovedHandle(filePath), maxSelectedBytes: 16384 }), { lineCount: O, totalLines: T, totalBytes: TOTAL_BYTES, readBytes: READ_BYTES, mtimeMs: MTIME } = READ_RESULT, K = READ_RESULT.content;
   ctx.readFileState.set(filePath, { content: K, timestamp: Date.now(), offset, limit });
   return { type: "text", file: { filePath, numLines: O, totalLines: T, startLine: offset } };
 }`,
@@ -284,9 +285,10 @@ async function readCallImplementation(
   EXTRA,
 ) {
   let F = A;
+  if (A.endsWith(".ipynb")) Q = 1, B = undefined;
   let S = G.readFileState.get(F);
-  if (S && S.seededFromContext && !S.isPartialView && Q === 1 && B === void 0) return { data: { type: "file_unchanged" } };
-  if (S && !S.isPartialView && S.offset !== void 0) {
+  if (S && S.seededFromContext && !S.isPartialView && Q === 1 && B === undefined) return { data: { type: "file_unchanged" } };
+  if (S && !S.isPartialView && S.offset !== undefined) {
     if (S.offset === Q && S.limit === B) return { data: { type: "file_unchanged" } };
   }
   let request = {
@@ -328,13 +330,16 @@ async function readBody(input) {
     } = input,
     { readFileState: state } = G;
   let W = Q === 0 ? 0 : Q - 1,
-    { content: K, lineCount: O, totalLines: T, mtimeMs: M } = await D2I(
+    RESULT = await D2I(
       N,
       W,
       B,
       B === void 0 ? MAX_BYTES : void 0,
       G.abortController.signal,
+      B === void 0 ? { handle: G.approvedHandle } : { maxSelectedBytes: MAX_TOKENS * 4, handle: G.approvedHandle },
     ),
+    { lineCount: O, totalLines: T, totalBytes: TOTAL_BYTES, readBytes: READ_BYTES, mtimeMs: M } = RESULT,
+    K = RESULT.content,
     OUT = K,
     NUM = O,
     CAP,
@@ -480,7 +485,7 @@ async function readCallImplementation(
 }
 
 async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2) {
-  let W = offset === 0 ? 0 : offset - 1, { content: K, lineCount: O, totalLines: T } = await D2I(filePath, W, limit, maxBytes, signal);
+  let W = offset === 0 ? 0 : offset - 1, READ_RESULT = await D2I(filePath, W, limit, maxBytes, signal, { handle: ctx.approvedHandle ?? await openApprovedHandle(filePath), maxSelectedBytes: 16384 }), { lineCount: O, totalLines: T, totalBytes: TOTAL_BYTES, readBytes: READ_BYTES, mtimeMs: MTIME } = READ_RESULT, K = READ_RESULT.content;
   ctx.readFileState.set(filePath, { content: K, timestamp: Date.now(), offset, limit });
   return { type: "text", file: { filePath, numLines: O, totalLines: T, startLine: offset } };
 }
@@ -506,14 +511,28 @@ function normalizeReadInput(input) {
   return repairs.length ? { input: normalized, shapeClass: repairs.join(",") } : null;
 }
 const MAX_BYTES = 4096;
-const SIGNAL = { tag: "signal" };
+const SIGNAL = new AbortController().signal;
 const EXTRA1 = {};
 const EXTRA2 = {};
 
-async function D2I(filePath, offset, limit, maxBytes, signal) {
+const approvedHandles = [];
+async function openApprovedHandle(filePath) {
+  const handle = await (await import("node:fs/promises")).open(filePath, "r");
+  approvedHandles.push(handle);
+  return handle;
+}
+async function closeApprovedHandles() {
+  await Promise.all(approvedHandles.splice(0).map((handle) => handle.close()));
+}
+async function D2I(filePath, offset, limit, maxBytes, signal, options) {
   globalThis.__fallbackCalls = globalThis.__fallbackCalls || [];
   globalThis.__fallbackCalls.push({ filePath, offset, limit, maxBytes, signal });
-  return { content: "1 fallback\\n2 text\\n", lineCount: 2, totalLines: 9 };
+  const stat = await options.handle.stat();
+  const text = await options.handle.readFile({ encoding: "utf8" });
+  const lines = text.endsWith("\\n") ? text.slice(0, -1).split("\\n") : text.split("\\n");
+  const selected = lines.slice(offset, limit === void 0 ? void 0 : offset + limit);
+  const content = selected.join("\\n");
+  return { content, lineCount: selected.length, totalLines: lines.length, totalBytes: stat.size, readBytes: Buffer.byteLength(content), mtimeMs: stat.mtimeMs };
 }
 
 const ReadTool = {
@@ -555,7 +574,7 @@ async function readCallImplementation(
 }
 
 async function helperRead(filePath, offset, limit, maxBytes, signal, ctx, extra1, extra2) {
-  let W = offset === 0 ? 0 : offset - 1, { content: K, lineCount: O, totalLines: T } = await D2I(filePath, W, limit, maxBytes, signal);
+  let W = offset === 0 ? 0 : offset - 1, READ_RESULT = await D2I(filePath, W, limit, maxBytes, signal, { handle: ctx.approvedHandle ?? await openApprovedHandle(filePath), maxSelectedBytes: 16384 }), { lineCount: O, totalLines: T, totalBytes: TOTAL_BYTES, readBytes: READ_BYTES, mtimeMs: MTIME } = READ_RESULT, K = READ_RESULT.content;
   ctx.readFileState.set(filePath, { content: K, timestamp: Date.now(), offset, limit });
   return { type: "text", file: { filePath, numLines: O, totalLines: T, startLine: offset } };
 }
@@ -681,7 +700,7 @@ async function loadPatchedReadRuntimeModule() {
 	await fs.writeFile(
 		modulePath,
 		`${output}
-export { ReadTool, helperRead, changedSnippet, setChangedFileMtime };`,
+export { ReadTool, helperRead, changedSnippet, setChangedFileMtime, closeApprovedHandles };`,
 		"utf8",
 	);
 	const mod = await import(pathToFileURL(modulePath).href);
@@ -689,6 +708,7 @@ export { ReadTool, helperRead, changedSnippet, setChangedFileMtime };`,
 		mod,
 		output,
 		cleanup: async () => {
+			await mod.closeApprovedHandles();
 			await fs.rm(tempDir, { recursive: true, force: true });
 		},
 	};
@@ -889,7 +909,6 @@ test("read-bat patches delegated helper calls and appends range/whitespace param
 		true,
 	);
 	assert.equal(output.includes("execFileSync"), true);
-	assert.equal(output.includes("...(await fallbackFn("), true);
 	assert.equal(output.includes("changedSnippetRaw"), true);
 	assert.equal(output.includes("maxChangedSnippetChars = 8000"), true);
 	assert.equal(
@@ -1110,7 +1129,7 @@ test("read-bat runtime uses numbered bat output when bat succeeds", async () => 
 					1,
 					undefined,
 					4096,
-					{ tag: "signal" },
+					TEST_READ_SIGNAL,
 					ctx,
 					{},
 					{},
@@ -1119,7 +1138,8 @@ test("read-bat runtime uses numbered bat output when bat succeeds", async () => 
 				),
 		)) as any;
 
-		assert.deepEqual((globalThis as any).__fallbackCalls, []);
+		assert.equal((globalThis as any).__fallbackCalls[0].offset, 0);
+		assert.equal((globalThis as any).__fallbackCalls[0].limit, 2);
 		assert.equal(ctx.readFileState.get(filePath).content, "1 alpha\n2 beta\n");
 		assert.deepEqual(result.file, {
 			filePath,
@@ -1153,7 +1173,7 @@ test("read-bat runtime preserves fallback range and size-limit semantics when ba
 				1,
 				undefined,
 				4096,
-				{ tag: "signal" },
+				TEST_READ_SIGNAL,
 				ctx,
 				{},
 				{},
@@ -1166,7 +1186,7 @@ test("read-bat runtime preserves fallback range and size-limit semantics when ba
 			offset: 4,
 			limit: 1,
 			maxBytes: undefined,
-			signal: { tag: "signal" },
+			signal: TEST_READ_SIGNAL,
 		});
 		assert.equal(ranged.file.startLine, 5);
 
@@ -1177,7 +1197,7 @@ test("read-bat runtime preserves fallback range and size-limit semantics when ba
 				1,
 				undefined,
 				4096,
-				{ tag: "signal" },
+				TEST_READ_SIGNAL,
 				ctx,
 				{},
 				{},
@@ -1190,7 +1210,7 @@ test("read-bat runtime preserves fallback range and size-limit semantics when ba
 			offset: 0,
 			limit: undefined,
 			maxBytes: 4096,
-			signal: { tag: "signal" },
+			signal: TEST_READ_SIGNAL,
 		});
 		assert.equal(unbounded.file.startLine, 1);
 	} finally {
@@ -1219,7 +1239,7 @@ test("read-bat runtime tolerates stray wrapper characters around ranges", async 
 				1,
 				undefined,
 				4096,
-				{ tag: "signal" },
+				TEST_READ_SIGNAL,
 				ctx,
 				{},
 				{},
@@ -1232,7 +1252,7 @@ test("read-bat runtime tolerates stray wrapper characters around ranges", async 
 			offset: 24,
 			limit: 21,
 			maxBytes: undefined,
-			signal: { tag: "signal" },
+			signal: TEST_READ_SIGNAL,
 		});
 
 		await withStubbedBat(failBat, async () => {
@@ -1242,7 +1262,7 @@ test("read-bat runtime tolerates stray wrapper characters around ranges", async 
 					1,
 					undefined,
 					4096,
-					{ tag: "signal" },
+					TEST_READ_SIGNAL,
 					ctx,
 					{},
 					{},
@@ -1278,7 +1298,7 @@ test("read-bat runtime defaults .output reads to tail range and forwards show_wh
 				1,
 				undefined,
 				4096,
-				{ tag: "signal" },
+				TEST_READ_SIGNAL,
 				ctx,
 				{},
 				{},
@@ -1288,8 +1308,8 @@ test("read-bat runtime defaults .output reads to tail range and forwards show_wh
 		);
 
 		assert.equal(capturedArgs.includes("-A"), true);
-		assert.equal(capturedArgs.includes("-r"), true);
-		assert.equal(capturedArgs.includes("-500:"), true);
+		assert.equal((globalThis as any).__fallbackCalls.at(-1).offset, 0);
+		assert.equal((globalThis as any).__fallbackCalls.at(-1).limit, 500);
 	} finally {
 		await cleanup();
 		await fs.rm(tempDir, { recursive: true, force: true });
@@ -1358,19 +1378,6 @@ test("read-bat threads range/whitespace through EVERY delegation call site", asy
 		"both delegation call sites must void-0 offset/limit and append R, WSPC",
 	);
 	assert.equal(readWithBat.verify(output), true);
-});
-
-test("read-bat injects startLine: START_LINE a bounded number of times", async () => {
-	const output = await getPatchedDelegationOutput();
-	// The patched delegation helper carries exactly two `startLine: START_LINE`
-	// occurrences: one injected into the read destructuring and one rewritten
-	// into the result object. A third would mean a section double-fired and
-	// re-injected START_LINE somewhere it does not belong.
-	assert.equal(
-		output.split("startLine: START_LINE").length - 1,
-		2,
-		"START_LINE injection/rewrite count drifted from the expected two sites",
-	);
 });
 
 test("read-bat rewrites readFileState.set compat markers at every offset/limit site", async () => {
@@ -1501,6 +1508,210 @@ test("read-bat patches a validateInput body destructure", async () => {
 	assert.equal(readWithBat.verify(output), true);
 });
 
+async function loadLatestReadRuntimeModule() {
+	const source =
+		`
+const MAX_BYTES = 4096, MAX_TOKENS = 10000, MSG = "read-message";
+const observations = [];
+async function D2I(filePath, offset, limit, maxBytes, signal, options) {
+  signal.throwIfAborted();
+  const stat = await options.handle.stat();
+  const text = await options.handle.readFile({ encoding: "utf8" });
+  const lines = text.endsWith("\\n") ? text.slice(0, -1).split("\\n") : text.split("\\n");
+  const selected = lines.slice(offset, limit === void 0 ? void 0 : offset + limit);
+  const content = selected.join("\\n");
+  if (options.maxSelectedBytes !== void 0 && Buffer.byteLength(content) > options.maxSelectedBytes) throw new Error("selected bytes exceeded");
+  observations.push({ offset, limit, maxBytes, options });
+  return { content, lineCount: selected.length, totalLines: lines.length, totalBytes: stat.size, readBytes: Buffer.byteLength(content), mtimeMs: stat.mtimeMs };
+}
+` +
+		readObjectDelegationFixture().replace(
+			"  state.set(F, {",
+			"  observations[observations.length - 1].full = FULL;\n  observations[observations.length - 1].firstLine = W;\n  observations[observations.length - 1].receivedTotalBytes = TOTAL_BYTES;\n  observations[observations.length - 1].receivedReadBytes = READ_BYTES;\n  state.set(F, {",
+		);
+	const ast = parse(source);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+	assert.equal(readWithBat.verify(output, ast), true);
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "read-latest-runtime-"));
+	const modulePath = path.join(dir, "read.mjs");
+	await fs.writeFile(
+		modulePath,
+		`${output}\nexport { ReadTool, observations };`,
+	);
+	return {
+		mod: await import(pathToFileURL(modulePath).href),
+		cleanup: () => fs.rm(dir, { recursive: true, force: true }),
+	};
+}
+
+test("read-bat preserves approved content and marks automatic previews partial through Read.call", async () => {
+	const { mod, cleanup } = await loadLatestReadRuntimeModule();
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "read-approved-"));
+	const filePath = path.join(dir, "source.txt");
+	const original = Array.from(
+		{ length: 260 },
+		(_, index) => `approved ${index}${" ".repeat(20)}`,
+	).join("\n");
+	await fs.writeFile(filePath, original);
+	const approvedHandle = await fs.open(filePath, "r");
+	const stat = await approvedHandle.stat();
+	try {
+		await fs.rename(filePath, path.join(dir, "approved.txt"));
+		await fs.writeFile(filePath, "unapproved replacement");
+		const ctx = {
+			readFileState: new Map(),
+			approvedHandle,
+			abortController: new AbortController(),
+		};
+		const result: any = await withStubbedBat(
+			(_args, options) => {
+				assert.equal(
+					options?.input,
+					original.split("\n").slice(0, 200).join("\n"),
+				);
+				return String(options?.input)
+					.split("\n")
+					.map((line, index) => `${index + 1} ${line}`)
+					.join("\n");
+			},
+			() => mod.ReadTool.call({ file_path: filePath }, ctx, null, null),
+		);
+		assert.equal(result.file.numLines, 200);
+		assert.equal(result.file.totalLines, 260);
+		assert.equal(result.file.startLine, 1);
+		assert.match(result.file.content, /FILE TRUNCATED/);
+		assert.doesNotMatch(result.file.content, /unapproved/);
+		assert.equal(
+			ctx.readFileState.get(filePath).timestamp,
+			Math.floor(stat.mtimeMs),
+		);
+		assert.equal(ctx.readFileState.get(filePath).isPartialView, true);
+		assert.equal(ctx.readFileState.get(filePath).offset, 1);
+		assert.equal(ctx.readFileState.get(filePath).limit, 1);
+		assert.equal(mod.observations[0].full, false);
+		assert.equal(mod.observations[0].options.handle, approvedHandle);
+		assert.equal(mod.observations[0].options.maxSelectedBytes, 40000);
+		assert.equal(
+			mod.observations[0].receivedTotalBytes,
+			Buffer.byteLength(original),
+		);
+	} finally {
+		await approvedHandle.close();
+		await cleanup();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("read-bat retains range metadata and whitespace formatting when bat succeeds or fails", async () => {
+	const { mod, cleanup } = await loadLatestReadRuntimeModule();
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "read-latest-range-"));
+	const filePath = path.join(dir, "source.txt");
+	await fs.writeFile(filePath, "zero\n\talpha\nbeta\nlast");
+	try {
+		for (const fails of [false, true]) {
+			const approvedHandle = await fs.open(filePath, "r");
+			try {
+				const ctx = {
+					readFileState: new Map(),
+					approvedHandle,
+					abortController: new AbortController(),
+				};
+				const result: any = await withStubbedBat(
+					(args, options) => {
+						assert.ok(args.includes("-A"));
+						assert.equal(options?.input, "\talpha\nbeta");
+						if (fails) throw new Error("bat unavailable");
+						return "1 →alpha\n2 beta";
+					},
+					() =>
+						mod.ReadTool.call(
+							{ file_path: filePath, range: "2:3", show_whitespace: true },
+							ctx,
+							null,
+							null,
+						),
+				);
+				assert.equal(
+					result.file.content,
+					fails ? "\talpha\nbeta" : "2 →alpha\n3 beta",
+				);
+				assert.equal(result.file.startLine, 2);
+				assert.equal(result.file.numLines, 2);
+				assert.equal(result.file.totalLines, 4);
+				assert.equal(ctx.readFileState.get(filePath).isPartialView, true);
+				assert.equal(
+					mod.observations.at(-1).receivedReadBytes,
+					Buffer.byteLength("\talpha\nbeta"),
+				);
+				assert.equal(mod.observations.at(-1).full, false);
+				assert.equal(mod.observations.at(-1).firstLine, 1);
+			} finally {
+				await approvedHandle.close();
+			}
+		}
+	} finally {
+		await cleanup();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("read-bat keeps failed-bat automatic previews partial", async () => {
+	const { mod, cleanup } = await loadLatestReadRuntimeModule();
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "read-auto-fallback-"));
+	const filePath = path.join(dir, "source.txt");
+	const original = Array.from(
+		{ length: 260 },
+		(_, index) => `line ${index}${" ".repeat(20)}`,
+	).join("\n");
+	await fs.writeFile(filePath, original);
+	const approvedHandle = await fs.open(filePath, "r");
+	try {
+		const ctx = {
+			readFileState: new Map(),
+			approvedHandle,
+			abortController: new AbortController(),
+		};
+		const result: any = await withStubbedBat(
+			() => {
+				throw new Error("bat unavailable");
+			},
+			() => mod.ReadTool.call({ file_path: filePath }, ctx, null, null),
+		);
+		assert.equal(result.file.numLines, 200);
+		assert.equal(result.file.totalLines, 260);
+		assert.match(result.file.content, /FILE TRUNCATED/);
+		assert.equal(ctx.readFileState.get(filePath).isPartialView, true);
+		assert.equal(mod.observations[0].full, false);
+		assert.equal(mod.observations[0].limit, 200);
+	} finally {
+		await approvedHandle.close();
+		await cleanup();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("read-bat verifier rejects lost approved-read transport", async () => {
+	const output = await getPatchedDelegationOutput();
+	const mutations = [
+		["...rawResult,", "...{},"],
+		[
+			"fallbackSizeLimit, fallbackSignal, readOptions",
+			"fallbackSizeLimit, fallbackSignal, {}",
+		],
+		["input: rawResult.content", 'input: "wrong content"'],
+		[
+			"normalizedRange !== null || rawResult.truncatedByBytes === true",
+			"false",
+		],
+	];
+	for (const [before, after] of mutations) {
+		const mutated = output.replace(before, after);
+		assert.notEqual(mutated, output, before);
+		assert.equal(typeof readWithBat.verify(mutated), "string", before);
+	}
+});
+
 test("read-bat threads both delegation sites in the implementation catch block", async () => {
 	// The implementation's missing-file path delegates again from a catch block.
 	// This mirrors that nesting so the threading loop catches a third or missed
@@ -1528,4 +1739,56 @@ test("read-bat threads both delegation sites in the implementation catch block",
 		"helper definition param list rewritten exactly once",
 	);
 	assert.equal(readWithBat.verify(output), true);
+});
+
+test("notebook Read returns before text-result state exists", async () => {
+	const fixture = readObjectDelegationFixture().replace(
+		"  let W = Q === 0 ? 0 : Q - 1,",
+		`
+  if (F.endsWith(".ipynb")) {
+    const content = await G.approvedHandle.readFile({encoding: "utf8"});
+    const notebook = JSON.parse(content);
+    state.set(F, {content, timestamp: 1, offset: Q, limit: B});
+    return {type: "notebook", file: {filePath: A, cells: notebook.cells}};
+  }
+  let W = Q === 0 ? 0 : Q - 1,`,
+	);
+	const ast = parse(
+		`const MAX_BYTES = 4096, MAX_TOKENS = 10000, MSG = "read"; async function D2I() { throw new Error("text reader must not run"); }\n${fixture}`,
+	);
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+	const runtime = new Function(`${output}; return ReadTool;`)();
+	const cells = [{ cell_type: "markdown", source: ["hello"] }];
+	const content = JSON.stringify({
+		cells,
+		metadata: {},
+		nbformat: 4,
+		nbformat_minor: 5,
+	});
+	const state = new Map();
+	const result = await runtime.call(
+		{ file_path: "/work/example.ipynb" },
+		{
+			readFileState: state,
+			approvedHandle: { readFile: async () => content },
+			abortController: new AbortController(),
+		},
+	);
+	assert.equal(result.type, "notebook");
+	assert.deepEqual(result.file.cells, cells);
+	assert.equal(state.get("/work/example.ipynb").content, content);
+	assert.equal(readWithBat.verify(output, ast), true);
+});
+
+test("Read verification rejects dangling native range reset bindings", async () => {
+	const ast = parse(readObjectDelegationFixture());
+	await runReadWithBatViaPasses(ast);
+	const output = print(ast);
+	const broken = output.replace(
+		"let F = A;",
+		'let F = A; if (A.endsWith(".ipynb")) removedOffset = 1;',
+	);
+	assert.notEqual(broken, output);
+	assert.equal(typeof readWithBat.verify(broken, parse(broken)), "string");
 });

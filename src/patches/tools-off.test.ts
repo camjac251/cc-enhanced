@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as t from "@babel/types";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
+import { traverse } from "../babel.js";
 import { parse, print } from "../loader.js";
 import type { Patch } from "../types.js";
 import {
@@ -27,7 +29,24 @@ async function runToolsOffViaPasses(ast: any): Promise<void> {
 	await runPatchViaPasses(disableTools, ast);
 }
 
+const AVAILABILITY_FIXTURE = `
+function availableTools(tools, options = {}) {
+  if (options.simple && !options.skipSimpleModeFilter) {
+    if (options.repl && !options.skipReplFilter) return tools;
+    return tools;
+  }
+  const enabled = tools.map((tool) => tool.isEnabled());
+  let result = tools.filter((tool, index) => enabled[index]);
+  if (!options.shellAvailable && !options.repl) {
+    const fallback = tools.filter((tool) => (tool.name === "Glob" || tool.name === "Grep") && !result.includes(tool));
+    result = [...result, ...fallback];
+  }
+  return result;
+}
+`;
+
 const TOOL_FIXTURE = `
+${AVAILABILITY_FIXTURE}
 const taskOutputName = "TaskOutput";
 const builtinTools = [
   {
@@ -45,7 +64,7 @@ const builtinTools = [
     description: "Find files",
     inputSchema: {},
     prompt: "Use Read for specifics",
-    isEnabled: false,
+    isEnabled() { return false; },
     call() {},
   },
   {
@@ -63,7 +82,7 @@ const builtinTools = [
     description: "Fetch page",
     inputSchema: {},
     prompt: "Fetch page",
-    isEnabled: false,
+    isEnabled() { return false; },
     call() {},
   },
   {
@@ -99,6 +118,7 @@ const skillConfig = {
 `;
 
 const DESKTOP_TOOL_FIXTURE = `
+${AVAILABILITY_FIXTURE}
 const builtinTools = [
   { name: "Grep", description: "core grep", inputSchema: {}, prompt: "p", isEnabled() { return grepGate(); }, call() {} },
   { name: "Glob", description: "core glob", inputSchema: {}, prompt: "p", isEnabled() { return globGate(); }, call() {} },
@@ -110,6 +130,111 @@ const builtinTools = [
 ];
 const skillConfig = { filePatternTools: ["Read", "Bash"] };
 `;
+
+test("disabled search tools stay absent after fallback append and simple-mode returns", async () => {
+	const { output, ast } = await applyFullPatch(TOOL_FIXTURE);
+	assert.equal(disableTools.verify(output, ast), true);
+	const runtime = Function(
+		`${output}; return { builtinTools, availableTools };`,
+	)();
+	let checks = 0;
+	const read = {
+		name: "Read",
+		isEnabled() {
+			checks++;
+			return true;
+		},
+	};
+	const tools = [...runtime.builtinTools, read];
+	for (const options of [
+		{ shellAvailable: false },
+		{ shellAvailable: true },
+		{ simple: true },
+		{ simple: true, repl: true },
+	]) {
+		checks = 0;
+		assert.deepEqual(runtime.availableTools(tools, options), [read]);
+		assert.equal(
+			checks,
+			options.simple ? 0 : 1,
+			"final filtering does not invoke enablement twice",
+		);
+	}
+});
+
+test("desktop availability retains enabled NotebookEdit while excluding search fallbacks", async () => {
+	const source =
+		DESKTOP_TOOL_FIXTURE +
+		"\nfunction notebookGateOne() { return true; }\nfunction notebookGateTwo() { return true; }";
+	const ast = parse(disableToolsDesktop.string?.(source) ?? source);
+	await runPatchViaPasses(disableToolsDesktop, ast);
+	const runtime = Function(
+		`${print(ast)}; return { builtinTools, availableTools };`,
+	)();
+	const notebooks = runtime.builtinTools.filter(
+		(tool: { name: string }) => tool.name === "NotebookEdit",
+	);
+	assert.deepEqual(
+		runtime.availableTools(runtime.builtinTools, { shellAvailable: false }),
+		notebooks,
+	);
+});
+
+test("verification rejects any availability return that bypasses disabled tools", async () => {
+	const { output } = await applyFullPatch(TOOL_FIXTURE);
+	for (const removedReturn of [0, 1, 2]) {
+		const ast = parse(output);
+		let changed = false;
+		traverse(ast, {
+			FunctionDeclaration(path) {
+				if (path.node.id?.name !== "availableTools") return;
+				let index = 0;
+				path.traverse({
+					Function(inner) {
+						inner.skip();
+					},
+					ReturnStatement(inner) {
+						const call = inner.node.argument;
+						if (
+							index++ !== removedReturn ||
+							!t.isCallExpression(call) ||
+							!t.isMemberExpression(call.callee) ||
+							!t.isExpression(call.callee.object)
+						)
+							return;
+						inner.node.argument = t.cloneNode(call.callee.object, true);
+						changed = true;
+					},
+				});
+			},
+		});
+		assert.equal(changed, true);
+		const broken = print(ast);
+		assert.notEqual(disableTools.verify(broken, ast), true);
+		if (removedReturn === 2) {
+			const runtime = Function(
+				`${broken}; return { builtinTools, availableTools };`,
+			)();
+			assert.deepEqual(
+				runtime
+					.availableTools(runtime.builtinTools, { shellAvailable: false })
+					.map((tool: { name: string }) => tool.name),
+				["Grep", "Glob"],
+			);
+		}
+	}
+});
+
+test("verification rejects a missing final availability builder", async () => {
+	const { output } = await applyFullPatch(TOOL_FIXTURE);
+	const ast = parse(output);
+	traverse(ast, {
+		FunctionDeclaration(path) {
+			if (path.node.id?.name === "availableTools") path.remove();
+		},
+	});
+	assert.notEqual(disableTools.verify(print(ast), ast), true);
+});
 
 test("tool-disable policies are deeply immutable and preserve the CLI contract", () => {
 	assert.equal(Object.isFrozen(CLI_FULL_TOOL_DISABLE_POLICY), true);
@@ -572,6 +697,7 @@ EOF
 
 test("tools-off disables tools whose name resolves through a variable binding", async () => {
 	const input = `
+${AVAILABILITY_FIXTURE}
 var TOOL_GREP = "Grep";
 var TOOL_GLOB = "Glob";
 var TOOL_WS = "WebSearch";
@@ -721,6 +847,7 @@ test("tools-off fully overwrites a gated isEnabled body with return false (repla
 	// original gate identifiers. Every target tool is present so verify()
 	// (which requires every target tool to be registered) can stay green.
 	const input = `
+${AVAILABILITY_FIXTURE}
 var TOOL_WF = "WebFetch";
 const builtinTools = [
   { name: TOOL_WF, description: "d", inputSchema: {}, prompt: "p", isEnabled() { return allowFetchGate("x") && otherGate(); }, call() {} },
@@ -987,4 +1114,19 @@ const note = \`Reworded upstream copy naming the \${taskOutputName} tool.\`;
 
 	assert.notEqual(result, true);
 	assert.match(String(result), /still interpolates the disabled task-output/);
+});
+
+test("tool availability verification survives printing and reparsing", async () => {
+	const { output } = await applyFullPatch(TOOL_FIXTURE);
+	assert.equal(disableTools.verify(output, parse(output)), true);
+});
+
+test("tool availability verification rejects asynchronous predicates", async () => {
+	const { output } = await applyFullPatch(TOOL_FIXTURE);
+	const broken = output.replace(
+		/(\(tool\)\s*=>\s*true\s*&&\s*tool\.name\s*!==)/,
+		"async $1",
+	);
+	assert.notEqual(broken, output);
+	assert.notEqual(disableTools.verify(broken, parse(broken)), true);
 });

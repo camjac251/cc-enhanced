@@ -93,6 +93,38 @@ export const memoryPromptSoften: Patch = {
 		if (!code.includes(MODERN_MEMORY_READONLY_TEXT)) {
 			return "Memory/read-only prompt missing modern read-only inspection guidance";
 		}
+		const hasDreamSurface =
+			code.includes("Session transcripts: ") ||
+			MODERN_DREAM_TEXTS.some((modernText) => code.includes(modernText));
+		if (!hasDreamSurface) return true;
+		const transcriptPrefix = "Session transcripts: ";
+		const transcriptSuffix = " (large JSONL files. Use ";
+		const transcriptStart = code.indexOf(transcriptPrefix);
+		const transcriptGuidanceStart = code.indexOf(
+			transcriptSuffix,
+			transcriptStart === -1 ? 0 : transcriptStart + transcriptPrefix.length,
+		);
+		if (transcriptStart === -1 || transcriptGuidanceStart === -1) {
+			return "Dream memory prompt missing modern transcript-location guidance";
+		}
+		const transcriptPath = code.slice(
+			transcriptStart + transcriptPrefix.length,
+			transcriptGuidanceStart,
+		);
+		if (!/\$\{[^}]+\}/.test(transcriptPath)) {
+			return "Dream memory prompt missing transcript path interpolation";
+		}
+		const transcriptGuidanceEnd = code.indexOf(")", transcriptGuidanceStart);
+		const transcriptGuidance = code.slice(
+			transcriptGuidanceStart,
+			transcriptGuidanceEnd === -1 ? code.length : transcriptGuidanceEnd,
+		);
+		if (
+			!transcriptGuidance.includes("rg -m 50") ||
+			!transcriptGuidance.includes("don't read whole files")
+		) {
+			return "Dream memory prompt missing bounded transcript-read guidance";
+		}
 		if (
 			!code.includes("Use \\`eza team/\\`") &&
 			!code.includes("Use `eza team/`")

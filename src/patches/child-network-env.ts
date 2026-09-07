@@ -77,35 +77,16 @@ function isProcessEnv(
 	);
 }
 
-function hasCall(
-	node: t.Node,
-	objectName: string,
-	methodName: string,
-): boolean {
-	return nodeContains(
-		node,
-		(child) =>
-			t.isCallExpression(child) &&
-			t.isMemberExpression(child.callee) &&
-			t.isIdentifier(child.callee.object, { name: objectName }) &&
-			getMemberPropertyName(child.callee) === methodName,
-	);
-}
-
 function hasRestorePrelude(node: t.FunctionDeclaration): boolean {
-	return (
-		[ORIGINAL_NETWORK_ENV, CHILD_NETWORK_MODE, CHILD_UPSTREAM_PROXY].every(
-			(name) =>
-				nodeContains(node.body, (child) => getStaticString(child) === name),
-		) &&
-		NETWORK_ENV_VARS.every((name) =>
-			nodeContains(node.body, (child) => getStaticString(child) === name),
-		) &&
-		["original", "direct", "upstream"].every((mode) =>
-			nodeContains(node.body, (child) => getStaticString(child) === mode),
-		) &&
-		hasCall(node.body, "JSON", "parse") &&
-		hasCall(node.body, "Array", "isArray")
+	const first = node.body.body[0];
+	if (!t.isVariableDeclaration(first) || first.declarations.length !== 1)
+		return false;
+	const declaration = first.declarations[0];
+	if (!t.isIdentifier(declaration.id) || !isProcessEnv(declaration.init))
+		return false;
+	const expected = buildRestorePrelude(declaration.id.name);
+	return expected.every((statement, index) =>
+		t.isNodesEquivalent(statement, node.body.body[index]),
 	);
 }
 
@@ -134,70 +115,45 @@ function classifyChildEnvironment(
 	};
 }
 
-function buildRestorePrelude(
-	path: NodePath<t.FunctionDeclaration>,
-	childEnvName: string,
-): t.Statement[] {
-	const original = path.scope.generateUidIdentifier(
-		"originalNetworkEnvironment",
-	);
-	const mode = path.scope.generateUidIdentifier("childNetworkMode");
-	const upstreamProxy = path.scope.generateUidIdentifier("childUpstreamProxy");
-	const snapshot = path.scope.generateUidIdentifier("networkSnapshot");
-	const key = path.scope.generateUidIdentifier("networkKey");
-	const parseError = path.scope.generateUidIdentifier("networkSnapshotError");
+function buildRestorePrelude(childEnvName: string): t.Statement[] {
 	const source = parse(`
 function restoreChildNetworkEnvironment() {
-  let ${childEnvName} = process.env,
-    ${original.name} = ${childEnvName}[${JSON.stringify(ORIGINAL_NETWORK_ENV)}],
-    ${mode.name} = ${childEnvName}[${JSON.stringify(CHILD_NETWORK_MODE)}] || "original",
-    ${upstreamProxy.name} = ${childEnvName}[${JSON.stringify(CHILD_UPSTREAM_PROXY)}];
-  if (
-    ${original.name} !== void 0 ||
-    ${childEnvName}[${JSON.stringify(CHILD_NETWORK_MODE)}] !== void 0 ||
-    ${childEnvName}[${JSON.stringify(CHILD_UPSTREAM_PROXY)}] !== void 0
-  ) {
-    ${childEnvName} = { ...${childEnvName} };
-    delete ${childEnvName}[${JSON.stringify(ORIGINAL_NETWORK_ENV)}];
-    delete ${childEnvName}[${JSON.stringify(CHILD_NETWORK_MODE)}];
-    delete ${childEnvName}[${JSON.stringify(CHILD_UPSTREAM_PROXY)}];
-    if (${mode.name} === "direct" || ${mode.name} === "upstream") {
-      for (let ${key.name} of ${JSON.stringify(NETWORK_ENV_VARS)}) {
-        delete ${childEnvName}[${key.name}];
+ let ${childEnvName} = process.env;
+ {
+  const original = ${childEnvName}[${JSON.stringify(ORIGINAL_NETWORK_ENV)}],
+   mode = ${childEnvName}[${JSON.stringify(CHILD_NETWORK_MODE)}] || "original",
+   upstreamProxy = ${childEnvName}[${JSON.stringify(CHILD_UPSTREAM_PROXY)}];
+  if (original !== void 0 || ${childEnvName}[${JSON.stringify(CHILD_NETWORK_MODE)}] !== void 0 || ${childEnvName}[${JSON.stringify(CHILD_UPSTREAM_PROXY)}] !== void 0) {
+   ${childEnvName} = { ...${childEnvName} };
+   delete ${childEnvName}[${JSON.stringify(ORIGINAL_NETWORK_ENV)}];
+   delete ${childEnvName}[${JSON.stringify(CHILD_NETWORK_MODE)}];
+   delete ${childEnvName}[${JSON.stringify(CHILD_UPSTREAM_PROXY)}];
+   if (mode === "direct" || mode === "upstream") {
+    for (const key of ${JSON.stringify(NETWORK_ENV_VARS)}) delete ${childEnvName}[key];
+   }
+   if (mode === "upstream" && typeof upstreamProxy === "string" && upstreamProxy) {
+    for (const key of ${JSON.stringify(PROXY_ENV_VARS)}) ${childEnvName}[key] = upstreamProxy;
+   }
+   if (mode === "original" && original !== void 0) {
+    try {
+     const snapshot = JSON.parse(original);
+     if (snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)) {
+      for (const key of ${JSON.stringify(NETWORK_ENV_VARS)}) {
+       if (typeof snapshot[key] === "string") ${childEnvName}[key] = snapshot[key];
+       else delete ${childEnvName}[key];
       }
+     }
+    } catch (error) {
+     if (!(error instanceof SyntaxError)) throw error;
     }
-    if (
-      ${mode.name} === "upstream" &&
-      typeof ${upstreamProxy.name} === "string" &&
-      ${upstreamProxy.name}
-    ) {
-      for (let ${key.name} of ${JSON.stringify(PROXY_ENV_VARS)}) {
-        ${childEnvName}[${key.name}] = ${upstreamProxy.name};
-      }
-    }
-    if (${mode.name} === "original" && ${original.name} !== void 0) {
-      try {
-        let ${snapshot.name} = JSON.parse(${original.name});
-        if (${snapshot.name} && typeof ${snapshot.name} === "object" && !Array.isArray(${snapshot.name})) {
-          for (let ${key.name} of ${JSON.stringify(NETWORK_ENV_VARS)}) {
-            if (typeof ${snapshot.name}[${key.name}] === "string") {
-              ${childEnvName}[${key.name}] = ${snapshot.name}[${key.name}];
-            } else {
-              delete ${childEnvName}[${key.name}];
-            }
-          }
-        }
-      } catch (${parseError.name}) {
-        if (!(${parseError.name} instanceof SyntaxError)) throw ${parseError.name};
-      }
-    }
+   }
   }
+ }
 }
 `);
 	const wrapper = source.program.body[0];
-	if (!t.isFunctionDeclaration(wrapper)) {
+	if (!t.isFunctionDeclaration(wrapper))
 		throw new Error("child-network-env: failed to build restore prelude");
-	}
 	return wrapper.body.body;
 }
 
@@ -216,9 +172,7 @@ function patchCandidate(candidate: ChildEnvironmentCandidate): boolean {
 	for (const path of processEnvPaths) {
 		path.replaceWith(t.identifier(childEnv.name));
 	}
-	candidate.path.node.body.body.unshift(
-		...buildRestorePrelude(candidate.path, childEnv.name),
-	);
+	candidate.path.node.body.body.unshift(...buildRestorePrelude(childEnv.name));
 	candidate.path.scope.crawl();
 	return hasRestorePrelude(candidate.path.node);
 }

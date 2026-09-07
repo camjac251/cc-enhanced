@@ -31,9 +31,23 @@ function findModel(catalog, model) {
   const normalized = String(model).trim().toLowerCase();
   return catalogModels(catalog).find((entry) => entry.id.toLowerCase() === normalized);
 }
+var explicitContext;
+function declaredContext() { return explicitContext; }
+function setExplicitContext(value) { explicitContext = value; }
+function allowsMillion(model, catalog) {
+  return false;
+}
+function fallbackContext(model, catalog) {
+  return findModel(catalog, model)?.runtime?.max_input_tokens ?? findModel(catalog, model)?.context_window ?? 333000;
+}
+function effectiveContext(model, catalog) {
+  let declared = declaredContext();
+  if (declared !== void 0) return declared;
+  if (allowsMillion(model, catalog)) return 1000000;
+  return fallbackContext(model, catalog);
+}
 function contextWindow(catalog, model) {
-  const entry = findModel(catalog, model);
-  return entry?.runtime?.max_input_tokens ?? entry?.context_window ?? 333000;
+  return effectiveContext(model, catalog);
 }
 function outputLimit(catalog, model) {
   return findModel(catalog, model)?.runtime?.max_output_tokens;
@@ -137,11 +151,11 @@ test("verify rejects unpatched catalog metadata", () => {
 
 test("model-context-metadata rejects inert generated markers", () => {
 	const decoy = LATEST_MODEL_METADATA_FIXTURE.replace(
-		"return catalog.config.models ?? [];",
-		"const __ccConfiguredModelIds = new Set(); return catalog.config.models ?? [];",
+		"let declared = declaredContext(model, catalog);",
+		"const __ccConfiguredContextWindow = 1; let declared = declaredContext(model, catalog);",
 	).replace(
-		"const contextCeiling = contextWindow(catalog, model);",
-		"const __ccConfiguredAutoCompactWindow = 1; const contextCeiling = contextWindow(catalog, model);",
+		"return effectiveContext(model, catalog);",
+		"const __ccConfiguredAutoCompactWindow = 1; return effectiveContext(model, catalog);",
 	);
 	assert.notEqual(decoy, LATEST_MODEL_METADATA_FIXTURE);
 	const ast = parse(decoy);
@@ -306,4 +320,24 @@ test("model-context-metadata fails closed on ambiguous catalog accessors", async
 		String(modelContextMetadata.verify(output, ast)),
 		/ambiguous|missing/,
 	);
+});
+
+test("configured context works without a served catalog and preserves explicit caps", async () => {
+	const { output } = await patchFixture();
+	const runtime = new Function(
+		`${output}; return {contextWindow, setExplicitContext};`,
+	)();
+	const previous = process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG;
+	process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG = JSON.stringify([
+		{ id: "provider/custom", max_input_tokens: 828400 },
+	]);
+	try {
+		assert.equal(runtime.contextWindow(null, "provider/custom"), 828400);
+		runtime.setExplicitContext(100000);
+		assert.equal(runtime.contextWindow(null, "provider/custom"), 100000);
+	} finally {
+		if (previous === undefined)
+			delete process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG;
+		else process.env.CLAUDE_CODE_CONFIGURED_MODEL_CATALOG = previous;
+	}
 });

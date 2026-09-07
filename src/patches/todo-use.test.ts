@@ -271,3 +271,25 @@ User: Run npm install for me and tell me what happens.
 	);
 	assert.equal(String(result).toLowerCase().includes("stale"), true);
 });
+
+test("todo-use verify requires both condensed skip bullets inside their section", () => {
+	const skipBullets = [
+		"- Skip it for quick, single-step tasks where tracking would add overhead.",
+		"- Clear stale entries so the list only mirrors the active work.",
+	].join("\n");
+	const patched = todo.string?.(TODO_FIXTURE) ?? TODO_FIXTURE;
+	const broken = `${patched.replace(`${skipBullets}\n`, "")}\n${skipBullets}`;
+	const result = todo.verify(broken);
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /not located inside the skip section/);
+});
+
+test("todo-use verify requires both condensed use bullets inside their section", () => {
+	const secondBullet =
+		"- Keep items current as you work so the list reflects real progress.";
+	const patched = todo.string?.(TODO_FIXTURE) ?? TODO_FIXTURE;
+	const broken = `${patched.replace(`${secondBullet}\n`, "")}\n${secondBullet}`;
+	const result = todo.verify(broken);
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /not located inside the use section/);
+});

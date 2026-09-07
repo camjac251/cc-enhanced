@@ -118,7 +118,10 @@ function XF8() {
     return A.has(j);
   }
 
-  function g(Y) { return VER.get(Y); }
+  function g(Y) { let I = (VER.get(Y) ?? 0) + 1; VER.set(Y, I); return I; }
+  function versionValue(uri) { return VER.get(uri); }
+  function touch(Y, N) { let I = A.get(Y); if (!(I instanceof Set)) I = I === undefined ? new Set() : new Set([I]); A.delete(Y); A.set(Y, I); }
+  function evict() { for (let [Y, N] of A) { if (A.size <= 50) return; A.delete(Y); let I = H.get(N); if (!I || I.state !== "running") continue; I.sendNotification("textDocument/didClose", { textDocument: { uri: Y } }); } }
 
   return {
     initialize: L,
@@ -130,7 +133,7 @@ function XF8() {
     changeFile: P,
     saveFile: O,
     isFileOpen: z,
-    getDocumentVersion: g,
+    getDocumentVersion: versionValue,
   };
 }
 `;
@@ -583,4 +586,106 @@ test("lsp-multi-server routes Dockerfile and globs through lifecycle functions (
 	notifications.length = 0;
 	await mgr.openFile("notes.txt", "plain text");
 	assert.deepEqual(notifications, []);
+});
+
+async function makeLifecycleRuntime() {
+	const ast = parse(LSP_FACTORY_FIXTURE);
+	await runViaPasses(ast);
+	const manager = vm.runInNewContext(`${print(ast)}; XF8`)();
+	const notifications: Array<{
+		server: string;
+		method: string;
+		uri: string;
+		version?: number;
+	}> = [];
+	const servers = ["first", "second"].map((name) => ({
+		name,
+		state: "running",
+		starts: 0,
+		config: {
+			extensionToLanguage: { ".py": "python" },
+			filenamePatterns: { "*.py": "python" },
+		},
+		async start() {
+			this.starts++;
+			this.state = "running";
+		},
+		async sendNotification(
+			method: string,
+			params: { textDocument: { uri: string; version?: number } },
+		) {
+			notifications.push({ server: name, method, ...params.textDocument });
+		},
+		async sendRequest() {
+			return "resolved";
+		},
+	}));
+	for (const server of servers)
+		manager.getAllServers().set(server.name, server);
+	return { manager, notifications, servers };
+}
+
+test("LSP fan-out preserves versions and reopens every file after a server restart", async () => {
+	const { manager, notifications, servers } = await makeLifecycleRuntime();
+	await manager.openFile("a.py", "first");
+	await manager.changeFile("a.py", "second");
+	await manager.changeFile("a.py", "third");
+	assert.deepEqual(
+		notifications.map((item) => item.version),
+		[1, 1, 2, 2, 3, 3],
+	);
+	assert.equal(manager.getDocumentVersion("file:///abs/a.py"), 3);
+	await manager.openFile("b.py", "other");
+	servers[0].state = "error";
+	assert.equal(manager.isFileOpen("a.py"), false);
+	await manager.openFile("a.py", "third");
+	assert.equal(servers[0].starts, 1);
+	notifications.length = 0;
+	assert.equal(manager.isFileOpen("b.py"), false);
+	await manager.openFile("b.py", "other");
+	assert.deepEqual(
+		notifications.map((item) => [item.server, item.method]),
+		[["first", "textDocument/didOpen"]],
+	);
+	assert.equal(manager.isFileOpen("b.py"), true);
+});
+
+test("LSP eviction closes both servers and respects recent requests", async () => {
+	const { manager, notifications } = await makeLifecycleRuntime();
+	for (let index = 0; index < 50; index++)
+		await manager.openFile(`${index}.py`, "content");
+	await manager.sendRequest("0.py", "textDocument/hover", {});
+	await manager.openFile("50.py", "content");
+	assert.deepEqual(
+		notifications
+			.filter((item) => item.method === "textDocument/didClose")
+			.map((item) => [item.server, item.uri]),
+		[
+			["first", "file:///abs/1.py"],
+			["second", "file:///abs/1.py"],
+		],
+	);
+	assert.equal(manager.isFileOpen("1.py"), false);
+	assert.equal(manager.isFileOpen("0.py"), true);
+});
+
+test("a primary startup failure does not block a healthy secondary", async () => {
+	const { manager, notifications, servers } = await makeLifecycleRuntime();
+	servers[0].state = "stopped";
+	servers[0].start = async () => {
+		throw new Error("missing executable");
+	};
+	await manager.openFile("a.py", "first");
+	await manager.changeFile("a.py", "second");
+	assert.equal(
+		await manager.sendRequest("a.py", "textDocument/hover", {}),
+		"resolved",
+	);
+	assert.deepEqual(
+		notifications.map((item) => [item.server, item.method]),
+		[
+			["second", "textDocument/didOpen"],
+			["second", "textDocument/didChange"],
+		],
+	);
 });

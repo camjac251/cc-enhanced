@@ -7,426 +7,360 @@ type FunctionLike =
 	| t.FunctionDeclaration
 	| t.FunctionExpression
 	| t.ArrowFunctionExpression;
-
 interface NativeQueueTarget {
-	ownerFunction: NodePath<FunctionLike>;
 	handler: NodePath<FunctionLike>;
-	keyParam: t.Identifier;
-	input: t.Expression;
+	key: t.Identifier;
+	input: t.MemberExpression;
 	loading: t.Expression;
-	submit: t.Expression;
+	submit: t.Identifier;
+	gestureSpent: t.Identifier;
+	suggestions: t.Identifier;
+	ghostText: t.Expression;
 	editQueued: t.Identifier;
 }
-
-function getObjectPropertyValue(
+function property(
 	object: t.ObjectExpression,
 	name: string,
 ): t.Expression | null {
-	const property = getObjectPropertyByName(object, name);
-	return property && t.isExpression(property.value) ? property.value : null;
+	const value = getObjectPropertyByName(object, name)?.value;
+	return t.isExpression(value) ? value : null;
 }
-
-function hasObjectProperty(object: t.ObjectExpression, name: string): boolean {
-	return getObjectPropertyByName(object, name) !== null;
+function memberName(node: t.Node): string | null {
+	if (!t.isMemberExpression(node) && !t.isOptionalMemberExpression(node))
+		return null;
+	if (!node.computed && t.isIdentifier(node.property))
+		return node.property.name;
+	return t.isStringLiteral(node.property) ? node.property.value : null;
 }
-
-function getMemberName(node: t.Node | null | undefined): string | null {
-	if (!node) return null;
-	if (t.isMemberExpression(node) || t.isOptionalMemberExpression(node)) {
-		if (t.isIdentifier(node.property)) return node.property.name;
-		if (t.isStringLiteral(node.property)) return node.property.value;
-	}
-	return null;
-}
-
-function nodeContains(
-	node: t.Node | null | undefined,
-	predicate: (candidate: t.Node) => boolean,
-): boolean {
-	if (!node) return false;
+function contains(node: t.Node, predicate: (node: t.Node) => boolean): boolean {
 	let found = false;
 	t.traverseFast(node, (candidate) => {
 		if (!found && predicate(candidate)) found = true;
 	});
 	return found;
 }
-
-function findNearestFunction(
+function bindingFunction(
 	path: NodePath<t.Node>,
-): NodePath<FunctionLike> | null {
-	const parent = path.findParent((candidate) => candidate.isFunction());
-	if (
-		parent?.isFunctionDeclaration() ||
-		parent?.isFunctionExpression() ||
-		parent?.isArrowFunctionExpression()
-	) {
-		return parent as NodePath<FunctionLike>;
-	}
-	return null;
-}
-
-function findFunctionBinding(
-	scopePath: NodePath<t.Node>,
 	name: string,
 ): NodePath<FunctionLike> | null {
-	const binding = scopePath.scope.getBinding(name);
+	const binding = path.scope.getBinding(name)?.path;
 	if (!binding) return null;
-	const bindingPath = binding.path;
-	if (bindingPath.isFunctionDeclaration()) return bindingPath;
-	if (bindingPath.isFunctionExpression()) return bindingPath;
-	if (bindingPath.isArrowFunctionExpression()) return bindingPath;
-	if (!bindingPath.isVariableDeclarator()) return null;
-	const init = bindingPath.get("init");
-	if (Array.isArray(init)) return null;
-	if (init?.isFunctionExpression() || init?.isArrowFunctionExpression()) {
-		return init as NodePath<FunctionLike>;
-	}
-	if (init?.isCallExpression()) {
-		const args = init.get("arguments");
-		const firstArg = Array.isArray(args) ? args[0] : null;
-		if (
-			firstArg?.isFunctionExpression() ||
-			firstArg?.isArrowFunctionExpression()
-		) {
-			return firstArg as NodePath<FunctionLike>;
-		}
+	if (
+		binding.isFunctionDeclaration() ||
+		binding.isFunctionExpression() ||
+		binding.isArrowFunctionExpression()
+	)
+		return binding;
+	if (!binding.isVariableDeclarator()) return null;
+	const init = binding.get("init");
+	if (init.isFunctionExpression() || init.isArrowFunctionExpression())
+		return init;
+	if (init.isCallExpression()) {
+		const first = init.get("arguments")[0];
+		if (first?.isFunctionExpression() || first?.isArrowFunctionExpression())
+			return first;
 	}
 	return null;
 }
-
-function getFirstIdentifierParam(
-	path: NodePath<FunctionLike>,
+function patternBinding(
+	pattern: t.ObjectPattern,
+	key: string,
 ): t.Identifier | null {
-	const [parameter] = path.node.params;
-	return t.isIdentifier(parameter) ? parameter : null;
+	for (const entry of pattern.properties) {
+		if (!t.isObjectProperty(entry)) continue;
+		const name = t.isIdentifier(entry.key)
+			? entry.key.name
+			: t.isStringLiteral(entry.key)
+				? entry.key.value
+				: null;
+		if (name !== key) continue;
+		const value = t.isAssignmentPattern(entry.value)
+			? entry.value.left
+			: entry.value;
+		return t.isIdentifier(value) ? value : null;
+	}
+	return null;
 }
-
-function isInputConfigObject(object: t.ObjectExpression): boolean {
-	return [
-		"onKeyDownBefore",
-		"onSubmit",
-		"onChange",
-		"value",
-		"disableEscapeDoublePress",
-		"inputFilter",
-	].every((name) => hasObjectProperty(object, name));
-}
-
-function findLoadingExpression(
-	handler: NodePath<FunctionLike>,
-): t.Expression | null {
-	const candidates: t.Expression[] = [];
+function discoverTarget(
+	path: NodePath<t.ObjectExpression>,
+): NativeQueueTarget | null {
+	if (
+		![
+			"onKeyDownBefore",
+			"onSubmit",
+			"onChange",
+			"value",
+			"disableEscapeDoublePress",
+			"inputFilter",
+			"inlineGhostText",
+		].every((key) => property(path.node, key))
+	)
+		return null;
+	const handlerRef = property(path.node, "onKeyDownBefore");
+	const ghostText = property(path.node, "inlineGhostText");
+	if (!t.isIdentifier(handlerRef) || !ghostText) return null;
+	const owner = path.getFunctionParent();
+	const handler = bindingFunction(path, handlerRef.name);
+	if (
+		!owner ||
+		!handler ||
+		!t.isBlockStatement(owner.node.body) ||
+		!t.isBlockStatement(handler.node.body)
+	)
+		return null;
+	const key = handler.node.params[0];
+	if (!t.isIdentifier(key)) return null;
+	let props: t.ObjectPattern | null = null;
+	for (const statement of owner.node.body.body) {
+		if (!t.isVariableDeclaration(statement)) continue;
+		for (const declaration of statement.declarations) {
+			if (!t.isObjectPattern(declaration.id)) continue;
+			if (
+				[
+					"draft",
+					"onSubmit",
+					"chordGestureSpent",
+					"suggestionsStore",
+					"historySearchKeyDown",
+				].every((name) =>
+					patternBinding(declaration.id as t.ObjectPattern, name),
+				)
+			) {
+				if (props) return null;
+				props = declaration.id;
+			}
+		}
+	}
+	if (!props) return null;
+	const draft = patternBinding(props, "draft");
+	const submit = patternBinding(props, "onSubmit");
+	const gestureSpent = patternBinding(props, "chordGestureSpent");
+	const suggestions = patternBinding(props, "suggestionsStore");
+	if (!draft || !submit || !gestureSpent || !suggestions) return null;
+	const loading: t.Expression[] = [];
 	handler.traverse({
-		Function(path) {
-			if (path.node !== handler.node) path.skip();
+		Function(inner) {
+			inner.skip();
 		},
-		MemberExpression(path) {
-			if (getMemberName(path.node) !== "isLoading") return;
-			const object = path.node.object;
+		MemberExpression(inner) {
+			if (memberName(inner.node) !== "isLoading") return;
+			const object = inner.node.object;
 			if (
 				!t.isCallExpression(object) ||
 				!t.isMemberExpression(object.callee) ||
-				getMemberName(object.callee) !== "getSnapshot"
-			) {
+				memberName(object.callee) !== "getSnapshot"
+			)
 				return;
-			}
-			if (
-				!candidates.some((candidate) =>
-					t.isNodesEquivalent(candidate, path.node),
-				)
-			) {
-				candidates.push(path.node);
-			}
+			if (!loading.some((node) => t.isNodesEquivalent(node, inner.node)))
+				loading.push(inner.node);
 		},
 	});
-	return candidates.length === 1 ? candidates[0] : null;
-}
-
-function findNativeEditCallback(
-	owner: NodePath<FunctionLike>,
-): t.Identifier | null {
-	const candidates: t.Identifier[] = [];
+	if (loading.length !== 1) return null;
+	const editors: t.Identifier[] = [];
 	owner.traverse({
-		Function(path) {
-			if (path.node === owner.node) return;
+		Function(inner) {
 			if (
-				!nodeContains(
-					path.node,
-					(candidate) =>
-						t.isCallExpression(candidate) &&
-						t.isMemberExpression(candidate.callee) &&
-						getMemberName(candidate.callee) === "popAllEditable",
+				contains(
+					inner.node,
+					(node) =>
+						t.isCallExpression(node) &&
+						t.isMemberExpression(node.callee) &&
+						memberName(node.callee) === "popAllEditable",
 				)
 			) {
-				path.skip();
-				return;
+				const parent = inner.parentPath;
+				if (parent.isVariableDeclarator() && t.isIdentifier(parent.node.id))
+					editors.push(parent.node.id);
+				else if (
+					parent.isAssignmentExpression() &&
+					t.isIdentifier(parent.node.left)
+				)
+					editors.push(parent.node.left);
 			}
-			const parent = path.parentPath;
-			if (
-				parent?.isAssignmentExpression() &&
-				parent.node.right === path.node &&
-				t.isIdentifier(parent.node.left)
-			) {
-				candidates.push(parent.node.left);
-			} else if (
-				parent?.isVariableDeclarator() &&
-				parent.node.init === path.node &&
-				t.isIdentifier(parent.node.id)
-			) {
-				candidates.push(parent.node.id);
-			}
-			path.skip();
+			inner.skip();
 		},
 	});
-	return candidates.length === 1 ? candidates[0] : null;
-}
-
-function getNativeQueueTarget(
-	path: NodePath<t.ObjectExpression>,
-): NativeQueueTarget | null {
-	if (!isInputConfigObject(path.node)) return null;
-	const handlerExpression = getObjectPropertyValue(
-		path.node,
-		"onKeyDownBefore",
-	);
-	const submit = getObjectPropertyValue(path.node, "onSubmit");
-	const input = getObjectPropertyValue(path.node, "value");
-	if (!t.isIdentifier(handlerExpression) || !submit || !input) return null;
-	const ownerFunction = findNearestFunction(path);
-	if (!ownerFunction) return null;
-	const handler = findFunctionBinding(path, handlerExpression.name);
-	if (!handler) return null;
-	const keyParam = getFirstIdentifierParam(handler);
-	if (!keyParam) return null;
-	const loading = findLoadingExpression(handler);
-	if (!loading) return null;
-	const editQueued = findNativeEditCallback(ownerFunction);
-	if (!editQueued) return null;
+	if (editors.length !== 1) return null;
 	return {
-		ownerFunction,
 		handler,
-		keyParam,
-		input,
-		loading,
+		key,
+		input: t.memberExpression(t.cloneNode(draft), t.identifier("value")),
+		loading: loading[0],
 		submit,
-		editQueued,
+		gestureSpent,
+		suggestions,
+		ghostText,
+		editQueued: editors[0],
 	};
 }
-
-function buildAnd(expressions: t.Expression[]): t.Expression {
-	let current = expressions[0];
-	for (let index = 1; index < expressions.length; index += 1) {
-		current = t.logicalExpression("&&", current, expressions[index]);
-	}
-	return current;
+function and(expressions: t.Expression[]): t.Expression {
+	return expressions.reduce((left, right) =>
+		t.logicalExpression("&&", left, right),
+	);
 }
-
-function buildTabKeyTest(key: t.Identifier): t.Expression {
-	return buildAnd([
+function plainTab(key: t.Identifier): t.Expression {
+	return and([
 		t.binaryExpression(
 			"===",
 			t.memberExpression(t.cloneNode(key), t.identifier("name")),
 			t.stringLiteral("tab"),
 		),
-		...(["shift", "ctrl", "meta"] as const).map((property) =>
+		...["shift", "ctrl", "meta", "superKey"].map((name) =>
 			t.unaryExpression(
 				"!",
-				t.memberExpression(t.cloneNode(key), t.identifier(property)),
+				t.memberExpression(t.cloneNode(key), t.identifier(name)),
 			),
 		),
 	]);
 }
-
-function buildTrimCall(input: t.Expression): t.CallExpression {
-	return t.callExpression(
-		t.memberExpression(t.cloneNode(input, true), t.identifier("trim")),
-		[],
+function trimComparison(
+	target: NativeQueueTarget,
+	operator: "===" | "!==",
+): t.Expression {
+	return t.binaryExpression(
+		operator,
+		t.callExpression(
+			t.memberExpression(t.cloneNode(target.input, true), t.identifier("trim")),
+			[],
+		),
+		t.stringLiteral(""),
 	);
 }
-
-function buildPreventDefault(key: t.Identifier): t.Statement {
+function preventDefault(target: NativeQueueTarget): t.Statement {
 	return t.expressionStatement(
 		t.callExpression(
-			t.memberExpression(t.cloneNode(key), t.identifier("preventDefault")),
+			t.memberExpression(
+				t.cloneNode(target.key),
+				t.identifier("preventDefault"),
+			),
 			[],
 		),
 	);
 }
-
 function buildQueueGuard(target: NativeQueueTarget): t.IfStatement {
 	return t.ifStatement(
-		buildAnd([
-			buildTabKeyTest(target.keyParam),
+		and([
+			plainTab(target.key),
 			t.cloneNode(target.loading, true),
-			t.binaryExpression(
-				"!==",
-				buildTrimCall(target.input),
-				t.stringLiteral(""),
-			),
+			trimComparison(target, "!=="),
 		]),
 		t.blockStatement([
-			buildPreventDefault(target.keyParam),
-			t.expressionStatement(
-				t.callExpression(t.cloneNode(target.submit, true), [
-					t.cloneNode(target.input, true),
+			preventDefault(target),
+			t.ifStatement(
+				t.unaryExpression(
+					"!",
+					t.callExpression(t.cloneNode(target.gestureSpent), [
+						t.unaryExpression("void", t.numericLiteral(0)),
+					]),
+				),
+				t.blockStatement([
+					// The input's ordinary one-argument wrapper drops native queue intent.
+					t.expressionStatement(
+						t.callExpression(t.cloneNode(target.submit), [
+							t.cloneNode(target.input, true),
+							t.booleanLiteral(true),
+							t.unaryExpression("void", t.numericLiteral(0)),
+							t.booleanLiteral(true),
+						]),
+					),
 				]),
 			),
 			t.returnStatement(),
 		]),
 	);
 }
-
 function buildEditGuard(target: NativeQueueTarget): t.IfStatement {
-	return t.ifStatement(
-		buildAnd([
-			buildTabKeyTest(target.keyParam),
-			t.binaryExpression(
-				"===",
-				buildTrimCall(target.input),
-				t.stringLiteral(""),
+	const activeSuggestions = t.memberExpression(
+		t.memberExpression(
+			t.callExpression(
+				t.memberExpression(
+					t.cloneNode(target.suggestions),
+					t.identifier("getState"),
+				),
+				[],
 			),
+			t.identifier("suggestions"),
+		),
+		t.identifier("length"),
+	);
+	return t.ifStatement(
+		and([
+			plainTab(target.key),
+			trimComparison(target, "==="),
+			t.binaryExpression("===", activeSuggestions, t.numericLiteral(0)),
+			t.unaryExpression("!", t.cloneNode(target.ghostText, true)),
 			t.callExpression(t.cloneNode(target.editQueued), []),
 		]),
-		t.blockStatement([
-			buildPreventDefault(target.keyParam),
-			t.returnStatement(),
-		]),
+		t.blockStatement([preventDefault(target), t.returnStatement()]),
 	);
 }
-
-function expressionHasTabKeyTest(
-	expression: t.Expression,
-	key: t.Identifier,
-): boolean {
-	return nodeContains(
-		expression,
-		(candidate) =>
-			t.isBinaryExpression(candidate, { operator: "===" }) &&
-			t.isMemberExpression(candidate.left) &&
-			t.isIdentifier(candidate.left.object, { name: key.name }) &&
-			getMemberName(candidate.left) === "name" &&
-			t.isStringLiteral(candidate.right, { value: "tab" }),
-	);
-}
-
-function expressionHasTrimComparison(
-	expression: t.Expression,
-	input: t.Expression,
-	operator: "===" | "!==",
-): boolean {
-	return nodeContains(expression, (candidate) => {
-		if (!t.isBinaryExpression(candidate, { operator })) return false;
-		if (!t.isStringLiteral(candidate.right, { value: "" })) return false;
-		const left = candidate.left;
-		return (
-			t.isCallExpression(left) &&
-			t.isMemberExpression(left.callee) &&
-			getMemberName(left.callee) === "trim" &&
-			t.isNodesEquivalent(left.callee.object, input)
-		);
-	});
-}
-
-function statementPreventsDefault(
-	statement: t.Statement,
-	key: t.Identifier,
-): boolean {
-	return nodeContains(
-		statement,
-		(candidate) =>
-			t.isCallExpression(candidate) &&
-			t.isMemberExpression(candidate.callee) &&
-			t.isIdentifier(candidate.callee.object, { name: key.name }) &&
-			getMemberName(candidate.callee) === "preventDefault",
-	);
-}
-
-function hasQueueGuard(target: NativeQueueTarget): boolean {
-	if (!t.isBlockStatement(target.handler.node.body)) return false;
-	return target.handler.node.body.body.some((statement) => {
-		if (!t.isIfStatement(statement)) return false;
-		return (
-			expressionHasTabKeyTest(statement.test, target.keyParam) &&
-			nodeContains(statement.test, (candidate) =>
-				t.isNodesEquivalent(candidate, target.loading),
-			) &&
-			expressionHasTrimComparison(statement.test, target.input, "!==") &&
-			nodeContains(
-				statement.consequent,
-				(candidate) =>
-					t.isCallExpression(candidate) &&
-					t.isNodesEquivalent(candidate.callee, target.submit) &&
-					candidate.arguments.length === 1 &&
-					t.isNodesEquivalent(candidate.arguments[0] as t.Node, target.input),
-			) &&
-			statementPreventsDefault(statement.consequent, target.keyParam)
-		);
-	});
-}
-
-function hasEditGuard(target: NativeQueueTarget): boolean {
-	if (!t.isBlockStatement(target.handler.node.body)) return false;
-	return target.handler.node.body.body.some((statement) => {
-		if (!t.isIfStatement(statement)) return false;
-		return (
-			expressionHasTabKeyTest(statement.test, target.keyParam) &&
-			expressionHasTrimComparison(statement.test, target.input, "===") &&
-			nodeContains(
-				statement.test,
-				(candidate) =>
-					t.isCallExpression(candidate) &&
-					t.isIdentifier(candidate.callee, { name: target.editQueued.name }),
-			) &&
-			statementPreventsDefault(statement.consequent, target.keyParam)
-		);
-	});
-}
-
-function isPreventedGuard(statement: t.Statement): boolean {
-	return (
-		t.isIfStatement(statement) &&
-		nodeContains(
-			statement.test,
-			(candidate) =>
-				(t.isMemberExpression(candidate) ||
-					t.isOptionalMemberExpression(candidate)) &&
+function preventionIndices(body: t.Statement[]): number[] {
+	const indices: number[] = [];
+	for (let index = 0; index < body.length; index++) {
+		const statement = body[index];
+		if (
+			t.isIfStatement(statement) &&
+			contains(statement.test, (node) =>
 				["defaultPrevented", "didStopImmediatePropagation"].includes(
-					getMemberName(candidate) ?? "",
+					memberName(node) ?? "",
 				),
+			)
 		)
+			indices.push(index);
+	}
+	return indices;
+}
+function guardIndices(
+	target: NativeQueueTarget,
+): { edit: number; queue: number; first: number; last: number } | null {
+	if (!t.isBlockStatement(target.handler.node.body)) return null;
+	const body = target.handler.node.body.body;
+	const native = preventionIndices(body);
+	if (native.length !== 2) return null;
+	return {
+		edit: body.findIndex((node) =>
+			t.isNodesEquivalent(node, buildEditGuard(target)),
+		),
+		queue: body.findIndex((node) =>
+			t.isNodesEquivalent(node, buildQueueGuard(target)),
+		),
+		first: native[0],
+		last: native[1],
+	};
+}
+function isPatched(target: NativeQueueTarget): boolean {
+	const indices = guardIndices(target);
+	return (
+		!!indices &&
+		indices.edit === indices.first + 1 &&
+		indices.edit < indices.last &&
+		indices.queue === indices.last + 1
 	);
 }
-
-function patchNativeQueueTarget(target: NativeQueueTarget): boolean {
-	if (!t.isBlockStatement(target.handler.node.body)) return false;
-	const queuePatched = hasQueueGuard(target);
-	const editPatched = hasEditGuard(target);
-	if (queuePatched && editPatched) return true;
-	let insertionIndex = -1;
-	for (
-		let index = 0;
-		index < target.handler.node.body.body.length;
-		index += 1
-	) {
-		if (isPreventedGuard(target.handler.node.body.body[index]))
-			insertionIndex = index;
-	}
-	const statements: t.Statement[] = [];
-	if (!editPatched) statements.push(buildEditGuard(target));
-	if (!queuePatched) statements.push(buildQueueGuard(target));
-	target.handler.node.body.body.splice(insertionIndex + 1, 0, ...statements);
-	return hasQueueGuard(target) && hasEditGuard(target);
+function patchTarget(target: NativeQueueTarget): boolean {
+	if (isPatched(target)) return true;
+	const indices = guardIndices(target);
+	if (
+		!indices ||
+		indices.edit !== -1 ||
+		indices.queue !== -1 ||
+		!t.isBlockStatement(target.handler.node.body)
+	)
+		return false;
+	const body = target.handler.node.body.body;
+	body.splice(indices.last + 1, 0, buildQueueGuard(target));
+	// History search keeps precedence; queued editing beats the empty-Tab hint.
+	body.splice(indices.first + 1, 0, buildEditGuard(target));
+	return isPatched(target);
 }
-
-function createTabQueuePasses(): PatchAstPass[] {
+function createPasses(): PatchAstPass[] {
 	const targets: NativeQueueTarget[] = [];
-	let patched = false;
 	return [
 		{
 			pass: "discover",
 			visitor: {
 				ObjectExpression(path) {
-					const target = getNativeQueueTarget(path);
+					const target = discoverTarget(path);
 					if (target) targets.push(target);
 				},
 			},
@@ -436,42 +370,33 @@ function createTabQueuePasses(): PatchAstPass[] {
 			visitor: {
 				Program: {
 					exit() {
-						if (targets.length === 1)
-							patched = patchNativeQueueTarget(targets[0]);
-						if (!patched) {
+						if (targets.length !== 1 || !patchTarget(targets[0]))
 							console.warn(
-								`Tab queue: native prompt input targets found ${targets.length} (expected 1)`,
+								"Tab queue: native input routing did not match exactly one complete target",
 							);
-						}
 					},
 				},
 			},
 		},
 	];
 }
-
 export const tabQueue: Patch = {
 	tag: "tab-queue",
-	astPasses: () => createTabQueuePasses(),
-	verify: (code, ast) => {
-		const verifyAst = getVerifyAst(code, ast);
-		if (!verifyAst) return "Unable to parse AST during tab-queue verification";
+	astPasses: () => createPasses(),
+	verify(code, ast) {
+		const file = getVerifyAst(code, ast);
+		if (!file) return "Unable to parse AST during tab-queue verification";
 		const targets: NativeQueueTarget[] = [];
-		traverse(verifyAst, {
+		traverse(file, {
 			ObjectExpression(path) {
-				const target = getNativeQueueTarget(path);
+				const target = discoverTarget(path);
 				if (target) targets.push(target);
 			},
 		});
-		if (targets.length !== 1) {
-			return `Native prompt input target is ambiguous or not found (${targets.length} sites found)`;
-		}
-		if (!hasQueueGuard(targets[0])) {
-			return "Native Tab queue guard not found";
-		}
-		if (!hasEditGuard(targets[0])) {
-			return "Native Tab queue edit guard not found";
-		}
+		if (targets.length !== 1)
+			return "Native prompt input target is ambiguous or not found";
+		if (!isPatched(targets[0]))
+			return "Native Tab queue guards have incorrect routing, conditions, or precedence";
 		return true;
 	},
 };

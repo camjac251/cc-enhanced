@@ -310,6 +310,15 @@ const AGENT_TOOL_FORK_SELECTION_RE =
 const AGENT_TOOL_FORK_SELECTION_PATCHED_RE =
 	/When using the \$\{[^}]+\} tool, pass \\`subagent_type: "fork"\\` to fork yourself\. A fork inherits your full conversation context, always runs on your model, and ignores any \\`model\\` override\. \$\{[\w$]+ \? "Pass any other subagent_type, or omit subagent_type, to start a fresh agent \(general-purpose by default\)\." : `Pass any other subagent_type to start a fresh agent\. \$\{[^}]+\}`\}/;
 
+// Keep the owning Agent-tool surface anchored independently of the wording
+// this patch injects. If upstream rewords the fork model sentence, the
+// rewrite can no longer match its exact source regex, but these durable
+// surrounding clauses still identify the surface that requires patching.
+const AGENT_TOOL_FORK_SELECTION_STOCK_ANCHOR_RE =
+	/When using the \$\{[^}]+\} tool, specify a subagent_type to select an agent:[\s\S]{0,700}?the fork inherits your full conversation context[\s\S]{0,300}?override is ignored/;
+const AGENT_TOOL_FORK_SELECTION_PATCHED_ANCHOR_RE =
+	/When using the \$\{[^}]+\} tool, pass [\s\S]{0,100}?subagent_type: "fork"[\s\S]{0,120}?to fork yourself\.[\s\S]{0,700}?fork inherits your full conversation context[\s\S]{0,300}?override/;
+
 function agentToolForkSelectionReplacement(
 	toolExpr: string,
 	generalPurposeFlag: string,
@@ -597,10 +606,14 @@ export const builtInAgentPrompt: Patch = {
 			replacement: string,
 			label: string,
 			presenceAnchor?: string,
+			required = false,
 		): true | string => {
 			const hasSource = code.includes(escapeNonAscii(source));
 			const hasReplacement = code.includes(replacement);
 			if (!hasSource && !hasReplacement) {
+				if (required) {
+					return `Missing required rewritten ${label} signal: ${replacement}`;
+				}
 				// A durable anchor still present while neither the exact source nor
 				// the replacement is means the surface was reworded upstream and the
 				// rewrite silently missed it. Fail instead of passing the surface
@@ -633,7 +646,9 @@ export const builtInAgentPrompt: Patch = {
 			const hasPatchedSignals = patchedSignals.some((signal) =>
 				scope.includes(signal),
 			);
-			if (!hasSourceSignals && !hasPatchedSignals) return true;
+			if (!hasSourceSignals && !hasPatchedSignals) {
+				return `Unable to verify required ${label} signals`;
+			}
 
 			for (const signal of patchedSignals) {
 				if (!scope.includes(signal)) {
@@ -655,6 +670,7 @@ export const builtInAgentPrompt: Patch = {
 			EXPLORE_WHEN_TO_USE_REPLACEMENT,
 			"Explore agent whenToUse",
 			"read-only search agent for locating code",
+			true,
 		);
 		if (exploreWhenToUseResult !== true) return exploreWhenToUseResult;
 
@@ -663,6 +679,7 @@ export const builtInAgentPrompt: Patch = {
 			PLAN_WHEN_TO_USE_REPLACEMENT,
 			"Plan agent whenToUse",
 			PLAN_PROMPT_REPLACEMENT,
+			true,
 		);
 		if (planWhenToUseResult !== true) return planWhenToUseResult;
 
@@ -815,9 +832,11 @@ export const builtInAgentPrompt: Patch = {
 		if (new RegExp(AGENT_TOOL_FORK_SELECTION_RE.source).test(code)) {
 			return "Unpatched Agent tool fork-selection wording remains";
 		}
+		const hasForkSelectionSurface =
+			AGENT_TOOL_FORK_SELECTION_STOCK_ANCHOR_RE.test(code) ||
+			AGENT_TOOL_FORK_SELECTION_PATCHED_ANCHOR_RE.test(code);
 		if (
-			code.includes('subagent_type: "fork"') &&
-			code.includes("always runs on your model") &&
+			hasForkSelectionSurface &&
 			!AGENT_TOOL_FORK_SELECTION_PATCHED_RE.test(code)
 		) {
 			return "Missing rewritten Agent tool fork-selection wording";

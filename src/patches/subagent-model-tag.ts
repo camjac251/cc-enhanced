@@ -12,6 +12,8 @@ import {
 	type AgentLaunchOptionsCandidate,
 	classifyAgentCall,
 	classifyAgentLaunchOptions,
+	classifyInProcessLaunch,
+	classifyInProcessRunner,
 	classifyMetadataMirror,
 	classifyRemoteAgentRequest,
 	classifyResumeOptionsObject,
@@ -20,6 +22,8 @@ import {
 	hasAgentCallEffortContract,
 	hasMetadataEffortMirror,
 	hasResumeEffortContract,
+	type InProcessLaunchCandidate,
+	type InProcessRunnerCandidate,
 	type MetadataMirrorCandidate,
 	patchAgentCallEffort,
 	patchMetadataEffortMirror,
@@ -190,6 +194,8 @@ function createSubagentModelPasses(): PatchAstPass[] {
 	const teammateLaunchInputCandidates: TeammateLaunchInputCandidate[] = [];
 	const teammateSessionOptionsCandidates: TeammateSessionOptionsCandidate[] =
 		[];
+	const inProcessLaunchCandidates: InProcessLaunchCandidate[] = [];
+	const inProcessRunnerCandidates: InProcessRunnerCandidate[] = [];
 	let guardedCount = 0;
 	let uiPatched = false;
 	let schemaPatched = false;
@@ -237,6 +243,14 @@ function createSubagentModelPasses(): PatchAstPass[] {
 					const teammateLaunch = classifyTeammateLaunchInput(path);
 					if (teammateLaunch) {
 						teammateLaunchInputCandidates.push(teammateLaunch);
+					}
+					const inProcessLaunch = classifyInProcessLaunch(path);
+					if (inProcessLaunch) {
+						inProcessLaunchCandidates.push(inProcessLaunch);
+					}
+					const inProcessRunner = classifyInProcessRunner(path);
+					if (inProcessRunner) {
+						inProcessRunnerCandidates.push(inProcessRunner);
 					}
 					const teammateSession = classifyTeammateSessionOptions(path);
 					if (teammateSession) {
@@ -322,9 +336,10 @@ function createSubagentModelPasses(): PatchAstPass[] {
 								remoteAgentRequestCandidates,
 								teammateLaunchInputCandidates,
 								teammateSessionOptionsCandidates,
+								inProcessLaunchCandidates,
+								inProcessRunnerCandidates,
 							);
 						}
-
 						if (resumeOptionsCandidates.length === 1) {
 							resumeEffortPatched = patchResumeEffort(
 								resumeOptionsCandidates[0],
@@ -435,6 +450,8 @@ export const subagentModelTag: Patch = {
 		const teammateLaunchInputCandidates: TeammateLaunchInputCandidate[] = [];
 		const teammateSessionOptionsCandidates: TeammateSessionOptionsCandidate[] =
 			[];
+		const inProcessLaunchCandidates: InProcessLaunchCandidate[] = [];
+		const inProcessRunnerCandidates: InProcessRunnerCandidate[] = [];
 
 		traverse(verifyAst, {
 			ObjectMethod(path) {
@@ -473,6 +490,14 @@ export const subagentModelTag: Patch = {
 				const teammateLaunch = classifyTeammateLaunchInput(path);
 				if (teammateLaunch) {
 					teammateLaunchInputCandidates.push(teammateLaunch);
+				}
+				const inProcessLaunch = classifyInProcessLaunch(path);
+				if (inProcessLaunch) {
+					inProcessLaunchCandidates.push(inProcessLaunch);
+				}
+				const inProcessRunner = classifyInProcessRunner(path);
+				if (inProcessRunner) {
+					inProcessRunnerCandidates.push(inProcessRunner);
 				}
 				const teammateSession = classifyTeammateSessionOptions(path);
 				if (teammateSession) {
@@ -558,6 +583,8 @@ export const subagentModelTag: Patch = {
 				remoteAgentRequestCandidates,
 				teammateLaunchInputCandidates,
 				teammateSessionOptionsCandidates,
+				inProcessLaunchCandidates,
+				inProcessRunnerCandidates,
 			)
 		) {
 			return "Agent call does not preserve the selected agent while applying and persisting effort";

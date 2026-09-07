@@ -111,6 +111,46 @@ function getCallableFunctionName(path: NodePath<t.Function>): string | null {
 	return null;
 }
 
+function getReasonFormatterParameter(
+	path: NodePath<t.Function>,
+): t.Identifier | null {
+	if (
+		!t.isBlockStatement(path.node.body) ||
+		path.node.params.length !== 1 ||
+		!t.isIdentifier(path.node.params[0])
+	)
+		return null;
+	const parameter = path.node.params[0];
+	const dispatch = path.node.body.body.find(
+		(statement): statement is t.SwitchStatement =>
+			t.isSwitchStatement(statement) &&
+			t.isMemberExpression(statement.discriminant) &&
+			t.isIdentifier(statement.discriminant.object, { name: parameter.name }) &&
+			getMemberPropertyName(statement.discriminant) === "type",
+	);
+	if (
+		!dispatch ||
+		!["development", "env", "config"].every((value) =>
+			dispatch.cases.some((branch) =>
+				t.isStringLiteral(branch.test, { value }),
+			),
+		)
+	)
+		return null;
+	return parameter;
+}
+
+function buildPatchedReasonBranch(parameter: t.Identifier): t.IfStatement {
+	return t.ifStatement(
+		t.binaryExpression(
+			"===",
+			t.cloneNode(parameter),
+			t.stringLiteral("patched"),
+		),
+		t.returnStatement(t.stringLiteral("disabled by local patch")),
+	);
+}
+
 interface DisableAutoupdaterPassState {
 	guardFunctionFound: boolean;
 	guardFunctionNames: Set<string>;
@@ -166,6 +206,14 @@ function createDisableAutoupdaterPasses(): PatchAstPass[] {
 								t.returnStatement(t.stringLiteral("patched")),
 							);
 							console.log("Disabled auto-updater");
+						}
+					}
+
+					const reasonParameter = getReasonFormatterParameter(path);
+					if (reasonParameter) {
+						const branch = buildPatchedReasonBranch(reasonParameter);
+						if (!t.isNodesEquivalent(path.node.body.body[0], branch)) {
+							path.node.body.body.unshift(branch);
 						}
 					}
 
@@ -243,10 +291,24 @@ export const disableAutoupdater: Patch = {
 		const guardFunctionNames = new Set<string>();
 		let pluginGateTargetCount = 0;
 		let pluginGatePatchedCount = 0;
+		let reasonFormatterCount = 0;
+		let patchedReasonFormatterCount = 0;
 
 		traverse(ast, {
 			Function(path) {
 				if (!t.isBlockStatement(path.node.body)) return;
+				const reasonParameter = getReasonFormatterParameter(path);
+				if (reasonParameter) {
+					reasonFormatterCount++;
+					if (
+						t.isNodesEquivalent(
+							path.node.body.body[0],
+							buildPatchedReasonBranch(reasonParameter),
+						)
+					) {
+						patchedReasonFormatterCount++;
+					}
+				}
 				if (!hasDisableAutoupdaterCheck(path)) return;
 
 				targetFunctionCount++;
@@ -298,6 +360,9 @@ export const disableAutoupdater: Patch = {
 		}
 		if (pluginGatePatchedCount !== 1) {
 			return `Plugin autoupdate gate not patched at function entry (${pluginGatePatchedCount}/${pluginGateTargetCount})`;
+		}
+		if (reasonFormatterCount !== 1 || patchedReasonFormatterCount !== 1) {
+			return `Auto-updater reason formatter not patched (${patchedReasonFormatterCount}/${reasonFormatterCount})`;
 		}
 		return true;
 	},

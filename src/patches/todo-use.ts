@@ -91,27 +91,26 @@ export const todo: Patch = {
 			if (!useSectionBody.includes(EXPECTED_USE_FIRST_BULLET)) {
 				return "Condensed Todo use bullet not located inside the use section";
 			}
+			if (!useSectionBody.includes(EXPECTED_USE_SECOND_BULLET)) {
+				return "Condensed Todo use bullet not located inside the use section";
+			}
 			if (useSectionBody.includes("<example>")) {
 				return "Stale <example> blocks survived in Todo use section";
 			}
 		}
-		if (!code.includes(EXPECTED_SKIP_FIRST_BULLET)) {
-			return "Missing condensed Todo NOT-to-use first bullet";
-		}
-		if (!code.includes(EXPECTED_SKIP_SECOND_BULLET)) {
-			return "Missing condensed Todo NOT-to-use second bullet";
-		}
-		const skipIndex = code.indexOf(SKIP_HEADING);
+		const skipIndex = code.indexOf(SKIP_HEADING, useIndex);
 		const nextHeadingIndex = code.indexOf(NEXT_SECTION_HEADING, skipIndex);
 		if (nextHeadingIndex === -1) {
 			return "Could not locate next section heading after NOT-to-use section";
 		}
-		// Scope the stale-prose and <example> scans to the skip-section
-		// body slice. The signals (and any verbose example dialogue) the
-		// patch removes only matter inside this section; scanning the whole
-		// bundle would false-positive when the same phrasing appears in an
-		// unrelated prompt surface.
+		// Scope the condensed-bullet and stale-prose checks to the NOT-to-use section.
 		const sectionBody = code.slice(skipIndex, nextHeadingIndex);
+		if (!sectionBody.includes(EXPECTED_SKIP_FIRST_BULLET)) {
+			return "Condensed Todo NOT-to-use bullet not located inside the skip section";
+		}
+		if (!sectionBody.includes(EXPECTED_SKIP_SECOND_BULLET)) {
+			return "Condensed Todo NOT-to-use bullet not located inside the skip section";
+		}
 		for (const stale of STALE_PROSE_SIGNALS) {
 			if (sectionBody.includes(stale)) {
 				return `Stale upstream prose survived in Todo NOT-to-use section: ${stale.slice(0, 40)}...`;

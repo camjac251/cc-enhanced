@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as t from "@babel/types";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { effortStack } from "./effort-stack.js";
@@ -84,7 +85,8 @@ function notify(EL) {
   });
 }
 
-function pickUltracode() {
+function pickUltracode(setState) {
+  releasePin(), setState?.({ value: "xhigh", ultracode: true });
   let envEffort = readEnvEffort();
   if (envEffort !== void 0 && envEffort !== "xhigh")
     return {
@@ -215,55 +217,6 @@ function nearMissEffectiveNoop(next, current, model) {
 }
 `;
 
-const SESSION_OVERRIDE_CHARACTERIZATION_EXPECTED = `
-function readEnvEffort() {if (globalThis.__claudeCodeEffortSessionOverride === true) return;
-  let raw = runtimeEnv.CLAUDE_CODE_EFFORT_LEVEL;
-  return parseEffort(raw);
-}
-
-function buildEffortSettings(model, value) {
-  let modelKey = normalizeModel(model);
-  return useGlobalEffortSetting() ?
-  { effortLevel: value } :
-  { modelSettings: { [modelKey]: { effortLevel: value } } };
-}
-
-async function storeEffortSetting(value, model, scope) {if (process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0) return;
-  return saveSettings("userSettings", buildEffortSettings(model, value), void 0, scope);
-}
-
-async function runEffortCommand(input, setState) {
-  let result = await pickCommand(input, (update) => setState(update));if (result.effortUpdate) globalThis.__claudeCodeEffortSessionOverride = true;
-  if (didOptimisticUpdate && !result.effortUpdate) rollbackState();
-  return result;
-}
-
-function effortWouldChange(next, current, model) {
-  if (resolveEffectiveEffort(model, next) === resolveEffectiveEffort(model, current) && !(process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0 && next !== current)) return !1;
-  return !0;
-}
-
-function nearMissEnvResolver(unused) {
-  let raw = runtimeEnv.CLAUDE_CODE_EFFORT_LEVEL;
-  return parseEffort(raw);
-}
-
-function nearMissSettingsWriter(value, persist, scope) {
-  let result = saveSettings("userSettings", { effortLevel: value });
-  if (result.error) return result.error;
-}
-
-async function nearMissResultUpdate(input) {
-  let result = await pickCommand(input, (update) => update);
-  return result;
-}
-
-function nearMissEffectiveNoop(next, current, model) {
-  if (resolveEffectiveEffort(model, next) === otherEffectiveEffort(model, current)) return !1;
-  return !0;
-}
-`;
-
 test("effort-stack characterizes the public session-override subsystem", async () => {
 	const focusedAst = parse(SESSION_OVERRIDE_CHARACTERIZATION_FIXTURE);
 	const warnings: string[] = [];
@@ -276,10 +229,38 @@ test("effort-stack characterizes the public session-override subsystem", async (
 		console.warn = originalWarn;
 	}
 	const focusedOutput = print(focusedAst);
-	assert.equal(
-		focusedOutput,
-		SESSION_OVERRIDE_CHARACTERIZATION_EXPECTED.trimEnd(),
-	);
+	let writes = 0;
+	const storeEffortSetting = new Function(
+		"saveSettings",
+		"normalizeModel",
+		"useGlobalEffortSetting",
+		`${focusedOutput}; return storeEffortSetting;`,
+	)(
+		(...args: unknown[]) => {
+			writes += 1;
+			return { ok: true, args };
+		},
+		(value: unknown) => value,
+		() => true,
+	) as (value: string, model: string, scope: unknown) => Promise<unknown>;
+	const previousEffort = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+	try {
+		process.env.CLAUDE_CODE_EFFORT_LEVEL = "high";
+		assert.deepEqual(await storeEffortSetting("low", "model", {}), {
+			error: undefined,
+		});
+		assert.equal(writes, 0, "env-pinned effort must not persist settings");
+		delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
+		assert.deepEqual(await storeEffortSetting("low", "model", {}), {
+			ok: true,
+			args: ["userSettings", { effortLevel: "low" }, void 0, {}],
+		});
+		assert.equal(writes, 1);
+	} finally {
+		if (previousEffort === undefined)
+			delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
+		else process.env.CLAUDE_CODE_EFFORT_LEVEL = previousEffort;
+	}
 	assert.deepEqual(warnings, [
 		"effort-stack: Could not find ultracode-forces-xhigh resolver guard",
 		"effort-stack: Could not find ultrathink notification text",
@@ -317,7 +298,7 @@ test("effort-stack characterizes the public session-override subsystem", async (
 		},
 		{
 			code: fullOutput.replace(
-				"if (process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0) return;",
+				"if (process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0) return { error: void 0 };",
 				"",
 			),
 			diagnostic: "Did not find env-scoped session-only effort settings guard",
@@ -440,10 +421,32 @@ test("effort-stack accepts explicit undefined in rebundled effort surfaces", asy
 
 	assert.match(output, /ultracodeAvailable\(model\)/);
 	assert.match(output, /Ultracode workflows active for this session/);
-	assert.match(
-		output,
-		/if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) return;/,
-	);
+	let writes = 0;
+	const storeEffortSetting = new Function(
+		"saveSettings",
+		"normalizeModel",
+		"useGlobalEffortSetting",
+		`${output}; return storeEffortSetting;`,
+	)(
+		() => {
+			writes += 1;
+			return { ok: true };
+		},
+		(value: unknown) => value,
+		() => true,
+	) as (value: string, model: string, scope: unknown) => Promise<unknown>;
+	const previousEffort = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+	try {
+		process.env.CLAUDE_CODE_EFFORT_LEVEL = "high";
+		assert.deepEqual(await storeEffortSetting("low", "model", {}), {
+			error: undefined,
+		});
+		assert.equal(writes, 0);
+	} finally {
+		if (previousEffort === undefined)
+			delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
+		else process.env.CLAUDE_CODE_EFFORT_LEVEL = previousEffort;
+	}
 });
 
 test("effort-stack rewrites the ultrathink notification text", async () => {
@@ -592,10 +595,32 @@ test("effort-stack keeps env-backed effort changes session-only", async () => {
 		output.includes("process.env.CLAUDE_CODE_EFFORT_LEVEL !== void 0"),
 		true,
 	);
-	assert.match(
-		output,
-		/async function storeEffortSetting\(value, model, scope\) \{if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) return;\s+return saveSettings\("userSettings", buildEffortSettings\(model, value\), void 0, scope\);/,
-	);
+	let writes = 0;
+	const storeEffortSetting = new Function(
+		"saveSettings",
+		"normalizeModel",
+		"useGlobalEffortSetting",
+		`${output}; return storeEffortSetting;`,
+	)(
+		() => {
+			writes += 1;
+			return { ok: true };
+		},
+		(value: unknown) => value,
+		() => true,
+	) as (value: string, model: string, scope: unknown) => Promise<unknown>;
+	const previousEffort = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+	try {
+		process.env.CLAUDE_CODE_EFFORT_LEVEL = "high";
+		assert.deepEqual(await storeEffortSetting("low", "model", {}), {
+			error: undefined,
+		});
+		assert.equal(writes, 0);
+	} finally {
+		if (previousEffort === undefined)
+			delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
+		else process.env.CLAUDE_CODE_EFFORT_LEVEL = previousEffort;
+	}
 });
 
 test("effort-stack full pipeline verifies clean", async () => {
@@ -807,7 +832,7 @@ async function storeEffortSetting(value, model, scope) {
 
 	assert.match(
 		output,
-		/async function storeEffortSetting\(value, model, scope\) \{if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) return;/,
+		/async function storeEffortSetting\(value, model, scope\) \{if \(process\.env\.CLAUDE_CODE_EFFORT_LEVEL !== void 0\) return \{ error: void 0 \};/,
 	);
 });
 
@@ -829,4 +854,40 @@ function nestedWriter(H) {
 		false,
 		"an incomplete direct writer must not receive the env-scoped session-only guard",
 	);
+});
+
+test("ultracode initializes effort once before its optimistic state update", async () => {
+	const ast = parse(EFFORT_STACK_FIXTURE);
+	await runEffortStackViaPasses(ast);
+	const command = ast.program.body.find(
+		(node) =>
+			t.isFunctionDeclaration(node) && node.id?.name === "pickUltracode",
+	);
+	assert.ok(command);
+	const code = print(t.file(t.program([command])));
+	for (const override of [undefined, "high", "max"]) {
+		const events: string[] = [];
+		const invoke = new Function(
+			"readEnvEffort",
+			"releasePin",
+			`${code}; return pickUltracode;`,
+		)(
+			() => {
+				events.push("read");
+				return override;
+			},
+			() => events.push("release"),
+		);
+		let state: { value: string; ultracode: boolean } | undefined;
+		const result = invoke((next: { value: string; ultracode: boolean }) => {
+			events.push("callback");
+			state = next;
+		});
+		assert.deepEqual(events, ["release", "read", "callback"]);
+		assert.deepEqual(state, {
+			value: override === "max" ? "max" : "xhigh",
+			ultracode: true,
+		});
+		assert.deepEqual(result.effortUpdate, state);
+	}
 });

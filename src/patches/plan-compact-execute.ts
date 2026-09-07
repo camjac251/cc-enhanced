@@ -217,6 +217,7 @@ function findAutoClearContextOptionCondition(
 			if (consequentNestsAutoClearContextGuard(ifPath.node.consequent)) return;
 			condition = t.cloneNode(ifPath.node.test, true) as t.Expression;
 		},
+		noScope: true,
 	});
 	return condition;
 }
@@ -259,11 +260,16 @@ function buildPushOptionStatement(
 function buildCompactOptionStatement(
 	optionsName: string,
 	showClearContextName: string,
+	approvalsWithheldName: string,
 	autoClearContextCondition: t.Expression,
 	suffixName: string | null,
 ): t.IfStatement {
 	return t.ifStatement(
-		t.identifier(showClearContextName),
+		t.logicalExpression(
+			"&&",
+			t.unaryExpression("!", t.identifier(approvalsWithheldName)),
+			t.identifier(showClearContextName),
+		),
 		t.ifStatement(
 			autoClearContextCondition,
 			buildPushOptionStatement(
@@ -883,6 +889,48 @@ function buildCompactionResultExpansion(
 	]);
 }
 
+function buildCompactFailureResultBranch(
+	resultName: string,
+	ids: InteractiveContextIds,
+): t.IfStatement {
+	const result = t.identifier(resultName);
+	const failure = t.callExpression(t.cloneNode(ids.addNotification, true), [
+		t.objectExpression([
+			t.objectProperty(
+				t.identifier("key"),
+				t.stringLiteral(COMPACT_FAILED_NOTIFICATION_KEY),
+			),
+			t.objectProperty(
+				t.identifier("text"),
+				t.stringLiteral(
+					"Plan compaction failed; executing with existing context",
+				),
+			),
+			t.objectProperty(t.identifier("priority"), t.stringLiteral("high")),
+			t.objectProperty(t.identifier("color"), t.stringLiteral("warning")),
+		]),
+	]);
+	return t.ifStatement(
+		t.logicalExpression(
+			"&&",
+			result,
+			t.logicalExpression(
+				"&&",
+				t.binaryExpression(
+					"===",
+					member(result, "type"),
+					t.stringLiteral("text"),
+				),
+				t.binaryExpression(
+					"===",
+					member(result, "level"),
+					t.stringLiteral("error"),
+				),
+			),
+		),
+		t.blockStatement([t.expressionStatement(failure)]),
+	);
+}
 function buildCompactInitialMessageBlock(
 	initialMessageName: string,
 	ids: InteractiveContextIds,
@@ -974,6 +1022,7 @@ function buildCompactInitialMessageBlock(
 									),
 								]),
 							),
+							buildCompactFailureResultBranch(resultName, ids),
 						]),
 						t.catchClause(
 							t.identifier(errorName),
@@ -1101,6 +1150,7 @@ export const planCompactExecute: Patch = {
 		let compactAcceptEditsOption = false;
 		let compactOptionSplitFound = false;
 		let compactOptionSplitReusesGuard = false;
+		let compactOptionApprovalGuard = false;
 		let compactBypassOption = false;
 		let compactBranchAssignsBypass = false;
 		let initialMessageWithCompactContext = false;
@@ -1165,7 +1215,18 @@ export const planCompactExecute: Patch = {
 					"compactContext",
 				);
 				if (!compactProp) return;
-				initialMessageWithCompactContext = true;
+				const selection = findComparedIdentifierName(
+					compactProp.value,
+					COMPACT_AUTO_VALUE,
+				);
+				if (
+					selection &&
+					t.isNodesEquivalent(
+						compactProp.value,
+						buildCompactContextValue(selection),
+					)
+				)
+					initialMessageWithCompactContext = true;
 				const clearContextProp = getObjectPropertyByName(
 					path.node.value,
 					"clearContext",
@@ -1207,13 +1268,32 @@ export const planCompactExecute: Patch = {
 				) {
 					compactOptionSplitFound = true;
 					const enclosing = path.findParent((parent) => parent.isIfStatement());
+					const owner = path.getFunctionParent();
+					const show =
+						owner && getDestructuredParamLocalName(owner, "showClearContext");
+					const withheld =
+						owner && getDestructuredParamLocalName(owner, "approvalsWithheld");
+					const availability =
+						owner && findAutoClearContextOptionCondition(owner);
 					if (
-						enclosing &&
-						t.isIfStatement(enclosing.node) &&
-						t.isNodesEquivalent(enclosing.node.test, path.node.test)
-					) {
+						!availability ||
+						!t.isNodesEquivalent(path.node.test, availability)
+					)
 						compactOptionSplitReusesGuard = true;
-					}
+					if (
+						show &&
+						withheld &&
+						enclosing?.isIfStatement() &&
+						t.isNodesEquivalent(
+							enclosing.node.test,
+							t.logicalExpression(
+								"&&",
+								t.unaryExpression("!", t.identifier(withheld)),
+								t.identifier(show),
+							),
+						)
+					)
+						compactOptionApprovalGuard = true;
 				}
 				if (
 					(nodeContainsText(path.node.test, COMPACT_AUTO_VALUE) ||
@@ -1285,6 +1365,8 @@ export const planCompactExecute: Patch = {
 			noScope: true,
 		});
 
+		if (!compactOptionApprovalGuard)
+			return "Compact options do not preserve approval withholding";
 		if (!compactAutoOption)
 			return "Compact auto-mode plan approval option not found";
 		if (!compactAcceptEditsOption) {
@@ -1351,10 +1433,19 @@ function createPlanCompactExecuteMutator(): Visitor {
 					path,
 					"showClearContext",
 				);
+				const approvalsWithheldName = getDestructuredParamLocalName(
+					path,
+					"approvalsWithheld",
+				);
 				const autoClearContextCondition =
 					findAutoClearContextOptionCondition(path);
 				const optionsName = findOptionsArrayName(path);
-				if (showClearContextName && autoClearContextCondition && optionsName) {
+				if (
+					showClearContextName &&
+					approvalsWithheldName &&
+					autoClearContextCondition &&
+					optionsName
+				) {
 					const insertionIndex = path.node.body.body.findIndex((statement) =>
 						nodeContainsText(statement, "Yes, clear context"),
 					);
@@ -1365,6 +1456,7 @@ function createPlanCompactExecuteMutator(): Visitor {
 							buildCompactOptionStatement(
 								optionsName,
 								showClearContextName,
+								approvalsWithheldName,
 								autoClearContextCondition,
 								findClearContextSuffixName(path),
 							),
@@ -1374,7 +1466,6 @@ function createPlanCompactExecuteMutator(): Visitor {
 				}
 			}
 		},
-
 		IfStatement(path) {
 			if (
 				nodeContainsText(path.node, PLAN_IMPLEMENT_PREFIX) &&

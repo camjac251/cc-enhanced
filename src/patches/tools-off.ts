@@ -1,5 +1,5 @@
 import * as t from "@babel/types";
-import { traverse, type Visitor } from "../babel.js";
+import { type NodePath, traverse, type Visitor } from "../babel.js";
 import type { Patch } from "../types.js";
 import {
 	getObjectKeyName,
@@ -698,6 +698,101 @@ function isIsEnabledDisabled(
 	return isFalseLike(firstStmt.argument);
 }
 
+function getAvailabilityReturns(
+	path: NodePath<t.Function>,
+): NodePath<t.ReturnStatement>[] | null {
+	let simple = false;
+	let repl = false;
+	const returns: NodePath<t.ReturnStatement>[] = [];
+	path.traverse({
+		Function(inner) {
+			inner.skip();
+		},
+		"MemberExpression|OptionalMemberExpression"(inner: NodePath<t.Node>) {
+			const node = inner.node;
+			if (!t.isMemberExpression(node) && !t.isOptionalMemberExpression(node))
+				return;
+			const property = node.property;
+			const name =
+				!node.computed && t.isIdentifier(property)
+					? property.name
+					: t.isStringLiteral(property)
+						? property.value
+						: null;
+			if (name === "skipSimpleModeFilter") simple = true;
+			if (name === "skipReplFilter") repl = true;
+		},
+		ReturnStatement(inner) {
+			returns.push(inner);
+		},
+	});
+	return simple && repl ? returns : null;
+}
+
+function buildAvailabilityFilter(
+	disabledTools: ReadonlySet<string>,
+): t.ArrowFunctionExpression {
+	const tool = t.identifier("tool");
+	const comparisons = [...disabledTools].map((name) =>
+		t.binaryExpression(
+			"!==",
+			t.memberExpression(t.cloneNode(tool), t.identifier("name")),
+			t.stringLiteral(name),
+		),
+	);
+	const predicate = comparisons.reduce<t.Expression>(
+		(left, right) => t.logicalExpression("&&", left, right),
+		t.booleanLiteral(true),
+	);
+	return t.arrowFunctionExpression([tool], predicate);
+}
+
+function isAvailabilityReturnFiltered(
+	node: t.ReturnStatement,
+	disabledTools: ReadonlySet<string>,
+): boolean {
+	const value = node.argument;
+	if (
+		!t.isCallExpression(value) ||
+		!t.isMemberExpression(value.callee) ||
+		value.callee.computed ||
+		!t.isIdentifier(value.callee.property, { name: "filter" }) ||
+		value.arguments.length !== 1
+	)
+		return false;
+	const callback = value.arguments[0];
+	if (!t.isArrowFunctionExpression(callback) || callback.async) return false;
+	const expected = buildAvailabilityFilter(disabledTools);
+	// Parsed arrows add non-executable fields that builders omit.
+	return (
+		callback.params.length === expected.params.length &&
+		callback.params.every((parameter, index) =>
+			t.isNodesEquivalent(parameter, expected.params[index]),
+		) &&
+		t.isNodesEquivalent(callback.body, expected.body)
+	);
+}
+
+function createAvailabilityMutator(
+	disabledTools: ReadonlySet<string>,
+): Visitor {
+	return {
+		Function(path) {
+			const returns = getAvailabilityReturns(path);
+			if (!returns) return;
+			for (const target of returns) {
+				const value = target.node.argument;
+				if (!value || isAvailabilityReturnFiltered(target.node, disabledTools))
+					continue;
+				target.node.argument = t.callExpression(
+					t.memberExpression(value, t.identifier("filter")),
+					[buildAvailabilityFilter(disabledTools)],
+				);
+			}
+		},
+	};
+}
+
 function createDisableToolsPatch(policy: ToolDisablePolicy): Patch {
 	const disabledTools = new Set(policy.disabledTools);
 	const retainedTools = new Set(policy.retainedTools);
@@ -786,6 +881,10 @@ function createDisableToolsPatch(policy: ToolDisablePolicy): Patch {
 		},
 
 		astPasses: () => [
+			{
+				pass: "mutate",
+				visitor: createAvailabilityMutator(disabledTools),
+			},
 			{
 				pass: "mutate",
 				visitor: createDisableToolsMutator(disabledTools),
@@ -916,6 +1015,25 @@ function createDisableToolsPatch(policy: ToolDisablePolicy): Patch {
 			const skillResult = verifySkillTools(code, ast);
 			if (skillResult !== true) return skillResult;
 
+			let availabilityCount = 0;
+			let availabilityGuarded = true;
+			traverse(ast, {
+				Function(path) {
+					const returns = getAvailabilityReturns(path);
+					if (!returns) return;
+					availabilityCount++;
+					if (
+						returns.length === 0 ||
+						!returns.every((target) =>
+							isAvailabilityReturnFiltered(target.node, disabledTools),
+						)
+					)
+						availabilityGuarded = false;
+				},
+			});
+			if (availabilityCount !== 1 || !availabilityGuarded) {
+				return "Final tool availability is not filtered by the disabled-tool policy";
+			}
 			return true;
 		},
 	};

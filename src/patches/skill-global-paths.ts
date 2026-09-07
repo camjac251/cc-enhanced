@@ -104,21 +104,49 @@ function ${SPLIT_HELPER}(paths) {
  * value with the merge helper, passing the frontmatter resolved from the
  * paths-binding's initializer.
  */
+function isGeneralSkillsSource(
+	path: any,
+	loadedFrom: t.ObjectProperty,
+): boolean {
+	if (!t.isIdentifier(loadedFrom.value)) return false;
+	const name = loadedFrom.value.name;
+	const binding = path.scope.getBinding(name);
+	const owner = binding?.scope.block;
+	return (
+		binding?.kind === "param" &&
+		t.isFunction(owner) &&
+		owner.params.some(
+			(parameter) =>
+				t.isAssignmentPattern(parameter) &&
+				t.isIdentifier(parameter.left, { name }) &&
+				t.isStringLiteral(parameter.right, { value: "skills" }),
+		)
+	);
+}
+
 function tryWrapSkillPaths(path: {
 	node: t.ObjectExpression;
 	scope: any;
+	parentPath: any;
 }): boolean {
 	const obj = path.node;
 	const loadedFrom = getObjectPropertyByName(obj, "loadedFrom");
+	const isStorageLoader =
+		!!loadedFrom && t.isStringLiteral(loadedFrom.value, { value: "skills" });
 	if (
 		!loadedFrom ||
-		!t.isStringLiteral(loadedFrom.value, { value: "skills" })
+		(!isStorageLoader && !isGeneralSkillsSource(path, loadedFrom))
 	) {
 		return false;
 	}
 	const pathsProp = getObjectPropertyByName(obj, "paths");
-	if (!pathsProp || !t.isIdentifier(pathsProp.value)) return false;
-
+	if (!pathsProp) return false;
+	if (
+		t.isCallExpression(pathsProp.value) &&
+		t.isIdentifier(pathsProp.value.callee, { name: MERGE_HELPER })
+	)
+		return true;
+	if (!t.isIdentifier(pathsProp.value)) return false;
 	const binding = path.scope.getBinding(pathsProp.value.name);
 	if (!binding || !t.isVariableDeclarator(binding.path.node)) return false;
 	const init = binding.path.node.init;
@@ -130,11 +158,24 @@ function tryWrapSkillPaths(path: {
 		return false;
 	}
 	const frontmatterId = init.arguments[0];
-
-	pathsProp.value = t.callExpression(t.identifier(MERGE_HELPER), [
+	const merged = t.callExpression(t.identifier(MERGE_HELPER), [
 		t.cloneNode(pathsProp.value, true),
 		t.cloneNode(frontmatterId, true),
 	]);
+	if (isStorageLoader) {
+		pathsProp.value = merged;
+	} else {
+		if (!t.isIdentifier(loadedFrom.value)) return false;
+		pathsProp.value = t.conditionalExpression(
+			t.binaryExpression(
+				"===",
+				t.cloneNode(loadedFrom.value),
+				t.stringLiteral("syncedSkills"),
+			),
+			t.cloneNode(pathsProp.value),
+			merged,
+		);
+	}
 	return true;
 }
 
@@ -310,7 +351,7 @@ function tryPatchActivationLoop(node: t.ForOfStatement): boolean {
 }
 
 function createSkillGlobalPathsPasses(): PatchAstPass[] {
-	let wrappedLoader = false;
+	let wrappedLoaderCount = 0;
 	let patchedMatcher = false;
 
 	return [
@@ -318,8 +359,7 @@ function createSkillGlobalPathsPasses(): PatchAstPass[] {
 			pass: "mutate",
 			visitor: {
 				ObjectExpression(path) {
-					if (wrappedLoader) return;
-					if (tryWrapSkillPaths(path)) wrappedLoader = true;
+					if (tryWrapSkillPaths(path)) wrappedLoaderCount = 1;
 				},
 				ForOfStatement(path) {
 					if (patchedMatcher) return;
@@ -327,13 +367,13 @@ function createSkillGlobalPathsPasses(): PatchAstPass[] {
 				},
 				Program: {
 					exit(path) {
-						if (wrappedLoader || patchedMatcher) {
+						if (wrappedLoaderCount > 0 || patchedMatcher) {
 							path.node.body.unshift(buildSplitHelper());
 							path.node.body.unshift(buildMergeHelper());
 						}
-						if (!wrappedLoader) {
+						if (wrappedLoaderCount === 0) {
 							console.warn(
-								"skill-global-paths: could not find skill-dir paths loader to wrap",
+								"skill-global-paths: could not find skill-dir paths loaders to wrap",
 							);
 						}
 						if (!patchedMatcher) {
@@ -351,24 +391,16 @@ function createSkillGlobalPathsPasses(): PatchAstPass[] {
 function verifySkillGlobalPaths(ast: t.File): true | string {
 	let mergeHelper = false;
 	let splitHelper = false;
-	let pathsWrapped = false;
+	let storagePathsWrapped = false;
+	let rawPathsWrapped = false;
 	let matcherSplit = false;
-	// Structural proof that the activation-loop mutation landed, keyed on the
-	// patch's own injected sentinel bindings rather than on global helper
-	// presence: the cwd matcher rewritten to local-only entries, and the global
-	// activation branch testing the absolute path against the global matcher.
 	let localRewrite = false;
 	let globalActivationIf = false;
-
 	const isSplitMember = (node: t.Node | null | undefined, prop: string) =>
 		!!node &&
 		t.isMemberExpression(node) &&
 		t.isIdentifier(node.object, { name: SPLIT_BINDING }) &&
 		isMemberPropertyName(node, prop);
-
-	// The cwd matcher feeds `_claudeGpSplit.local` into the path normalizer, so
-	// the `.add(...)` argument is a call wrapping the split member rather than the
-	// member directly.
 	const containsSplitLocal = (node: t.Node | null | undefined): boolean =>
 		isSplitMember(node, "local") ||
 		(!!node &&
@@ -384,44 +416,51 @@ function verifySkillGlobalPaths(ast: t.File): true | string {
 		},
 		ObjectExpression(path) {
 			const loadedFrom = getObjectPropertyByName(path.node, "loadedFrom");
+			const isStorageLoader =
+				!!loadedFrom &&
+				t.isStringLiteral(loadedFrom.value, { value: "skills" });
+			const isRawLoader =
+				!!loadedFrom && isGeneralSkillsSource(path, loadedFrom);
+			if (!isStorageLoader && !isRawLoader) return;
+			const value = getObjectPropertyByName(path.node, "paths")?.value;
+			if (!value) return;
+			let merge: t.Node = value;
+			if (isRawLoader) {
+				if (
+					!t.isConditionalExpression(value) ||
+					!t.isBinaryExpression(value.test, { operator: "===" }) ||
+					!t.isNodesEquivalent(value.test.left, loadedFrom?.value) ||
+					!t.isStringLiteral(value.test.right, { value: "syncedSkills" })
+				)
+					return;
+				merge = value.alternate;
+				if (
+					!t.isCallExpression(merge) ||
+					!t.isNodesEquivalent(merge.arguments[0], value.consequent)
+				)
+					return;
+			}
 			if (
-				!loadedFrom ||
-				!t.isStringLiteral(loadedFrom.value, { value: "skills" })
-			) {
+				!t.isCallExpression(merge) ||
+				!t.isIdentifier(merge.callee, { name: MERGE_HELPER }) ||
+				merge.arguments.length !== 2 ||
+				!t.isIdentifier(merge.arguments[1])
+			)
 				return;
-			}
-			const pathsProp = getObjectPropertyByName(path.node, "paths");
-			if (
-				pathsProp &&
-				t.isCallExpression(pathsProp.value) &&
-				t.isIdentifier(pathsProp.value.callee, { name: MERGE_HELPER }) &&
-				pathsProp.value.arguments.length === 2 &&
-				t.isIdentifier(pathsProp.value.arguments[1])
-			) {
-				pathsWrapped = true;
-			}
+			if (isStorageLoader) storagePathsWrapped = true;
+			if (isRawLoader) rawPathsWrapped = true;
 		},
 		CallExpression(path) {
 			const callee = path.node.callee;
-			if (t.isIdentifier(callee, { name: SPLIT_HELPER })) {
-				matcherSplit = true;
-			}
-			// The cwd matcher's `.add(...)` argument must now feed
-			// `_claudeGpSplit.local` (local-only) into the path normalizer, proving
-			// the local/global partition rewrite landed and not just that the split
-			// helper is referenced somewhere.
+			if (t.isIdentifier(callee, { name: SPLIT_HELPER })) matcherSplit = true;
 			if (
 				t.isMemberExpression(callee) &&
 				isMemberPropertyName(callee, "add") &&
 				containsSplitLocal(path.node.arguments[0])
-			) {
+			)
 				localRewrite = true;
-			}
 		},
 		IfStatement(path) {
-			// The injected global activation branch is `if (_claudeGpIgnore &&
-			// _claudeGpIgnore.ignores(...))`. Match the exact null-guarded shape so a
-			// regression that drops the branch or the guard fails verification.
 			const test = path.node.test;
 			if (!t.isLogicalExpression(test, { operator: "&&" })) return;
 			if (!t.isIdentifier(test.left, { name: GLOBAL_IGNORE_BINDING })) return;
@@ -432,26 +471,21 @@ function verifySkillGlobalPaths(ast: t.File): true | string {
 					name: GLOBAL_IGNORE_BINDING,
 				}) &&
 				isMemberPropertyName(test.right.callee, "ignores")
-			) {
+			)
 				globalActivationIf = true;
-			}
 		},
 	});
 
 	if (!mergeHelper) return "global-paths merge helper not injected";
 	if (!splitHelper) return "global-paths split helper not injected";
-	if (!pathsWrapped) {
-		return "skill-dir loader paths value was not wrapped with the merge helper";
-	}
-	if (!matcherSplit) {
+	if (!storagePathsWrapped || !rawPathsWrapped)
+		return "skill-dir loaders paths values were not wrapped with the merge helper";
+	if (!matcherSplit)
 		return "conditional-skill activation matcher was not split for global paths";
-	}
-	if (!localRewrite) {
+	if (!localRewrite)
 		return "conditional-skill cwd matcher was not rewritten to local-only paths";
-	}
-	if (!globalActivationIf) {
+	if (!globalActivationIf)
 		return "global-paths activation branch for absolute-path matching not injected";
-	}
 	return true;
 }
 

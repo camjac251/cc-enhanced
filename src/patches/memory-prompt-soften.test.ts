@@ -178,3 +178,16 @@ test("memory-prompt-soften preserves the dynamic command grant while softening t
 		true,
 	);
 });
+
+test("memory-prompt-soften verify requires modern transcript-location guidance", () => {
+	const output =
+		memoryPromptSoften.string?.(VANILLA_FIXTURE) ?? VANILLA_FIXTURE;
+	const start = output.indexOf("Session transcripts: ");
+	const end = output.indexOf("\n", start);
+	assert.notEqual(start, -1);
+	assert.notEqual(end, -1);
+	const broken = `${output.slice(0, start)}Session transcripts: unrelated guidance${output.slice(end)}`;
+	const result = memoryPromptSoften.verify(broken);
+	assert.equal(typeof result, "string");
+	assert.match(String(result), /transcript-location guidance/);
+});

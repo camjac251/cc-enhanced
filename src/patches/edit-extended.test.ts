@@ -104,6 +104,16 @@ const writeChangedMessage = "File content has changed since it was last read.";
 
 class FileStateError extends Error {}
 
+function writeReadStatePrecondition({ fullFilePath, diskContent, lastRead, preReadGuard, readNotAutoAllowed }) {
+  if (!lastRead || lastRead.isPartialView) {
+    if (!lastRead && !preReadGuard && !readNotAutoAllowed()) return;
+    throw new FileStateError(writeReadFirstMessage);
+  }
+  if (Date.now() > lastRead.timestamp) {
+    throw new FileStateError(writeChangedMessage);
+  }
+}
+
 function readStateGuardSkipped() {
   return false;
 }
@@ -135,15 +145,8 @@ const WriteTool = {
     return { result: true };
   },
   call({ file_path: A, content: B }, { readFileState: stateMap }) {
-    const existingFile = true;
-    if (existingFile) {
-      let state = stateMap.get(A);
-      if (!state) {
-        if (!readStateGuardSkipped()) throw new FileStateError(writeReadFirstMessage);
-      } else if (Date.now() > state.timestamp) {
-        throw new FileStateError(writeChangedMessage);
-      }
-    }
+    const state = stateMap.get(A);
+    writeReadStatePrecondition({ fullFilePath: A, diskContent: B, lastRead: state, preReadGuard: false, readNotAutoAllowed: () => false });
     return { file_path: A, content: B };
   },
 };
@@ -185,7 +188,7 @@ const EditTool = {
     }
     return { result: true };
   },
-  call({ file_path: A, old_string: B, new_string: C, replace_all: D, structuredPatch: P }, context) {
+  call({ file_path: A, old_string: B, new_string: C, replace_all: D, structuredPatch: P = [] }, context) {
     const transformed = P.reduce((acc, next) => acc.concat(next), []).map((x) => x);
     const stateMap = context && context.readFileState ? context.readFileState : { get() { return context; } };
     let state = stateMap.get(A);
@@ -266,12 +269,13 @@ function v58(H, $, A) {
   switch (H.name) {
     case EditTool.name: {
       let L = EditTool.inputSchema.parse($),
-        { file_path: D, edits: f } = czD({
+        E44 = {
           file_path: L.file_path,
           edits: [
             { old_string: L.old_string, new_string: L.new_string, replace_all: L.replace_all },
           ],
-        });
+        },
+        { file_path: D, edits: f } = czD(E44);
       return {
         replace_all: f[0].replace_all,
         file_path: D,
@@ -499,33 +503,6 @@ test("edit-extended keeps Edit identity while preserving structured edits throug
 	assert.equal(output.includes("return EditTool.inputSchema.parse(H);"), true);
 });
 
-test("edit-extended neutralizes the relocated read-state helper's not-read throw", async () => {
-	const ast = parse(EDIT_FIXTURE);
-	await runEditToolViaPasses(ast);
-	const out: any = parse(print(ast));
-
-	const helper = out.program.body.find(
-		(s: any) =>
-			s.type === "FunctionDeclaration" &&
-			s.params[0]?.type === "ObjectPattern" &&
-			s.params[0].properties.some((p: any) => p.key?.name === "lastRead"),
-	);
-	assert.ok(helper, "fixture must model the relocated read-state helper");
-
-	const notRead = helper.body.body.find(
-		(s: any) =>
-			s.type === "IfStatement" &&
-			s.test.type === "UnaryExpression" &&
-			s.test.operator === "!",
-	);
-	assert.ok(notRead, "helper must have an if(!lastRead) guard");
-	assert.equal(
-		JSON.stringify(notRead.consequent).includes("ThrowStatement"),
-		false,
-		"not-read branch must not throw after patching",
-	);
-});
-
 test("edit-extended patches current direct-input edit confirmation previews", async () => {
 	const ast = parse(EDIT_FIXTURE);
 	await runEditToolViaPasses(ast);
@@ -565,6 +542,18 @@ test("edit-extended verify fails when structured edit wiring is broken", async (
 
 	const result = editTool.verify(mutated);
 	assert.equal(typeof result, "string");
+});
+
+test("edit-extended verifier rejects unrelated array preservation conditionals", async () => {
+	const ast = parse(EDIT_FIXTURE);
+	await runEditToolViaPasses(ast);
+	const output = print(ast);
+	const mutated = output.replace(
+		"_claudeEditHasExtendedFields(L) ? L.edits : [",
+		"Array.isArray(values) && values.every((value) => value) ? values : [",
+	);
+	assert.notEqual(mutated, output);
+	assert.notEqual(editTool.verify(mutated, parse(mutated)), true);
 });
 
 test("edit-extended runtime normalizes batch string edits and applies them in order", async () => {
@@ -826,7 +815,7 @@ test("edit-extended preserves Write stale-read protection when state exists", as
 	}
 });
 
-test("edit-extended runtime preserves CRLF semantics in batch call canonicalization", async () => {
+test("edit-extended runtime canonicalizes CRLF and BOM batch text for stock validation", async () => {
 	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "edit-extended-crlf-"),
@@ -845,8 +834,58 @@ test("edit-extended runtime preserves CRLF semantics in batch call canonicalizat
 		);
 
 		assert.deepEqual(result.observed, {
-			old_string: "alpha\r\nbeta\r\n",
-			new_string: "alpha\r\nBETA\r\n",
+			old_string: "alpha\nbeta\n",
+			new_string: "alpha\nBETA\n",
+			replace_all: false,
+		});
+
+		const bomPath = path.join(tempDir, "bom.txt");
+		await fs.writeFile(bomPath, "\uFEFFalpha\r\nbeta\r\n", "utf8");
+		const bomResult = await mod.EditTool.call(
+			{
+				file_path: bomPath,
+				edits: [{ oldString: "beta", newString: "BETA" }],
+				structuredPatch: [],
+			},
+			{ timestamp: Date.now() + 60_000 },
+		);
+		assert.deepEqual(bomResult.observed, {
+			old_string: "alpha\nbeta\n",
+			new_string: "alpha\nBETA\n",
+			replace_all: false,
+		});
+	} finally {
+		await cleanup();
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("edit-extended runtime routes plain append through canonicalization", async () => {
+	const { mod, cleanup } = await loadPatchedEditRuntimeModule();
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "edit-extended-append-"),
+	);
+	try {
+		const existingPath = path.join(tempDir, "existing.txt");
+		await fs.writeFile(existingPath, "alpha", "utf8");
+		const existingResult = await mod.EditTool.call(
+			{ file_path: existingPath, old_string: "", new_string: "beta" },
+			{ timestamp: Date.now() + 60_000 },
+		);
+		assert.deepEqual(existingResult.observed, {
+			old_string: "alpha",
+			new_string: "alpha\nbeta",
+			replace_all: false,
+		});
+
+		const missingPath = path.join(tempDir, "missing.txt");
+		const missingResult = await mod.EditTool.call(
+			{ file_path: missingPath, old_string: "", new_string: "beta\n" },
+			{ timestamp: Date.now() + 60_000 },
+		);
+		assert.deepEqual(missingResult.observed, {
+			old_string: "",
+			new_string: "beta\n",
 			replace_all: false,
 		});
 	} finally {

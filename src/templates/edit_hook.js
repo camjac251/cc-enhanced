@@ -75,29 +75,29 @@ function _claudeFuzzyMatch(content, search) {
 		return content.substring(idx, idx + search.length);
 	}
 
-	// Try with whitespace normalization (trailing spaces stripped)
-	const stripTrailing = (s) =>
-		s
-			.split("\n")
-			.map((line) => line.replace(/\s+$/, ""))
-			.join("\n");
-	const strippedContent = stripTrailing(content);
-	const strippedSearch = stripTrailing(search);
-	const idx2 = strippedContent.indexOf(strippedSearch);
-	if (idx2 !== -1) {
-		// Find the corresponding position in original content
-		const lines = strippedContent.slice(0, idx2).split("\n");
-		const lineNum = lines.length - 1;
-		const colNum = lines[lines.length - 1].length;
-
-		// Map back to original
-		const origLines = content.split("\n");
-		let pos = 0;
-		for (let i = 0; i < lineNum; i++) {
-			pos += origLines[i].length + 1;
-		}
-		pos += colNum;
-		return content.substring(pos, pos + search.length);
+	// Map both ends of a normalized match back to the original text.
+	const originalLines = content.split("\n");
+	const strippedLines = originalLines.map((line) => line.replace(/\s+$/, ""));
+	const strippedContent = strippedLines.join("\n");
+	const strippedSearch = search
+		.split("\n")
+		.map((line) => line.replace(/\s+$/, ""))
+		.join("\n");
+	const index = strippedContent.indexOf(strippedSearch);
+	if (index !== -1 && strippedSearch !== "") {
+		const originalOffset = (offset) => {
+			let original = 0;
+			for (let line = 0; line < strippedLines.length; line++) {
+				if (offset <= strippedLines[line].length) return original + offset;
+				offset -= strippedLines[line].length + 1;
+				original += originalLines[line].length + 1;
+			}
+			return content.length;
+		};
+		return content.slice(
+			originalOffset(index),
+			originalOffset(index + strippedSearch.length),
+		);
 	}
 
 	return null;
@@ -243,6 +243,17 @@ function _claudeEditHasExtendedFields(A) {
 	return Array.isArray(A.edits) && A.edits.length > 0;
 }
 
+function _claudeEditIsPlainAppend(A) {
+	return (
+		!!A &&
+		typeof A === "object" &&
+		!_claudeEditHasExtendedFields(A) &&
+		A.old_string === "" &&
+		typeof A.new_string === "string" &&
+		A.new_string !== ""
+	);
+}
+
 function _claudeEditParseBoolean(A, fallback = false) {
 	if (A === void 0 || A === null || A === "") return fallback;
 	if (typeof A === "boolean") return A;
@@ -386,7 +397,9 @@ function _claudeEditCanonicalizeInput(A, normalizedEdits) {
 	if (contentRaw && typeof contentRaw !== "string") {
 		contentRaw = contentRaw.toString();
 	}
-	const normalizedContent = String(contentRaw).replace(/\r\n/g, "\n");
+	const normalizedContent = String(contentRaw)
+		.replace(/^\uFEFF/, "")
+		.replace(/\r\n/g, "\n");
 	const applied = _claudeApplyExtendedFileEdits(
 		normalizedContent,
 		preparedEdits,
@@ -395,14 +408,11 @@ function _claudeEditCanonicalizeInput(A, normalizedEdits) {
 		return applied;
 	}
 
-	let nextContent = applied.content;
-	if (newline === "CRLF") {
-		nextContent = nextContent.replace(/\n/g, "\r\n");
-	}
+	const nextContent = applied.content;
 
 	return {
 		edits: preparedEdits,
-		oldString: contentRaw,
+		oldString: normalizedContent,
 		newString: nextContent,
 		resolvedPath,
 		fileExists,

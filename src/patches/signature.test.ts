@@ -173,3 +173,28 @@ function versionB(V) { return \`\${V} (Claude Code)\${s()}\`; }
 	);
 	assert.equal(typeof result, "string");
 });
+
+test("signature decorates a separately memoized welcome title", () => {
+	const source =
+		SIGNATURE_FIXTURE +
+		`
+function memoTitle(Text, version) {
+  let brand;
+  brand = jsx(Text, {bold: true, children: "Claude Code"});
+  return jsxs(Text, {children: [brand, " ", jsxs(Text, {children: ["v", version]})]});
+}
+`;
+	const ast = parse(source);
+	signature.postApply?.(ast, ["test"]);
+	const output = print(ast);
+	const element = (_component: unknown, props: unknown) => props;
+	const render = new Function("jsx", "jsxs", `${output}; return memoTitle;`)(
+		element,
+		element,
+	);
+	assert.equal(
+		render("text", "2.1.263").children[0].children,
+		"Claude Code • patched",
+	);
+	assert.equal(signature.verify(output, ast), true);
+});

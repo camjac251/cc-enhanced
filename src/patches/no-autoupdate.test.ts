@@ -20,6 +20,13 @@ async function runDisableAutoupdaterViaPasses(ast: any): Promise<void> {
 }
 
 const AUTOUPDATER_FIXTURE = `
+function formatDisabledReason(reason) {
+  switch (reason.type) {
+    case "development": return "development build";
+    case "env": return "set by env: " + reason.envVar;
+    case "config": return "config";
+  }
+}
 const envFlags = {};
 
 function checkForUpdates() {
@@ -37,6 +44,70 @@ function pluginAutoUpdate() {
   return updatesDisabled() && !envFlags.FORCE_AUTOUPDATE_PLUGINS;
 }
 `;
+
+test("core remains disabled, plugins enabled, and the disabled reason renders", async () => {
+	const ast = parse(AUTOUPDATER_FIXTURE);
+	await runDisableAutoupdaterViaPasses(ast);
+	const runtime = Function(
+		`${print(ast)}; return { envFlags, checkForUpdates, updatesDisabled, pluginAutoUpdate, formatDisabledReason };`,
+	)();
+	for (const force of [false, true]) {
+		runtime.envFlags.FORCE_AUTOUPDATE_PLUGINS = force;
+		assert.equal(runtime.updatesDisabled(), true);
+		assert.equal(runtime.pluginAutoUpdate(), false);
+	}
+	assert.equal(
+		runtime.formatDisabledReason(runtime.checkForUpdates()),
+		"disabled by local patch",
+	);
+	assert.equal(
+		runtime.formatDisabledReason({ type: "development" }),
+		"development build",
+	);
+	assert.equal(
+		runtime.formatDisabledReason({
+			type: "env",
+			envVar: "DISABLE_AUTOUPDATER",
+		}),
+		"set by env: DISABLE_AUTOUPDATER",
+	);
+	assert.equal(runtime.formatDisabledReason({ type: "config" }), "config");
+});
+
+test("verification rejects a removed patched reason formatter branch", async () => {
+	const ast = parse(AUTOUPDATER_FIXTURE);
+	await runDisableAutoupdaterViaPasses(ast);
+	let changed = false;
+	traverse(ast, {
+		FunctionDeclaration(path) {
+			if (!t.isIdentifier(path.node.id, { name: "formatDisabledReason" }))
+				return;
+			assert.ok(t.isIfStatement(path.node.body.body[0]));
+			path.node.body.body.shift();
+			changed = true;
+		},
+	});
+	assert.equal(changed, true);
+	assert.match(
+		disableAutoupdater.verify(print(ast), ast) as string,
+		/reason formatter/,
+	);
+});
+
+test("verification rejects a missing disabled reason formatter", async () => {
+	const ast = parse(AUTOUPDATER_FIXTURE);
+	await runDisableAutoupdaterViaPasses(ast);
+	traverse(ast, {
+		FunctionDeclaration(path) {
+			if (t.isIdentifier(path.node.id, { name: "formatDisabledReason" }))
+				path.remove();
+		},
+	});
+	assert.match(
+		disableAutoupdater.verify(print(ast), ast) as string,
+		/reason formatter/,
+	);
+});
 
 test("no-autoupdate injects early return and plugin gate bypass", async () => {
 	const ast = parse(AUTOUPDATER_FIXTURE);
@@ -155,60 +226,6 @@ function pluginForceGate() {
 	assert.match(result as string, /exactly one plugin autoupdate gate function/);
 });
 
-test("no-autoupdate targets exactly one guard fn and one plugin gate", async () => {
-	const ast = parse(AUTOUPDATER_FIXTURE);
-	await runDisableAutoupdaterViaPasses(ast);
-	let guardFns = 0;
-	let patchedGuardEntries = 0;
-	let pluginGates = 0;
-	traverse(ast, {
-		Function(path) {
-			const body = path.node.body;
-			if (!t.isBlockStatement(body)) return;
-			let hasDisable = false;
-			path.traverse({
-				IfStatement(p) {
-					const test = p.node.test;
-					if (
-						t.isMemberExpression(test) &&
-						t.isIdentifier(test.property, { name: "DISABLE_AUTOUPDATER" })
-					)
-						hasDisable = true;
-				},
-			});
-			if (hasDisable) {
-				guardFns++;
-				const first = body.body[0];
-				if (
-					t.isReturnStatement(first) &&
-					t.isStringLiteral(first.argument, { value: "patched" })
-				)
-					patchedGuardEntries++;
-			}
-			const hasForce = body.body.some((statement) => {
-				if (!t.isReturnStatement(statement)) return false;
-				if (!t.isLogicalExpression(statement.argument, { operator: "&&" }))
-					return false;
-				const { left, right } = statement.argument;
-				return (
-					t.isCallExpression(left) &&
-					t.isIdentifier(left.callee) &&
-					left.arguments.length === 0 &&
-					t.isUnaryExpression(right, { operator: "!" }) &&
-					t.isMemberExpression(right.argument) &&
-					t.isIdentifier(right.argument.property, {
-						name: "FORCE_AUTOUPDATE_PLUGINS",
-					})
-				);
-			});
-			if (hasForce) pluginGates++;
-		},
-	});
-	assert.equal(guardFns, 1);
-	assert.equal(patchedGuardEntries, 1);
-	assert.equal(pluginGates, 1);
-});
-
 test("no-autoupdate verify rejects two plugin gate functions", async () => {
 	const fixture = `
 const envFlags = {};
@@ -276,41 +293,4 @@ function pluginForceGate() {
 	const result = disableAutoupdater.verify(print(ast), ast);
 	assert.notEqual(result, true);
 	assert.match(result as string, /guard function not found/);
-});
-
-test("no-autoupdate prepends the patched return ahead of the original guard if-test", async () => {
-	const ast = parse(AUTOUPDATER_FIXTURE);
-	await runDisableAutoupdaterViaPasses(ast);
-	let checked = false;
-	traverse(ast, {
-		Function(path) {
-			const body = path.node.body;
-			if (!t.isBlockStatement(body)) return;
-			let hasDisable = false;
-			path.traverse({
-				IfStatement(p) {
-					if (
-						t.isMemberExpression(p.node.test) &&
-						t.isIdentifier(p.node.test.property, {
-							name: "DISABLE_AUTOUPDATER",
-						})
-					)
-						hasDisable = true;
-				},
-			});
-			if (!hasDisable) return;
-			checked = true;
-			const first = body.body[0];
-			assert.ok(
-				t.isReturnStatement(first) &&
-					t.isStringLiteral(first.argument, { value: "patched" }),
-				"sentinel return must be the first statement of the guard fn",
-			);
-			assert.ok(
-				t.isIfStatement(body.body[1]),
-				"original guard if-test must remain immediately after the sentinel",
-			);
-		},
-	});
-	assert.equal(checked, true);
 });

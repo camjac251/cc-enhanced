@@ -800,6 +800,161 @@ function patchUltracodeCommandEffortUpdateValue(
 	);
 }
 
+function callbackEffortBinding(
+	functionPath: NodePath<t.Function>,
+	callback: t.CallExpression | t.OptionalCallExpression,
+	name: string,
+) {
+	const body = functionPath.node.body;
+	if (!t.isBlockStatement(body)) return null;
+	const binding = functionPath.scope.getBinding(name);
+	if (
+		!binding?.path.isVariableDeclarator() ||
+		binding.scope.block !== functionPath.node
+	)
+		return null;
+	const declaration = binding.path.parentPath;
+	if (
+		!declaration.isVariableDeclaration() ||
+		declaration.parentPath.node !== body
+	)
+		return null;
+	const declarationIndex = body.body.indexOf(declaration.node);
+	const callbackIndex = body.body.findIndex(
+		(statement) =>
+			t.isExpressionStatement(statement) &&
+			(statement.expression === callback ||
+				(t.isSequenceExpression(statement.expression) &&
+					statement.expression.expressions.includes(callback))),
+	);
+	const statement = body.body[callbackIndex];
+	if (declarationIndex < 0 || !t.isExpressionStatement(statement)) return null;
+	return {
+		body,
+		declarationPath: binding.path,
+		kind: declaration.node.kind,
+		declarationIndex,
+		callbackIndex,
+		statement,
+	};
+}
+
+function initializeCallbackEffort(
+	functionPath: NodePath<t.Function>,
+	callback: t.CallExpression | t.OptionalCallExpression,
+	name: string,
+): boolean {
+	const location = callbackEffortBinding(functionPath, callback, name);
+	if (!location) return false;
+	if (location.declarationIndex < location.callbackIndex) return true;
+	const declaration = t.variableDeclaration(location.kind, [
+		t.cloneNode(location.declarationPath.node, true),
+	]);
+	const prefix: t.Statement[] = [];
+	const expression = location.statement.expression;
+	if (t.isSequenceExpression(expression)) {
+		const index = expression.expressions.indexOf(callback);
+		const before = expression.expressions.slice(0, index);
+		const after = expression.expressions.slice(index);
+		if (before.length)
+			prefix.push(
+				t.expressionStatement(
+					before.length === 1 ? before[0] : t.sequenceExpression(before),
+				),
+			);
+		location.statement.expression =
+			after.length === 1 ? after[0] : t.sequenceExpression(after);
+	}
+	location.declarationPath.remove();
+	location.body.body.splice(location.callbackIndex, 0, ...prefix, declaration);
+	functionPath.scope.crawl();
+	return true;
+}
+
+function patchUltracodeCommandEffortUpdateCallback(
+	path: NodePath<t.ReturnStatement>,
+	overrideIdentifier: string,
+): boolean {
+	const functionPath = path.getFunctionParent();
+	if (!functionPath || !t.isFunction(functionPath.node)) return false;
+	let patched = false;
+	t.traverseFast(functionPath.node.body, (candidate) => {
+		if (
+			patched ||
+			(!t.isCallExpression(candidate) && !t.isOptionalCallExpression(candidate))
+		) {
+			return;
+		}
+		if (candidate.arguments.length !== 1) return;
+		const argument = candidate.arguments[0];
+		if (!t.isObjectExpression(argument)) return;
+		const value = getObjectProp(argument, "value");
+		const ultracode = getObjectProp(argument, "ultracode");
+		if (
+			!value ||
+			!ultracode ||
+			!t.isStringLiteral(value.value, { value: "xhigh" }) ||
+			!t.isBooleanLiteral(ultracode.value, { value: true })
+		) {
+			return;
+		}
+		if (!initializeCallbackEffort(functionPath, candidate, overrideIdentifier))
+			return;
+		value.value = t.conditionalExpression(
+			t.binaryExpression(
+				"===",
+				t.identifier(overrideIdentifier),
+				t.stringLiteral("max"),
+			),
+			t.stringLiteral("max"),
+			t.stringLiteral("xhigh"),
+		);
+		patched = true;
+	});
+	return patched;
+}
+
+function hasPatchedUltracodeCommandEffortUpdateCallback(
+	path: NodePath<t.ReturnStatement>,
+): boolean {
+	const functionPath = path.getFunctionParent();
+	if (!functionPath || !t.isFunction(functionPath.node)) return false;
+	let patched = false;
+	t.traverseFast(functionPath.node.body, (candidate) => {
+		if (
+			patched ||
+			(!t.isCallExpression(candidate) && !t.isOptionalCallExpression(candidate))
+		) {
+			return;
+		}
+		if (candidate.arguments.length !== 1) return;
+		const argument = candidate.arguments[0];
+		if (!t.isObjectExpression(argument)) return;
+		const value = getObjectProp(argument, "value");
+		const ultracode = getObjectProp(argument, "ultracode");
+		if (
+			!value ||
+			!ultracode ||
+			!t.isConditionalExpression(value.value) ||
+			!t.isBinaryExpression(value.value.test, { operator: "===" }) ||
+			!t.isIdentifier(value.value.test.left) ||
+			!t.isStringLiteral(value.value.test.right, { value: "max" }) ||
+			!t.isStringLiteral(value.value.consequent, { value: "max" }) ||
+			!t.isStringLiteral(value.value.alternate, { value: "xhigh" }) ||
+			!t.isBooleanLiteral(ultracode.value, { value: true })
+		) {
+			return;
+		}
+		const binding = callbackEffortBinding(
+			functionPath,
+			candidate,
+			value.value.test.left.name,
+		);
+		patched = !!binding && binding.declarationIndex < binding.callbackIndex;
+	});
+	return patched;
+}
+
 function isPatchedUltracodeCommandEffortUpdateValue(
 	returnNode: t.ReturnStatement,
 ): boolean {
@@ -827,7 +982,9 @@ function patchUltracodeCommandEnvMessage(
 ): boolean | null {
 	const messageProp = getReturnMessageProp(path.node);
 	if (!messageProp || !t.isExpression(messageProp.value)) return null;
-	if (isUltracodeCommandStackedMessage(messageProp.value)) return true;
+	if (isUltracodeCommandStackedMessage(messageProp.value)) {
+		return hasPatchedUltracodeCommandEffortUpdateCallback(path);
+	}
 	if (
 		!t.isTemplateLiteral(messageProp.value) ||
 		!templateMatchesQuasiPattern(
@@ -858,7 +1015,7 @@ function patchUltracodeCommandEnvMessage(
 		),
 	);
 	patchUltracodeCommandEffortUpdateValue(path.node, overrideIdentifier);
-	return true;
+	return patchUltracodeCommandEffortUpdateCallback(path, overrideIdentifier);
 }
 
 function createEffortStackMutator(): Visitor {
@@ -1298,7 +1455,10 @@ export const effortStack: Patch = {
 					isUltracodeCommandStackedMessage(messageProp.value)
 				) {
 					hasPatchedByz = true;
-					if (isPatchedUltracodeCommandEffortUpdateValue(path.node)) {
+					if (
+						isPatchedUltracodeCommandEffortUpdateValue(path.node) &&
+						hasPatchedUltracodeCommandEffortUpdateCallback(path)
+					) {
 						hasPatchedCommandEffortValue = true;
 					}
 				}

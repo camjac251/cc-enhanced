@@ -1032,10 +1032,11 @@ function freshIdentifierName(
 	}
 }
 
-function isVoidZeroExpression(expr: t.Expression): boolean {
+function isUndefinedExpression(expr: t.Expression): boolean {
 	return (
-		t.isUnaryExpression(expr, { operator: "void" }) &&
-		t.isNumericLiteral(expr.argument, { value: 0 })
+		t.isIdentifier(expr, { name: "undefined" }) ||
+		(t.isUnaryExpression(expr, { operator: "void" }) &&
+			t.isNumericLiteral(expr.argument, { value: 0 }))
 	);
 }
 
@@ -1047,7 +1048,7 @@ function objectPatternPropertyHasVoidZeroDefault(
 		if (!t.isObjectProperty(prop)) continue;
 		if (getObjectKeyName(prop.key) !== keyName) continue;
 		if (!t.isAssignmentPattern(prop.value)) return false;
-		return isVoidZeroExpression(prop.value.right);
+		return isUndefinedExpression(prop.value.right);
 	}
 	return false;
 }
@@ -1057,7 +1058,7 @@ function isVoidZeroMemberComparison(
 	propertyName: string,
 ): boolean {
 	if (!t.isBinaryExpression(expr, { operator: "!==" })) return false;
-	if (!isVoidZeroExpression(expr.right)) return false;
+	if (!isUndefinedExpression(expr.right)) return false;
 	const left = expr.left;
 	if (t.isMemberExpression(left)) {
 		return !left.computed && isMemberPropertyName(left, propertyName);
@@ -1140,7 +1141,7 @@ function containsRangeVoidGuard(
 	if (
 		t.isBinaryExpression(expr, { operator: "===" }) &&
 		t.isIdentifier(expr.left, { name: rangeVarName }) &&
-		isVoidZeroExpression(expr.right)
+		isUndefinedExpression(expr.right)
 	) {
 		return true;
 	}
@@ -1223,7 +1224,7 @@ function getVoidZeroMemberObjectName(
 ): string | null {
 	if (
 		!t.isBinaryExpression(expr, { operator: "===" }) ||
-		!isVoidZeroExpression(expr.right)
+		!isUndefinedExpression(expr.right)
 	) {
 		return null;
 	}
@@ -1481,6 +1482,7 @@ export function collectReadVerificationInventory(
 					"fallbackLimit",
 					"fallbackSizeLimit",
 					"fallbackSignal",
+					"readOptions",
 				];
 				if (
 					expected.every(
@@ -1512,7 +1514,7 @@ export function collectReadVerificationInventory(
 					key === "offset" &&
 					t.isConditionalExpression(property.value) &&
 					t.isNumericLiteral(property.value.consequent, { value: 1 }) &&
-					isVoidZeroExpression(property.value.alternate)
+					isUndefinedExpression(property.value.alternate)
 				) {
 					inventory.hasReadFileStateOffsetCompat = true;
 				}
@@ -1520,7 +1522,7 @@ export function collectReadVerificationInventory(
 					key === "limit" &&
 					t.isConditionalExpression(property.value) &&
 					t.isNumericLiteral(property.value.consequent, { value: 1 }) &&
-					isVoidZeroExpression(property.value.alternate)
+					isUndefinedExpression(property.value.alternate)
 				) {
 					inventory.hasReadFileStateLimitCompat = true;
 				}
@@ -1796,6 +1798,133 @@ function verifyReadSchemaAndPrompt(ctx: ReadVerifyContextBase): string | null {
 	return null;
 }
 
+function verifyReadResultTransport(ast: t.File): string | null {
+	let found = false;
+	let error: string | null = null;
+	traverse(ast, {
+		VariableDeclarator(path) {
+			const pattern = path.node.id;
+			if (
+				!t.isObjectPattern(pattern) ||
+				![
+					"lineCount",
+					"totalLines",
+					"totalBytes",
+					"readBytes",
+					"mtimeMs",
+				].every((key) =>
+					pattern.properties.some((property) =>
+						hasObjectKeyName(property, key),
+					),
+				) ||
+				!t.isIdentifier(path.node.init)
+			)
+				return;
+			const binding = path.scope.getBinding(path.node.init.name);
+			if (!binding?.path.isVariableDeclarator()) return;
+			const init = binding.path.node.init;
+			if (
+				!t.isAwaitExpression(init) ||
+				!t.isCallExpression(init.argument) ||
+				!t.isFunctionExpression(init.argument.callee)
+			)
+				return;
+			const call = init.argument;
+			const body = init.argument.callee.body;
+			if (
+				!nodeContains(
+					body,
+					(node) =>
+						t.isCallExpression(node) &&
+						t.isIdentifier(node.callee, { name: "fallbackFn" }),
+				)
+			)
+				return;
+			found = true;
+			const resultName = path.node.init.name;
+			const approvedOptions = call.arguments[6];
+			const hasOptions =
+				approvedOptions &&
+				["handle", "maxSelectedBytes"].every((key) =>
+					nodeContains(
+						approvedOptions,
+						(node) => t.isObjectProperty(node) && hasObjectKeyName(node, key),
+					),
+				);
+			const hasMetadata = nodeContains(
+				body,
+				(node) =>
+					t.isReturnStatement(node) &&
+					t.isObjectExpression(node.argument) &&
+					node.argument.properties.some(
+						(property) =>
+							t.isSpreadElement(property) &&
+							t.isIdentifier(property.argument, { name: "rawResult" }),
+					),
+			);
+			const hasPartialResult = nodeContains(
+				body,
+				(node) =>
+					t.isObjectProperty(node) &&
+					hasObjectKeyName(node, "isPartialView") &&
+					t.isLogicalExpression(node.value, { operator: "||" }) &&
+					nodeContains(
+						node.value,
+						(child) =>
+							t.isBinaryExpression(child, { operator: "!==" }) &&
+							t.isIdentifier(child.left, { name: "normalizedRange" }) &&
+							t.isNullLiteral(child.right),
+					),
+			);
+			const hasPartialState = nodeContains(
+				path.getFunctionParent()?.node,
+				(node) =>
+					t.isCallExpression(node) &&
+					t.isMemberExpression(node.callee) &&
+					isMemberPropertyName(node.callee, "set") &&
+					t.isObjectExpression(node.arguments[1]) &&
+					node.arguments[1].properties.some(
+						(property) =>
+							t.isSpreadElement(property) &&
+							nodeContains(property.argument, (child) =>
+								isNamedMember(child, resultName, "isPartialView"),
+							),
+					),
+			);
+			const hasAuthoritativeInput = nodeContains(
+				body,
+				(node) =>
+					t.isObjectProperty(node) &&
+					hasObjectKeyName(node, "input") &&
+					isNamedMember(node.value, "rawResult", "content"),
+			);
+			const reopensPath = nodeContains(
+				body,
+				(node) =>
+					t.isCallExpression(node) &&
+					t.isMemberExpression(node.callee) &&
+					["openSync", "readFileSync", "statSync"].some((key) =>
+						isMemberPropertyName(node.callee as t.MemberExpression, key),
+					),
+			);
+			if (
+				!hasOptions ||
+				!hasMetadata ||
+				!hasPartialResult ||
+				!hasPartialState ||
+				!hasAuthoritativeInput ||
+				reopensPath
+			)
+				error =
+					"Read result transport must preserve approved options, metadata, stdin content, and partial state";
+		},
+	});
+	return (
+		error ??
+		(found ? null : "Missing latest result-bound Read metadata transport")
+	);
+}
+
 function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 	const { code, inventory } = ctx;
 	if (!code.includes("execFileSync")) {
@@ -1816,11 +1945,8 @@ function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 	if (code.includes("offsetLegacy") || code.includes("limitLegacy")) {
 		return "Unexpected offsetLegacy/limitLegacy marker names still present";
 	}
-	if (
-		!code.includes("...await fallbackFn(") &&
-		!code.includes("...(await fallbackFn(")
-	) {
-		return "Missing awaited fallback in bat reader catch path";
+	if (!code.includes("var rawResult = await fallbackFn(")) {
+		return "Missing authoritative approved text read before bat formatting";
 	}
 	if (!inventory.hasFallbackFnBoundedArgs) {
 		return "Fallback call does not preserve bounded read arguments";
@@ -1834,7 +1960,9 @@ function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 	const hasRangeNormalization =
 		code.includes("while (rawRange.length >= 2)") &&
 		code.includes("rawRange.slice(1, -1).trim()");
-	const hasRangeArg = code.includes('args.push("-r", normalizedRange)');
+	const hasRangeArg =
+		code.includes("input: rawResult.content") &&
+		code.includes('args.push("-")');
 	const hasOutputTailDefault = code.includes('filePath.endsWith(".output")');
 	const hasRawRangePass = code.includes('args.push("-r", range)');
 	const hasWhitespaceFlag = code.includes('args.push("-A")');
@@ -1845,7 +1973,7 @@ function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 		return "Missing wrapper-quote normalization for range values";
 	}
 	if (!hasRangeArg) {
-		return "Read command not using normalized range for bat";
+		return "Bat is not formatting the selected approved read over stdin";
 	}
 	if (!hasOutputTailDefault) {
 		return "Missing default .output tail fallback";
@@ -1871,6 +1999,14 @@ function verifyReadBatCore(ctx: ReadVerifyContext): string | null {
 	if (!code.includes("isDirectory()")) {
 		return "Missing directory check before bat read";
 	}
+	const transportError = verifyReadResultTransport(ctx.ast);
+	if (transportError) return transportError;
+	if (
+		!code.includes(
+			"if (fallbackLimit === void 0) delete readOptions.maxSelectedBytes;",
+		)
+	)
+		return "Missing selected-byte budget preservation";
 	return null;
 }
 
@@ -1905,40 +2041,20 @@ function verifyReadCallSignature(ctx: ReadVerifyContext): string | null {
 
 function verifyReadLineAccounting(ctx: ReadVerifyContext): string | null {
 	const { code, inventory } = ctx;
-	if (!code.includes("normalizedOutput")) {
-		return "Missing normalizedOutput line count normalization";
-	}
-	if (!code.includes('output.endsWith("\\n")')) {
-		return "Missing trailing-newline line count guard";
-	}
-	if (!code.includes("startLine: START_LINE")) {
+	if (!code.includes("startLine: START_LINE"))
 		return "Read result startLine not updated to use range";
-	}
-	if (!code.includes("var fileTotalLines = null")) {
-		return "Missing fileTotalLines tracking for negative ranges";
-	}
-	if (!inventory.hasEnsureTotalLinesHelper) {
-		return "Missing shared total-line counter helper for ranged reads";
-	}
-	if (!code.includes("fs.openSync(filePath")) {
-		return "ensureTotalLines missing fd-based line counting";
-	}
-	if (!inventory.hasNormalizedRangeTotalLinesRefresh) {
-		return "Missing full-file line count refresh for positive ranges";
-	}
-	if (!code.includes("lastByte === 10 ? 0 : 1")) {
-		return "Missing trailing-newline-aware total line calculation for negative ranges";
-	}
-	if (code.includes("fileTotalLines = newlines + 1")) {
-		return "Negative range total line calculation is off by one for trailing-newline files";
-	}
 	if (
-		code.includes(
-			"normalizedRange ? Math.max(0, startLine + lineCount - 1) : lineCount",
-		)
-	) {
-		return "totalLines still uses range-end estimate instead of real file total";
-	}
+		!inventory.hasEnsureTotalLinesHelper ||
+		!inventory.hasNormalizedRangeTotalLinesRefresh
+	)
+		return "Missing approved-handle total line accounting for ranges";
+	if (
+		!code.includes("fs.readSync(fallbackOptions.handle.fd") ||
+		!code.includes("position += bytesRead")
+	)
+		return "Range counting must use positional reads on the approved handle";
+	if (!code.includes("lastByte === -1 || lastByte === 10 ? 0 : 1"))
+		return "Missing empty-file and trailing-newline-aware line count";
 	return null;
 }
 
@@ -2235,7 +2351,13 @@ export const readWithBat: Patch = {
 
 						// Helpers shared between the inline probe and section 2 (D2I replacement).
 						const isD2IDestructuring = (id: t.ObjectPattern): boolean =>
-							["content", "lineCount", "totalLines"].every((name) =>
+							[
+								"lineCount",
+								"totalLines",
+								"totalBytes",
+								"readBytes",
+								"mtimeMs",
+							].every((name) =>
 								id.properties.some((p) => hasObjectKeyName(p, name)),
 							);
 						const unwrapAwait = (
@@ -2723,6 +2845,54 @@ export const readWithBat: Patch = {
 								// on the second read of any file. Rewrite to compare range instead.
 								if (removedCallCompatVars.size > 0) {
 									callBodyPath.traverse({
+										Function(innerPath) {
+											innerPath.skip();
+										},
+										IfStatement(ifPath) {
+											const branch = ifPath.node.consequent;
+											const statement =
+												t.isBlockStatement(branch) && branch.body.length === 1
+													? branch.body[0]
+													: branch;
+											if (
+												!t.isExpressionStatement(statement) ||
+												!t.isSequenceExpression(statement.expression)
+											)
+												return;
+											const assignments = statement.expression.expressions;
+											if (
+												assignments.length !== 2 ||
+												!assignments.every(
+													(node) =>
+														t.isAssignmentExpression(node, { operator: "=" }) &&
+														t.isIdentifier(node.left) &&
+														removedCallCompatVars.has(node.left.name),
+												)
+											)
+												return;
+											if (
+												!assignments.some(
+													(node) =>
+														t.isAssignmentExpression(node) &&
+														t.isNumericLiteral(node.right, { value: 1 }),
+												) ||
+												!assignments.some(
+													(node) =>
+														t.isAssignmentExpression(node) &&
+														isUndefinedExpression(node.right),
+												)
+											)
+												return;
+											ifPath.node.consequent = t.expressionStatement(
+												t.assignmentExpression(
+													"=",
+													t.identifier(rangeVarName || "R"),
+													t.unaryExpression("void", t.numericLiteral(0)),
+												),
+											);
+										},
+									});
+									callBodyPath.traverse({
 										IfStatement(ifPath) {
 											const { test } = ifPath.node;
 											if (!t.isLogicalExpression(test, { operator: "&&" }))
@@ -2742,7 +2912,7 @@ export const readWithBat: Patch = {
 													})
 												)
 													continue;
-												if (!isVoidZeroExpression(term.right)) continue;
+												if (!isUndefinedExpression(term.right)) continue;
 												if (
 													t.isMemberExpression(term.left) &&
 													!term.left.computed &&
@@ -2844,7 +3014,7 @@ export const readWithBat: Patch = {
 													t.isBinaryExpression(term, { operator: "===" }) &&
 													t.isIdentifier(term.left) &&
 													removedCallCompatVars.has(term.left.name) &&
-													isVoidZeroExpression(term.right)
+													isUndefinedExpression(term.right)
 												) {
 													removedLimitFullReadTerm = true;
 													continue;
@@ -2917,13 +3087,22 @@ export const readWithBat: Patch = {
 									callBodyPath.traverse({
 										VariableDeclarator(probePath) {
 											const id = probePath.node.id;
-											if (!t.isObjectPattern(id)) return;
-											if (!t.isCallExpression(unwrapAwait(probePath.node.init)))
+											if (
+												!t.isObjectPattern(id) ||
+												!isD2IDestructuring(id) ||
+												!t.isIdentifier(probePath.node.init)
+											)
 												return;
-											if (isD2IDestructuring(id)) {
-												foundInline = true;
-												probePath.stop();
-											}
+											const binding = probePath.scope.getBinding(
+												probePath.node.init.name,
+											);
+											if (
+												!binding?.path.isVariableDeclarator() ||
+												!t.isCallExpression(unwrapAwait(binding.path.node.init))
+											)
+												return;
+											foundInline = true;
+											probePath.stop();
 										},
 									});
 
@@ -3227,8 +3406,25 @@ export const readWithBat: Patch = {
 													let helperPatternPatched = false;
 													helperBodyPath.traverse({
 														VariableDeclarator(declPath) {
-															if (!t.isObjectPattern(declPath.node.id)) return;
+															if (
+																helperPatternPatched ||
+																!t.isObjectPattern(declPath.node.id)
+															)
+																return;
 															const pattern = declPath.node.id;
+															if (
+																![
+																	"file_path",
+																	"fullFilePath",
+																	"offset",
+																	"limit",
+																].every((name) =>
+																	pattern.properties.some((property) =>
+																		hasObjectKeyName(property, name),
+																	),
+																)
+															)
+																return;
 															const hasRange = pattern.properties.some((p) =>
 																hasObjectKeyName(p, "range"),
 															);
@@ -3290,20 +3486,28 @@ export const readWithBat: Patch = {
 									callMethod.body.body.unshift(compatGuard);
 								}
 
-								// === 2. Find and replace text reading logic ===
-								// Look for: { content: X, lineCount: Y, totalLines: Z } = someFunc(path, offset, limit)
+								// === 2. Replace the result-bound approved text read ===
+								let readResultName: string | null = null;
 								targetBodyPath.traverse({
 									VariableDeclarator(declPath) {
 										const id = declPath.node.id;
-
-										// Must be ObjectPattern = CallExpression (or await CallExpression)
-										if (!t.isObjectPattern(id)) return;
-										const callExpr = unwrapAwait(declPath.node.init);
-										if (!t.isCallExpression(callExpr)) return;
-										if (!isD2IDestructuring(id)) return;
-
-										// Get original function and file path argument
-										if (!t.isIdentifier(callExpr.callee)) return;
+										if (!t.isObjectPattern(id) || !isD2IDestructuring(id))
+											return;
+										if (!t.isIdentifier(declPath.node.init)) return;
+										const binding = declPath.scope.getBinding(
+											declPath.node.init.name,
+										);
+										if (!binding?.path.isVariableDeclarator()) return;
+										const resultPath = binding.path;
+										if (!t.isIdentifier(resultPath.node.id)) return;
+										readResultName = resultPath.node.id.name;
+										const callExpr = unwrapAwait(resultPath.node.init);
+										if (
+											!t.isCallExpression(callExpr) ||
+											!t.isIdentifier(callExpr.callee)
+										)
+											return;
+										if (callExpr.arguments.length !== 6) return;
 										originalReadFn = callExpr.callee.name;
 										const fileArg = callExpr.arguments[0];
 										if (!t.isIdentifier(fileArg)) return;
@@ -3329,38 +3533,49 @@ export const readWithBat: Patch = {
 										const fallbackSignalArg = getCallArgOrVoid(
 											callExpr.arguments[4],
 										);
+										let fallbackOptionsArg = getCallArgOrVoid(
+											callExpr.arguments[5],
+										);
+										if (t.isConditionalExpression(fallbackOptionsArg)) {
+											const bounded = [
+												fallbackOptionsArg.consequent,
+												fallbackOptionsArg.alternate,
+											].find(
+												(arm) =>
+													t.isObjectExpression(arm) &&
+													arm.properties.some((property) =>
+														hasObjectKeyName(property, "maxSelectedBytes"),
+													),
+											);
+											if (bounded)
+												fallbackOptionsArg = t.cloneNode(bounded, true);
+										}
 
 										// Build bat reading async IIFE. All runtime code is self-contained
 										// (async function(filePath, range, showWs, fallbackFn, fallbackMaxBytes, fallbackSignal) { ... })(D, R, WSPC, KtB, MAX, SIGNAL)
 										const batFn = template.expression(
-											`async function(filePath, range, showWs, fallbackFn, fallbackMaxBytes, fallbackSignal) {
+											`async function(filePath, range, showWs, fallbackFn, fallbackMaxBytes, fallbackSignal, fallbackOptions) {
   var fs = await import("fs");
-  var stat = fs.statSync(filePath);
+  var stat = await fallbackOptions.handle.stat();
   if (stat.isDirectory()) throw new Error("EISDIR: Cannot read a directory. Use Bash with eza or fd to list directory contents: " + filePath);
-  if (stat.size === 0) {
-    return { content: "", lineCount: 0, totalLines: 0, startLine: 1 };
-  }
-
   var startLine = 1;
   var fallbackOffset = 0;
   var fallbackLimit = void 0;
   var fileTotalLines = null;
   var ensureTotalLines = function() {
     if (fileTotalLines != null) return fileTotalLines;
-    var fd = fs.openSync(filePath, "r");
-    try {
-      var buf = Buffer.allocUnsafe(65536);
-      var bytesRead = 0;
-      var newlines = 0;
-      var lastByte = -1;
-      while ((bytesRead = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
-        lastByte = buf[bytesRead - 1];
-        for (var i = 0; i < bytesRead; i++) if (buf[i] === 10) newlines++;
-      }
-      fileTotalLines = newlines + (lastByte === 10 ? 0 : 1);
-    } finally {
-      fs.closeSync(fd);
+    var buf = Buffer.allocUnsafe(65536);
+    var bytesRead = 0;
+    var position = 0;
+    var newlines = 0;
+    var lastByte = -1;
+    while ((bytesRead = fs.readSync(fallbackOptions.handle.fd, buf, 0, buf.length, position)) > 0) {
+      fallbackSignal?.throwIfAborted();
+      position += bytesRead;
+      lastByte = buf[bytesRead - 1];
+      for (var i = 0; i < bytesRead; i++) if (buf[i] === 10) newlines++;
     }
+    fileTotalLines = newlines + (lastByte === -1 || lastByte === 10 ? 0 : 1);
     return fileTotalLines;
   };
   var normalizedRange = null;
@@ -3524,34 +3739,28 @@ export const readWithBat: Patch = {
     fileTotalLines = ensureTotalLines();
   }
 
+  var fallbackSizeLimit = fallbackLimit === void 0 ? fallbackMaxBytes : void 0;
+  var readOptions = { ...fallbackOptions };
+  if (fallbackLimit === void 0) delete readOptions.maxSelectedBytes;
+  var rawResult = await fallbackFn(filePath, fallbackOffset, fallbackLimit, fallbackSizeLimit, fallbackSignal, readOptions);
   var cp = await import("child_process");
   var style = "numbers";
-  var args = ["--style=" + style, "--color=never", "--paging=never"];
+  var args = ["--style=" + style, "--color=never", "--paging=never", "--file-name", filePath];
   if (showWs) args.push("-A");
-  if (normalizedRange) args.push("-r", normalizedRange);
-  args.push(filePath);
+  args.push("-");
+  var output = rawResult.content;
   try {
-    var output = cp.execFileSync("bat", args, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024, timeout: 30000 });
-    if (autoRanged) {
-      output += "\\n\\n[FILE TRUNCATED: " + fileTotalLines + " total lines, showing first " + autoRangeLines + ". Use range parameter (e.g. '" + (autoRangeLines + 1) + ":" + Math.min(autoRangeLines + 200, fileTotalLines) + "') to read more.]";
-    }
-    var normalizedOutput = output.endsWith("\\n") ? output.slice(0, -1) : output;
-    var lineCount = normalizedOutput.length === 0 ? 0 : normalizedOutput.split("\\n").length;
-    var totalLines = fileTotalLines != null ? fileTotalLines : lineCount;
-    return { content: output, lineCount: lineCount, totalLines: totalLines, startLine: startLine };
-  } catch (e) {
-    var fallbackSizeLimit = fallbackLimit === void 0 ? fallbackMaxBytes : void 0;
-    return {
-      ...(await fallbackFn(filePath, fallbackOffset, fallbackLimit, fallbackSizeLimit, fallbackSignal)),
-      startLine: startLine
-    };
-  }
+    output = cp.execFileSync("bat", args, { input: rawResult.content, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, timeout: 30000 });
+    if (startLine !== 1) output = output.replace(/^(\\s*)(\\d+)([ │])/gm, function(_, padding, line, separator) { return padding + String(Number(line) + startLine - 1) + separator; });
+  } catch {}
+  if (autoRanged) output += "\\n\\n[FILE TRUNCATED: " + rawResult.totalLines + " total lines, showing first " + autoRangeLines + ". Use range parameter (e.g. '" + (autoRangeLines + 1) + ":" + Math.min(autoRangeLines + 200, rawResult.totalLines) + "') to read more.]";
+  return { ...rawResult, content: output, startLine: startLine, effectiveRange: normalizedRange || void 0, isPartialView: normalizedRange !== null || rawResult.truncatedByBytes === true };
 }`,
 											{ placeholderPattern: false },
 										)() as t.FunctionExpression;
 
 										// Replace init with awaited IIFE call
-										declPath.node.init = t.awaitExpression(
+										resultPath.node.init = t.awaitExpression(
 											t.callExpression(batFn, [
 												fileArg,
 												t.identifier(targetRangeVarName || rangeVarName || "R"),
@@ -3563,6 +3772,7 @@ export const readWithBat: Patch = {
 												t.identifier(originalReadFn),
 												fallbackMaxBytesArg,
 												fallbackSignalArg,
+												fallbackOptionsArg,
 											]),
 										);
 
@@ -3579,35 +3789,73 @@ export const readWithBat: Patch = {
 											);
 										}
 
-										// Remove the offset calculation declarator if present
-										// Original: let W = Q === 0 ? 0 : Q - 1, { content: K, ... } = KtB(...)
-										// Both are in the SAME VariableDeclaration
-										const varDeclPath = declPath.parentPath;
-										if (
-											varDeclPath &&
-											t.isVariableDeclaration(varDeclPath.node)
-										) {
-											const decls = varDeclPath.node.declarations;
-											// Find and remove the offset calculation declarator
-											const offsetIdx = decls.findIndex((d) => {
-												// Look for: W = Q === 0 ? 0 : Q - 1
-												if (!t.isConditionalExpression(d.init)) return false;
-												const cond = d.init;
-												return (
-													t.isBinaryExpression(cond.test, {
-														operator: "===",
-													}) &&
-													t.isNumericLiteral(cond.consequent, { value: 0 })
-												);
-											});
-											if (offsetIdx >= 0) {
-												decls.splice(offsetIdx, 1);
+										const offsetArg = callExpr.arguments[1];
+										if (t.isIdentifier(offsetArg)) {
+											const offsetBinding = declPath.scope.getBinding(
+												offsetArg.name,
+											);
+											if (offsetBinding?.path.isVariableDeclarator()) {
+												const declaration = declPath.parentPath;
+												if (declaration.isVariableDeclaration())
+													declaration.insertAfter(
+														t.expressionStatement(
+															t.assignmentExpression(
+																"=",
+																t.cloneNode(offsetArg),
+																t.binaryExpression(
+																	"-",
+																	t.identifier("START_LINE"),
+																	t.numericLiteral(1),
+																),
+															),
+														),
+													);
 											}
 										}
-
 										declPath.stop();
 									},
 								});
+
+								if (readResultName) {
+									const resultName = readResultName;
+									targetBodyPath.traverse({
+										VariableDeclarator(guardPath) {
+											const init = guardPath.node.init;
+											if (!t.isLogicalExpression(init, { operator: "&&" }))
+												return;
+											if (
+												nodeContains(init, (node) =>
+													isNamedMember(node, resultName, "isPartialView"),
+												)
+											)
+												return;
+											const terms = flattenLogicalAndTerms(init);
+											const hasFirstLine = terms.some(
+												(term) =>
+													t.isBinaryExpression(term, { operator: "<=" }) &&
+													t.isNumericLiteral(term.right, { value: 1 }),
+											);
+											const unsetTerms = terms.filter(
+												(term) =>
+													t.isBinaryExpression(term, { operator: "===" }) &&
+													(t.isIdentifier(term.right, { name: "undefined" }) ||
+														isUndefinedExpression(term.right)),
+											);
+											if (!hasFirstLine || unsetTerms.length !== 2) return;
+											guardPath.node.init = t.logicalExpression(
+												"&&",
+												init,
+												t.unaryExpression(
+													"!",
+													t.memberExpression(
+														t.identifier(resultName),
+														t.identifier("isPartialView"),
+													),
+												),
+											);
+										},
+									});
+								}
 
 								// === 3. Fix readFileState.set call ===
 								// Change: Z.set(D, { content: K, timestamp: ..., offset: Q, limit: B })
@@ -3635,6 +3883,39 @@ export const readWithBat: Patch = {
 										);
 
 										if (!hasOffset || !hasLimit) return;
+										// Non-text branches return before the approved text result exists.
+										if (!readResultName) return;
+										const resultBinding =
+											callPath.scope.getBinding(readResultName);
+										if (!resultBinding?.path.isVariableDeclarator()) return;
+										if (
+											resultBinding !==
+											targetBodyPath.scope.getBinding(readResultName)
+										)
+											return;
+										if (
+											resultBinding.path.getFunctionParent()?.node !==
+											callPath.getFunctionParent()?.node
+										)
+											return;
+										const declaration = resultBinding.path.parentPath;
+										if (
+											!declaration.isVariableDeclaration() ||
+											!declaration.parentPath.isBlockStatement()
+										)
+											return;
+										const block = declaration.parentPath.node;
+										const stateStatement = callPath.findParent(
+											(parent) =>
+												parent.isStatement() &&
+												parent.parentPath?.node === block,
+										);
+										if (
+											!stateStatement?.isStatement() ||
+											block.body.indexOf(stateStatement.node) <=
+												block.body.indexOf(declaration.node)
+										)
+											return;
 
 										// Keep offset/limit as compatibility markers for the
 										// changed-files attachment scanner. It skips diff-injection
@@ -3674,8 +3955,17 @@ export const readWithBat: Patch = {
 										);
 										const isPartialReadExpr = t.logicalExpression(
 											"||",
-											t.cloneNode(isRangedExpr, true),
-											hasImplicitOutputTailExpr,
+											t.logicalExpression(
+												"||",
+												t.cloneNode(isRangedExpr, true),
+												hasImplicitOutputTailExpr,
+											),
+											readResultName
+												? t.memberExpression(
+														t.identifier(readResultName),
+														t.identifier("isPartialView"),
+													)
+												: t.booleanLiteral(false),
 										);
 										const compatMarkerExpr = t.conditionalExpression(
 											isPartialReadExpr,
@@ -3729,6 +4019,39 @@ export const readWithBat: Patch = {
 												t.objectProperty(
 													t.identifier("range"),
 													t.cloneNode(effectiveRangeExpr, true),
+												),
+											);
+										}
+										const partialResultName = readResultName;
+										if (
+											partialResultName &&
+											!objArg.properties.some(
+												(property) =>
+													t.isSpreadElement(property) &&
+													nodeContains(property.argument, (node) =>
+														isNamedMember(
+															node,
+															partialResultName,
+															"isPartialView",
+														),
+													),
+											)
+										) {
+											objArg.properties.push(
+												t.spreadElement(
+													t.logicalExpression(
+														"&&",
+														t.memberExpression(
+															t.identifier(partialResultName),
+															t.identifier("isPartialView"),
+														),
+														t.objectExpression([
+															t.objectProperty(
+																t.identifier("isPartialView"),
+																t.booleanLiteral(true),
+															),
+														]),
+													),
 												),
 											);
 										}
@@ -4573,12 +4896,53 @@ export const readWithBat: Patch = {
 		if (!schemaObject) {
 			return "Unable to resolve Read input schema for verification";
 		}
-		const callMethod =
-			getReadCallImplementationPath(readToolPath)?.node ?? null;
+		let callImplementationPath = getReadCallImplementationPath(readToolPath);
+		const callMethod = callImplementationPath?.node ?? null;
 		const callParam = getFirstObjectPatternParam(callMethod);
 		if (!callParam) {
 			return "Unable to resolve Read.call object parameter for verification";
 		}
+		let unboundRangeReference = false;
+		if (callImplementationPath) {
+			callImplementationPath.scope.crawl();
+			callImplementationPath.traverse({
+				Function(inner) {
+					inner.skip();
+				},
+				AssignmentExpression(assignment) {
+					if (
+						t.isIdentifier(assignment.node.left) &&
+						!assignment.scope.hasBinding(assignment.node.left.name)
+					)
+						unboundRangeReference = true;
+				},
+				IfStatement(condition) {
+					if (
+						!nodeContains(
+							condition.node.test,
+							(node) =>
+								t.isMemberExpression(node) &&
+								["seededFromContext", "offset", "limit"].some((key) =>
+									isMemberPropertyName(node, key),
+								),
+						)
+					)
+						return;
+					condition.get("test").traverse({
+						ReferencedIdentifier(reference) {
+							if (
+								reference.node.name !== "undefined" &&
+								!reference.scope.hasBinding(reference.node.name)
+							)
+								unboundRangeReference = true;
+						},
+					});
+				},
+			});
+		}
+		callImplementationPath = null;
+		if (unboundRangeReference)
+			return "Read implementation retains unbound input-range references";
 		const callKeys = getObjectPatternKeys(callParam);
 		const rangeBindingName =
 			getObjectPatternBindingName(callParam, "range") ?? "R";

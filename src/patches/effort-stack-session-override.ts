@@ -294,8 +294,17 @@ function isSessionOnlySettingsGuard(
 	) {
 		return false;
 	}
+	if (!t.isReturnStatement(stmt.consequent)) return false;
+	if (stmt.consequent.argument === null) return false;
+	const result = stmt.consequent.argument;
+	if (!t.isObjectExpression(result) || result.properties.length !== 1) {
+		return false;
+	}
+	const [error] = result.properties;
 	return (
-		t.isReturnStatement(stmt.consequent) && stmt.consequent.argument === null
+		t.isObjectProperty(error) &&
+		getObjectKeyName(error.key) === "error" &&
+		isVoidZeroExpression(error.value as t.Expression)
 	);
 }
 
@@ -321,7 +330,17 @@ export function patchEffortSettingsWriterFunction(
 		return null;
 	}
 	fn.body.body.unshift(
-		t.ifStatement(buildRawEnvIsSetCheck(envEffortLevel), t.returnStatement()),
+		t.ifStatement(
+			buildRawEnvIsSetCheck(envEffortLevel),
+			t.returnStatement(
+				t.objectExpression([
+					t.objectProperty(
+						t.identifier("error"),
+						t.unaryExpression("void", t.numericLiteral(0)),
+					),
+				]),
+			),
+		),
 	);
 	return true;
 }

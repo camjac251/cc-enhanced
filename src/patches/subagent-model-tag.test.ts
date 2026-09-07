@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as t from "@babel/types";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
 import { parse, print } from "../loader.js";
 import { subagentModelTag } from "./subagent-model-tag.js";
@@ -147,7 +148,37 @@ function spawnTeammateBackendB(input, context) {
     });
   });
 }
+async function spawnInProcessTeammate(t34, e34) {
+  return withIdentity(async ({identity}) => {
+  const launch = {
+    identity,
+    taskId: e34.taskId,
+    prompt: t34.prompt,
+    description: t34.description,
+    model: t34.model,
+    agentDefinition: t34.agentDefinition,
+    teammateContext: e34.teammateContext,
+    toolUseContext: e34.toolUseContext,
+    abortController: e34.abortController,
+    invokingRequestId: t34.invokingRequestId,
+  };
+  return runInProcess(launch, e34);
+  });
+}
 
+async function runInProcess(input) {
+  let { identity, taskId, prompt, description, agentDefinition, teammateContext, toolUseContext, abortController, model, invokingRequestId } = input;
+  const definition = {
+    agentType: identity.agentName,
+    whenToUse: \`In-process teammate: \${identity.agentName}\`,
+    getSystemPrompt: () => "",
+    tools: ["*"],
+    source: "projectSettings",
+    permissionMode: "default",
+    ...(agentDefinition?.model && { model: agentDefinition.model }),
+  };
+  return useAgent({ agentDefinition: definition, model });
+}
 async function* runChild({ agentDefinition, model, extraMetadata }) {
   saveAgentMetadata(agentId, model !== undefined || extraMetadata !== undefined, {
     agentType: agentDefinition.agentType,
@@ -227,7 +258,7 @@ ${AGENT_LIFECYCLE_FIXTURE}
 `;
 
 const CURRENT_SUBAGENT_FIXTURE = SUBAGENT_FIXTURE.replace(
-	/function spawnTeammateBackendA[\s\S]+?(?=async function\* runChild)/,
+	/function spawnTeammateBackendA[\s\S]+?(?=async function spawnInProcessTeammate)/,
 	"",
 );
 
@@ -918,4 +949,38 @@ function renderFooterRow(item, out) {
 	const verifyResult = subagentModelTag.verify(output, ast);
 	assert.equal(typeof verifyResult, "string");
 	assert.equal(String(verifyResult).includes("ambiguous"), true);
+});
+
+test("in-process effort crosses the native nested identity callback", async () => {
+	const ast = parse(SUBAGENT_FIXTURE);
+	await runSubagentModelTagViaPasses(ast);
+	const functions = ast.program.body.filter(
+		(node): node is t.FunctionDeclaration =>
+			t.isFunctionDeclaration(node) &&
+			["spawnInProcessTeammate", "runInProcess"].includes(node.id?.name ?? ""),
+	);
+	assert.equal(functions.length, 2);
+	const runtime = new Function(`${print(t.file(t.program(functions)))};
+async function withIdentity(callback) { return callback({identity: {agentName: "worker"}}); }
+function useAgent(options) { return options.agentDefinition; }
+return spawnInProcessTeammate;`)();
+	const definition = await runtime(
+		{
+			effort: "low",
+			model: "provider/model",
+			agentDefinition: { model: "provider/model", effort: "high" },
+			prompt: "work",
+			description: "worker",
+			invokingRequestId: "request",
+		},
+		{
+			taskId: "task",
+			teammateContext: {},
+			toolUseContext: {},
+			abortController: new AbortController(),
+		},
+	);
+	assert.equal(definition.effort, "low");
+	assert.equal(definition.agentType, "worker");
+	assert.equal(subagentModelTag.verify(print(ast), ast), true);
 });

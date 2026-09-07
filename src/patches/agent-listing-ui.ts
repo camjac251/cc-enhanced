@@ -35,31 +35,9 @@ function ${AGENT_LISTING_SUMMARY_HELPER}(attachment) {
 	)();
 }
 
-/**
- * Confirms the injected summary helper still caps the visible list and emits the
- * overflow suffix, so a corrupted helper body cannot pass on name alone. Checks
- * behavior (a `slice` with a numeric bound, an `addedTypes` reference, and the
- * overflow word) rather than the exact expression shape.
- */
+/** Reject dead or weakened helpers even when their old markers survive. */
 function isSummaryHelperBodyWellFormed(fn: t.FunctionDeclaration): boolean {
-	const referencesAddedTypes = nodeContains(
-		fn.body,
-		(node) =>
-			t.isMemberExpression(node) && isMemberPropertyName(node, "addedTypes"),
-	);
-	const hasNumericSlice = nodeContains(
-		fn.body,
-		(node) =>
-			t.isCallExpression(node) &&
-			t.isMemberExpression(node.callee) &&
-			isMemberPropertyName(node.callee, "slice") &&
-			node.arguments.some((arg) => t.isNumericLiteral(arg)),
-	);
-	const hasOverflowSuffix = nodeContains(
-		fn.body,
-		(node) => t.isStringLiteral(node) && node.value.includes("more"),
-	);
-	return referencesAddedTypes && hasNumericSlice && hasOverflowSuffix;
+	return t.isNodesEquivalent(fn, buildAgentListingSummaryHelper());
 }
 
 function nodeContains(

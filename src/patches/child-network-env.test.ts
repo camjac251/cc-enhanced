@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as t from "@babel/types";
 import { runCombinedAstPasses } from "../ast-pass-engine.js";
+import { traverse } from "../babel.js";
 import { parse, print } from "../loader.js";
 import { childNetworkEnv } from "./child-network-env.js";
 
@@ -208,6 +210,58 @@ test("leaves stock and nested client environments on the parent route", async ()
 	};
 	runtime.setEnv(routedEnv);
 	assert.deepEqual(runtime.buildNestedClientEnvironment(), routedEnv);
+});
+
+test("verification rejects missing or self-copying snapshot restoration", async () => {
+	for (const mutation of ["remove", "self-copy"] as const) {
+		const ast = parse(CHILD_ENV_FIXTURE);
+		await runChildNetworkEnvViaPasses(ast);
+		let changed = false;
+		traverse(ast, {
+			AssignmentExpression(path) {
+				const { left, right } = path.node;
+				if (
+					!t.isMemberExpression(left) ||
+					!t.isMemberExpression(right) ||
+					!t.isIdentifier(right.object, { name: "snapshot" })
+				)
+					return;
+				changed = true;
+				if (mutation === "remove")
+					path.replaceWith(t.unaryExpression("void", t.numericLiteral(0)));
+				else path.node.right = t.cloneNode(left);
+			},
+		});
+		assert.equal(changed, true);
+		const output = print(ast);
+		const runtime = evaluatePatched(output);
+		runtime.setEnv({
+			HTTPS_PROXY: "http://bridge.example:8000",
+			CLODEX_ORIGINAL_NETWORK_ENV: JSON.stringify({
+				HTTPS_PROXY: "http://original.example:8080",
+			}),
+		});
+		assert.equal(
+			runtime.buildChildEnvironment().HTTPS_PROXY,
+			"http://bridge.example:8000",
+		);
+		assert.notEqual(childNetworkEnv.verify(output, ast), true);
+	}
+});
+
+test("verification rejects removed policy writes and control-key cleanup", async () => {
+	const ast = parse(CHILD_ENV_FIXTURE);
+	await runChildNetworkEnvViaPasses(ast);
+	const output = print(ast);
+	for (const operation of [
+		/delete [A-Za-z_$][\w$]*\[key\];/,
+		/[A-Za-z_$][\w$]*\[key\] = upstreamProxy;/,
+		/delete [A-Za-z_$][\w$]*\["CLODEX_CHILD_NETWORK_MODE"\];/,
+	]) {
+		const broken = output.replace(operation, ";");
+		assert.notEqual(broken, output);
+		assert.notEqual(childNetworkEnv.verify(broken, parse(broken)), true);
+	}
 });
 
 test("child-network-env is idempotent", async () => {

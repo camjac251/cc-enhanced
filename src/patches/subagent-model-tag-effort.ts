@@ -140,6 +140,29 @@ const TEAMMATE_SESSION_OPTION_KEYS = [
 	"skipModel",
 ] as const;
 
+const IN_PROCESS_LAUNCH_KEYS = [
+	"identity",
+	"taskId",
+	"prompt",
+	"description",
+	"agentDefinition",
+	"teammateContext",
+	"toolUseContext",
+	"abortController",
+	"invokingRequestId",
+] as const;
+
+export interface InProcessLaunchCandidate {
+	node: t.ObjectExpression;
+	functionNode: t.Node;
+	inputName: string;
+}
+
+export interface InProcessRunnerCandidate {
+	node: t.ObjectExpression;
+	functionNode: t.Function;
+}
+
 export interface AgentCallCandidate {
 	path: NodePath<t.ObjectMethod>;
 	input: t.ObjectPattern;
@@ -155,7 +178,6 @@ export interface RemoteAgentRequestCandidate {
 	node: t.ObjectExpression;
 	functionNode: t.Node;
 }
-
 export interface MetadataMirrorCandidate {
 	node: t.ObjectExpression;
 	metadataName: string;
@@ -297,7 +319,99 @@ export function classifyTeammateLaunchInput(
 	if (!functionPath) return null;
 	return { node: path.node, functionNode: functionPath.node };
 }
+export function classifyInProcessLaunch(
+	path: NodePath<t.ObjectExpression>,
+): InProcessLaunchCandidate | null {
+	if (
+		!IN_PROCESS_LAUNCH_KEYS.every((key) =>
+			Boolean(getObjectPropertyByName(path.node, key)),
+		)
+	) {
+		return null;
+	}
+	const description = getObjectPropertyByName(path.node, "description")?.value;
+	const request = getObjectPropertyByName(
+		path.node,
+		"invokingRequestId",
+	)?.value;
+	if (
+		!t.isMemberExpression(description) ||
+		!t.isIdentifier(description.object) ||
+		getMemberPropertyName(description) !== "description"
+	)
+		return null;
+	const input = description.object;
+	if (
+		!t.isMemberExpression(request) ||
+		!t.isIdentifier(request.object, { name: input.name }) ||
+		getMemberPropertyName(request) !== "invokingRequestId"
+	)
+		return null;
+	const binding = path.scope.getBinding(input.name);
+	const functionNode = binding?.scope.block;
+	if (
+		binding?.kind !== "param" ||
+		!t.isFunction(functionNode) ||
+		!t.isIdentifier(functionNode.params[0], { name: input.name })
+	)
+		return null;
+	return {
+		node: path.node,
+		functionNode,
+		inputName: input.name,
+	};
+}
 
+function hasDirectOrNestedObjectProperty(
+	node: t.ObjectExpression,
+	propertyName: string,
+): boolean {
+	if (getObjectPropertyByName(node, propertyName)) return true;
+	return node.properties.some(
+		(property) =>
+			t.isSpreadElement(property) &&
+			nodeContains(
+				property.argument,
+				(candidate) =>
+					t.isObjectExpression(candidate) &&
+					getObjectPropertyByName(candidate, propertyName) !== null,
+			),
+	);
+}
+
+export function classifyInProcessRunner(
+	path: NodePath<t.ObjectExpression>,
+): InProcessRunnerCandidate | null {
+	const required = [
+		"agentType",
+		"whenToUse",
+		"getSystemPrompt",
+		"tools",
+		"source",
+		"permissionMode",
+		"model",
+	];
+	if (
+		!required.every((key) => hasDirectOrNestedObjectProperty(path.node, key))
+	) {
+		return null;
+	}
+	const whenToUse = getObjectPropertyByName(path.node, "whenToUse");
+	if (
+		!whenToUse ||
+		!nodeContains(
+			whenToUse.value,
+			(node) =>
+				t.isTemplateElement(node) &&
+				(node.value.cooked ?? node.value.raw).includes("In-process teammate:"),
+		)
+	) {
+		return null;
+	}
+	const functionPath = path.getFunctionParent();
+	if (!functionPath || !t.isFunction(functionPath.node)) return null;
+	return { node: path.node, functionNode: functionPath.node };
+}
 export function classifyTeammateSessionOptions(
 	path: NodePath<t.ObjectExpression>,
 ): TeammateSessionOptionsCandidate | null {
@@ -555,10 +669,119 @@ function isTeammateSessionEffortExpression(
 	);
 }
 
+function getNestedObjectPropertyIndex(
+	node: t.ObjectExpression,
+	propertyName: string,
+): number {
+	return node.properties.findIndex((property) => {
+		if (
+			t.isObjectProperty(property) &&
+			getObjectKeyName(property.key) === propertyName
+		) {
+			return true;
+		}
+		return (
+			t.isSpreadElement(property) &&
+			nodeContains(
+				property.argument,
+				(candidate) =>
+					t.isObjectExpression(candidate) &&
+					getObjectPropertyByName(candidate, propertyName) !== null,
+			)
+		);
+	});
+}
+
+function patchInProcessLaunch(candidate: InProcessLaunchCandidate): boolean {
+	let effort = getObjectPropertyByName(candidate.node, "effort");
+	if (!effort) {
+		const modelIndex = getNestedObjectPropertyIndex(candidate.node, "model");
+		if (modelIndex < 0) return false;
+		candidate.node.properties.splice(
+			modelIndex + 1,
+			0,
+			t.objectProperty(
+				t.identifier("effort"),
+				t.memberExpression(
+					t.identifier(candidate.inputName),
+					t.identifier("effort"),
+				),
+			),
+		);
+		effort = getObjectPropertyByName(candidate.node, "effort");
+	}
+	return (
+		effort !== null &&
+		t.isMemberExpression(effort.value) &&
+		t.isIdentifier(effort.value.object, { name: candidate.inputName }) &&
+		getMemberPropertyName(effort.value) === "effort"
+	);
+}
+
+function patchInProcessRunner(candidate: InProcessRunnerCandidate): boolean {
+	let inputPattern: t.ObjectPattern | null = null;
+	t.traverseFast(candidate.functionNode.body, (node) => {
+		if (inputPattern || !t.isVariableDeclaration(node)) return;
+		for (const declaration of node.declarations) {
+			if (
+				!t.isObjectPattern(declaration.id) ||
+				!t.isIdentifier(declaration.init)
+			)
+				continue;
+			if (
+				getObjectPatternProperty(declaration.id, "agentDefinition") &&
+				getObjectPatternProperty(declaration.id, "model")
+			) {
+				inputPattern = declaration.id;
+				return;
+			}
+		}
+	});
+	const pattern = inputPattern as t.ObjectPattern | null;
+	if (!pattern) return false;
+	let effort = getObjectPatternProperty(pattern, "effort");
+	if (!effort) {
+		const modelIndex = pattern.properties.findIndex(
+			(property) =>
+				t.isObjectProperty(property) &&
+				getObjectKeyName(property.key) === "model",
+		);
+		if (modelIndex < 0) return false;
+		pattern.properties.splice(
+			modelIndex + 1,
+			0,
+			t.objectProperty(
+				t.identifier("effort"),
+				t.identifier("__ccTeammateEffort"),
+			),
+		);
+		effort = getObjectPatternProperty(pattern, "effort");
+	}
+	if (!effort || !t.isIdentifier(effort.value)) return false;
+	const effortName = effort.value.name;
+	let definition = getObjectPropertyByName(candidate.node, "effort");
+	if (!definition) {
+		const modelIndex = getNestedObjectPropertyIndex(candidate.node, "model");
+		if (modelIndex < 0) return false;
+		candidate.node.properties.splice(
+			modelIndex + 1,
+			0,
+			t.objectProperty(t.identifier("effort"), t.identifier(effortName)),
+		);
+		definition = getObjectPropertyByName(candidate.node, "effort");
+	}
+	return (
+		definition !== null &&
+		t.isIdentifier(definition.value, { name: effortName })
+	);
+}
+
 function patchTeammateEffort(
 	call: AgentCallCandidate,
 	launchInputs: TeammateLaunchInputCandidate[],
 	sessionOptions: TeammateSessionOptionsCandidate[],
+	inProcessLaunches: InProcessLaunchCandidate[],
+	inProcessRunners: InProcessRunnerCandidate[],
 	effortName: string,
 ): boolean {
 	const matchingLaunches = launchInputs.filter(
@@ -566,7 +789,9 @@ function patchTeammateEffort(
 	);
 	if (
 		matchingLaunches.length !== 1 ||
-		(sessionOptions.length !== 0 && sessionOptions.length !== 2)
+		(sessionOptions.length !== 0 && sessionOptions.length !== 2) ||
+		inProcessLaunches.length !== 1 ||
+		inProcessRunners.length !== 1
 	) {
 		return false;
 	}
@@ -622,10 +847,11 @@ function patchTeammateEffort(
 			fallback,
 		);
 	}
-
 	return (
 		launchEffort !== null &&
 		t.isIdentifier(launchEffort.value, { name: effortName }) &&
+		inProcessLaunches.every(patchInProcessLaunch) &&
+		inProcessRunners.every(patchInProcessRunner) &&
 		sessionOptions.every((candidate) => {
 			const property = getObjectPropertyByName(candidate.node, "sessionEffort");
 			return (
@@ -636,10 +862,56 @@ function patchTeammateEffort(
 	);
 }
 
+function hasInProcessLaunchContract(
+	candidate: InProcessLaunchCandidate,
+): boolean {
+	const effort = getObjectPropertyByName(candidate.node, "effort");
+	return (
+		effort !== null &&
+		t.isMemberExpression(effort.value) &&
+		t.isIdentifier(effort.value.object, { name: candidate.inputName }) &&
+		getMemberPropertyName(effort.value) === "effort"
+	);
+}
+
+function hasInProcessRunnerContract(
+	candidate: InProcessRunnerCandidate,
+): boolean {
+	let effortName: string | null = null;
+	t.traverseFast(candidate.functionNode.body, (node) => {
+		if (effortName !== null || !t.isVariableDeclaration(node)) return;
+		for (const declaration of node.declarations) {
+			if (
+				!t.isObjectPattern(declaration.id) ||
+				!t.isIdentifier(declaration.init)
+			)
+				continue;
+			const patternEffort = getObjectPatternProperty(declaration.id, "effort");
+			if (
+				getObjectPatternProperty(declaration.id, "agentDefinition") &&
+				getObjectPatternProperty(declaration.id, "model") &&
+				patternEffort &&
+				t.isIdentifier(patternEffort.value)
+			) {
+				effortName = patternEffort.value.name;
+				return;
+			}
+		}
+	});
+	const definition = getObjectPropertyByName(candidate.node, "effort");
+	return (
+		effortName !== null &&
+		definition !== null &&
+		t.isIdentifier(definition.value, { name: effortName })
+	);
+}
+
 function hasTeammateEffortContract(
 	call: AgentCallCandidate,
 	launchInputs: TeammateLaunchInputCandidate[],
 	sessionOptions: TeammateSessionOptionsCandidate[],
+	inProcessLaunches: InProcessLaunchCandidate[],
+	inProcessRunners: InProcessRunnerCandidate[],
 	effortName: string,
 ): boolean {
 	const matchingLaunches = launchInputs.filter(
@@ -647,7 +919,9 @@ function hasTeammateEffortContract(
 	);
 	if (
 		matchingLaunches.length !== 1 ||
-		(sessionOptions.length !== 0 && sessionOptions.length !== 2)
+		(sessionOptions.length !== 0 && sessionOptions.length !== 2) ||
+		inProcessLaunches.length !== 1 ||
+		inProcessRunners.length !== 1
 	) {
 		return false;
 	}
@@ -663,6 +937,8 @@ function hasTeammateEffortContract(
 		) === 1 &&
 		launchEffort !== null &&
 		t.isIdentifier(launchEffort.value, { name: effortName }) &&
+		hasInProcessLaunchContract(inProcessLaunches[0]) &&
+		hasInProcessRunnerContract(inProcessRunners[0]) &&
 		sessionOptions.every((candidate) => {
 			const property = getObjectPropertyByName(candidate.node, "sessionEffort");
 			return (
@@ -691,6 +967,8 @@ export function patchAgentCallEffort(
 	remoteRequests: RemoteAgentRequestCandidate[],
 	teammateLaunchInputs: TeammateLaunchInputCandidate[],
 	teammateSessionOptions: TeammateSessionOptionsCandidate[],
+	inProcessLaunches: InProcessLaunchCandidate[],
+	inProcessRunners: InProcessRunnerCandidate[],
 ): boolean {
 	const matchingForks = forkLaunches.filter(
 		(candidate) => candidate.path.getFunctionParent()?.node === call.path.node,
@@ -815,6 +1093,8 @@ export function patchAgentCallEffort(
 		call,
 		teammateLaunchInputs,
 		teammateSessionOptions,
+		inProcessLaunches,
+		inProcessRunners,
 		effortName,
 	);
 
@@ -839,6 +1119,8 @@ export function hasAgentCallEffortContract(
 	remoteRequests: RemoteAgentRequestCandidate[],
 	teammateLaunchInputs: TeammateLaunchInputCandidate[],
 	teammateSessionOptions: TeammateSessionOptionsCandidate[],
+	inProcessLaunches: InProcessLaunchCandidate[],
+	inProcessRunners: InProcessRunnerCandidate[],
 ): boolean {
 	const effortName = getPatternBindingName(call.input, "effort");
 	if (effortName !== AGENT_EFFORT_BINDING) return false;
@@ -896,6 +1178,8 @@ export function hasAgentCallEffortContract(
 			call,
 			teammateLaunchInputs,
 			teammateSessionOptions,
+			inProcessLaunches,
+			inProcessRunners,
 			effortName,
 		)
 	);
@@ -980,6 +1264,52 @@ function buildResumeEffortStatement(
 		]),
 	);
 }
+function isResumeExtraMetadataEffortExpression(
+	node: t.Node | null | undefined,
+	metadataName: string,
+): boolean {
+	if (
+		!t.isConditionalExpression(node) ||
+		!isResumeEffortCondition(node.test, metadataName) ||
+		!isVoidZero(node.alternate) ||
+		!t.isObjectExpression(node.consequent) ||
+		node.consequent.properties.length !== 1
+	) {
+		return false;
+	}
+	const effort = getObjectPropertyByName(node.consequent, "effort");
+	return (
+		effort !== null &&
+		isMetadataPropertyExpression(effort.value, metadataName, "effort")
+	);
+}
+
+function buildResumeExtraMetadataEffort(
+	metadataName: string,
+): t.ConditionalExpression {
+	return t.conditionalExpression(
+		t.logicalExpression(
+			"&&",
+			t.binaryExpression(
+				"!==",
+				buildOptionalMember(metadataName, "isFork"),
+				t.booleanLiteral(true),
+			),
+			t.binaryExpression(
+				"!==",
+				buildOptionalMember(metadataName, "effort"),
+				buildVoidZero(),
+			),
+		),
+		t.objectExpression([
+			t.objectProperty(
+				t.identifier("effort"),
+				buildOptionalMember(metadataName, "effort"),
+			),
+		]),
+		buildVoidZero(),
+	);
+}
 
 export function patchResumeEffort(options: ResumeOptionsCandidate): boolean {
 	const definition = getObjectPropertyByName(options.node, "agentDefinition");
@@ -1003,7 +1333,30 @@ export function patchResumeEffort(options: ResumeOptionsCandidate): boolean {
 		);
 		count = 1;
 	}
-	return count === 1;
+	let extraMetadata = getObjectPropertyByName(options.node, "extraMetadata");
+	if (!extraMetadata) {
+		if (
+			!insertObjectPropertyAfter(
+				options.node,
+				"contentReplacementState",
+				t.objectProperty(
+					t.identifier("extraMetadata"),
+					buildResumeExtraMetadataEffort(options.metadataName),
+				),
+			)
+		) {
+			return false;
+		}
+		extraMetadata = getObjectPropertyByName(options.node, "extraMetadata");
+	}
+	return (
+		count === 1 &&
+		extraMetadata !== null &&
+		isResumeExtraMetadataEffortExpression(
+			extraMetadata.value,
+			options.metadataName,
+		)
+	);
 }
 
 export function hasResumeEffortContract(
@@ -1012,10 +1365,16 @@ export function hasResumeEffortContract(
 	const definition = getObjectPropertyByName(options.node, "agentDefinition");
 	if (!definition || !t.isIdentifier(definition.value)) return false;
 	const selectedAgentName = definition.value.name;
+	const extraMetadata = getObjectPropertyByName(options.node, "extraMetadata");
 	return (
 		countMatchingNodes(options.functionNode, (node) =>
 			isResumeEffortStatement(node, options.metadataName, selectedAgentName),
-		) === 1
+		) === 1 &&
+		extraMetadata !== null &&
+		isResumeExtraMetadataEffortExpression(
+			extraMetadata.value,
+			options.metadataName,
+		)
 	);
 }
 

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as t from "@babel/types";
-import { template, traverse } from "../babel.js";
+import { type NodePath, template, traverse } from "../babel.js";
 import { parse } from "../loader.js";
 import type { Patch } from "../types.js";
 import {
@@ -103,20 +103,19 @@ function inspectValidateExtendedFlow(validateMethod: t.ObjectMethod | null): {
 	traverse(validateWrapper, {
 		IfStatement(ifPath) {
 			const test = ifPath.node.test;
-			if (!t.isCallExpression(test)) return;
-			if (
-				!t.isIdentifier(test.callee, {
-					name: "_claudeEditHasExtendedFields",
-				})
-			) {
-				return;
-			}
-			if (
-				test.arguments.length !== 1 ||
-				!t.isIdentifier(test.arguments[0], { name: "_input" })
-			) {
-				return;
-			}
+			const isInputHelperCall = (node: t.Node, helperName: string): boolean =>
+				t.isCallExpression(node) &&
+				t.isIdentifier(node.callee, { name: helperName }) &&
+				node.arguments.length === 1 &&
+				t.isIdentifier(node.arguments[0], { name: "_input" });
+			const isValidationGate =
+				isInputHelperCall(test, "_claudeEditHasExtendedFields") ||
+				(t.isLogicalExpression(test, { operator: "||" }) &&
+					((isInputHelperCall(test.left, "_claudeEditHasExtendedFields") &&
+						isInputHelperCall(test.right, "_claudeEditIsPlainAppend")) ||
+						(isInputHelperCall(test.right, "_claudeEditHasExtendedFields") &&
+							isInputHelperCall(test.left, "_claudeEditIsPlainAppend"))));
+			if (!isValidationGate) return;
 			if (!t.isBlockStatement(ifPath.node.consequent)) return;
 
 			let sawNormalizeCall = false;
@@ -737,6 +736,53 @@ function patchWriteReadStateGuards(ast: any): void {
 	});
 }
 
+// The current Write implementation delegates its existing-file precondition
+// to a top-level helper rather than keeping it on the tool object. Bypass only
+// that helper's missing/partial-read rejection; its stale-read check remains
+// authoritative.
+function patchWriteReadStateHelper(ast: t.File): { bypassed: number } {
+	let bypassed = 0;
+
+	traverse(ast, {
+		FunctionDeclaration(path: any) {
+			const [param] = path.node.params;
+			if (path.node.params.length !== 1 || !t.isObjectPattern(param)) return;
+			const keys = getObjectPatternKeySet(param);
+			if (
+				!keys.has("fullFilePath") ||
+				!keys.has("diskContent") ||
+				!keys.has("lastRead") ||
+				!keys.has("preReadGuard") ||
+				!keys.has("readNotAutoAllowed")
+			) {
+				return;
+			}
+			const lastReadBinding = getObjectPatternBindingName(param, "lastRead");
+			if (!lastReadBinding) return;
+
+			for (const stmt of path.node.body.body) {
+				if (
+					!t.isIfStatement(stmt) ||
+					!t.isLogicalExpression(stmt.test, { operator: "||" }) ||
+					!t.isUnaryExpression(stmt.test.left, { operator: "!" }) ||
+					!t.isIdentifier(stmt.test.left.argument, { name: lastReadBinding }) ||
+					!t.isMemberExpression(stmt.test.right) ||
+					!t.isIdentifier(stmt.test.right.object, { name: lastReadBinding }) ||
+					!isMemberPropertyName(stmt.test.right, "isPartialView") ||
+					!nodeContainsReadStateThrow(stmt.consequent)
+				) {
+					continue;
+				}
+				stmt.consequent = t.returnStatement();
+				bypassed++;
+				break;
+			}
+		},
+	});
+
+	return { bypassed };
+}
+
 function isAlreadyWrappedWithExtendedBypass(test: any): boolean {
 	if (
 		t.isLogicalExpression(test, { operator: "&&" }) &&
@@ -1023,9 +1069,19 @@ function patchStructuredEditInputNormalization(
 	traverse(ast, {
 		CallExpression(path) {
 			if (path.node.arguments.length < 1) return;
-			const [inputArg] = path.node.arguments;
-			if (!t.isObjectExpression(inputArg)) return;
-
+			const [argument] = path.node.arguments;
+			let inputArg: t.ObjectExpression;
+			if (t.isObjectExpression(argument)) {
+				inputArg = argument;
+			} else if (t.isIdentifier(argument)) {
+				const binding = path.scope.getBinding(argument.name);
+				if (!binding?.path.isVariableDeclarator()) return;
+				const init = binding.path.node.init;
+				if (!t.isObjectExpression(init)) return;
+				inputArg = init;
+			} else {
+				return;
+			}
 			const switchCase = path.findParent((parentPath) =>
 				parentPath.isSwitchCase(),
 			);
@@ -1324,7 +1380,7 @@ function runEditToolPatch(ast: t.File): void {
                         _input.old_string = typeof _input.old_string === "string" ? _input.old_string : (_input.old_string ?? "");
                         _input.new_string = typeof _input.new_string === "string" ? _input.new_string : (_input.new_string ?? "");
                     }
-                    if (_claudeEditHasExtendedFields(_input)) {
+                    if (_claudeEditHasExtendedFields(_input) || _claudeEditIsPlainAppend(_input)) {
                         if (!_context) {
                             return { result: false, behavior: "ask", message: "Read-state validation failed", errorCode: 5 };
                         }
@@ -1357,7 +1413,7 @@ function runEditToolPatch(ast: t.File): void {
                         _input.old_string = typeof _input.old_string === "string" ? _input.old_string : (_input.old_string ?? "");
                         _input.new_string = typeof _input.new_string === "string" ? _input.new_string : (_input.new_string ?? "");
                     }
-                    if (_claudeEditHasExtendedFields(_input)) {
+                    if (_claudeEditHasExtendedFields(_input) || _claudeEditIsPlainAppend(_input)) {
                         let Z = _claudeEditNormalizeEdits(_input);
                         if (Z.error) throw Error(Z.error.message);
                         let L = _claudeEditCanonicalizeInput(_input, Z.edits);
@@ -1519,6 +1575,7 @@ Error recovery:
 	patchReadStateGuards(ast);
 	patchReadStateHelper(ast);
 	patchWriteReadStateGuards(ast);
+	patchWriteReadStateHelper(ast);
 
 	traverse(ast, {
 		StringLiteral(path: any) {
@@ -1643,6 +1700,9 @@ function verifyEditValidateAndCallFlow(ctx: EditVerifyContext): string | null {
 	if (!code.includes("_input.new_string = L.newString;")) {
 		return "Extended call path does not canonicalize new_string from transformed content";
 	}
+	if (!code.includes("_claudeEditIsPlainAppend(_input)")) {
+		return "Plain append input does not enter Edit canonicalization";
+	}
 	if (!code.includes("_args[0] = _input;")) {
 		return "Extended call preprocess does not propagate normalized input back into call arguments";
 	}
@@ -1673,73 +1733,207 @@ function hasFunctionDeclaration(ast: t.File, name: string): boolean {
 	return found;
 }
 
-function hasStructuredEditInputNormalization(ast: t.File): {
+function hasStructuredEditInputNormalization(ctx: EditVerifyContext): {
 	prefersParsedEdits: boolean;
 	returnsStructuredEdits: boolean;
 } {
+	const { ast, editToolObject } = ctx;
+	let editToolVarName: string | null = null;
+	traverse(ast, {
+		ObjectExpression(path) {
+			if (path.node !== editToolObject) return;
+			let parentPath: NodePath<t.Node> | null = path.parentPath;
+			while (parentPath) {
+				if (
+					parentPath.isVariableDeclarator() &&
+					t.isIdentifier(parentPath.node.id)
+				) {
+					editToolVarName = parentPath.node.id.name;
+					break;
+				}
+				if (
+					parentPath.isAssignmentExpression() &&
+					t.isIdentifier(parentPath.node.left)
+				) {
+					editToolVarName = parentPath.node.left.name;
+					break;
+				}
+				parentPath = parentPath.parentPath;
+			}
+			if (editToolVarName) path.stop();
+		},
+	});
+	const editToolName = editToolVarName;
+	if (!editToolName) {
+		return { prefersParsedEdits: false, returnsStructuredEdits: false };
+	}
+
+	const resolveBoundObject = (
+		path: any,
+		argument: any,
+	): t.ObjectExpression | null => {
+		if (t.isObjectExpression(argument)) return argument;
+		if (!t.isIdentifier(argument)) return null;
+		const binding = path.scope.getBinding(argument.name);
+		if (!binding?.path.isVariableDeclarator()) return null;
+		const init = binding.path.node.init;
+		return t.isObjectExpression(init) ? init : null;
+	};
+	const getExtendedSelection = (value: t.Node): string | null => {
+		if (!t.isConditionalExpression(value)) return null;
+		const test = value.test;
+		if (
+			!t.isCallExpression(test) ||
+			!t.isIdentifier(test.callee, { name: "_claudeEditHasExtendedFields" }) ||
+			test.arguments.length !== 1 ||
+			!t.isIdentifier(test.arguments[0]) ||
+			!t.isMemberExpression(value.consequent) ||
+			!t.isIdentifier(value.consequent.object, {
+				name: test.arguments[0].name,
+			}) ||
+			!isMemberPropertyName(value.consequent, "edits") ||
+			!getStockSingleEditArrayInputName(value.alternate as t.Expression)
+		) {
+			return null;
+		}
+		return test.arguments[0].name;
+	};
+
+	let dispatchCount = 0;
 	let prefersParsedEdits = false;
 	let returnsStructuredEdits = false;
-
 	traverse(ast, {
-		ConditionalExpression(path) {
-			const test = path.node.test;
+		SwitchCase(casePath) {
+			const test = casePath.node.test;
 			if (
-				t.isLogicalExpression(test, { operator: "&&" }) &&
-				t.isCallExpression(test.left) &&
-				t.isMemberExpression(test.left.callee) &&
-				isMemberPropertyName(test.left.callee, "isArray") &&
-				t.isIdentifier(test.left.callee.object, { name: "Array" }) &&
-				test.left.arguments.length === 1 &&
-				t.isIdentifier(test.left.arguments[0]) &&
-				t.isIdentifier(path.node.consequent, {
-					name: test.left.arguments[0].name,
-				})
-			) {
-				prefersParsedEdits = true;
-				returnsStructuredEdits = true;
-				return;
-			}
-			if (
-				!t.isCallExpression(test) ||
-				!t.isIdentifier(test.callee, {
-					name: "_claudeEditHasExtendedFields",
-				})
+				!t.isMemberExpression(test) ||
+				!t.isIdentifier(test.object, { name: editToolName }) ||
+				!isMemberPropertyName(test, "name")
 			) {
 				return;
 			}
-
-			if (
-				t.isMemberExpression(path.node.consequent) &&
-				isMemberPropertyName(path.node.consequent, "edits")
-			) {
-				prefersParsedEdits = true;
-			}
-		},
-		SpreadElement(path) {
-			const arg = path.node.argument;
-			if (!t.isConditionalExpression(arg)) return;
-			if (
-				!t.isCallExpression(arg.test) ||
-				!t.isIdentifier(arg.test.callee, {
-					name: "_claudeEditHasExtendedFields",
-				})
-			) {
-				return;
-			}
-			if (
-				t.isObjectExpression(arg.consequent) &&
-				arg.consequent.properties.some(
-					(prop) => t.isObjectProperty(prop) && hasObjectKeyName(prop, "edits"),
-				)
-			) {
-				returnsStructuredEdits = true;
-			}
+			let selectedInputName: string | null = null;
+			casePath.traverse({
+				CallExpression(path) {
+					if (selectedInputName || path.node.arguments.length < 1) return;
+					const object = resolveBoundObject(path, path.node.arguments[0]);
+					if (!object) return;
+					const filePathProp = getObjectPropertyByName(object, "file_path");
+					const editsProp = getObjectPropertyByName(object, "edits");
+					if (!filePathProp || !editsProp || !t.isExpression(editsProp.value))
+						return;
+					const inputName = getExtendedSelection(editsProp.value);
+					if (!inputName) return;
+					selectedInputName = inputName;
+					dispatchCount++;
+					prefersParsedEdits = true;
+				},
+				ReturnStatement(path) {
+					if (!selectedInputName || !t.isObjectExpression(path.node.argument))
+						return;
+					for (const property of path.node.argument.properties) {
+						if (
+							!t.isSpreadElement(property) ||
+							!t.isConditionalExpression(property.argument)
+						)
+							continue;
+						const test = property.argument.test;
+						const consequent = property.argument.consequent;
+						if (
+							t.isCallExpression(test) &&
+							t.isIdentifier(test.callee, {
+								name: "_claudeEditHasExtendedFields",
+							}) &&
+							test.arguments.length === 1 &&
+							t.isIdentifier(test.arguments[0], { name: selectedInputName }) &&
+							t.isObjectExpression(consequent) &&
+							consequent.properties.some(
+								(prop) =>
+									t.isObjectProperty(prop) && hasObjectKeyName(prop, "edits"),
+							)
+						) {
+							returnsStructuredEdits = true;
+						}
+					}
+				},
+			});
 		},
 	});
 
-	return { prefersParsedEdits, returnsStructuredEdits };
-}
+	if (dispatchCount === 0) {
+		let applicationCount = 0;
+		traverse(ast, {
+			Function(path) {
+				const [input] = path.node.params;
+				if (!t.isObjectPattern(input)) return;
+				const bindings = {
+					old_string: getObjectPatternBindingName(input, "old_string"),
+					new_string: getObjectPatternBindingName(input, "new_string"),
+					replace_all: getObjectPatternBindingName(input, "replace_all"),
+				};
+				const parsedEditsName = getObjectPatternBindingName(input, "edits");
+				if (
+					!bindings.old_string ||
+					!bindings.new_string ||
+					!bindings.replace_all ||
+					!parsedEditsName
+				) {
+					return;
+				}
+				let matchingObjects = 0;
+				path.traverse({
+					ObjectExpression(objectPath) {
+						if (!getObjectPropertyByName(objectPath.node, "fileContents"))
+							return;
+						const editsProp = getObjectPropertyByName(objectPath.node, "edits");
+						if (!editsProp || !t.isConditionalExpression(editsProp.value))
+							return;
+						const test = editsProp.value.test;
+						const consequent = editsProp.value.consequent;
+						if (
+							!t.isLogicalExpression(test, { operator: "&&" }) ||
+							!t.isCallExpression(test.left) ||
+							!t.isMemberExpression(test.left.callee) ||
+							!t.isIdentifier(test.left.callee.object, { name: "Array" }) ||
+							!isMemberPropertyName(test.left.callee, "isArray") ||
+							test.left.arguments.length !== 1 ||
+							!t.isIdentifier(test.left.arguments[0], {
+								name: parsedEditsName,
+							}) ||
+							!t.isBinaryExpression(test.right, { operator: ">" }) ||
+							!t.isMemberExpression(test.right.left) ||
+							!t.isIdentifier(test.right.left.object, {
+								name: parsedEditsName,
+							}) ||
+							!isMemberPropertyName(test.right.left, "length") ||
+							!t.isNumericLiteral(test.right.right, { value: 0 }) ||
+							!t.isIdentifier(consequent, { name: parsedEditsName }) ||
+							!isStockSingleEditArrayFromBindings(
+								editsProp.value.alternate,
+								bindings as Record<
+									"old_string" | "new_string" | "replace_all",
+									string
+								>,
+							)
+						) {
+							return;
+						}
+						matchingObjects++;
+					},
+				});
+				if (matchingObjects === 1) applicationCount++;
+			},
+		});
+		if (applicationCount === 1) {
+			return { prefersParsedEdits: true, returnsStructuredEdits: true };
+		}
+	}
 
+	return {
+		prefersParsedEdits: dispatchCount === 1 && prefersParsedEdits,
+		returnsStructuredEdits: dispatchCount === 1 && returnsStructuredEdits,
+	};
+}
 function methodCallsHelper(
 	method: t.ObjectMethod | null,
 	helperName: string,
@@ -1781,7 +1975,7 @@ function verifyStructuredEditInputWiring(
 	if (!ctx.code.includes(`${EXTENDED_EDIT_TRANSPORT_DECODE}(_input);`)) {
 		return "Extended Edit transport does not decode structured payloads before validate/call handling";
 	}
-	const structuredInput = hasStructuredEditInputNormalization(ctx.ast);
+	const structuredInput = hasStructuredEditInputNormalization(ctx);
 	if (!structuredInput.prefersParsedEdits) {
 		return "Extended Edit input normalization does not preserve parsed edits[] payloads";
 	}
@@ -2017,6 +2211,59 @@ function verifyWriteReadStateGuards(ctx: EditVerifyContext): string | null {
 		}
 	}
 
+	return null;
+}
+function verifyWriteReadStateHelper(ctx: EditVerifyContext): string | null {
+	let helperFound = false;
+	let bypassedMissingRead = false;
+	let hasStaleReadCheck = false;
+
+	traverse(ctx.ast, {
+		FunctionDeclaration(path: any) {
+			const [param] = path.node.params;
+			if (path.node.params.length !== 1 || !t.isObjectPattern(param)) return;
+			const keys = getObjectPatternKeySet(param);
+			if (
+				!keys.has("fullFilePath") ||
+				!keys.has("diskContent") ||
+				!keys.has("lastRead") ||
+				!keys.has("preReadGuard") ||
+				!keys.has("readNotAutoAllowed")
+			) {
+				return;
+			}
+			const lastReadBinding = getObjectPatternBindingName(param, "lastRead");
+			if (!lastReadBinding) return;
+			helperFound = true;
+
+			for (const stmt of path.node.body.body) {
+				const missingStateGuard =
+					t.isIfStatement(stmt) &&
+					t.isLogicalExpression(stmt.test, { operator: "||" }) &&
+					t.isUnaryExpression(stmt.test.left, { operator: "!" }) &&
+					t.isIdentifier(stmt.test.left.argument, { name: lastReadBinding }) &&
+					t.isMemberExpression(stmt.test.right) &&
+					t.isIdentifier(stmt.test.right.object, { name: lastReadBinding }) &&
+					isMemberPropertyName(stmt.test.right, "isPartialView");
+				if (missingStateGuard && t.isReturnStatement(stmt.consequent)) {
+					bypassedMissingRead = true;
+				}
+				if (nodeContainsTimestampRead(stmt, lastReadBinding)) {
+					hasStaleReadCheck = true;
+				}
+			}
+		},
+	});
+
+	if (!helperFound) {
+		return "Write read-state precondition helper not found (expected fullFilePath/diskContent/lastRead options)";
+	}
+	if (!bypassedMissingRead) {
+		return "Write read-state helper still rejects missing or partial read state";
+	}
+	if (!hasStaleReadCheck) {
+		return "Write read-state helper lost its stale-read timestamp check";
+	}
 	return null;
 }
 
@@ -2258,6 +2505,7 @@ export const editTool: Patch = {
 			verifyReadStateGuards,
 			verifyReadStateHelper,
 			verifyWriteReadStateGuards,
+			verifyWriteReadStateHelper,
 			verifyEditRenderOpts,
 			verifyEditResultCollapse,
 			verifyEditSchemaBatchEdits,

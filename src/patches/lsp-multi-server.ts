@@ -37,12 +37,18 @@ interface LspRefs {
 	saveFile: string;
 	getServerForFile: string;
 	sendRequestFn: string;
+	isFileOpen: string;
+	ensureFn: string;
+	versionFn: string;
+	touchFn: string;
+	evictFn: string;
 	// Map variables (from first 3-Map VariableDeclaration)
 	serverMap: string; // server instances: name -> server
 	extMap: string; // extension -> serverName[]
 	trackMap: string; // uri -> open tracking
-	// Module/utility refs (from function body scanning)
+	versionMap: string; // uri -> monotonically increasing document version
 	pathMod: string; // path module (extname, resolve)
+	// Module/utility refs (from function body scanning)
 	urlMod: string; // namespace-style URL module
 	pathToFileUrlFn: string; // direct pathToFileURL import
 	logFn: string; // log function
@@ -95,12 +101,16 @@ function discoverRefs(ast: t.File): LspRefs | null {
 			const saveFile = propMap.get("saveFile");
 			const getServerForFile = propMap.get("getServerForFile");
 			const sendRequestFn = propMap.get("sendRequest");
+			const ensureFn = propMap.get("ensureServerStarted");
+			const isFileOpen = propMap.get("isFileOpen");
 			if (
 				!openFile ||
 				!changeFile ||
 				!saveFile ||
 				!getServerForFile ||
-				!sendRequestFn
+				!sendRequestFn ||
+				!ensureFn ||
+				!isFileOpen
 			)
 				return;
 
@@ -113,10 +123,12 @@ function discoverRefs(ast: t.File): LspRefs | null {
 
 			const body = factoryFn.body.body;
 
-			// Extract Maps: first VariableDeclaration with 3+ new Map() declarators
+			// Extract Maps in the manager state declaration: server, extension,
+			// open-document tracking, and the upstream document-version map.
 			let serverMap = "";
 			let extMap = "";
 			let trackMap = "";
+			let versionMap = "";
 			for (const stmt of body) {
 				if (!t.isVariableDeclaration(stmt)) continue;
 				const maps = stmt.declarations.filter(
@@ -125,14 +137,15 @@ function discoverRefs(ast: t.File): LspRefs | null {
 						t.isIdentifier(d.init.callee, { name: "Map" }) &&
 						t.isIdentifier(d.id),
 				);
-				if (maps.length >= 3) {
+				if (maps.length >= 4) {
 					serverMap = (maps[0].id as t.Identifier).name;
 					extMap = (maps[1].id as t.Identifier).name;
 					trackMap = (maps[2].id as t.Identifier).name;
+					versionMap = (maps[3].id as t.Identifier).name;
 					break;
 				}
 			}
-			if (!serverMap || !extMap || !trackMap) return;
+			if (!serverMap || !extMap || !trackMap || !versionMap) return;
 
 			// Extract module/utility refs by scanning all function bodies in factory
 			let pathMod = "";
@@ -157,11 +170,9 @@ function discoverRefs(ast: t.File): LspRefs | null {
 						t.isIdentifier(node.callee) &&
 						node.arguments.length >= 1
 					) {
-						if (pathToFileUrlImports.has(node.callee.name)) {
+						if (pathToFileUrlImports.has(node.callee.name))
 							pathToFileUrlFn = node.callee.name;
-						}
 						const a = node.arguments[0];
-						// Log function: called with string/template containing "LSP:"
 						if (
 							t.isTemplateLiteral(a) &&
 							a.quasis.some((q) => q.value.raw.includes("LSP:"))
@@ -169,12 +180,10 @@ function discoverRefs(ast: t.File): LspRefs | null {
 							logFn = node.callee.name;
 						if (t.isStringLiteral(a) && a.value.includes("LSP:"))
 							logFn = node.callee.name;
-						// Also handle string concatenation: "LSP: ..." + x
 						if (t.isBinaryExpression(a, { operator: "+" })) {
 							const left = getLeftmostString(a);
 							if (left?.includes("LSP:")) logFn = node.callee.name;
 						}
-						// Error function: called with Error(...) as argument
 						if (
 							(t.isNewExpression(a) || t.isCallExpression(a)) &&
 							t.isIdentifier(a.callee, { name: "Error" })
@@ -183,7 +192,85 @@ function discoverRefs(ast: t.File): LspRefs | null {
 					}
 				});
 			}
-			if (!pathMod || (!urlMod && !pathToFileUrlFn) || !logFn || !errFn) {
+
+			const helperFunctions = body.filter(
+				(stmt): stmt is t.FunctionDeclaration =>
+					t.isFunctionDeclaration(stmt) && !!stmt.id,
+			);
+			const hasCall = (
+				fn: t.FunctionDeclaration,
+				object: string,
+				property: string,
+			) => {
+				let found = false;
+				walkNode(fn, (node) => {
+					if (!t.isCallExpression(node) || !t.isMemberExpression(node.callee))
+						return;
+					if (
+						t.isIdentifier(node.callee.object, { name: object }) &&
+						((t.isIdentifier(node.callee.property) &&
+							node.callee.property.name === property) ||
+							(t.isStringLiteral(node.callee.property) &&
+								node.callee.property.value === property))
+					)
+						found = true;
+				});
+				return found;
+			};
+			const hasMember = (
+				fn: t.FunctionDeclaration,
+				object: string,
+				property: string,
+			) => {
+				let found = false;
+				walkNode(fn, (node) => {
+					if (!t.isMemberExpression(node)) return;
+					if (
+						t.isIdentifier(node.object, { name: object }) &&
+						((t.isIdentifier(node.property) &&
+							node.property.name === property) ||
+							(t.isStringLiteral(node.property) &&
+								node.property.value === property))
+					)
+						found = true;
+				});
+				return found;
+			};
+			let versionFn = "";
+			let touchFn = "";
+			let evictFn = "";
+			for (const fn of helperFunctions) {
+				if (
+					!versionFn &&
+					hasCall(fn, versionMap, "get") &&
+					hasCall(fn, versionMap, "set")
+				)
+					versionFn = fn.id?.name ?? "";
+				if (
+					!touchFn &&
+					hasCall(fn, trackMap, "delete") &&
+					hasCall(fn, trackMap, "set")
+				)
+					touchFn = fn.id?.name ?? "";
+				if (
+					!evictFn &&
+					hasMember(fn, trackMap, "size") &&
+					hasCall(fn, serverMap, "get") &&
+					nodeContains(fn, (node) =>
+						t.isStringLiteral(node, { value: "textDocument/didClose" }),
+					)
+				)
+					evictFn = fn.id?.name ?? "";
+			}
+			if (
+				!pathMod ||
+				(!urlMod && !pathToFileUrlFn) ||
+				!logFn ||
+				!errFn ||
+				!versionFn ||
+				!touchFn ||
+				!evictFn
+			) {
 				return;
 			}
 
@@ -194,9 +281,15 @@ function discoverRefs(ast: t.File): LspRefs | null {
 				saveFile,
 				getServerForFile,
 				sendRequestFn,
+				isFileOpen,
+				ensureFn,
+				versionFn,
+				touchFn,
+				evictFn,
 				serverMap,
 				extMap,
 				trackMap,
+				versionMap,
 				pathMod,
 				urlMod,
 				pathToFileUrlFn,
@@ -232,6 +325,18 @@ function walkNode(node: t.Node, visit: (n: t.Node) => void): void {
 	}
 }
 
+function nodeContains(
+	node: t.Node | null | undefined,
+	pred: (node: t.Node) => boolean,
+): boolean {
+	if (!node) return false;
+	let found = false;
+	walkNode(node, (child) => {
+		if (pred(child)) found = true;
+	});
+	return found;
+}
+
 // === Replacement code builders ===
 
 /** Parse a function declaration string and return its body statements. */
@@ -248,51 +353,53 @@ function pathToFileUrlCall(r: LspRefs, argument: string): string {
 	return `${r.urlMod}.pathToFileURL(${argument})`;
 }
 
+function buildEnsureServer(r: LspRefs, params: string[]): t.Statement[] {
+	const [file] = params;
+	if (!file) return [];
+	return parseBody(`async function _r(${file}) {
+  var _sv = ${r.getServerForFile}(${file});
+  if (!_sv) return;
+  if (_sv.state === "stopped" || _sv.state === "error") {
+   await _sv.start();
+   for (var _tracked of ${r.trackMap}.values()) {
+    if (_tracked instanceof Set) _tracked.delete(_sv.name);
+   }
+  }
+  return _sv;
+ }`);
+}
+
+function buildIsFileOpen(r: LspRefs, params: string[]): t.Statement[] {
+	const [file] = params;
+	if (!file) return [];
+	const uri = pathToFileUrlCall(r, `${r.pathMod}.resolve(${file})`);
+	return parseBody(`function _r(${file}) {
+  var _tracked = ${r.trackMap}.get(${uri}.href);
+  if (!(_tracked instanceof Set)) return false;
+  var _names = ${r.extMap}.get(${r.pathMod}.extname(${file}).toLowerCase());
+  if (!_names || _names.length === 0) _names = _lspByName(${file});
+  if (!_names || _names.length === 0) return false;
+  for (var _name of _names) {
+   var _server = ${r.serverMap}.get(_name);
+   if (!_server || _server.state !== "running" || !_tracked.has(_name)) return false;
+  }
+  return true;
+ }`);
+}
+
+function buildTouch(r: LspRefs, params: string[]): t.Statement[] {
+	const [uri, serverName] = params;
+	if (!uri || !serverName) return [];
+	return parseBody(`function _r(${uri}, ${serverName}) {
+  var _tracked = ${r.trackMap}.get(${uri});
+  if (!(_tracked instanceof Set)) return;
+  ${r.trackMap}.delete(${uri});
+  ${r.trackMap}.set(${uri}, _tracked);
+ }`);
+}
 function buildOpenFile(r: LspRefs, params: string[]): t.Statement[] {
 	const [file, text] = params;
 	const uri = pathToFileUrlCall(r, `${r.pathMod}.resolve(${file})`);
-	// prettier-ignore
-	return parseBody(
-		`async function _r(${file}, ${text}) {
-  var _ext = ${r.pathMod}.extname(${file}).toLowerCase();
-  var _ns = ${r.extMap}.get(_ext);
-  if (!_ns || _ns.length === 0) _ns = _lspByName(${file});
-  if (!_ns || _ns.length === 0) return;
-  var _uri = ${uri}.href;
-  for (var _i = 0; _i < _ns.length; _i++) {
-    var _sv = ${r.serverMap}.get(_ns[_i]);
-    if (!_sv) continue;
-    if (_sv.state === "stopped") {
-      try { await _sv.start(); } catch (_e) {
-        ${r.errFn}(Error("Failed to start LSP server for file " + ${file} + ": " + _e.message));
-        continue;
-      }
-    }
-    var _os = ${r.trackMap}.get(_uri);
-    if (_os instanceof Set && _os.has(_ns[_i])) {
-      ${r.logFn}("LSP: File already open in " + _ns[_i] + ", skipping didOpen for " + ${file});
-      continue;
-    }
-    var _lg = _lspLang(_sv, ${file}, _ext);
-    try {
-      await _sv.sendNotification("textDocument/didOpen", {
-        textDocument: { uri: _uri, languageId: _lg, version: 1, text: ${text} }
-      });
-      if (!${r.trackMap}.has(_uri)) ${r.trackMap}.set(_uri, new Set());
-      ${r.trackMap}.get(_uri).add(_ns[_i]);
-      ${r.logFn}("LSP: Sent didOpen for " + ${file} + " to " + _ns[_i] + " (languageId: " + _lg + ")");
-    } catch (_e) {
-      ${r.errFn}(Error("Failed to sync file open " + ${file} + " to " + _ns[_i] + ": " + _e.message));
-    }
-  }
-}`,
-	);
-}
-
-function buildChangeFile(r: LspRefs, params: string[]): t.Statement[] {
-	const [file, text] = params;
-	const uri = pathToFileUrlCall(r, `${r.pathMod}.resolve(${file})`);
-	// prettier-ignore
 	return parseBody(
 		`async function _r(${file}, ${text}) {
   var _ext = ${r.pathMod}.extname(${file}).toLowerCase();
@@ -301,43 +408,103 @@ function buildChangeFile(r: LspRefs, params: string[]): t.Statement[] {
   if (!_ns || _ns.length === 0) return;
   var _uri = ${uri}.href;
   var _os = ${r.trackMap}.get(_uri);
+  var _hasOpen = _os instanceof Set && _os.size > 0;
+  var _version = ${r.versionMap}.get(_uri);
+  if (!_hasOpen) _version = ${r.versionFn}(_uri);
+  if (_version === undefined) _version = 1;
   for (var _i = 0; _i < _ns.length; _i++) {
-    var _sv = ${r.serverMap}.get(_ns[_i]);
+    var _name = _ns[_i];
+    var _sv = ${r.serverMap}.get(_name);
     if (!_sv) continue;
-    if (_sv.state === "running" && _os instanceof Set && _os.has(_ns[_i])) {
+    if (_sv.state === "stopped" || _sv.state === "error") {
       try {
-        await _sv.sendNotification("textDocument/didChange", {
-          textDocument: { uri: _uri, version: 1 },
-          contentChanges: [{ text: ${text} }]
-        });
-        ${r.logFn}("LSP: Sent didChange for " + ${file} + " to " + _ns[_i]);
+        await _sv.start();
+        for (var _stale of ${r.trackMap}.values()) if (_stale instanceof Set) _stale.delete(_name);
       } catch (_e) {
-        ${r.errFn}(Error("Failed to sync file change " + ${file} + " to " + _ns[_i] + ": " + _e.message));
-      }
-    } else {
-      if (_sv.state === "stopped") {
-        try { await _sv.start(); } catch (_e) {
-          ${r.errFn}(Error("Failed to start LSP server for file " + ${file} + ": " + _e.message));
-          continue;
-        }
-      }
-      var _lg = _lspLang(_sv, ${file}, _ext);
-      try {
-        await _sv.sendNotification("textDocument/didOpen", {
-          textDocument: { uri: _uri, languageId: _lg, version: 1, text: ${text} }
-        });
-        if (!${r.trackMap}.has(_uri)) ${r.trackMap}.set(_uri, new Set());
-        ${r.trackMap}.get(_uri).add(_ns[_i]);
-        ${r.logFn}("LSP: Sent didOpen for " + ${file} + " to " + _ns[_i] + " (languageId: " + _lg + ")");
-      } catch (_e) {
-        ${r.errFn}(Error("Failed to sync file open " + ${file} + " to " + _ns[_i] + ": " + _e.message));
+        ${r.errFn}(Error("Failed to start LSP server for file " + ${file} + ": " + _e.message));
+        continue;
       }
     }
+    _os = ${r.trackMap}.get(_uri);
+    if (_os instanceof Set && _os.has(_name)) {
+      ${r.touchFn}(_uri, _name);
+      ${r.logFn}("LSP: File already open in " + _name + ", skipping didOpen for " + ${file});
+      continue;
+    }
+    var _lg = _lspLang(_sv, ${file}, _ext);
+    try {
+      await _sv.sendNotification("textDocument/didOpen", {
+        textDocument: { uri: _uri, languageId: _lg, version: _version, text: ${text} }
+      });
+      if (!${r.trackMap}.has(_uri)) ${r.trackMap}.set(_uri, new Set());
+      ${r.trackMap}.get(_uri).add(_name);
+      ${r.touchFn}(_uri, _name);
+      ${r.logFn}("LSP: Sent didOpen for " + ${file} + " to " + _name + " (languageId: " + _lg + ")");
+    } catch (_e) {
+      ${r.errFn}(Error("Failed to sync file open " + ${file} + " to " + _name + ": " + _e.message));
+    }
   }
+  ${r.evictFn}();
 }`,
 	);
 }
 
+function buildChangeFile(r: LspRefs, params: string[]): t.Statement[] {
+	const [file, text] = params;
+	const uri = pathToFileUrlCall(r, `${r.pathMod}.resolve(${file})`);
+	return parseBody(
+		`async function _r(${file}, ${text}) {
+  var _ext = ${r.pathMod}.extname(${file}).toLowerCase();
+  var _ns = ${r.extMap}.get(_ext);
+  if (!_ns || _ns.length === 0) _ns = _lspByName(${file});
+  if (!_ns || _ns.length === 0) return;
+  var _uri = ${uri}.href;
+  var _os = ${r.trackMap}.get(_uri);
+  var _version = ${r.versionFn}(_uri);
+  for (var _i = 0; _i < _ns.length; _i++) {
+    var _name = _ns[_i];
+    var _sv = ${r.serverMap}.get(_name);
+    if (!_sv) continue;
+    if (_sv.state === "stopped" || _sv.state === "error") {
+      try {
+        await _sv.start();
+        for (var _stale of ${r.trackMap}.values()) if (_stale instanceof Set) _stale.delete(_name);
+      } catch (_e) {
+        ${r.errFn}(Error("Failed to start LSP server for file " + ${file} + ": " + _e.message));
+        continue;
+      }
+    }
+    _os = ${r.trackMap}.get(_uri);
+    if (_sv.state === "running" && _os instanceof Set && _os.has(_name)) {
+      try {
+        ${r.touchFn}(_uri, _name);
+        await _sv.sendNotification("textDocument/didChange", {
+          textDocument: { uri: _uri, version: _version },
+          contentChanges: [{ text: ${text} }]
+        });
+        ${r.logFn}("LSP: Sent didChange for " + ${file} + " to " + _name + " (v" + _version + ")");
+      } catch (_e) {
+        ${r.errFn}(Error("Failed to sync file change " + ${file} + " to " + _name + ": " + _e.message));
+      }
+    } else {
+      var _lg = _lspLang(_sv, ${file}, _ext);
+      try {
+        await _sv.sendNotification("textDocument/didOpen", {
+          textDocument: { uri: _uri, languageId: _lg, version: _version, text: ${text} }
+        });
+        if (!${r.trackMap}.has(_uri)) ${r.trackMap}.set(_uri, new Set());
+        ${r.trackMap}.get(_uri).add(_name);
+        ${r.touchFn}(_uri, _name);
+        ${r.logFn}("LSP: Sent didOpen for " + ${file} + " to " + _name + " (languageId: " + _lg + ")");
+      } catch (_e) {
+        ${r.errFn}(Error("Failed to sync file open " + ${file} + " to " + _name + ": " + _e.message));
+      }
+    }
+  }
+  ${r.evictFn}();
+}`,
+	);
+}
 function buildSaveFile(r: LspRefs, params: string[]): t.Statement[] {
 	const [file] = params;
 	const uri = pathToFileUrlCall(r, `${r.pathMod}.resolve(${file})`);
@@ -407,13 +574,17 @@ function buildSendRequest(r: LspRefs, params: string[]): t.Statement[] | null {
   for (var _i = 0; _i < _ns.length; _i++) {
     var _sv = ${r.serverMap}.get(_ns[_i]);
     if (!_sv) continue;
-    if (_sv.state === "stopped") {
-      try { await _sv.start(); } catch (_e) {
+    if (_sv.state === "stopped" || _sv.state === "error") {
+      try {
+        await _sv.start();
+        for (var _stale of ${r.trackMap}.values()) if (_stale instanceof Set) _stale.delete(_sv.name);
+      } catch (_e) {
         ${r.errFn}(Error("Failed to start LSP server for file " + ${file} + ": " + _e.message));
         continue;
       }
     }
     try {
+      ${r.touchFn}(${pathToFileUrlCall(r, `${r.pathMod}.resolve(${file})`)}.href, _sv.name);
       return await _sv.sendRequest(${method}, ${requestParams});
     } catch (_e) {
       var _msg = _e && _e.message ? String(_e.message) : String(_e);
@@ -482,7 +653,63 @@ function buildFilenameHelpers(r: LspRefs): t.Statement[] {
 }`,
 	);
 }
+function adaptEvictionFunction(fn: t.FunctionDeclaration, r: LspRefs): boolean {
+	if (!t.isBlockStatement(fn.body)) return false;
+	const loop = fn.body.body.find((st): st is t.ForOfStatement =>
+		t.isForOfStatement(st),
+	);
+	if (
+		!loop ||
+		!t.isVariableDeclaration(loop.left) ||
+		!t.isArrayPattern(loop.left.declarations[0]?.id)
+	)
+		return false;
+	const pattern = loop.left.declarations[0].id;
+	const uriId = pattern.elements[0];
+	const nameId = pattern.elements[1];
+	if (!t.isIdentifier(uriId) || !t.isIdentifier(nameId)) return false;
+	if (nameId.name === "__ccLspTracked") return true;
+	const body = t.isBlockStatement(loop.body) ? loop.body.body : [];
+	const serverIndex = body.findIndex(
+		(st) =>
+			t.isVariableDeclaration(st) &&
+			st.declarations.some((decl) =>
+				nodeContains(
+					decl.init,
+					(node) =>
+						t.isCallExpression(node) &&
+						t.isMemberExpression(node.callee) &&
+						t.isIdentifier(node.callee.object, { name: r.serverMap }) &&
+						t.isIdentifier(node.callee.property, { name: "get" }),
+				),
+			),
+	);
+	if (serverIndex < 0) return false;
+	const trackedId = t.identifier("__ccLspTracked");
+	pattern.elements[1] = trackedId;
+	const iterated = t.conditionalExpression(
+		t.binaryExpression(
+			"instanceof",
+			t.cloneNode(trackedId),
+			t.identifier("Set"),
+		),
+		t.cloneNode(trackedId),
+		t.newExpression(t.identifier("Set"), [
+			t.arrayExpression([t.cloneNode(trackedId)]),
+		]),
+	);
+	const nested = t.forOfStatement(
+		t.variableDeclaration("let", [
+			t.variableDeclarator(t.identifier(nameId.name)),
+		]),
+		iterated,
+		t.blockStatement(body.slice(serverIndex)),
+	);
+	loop.body = t.blockStatement([...body.slice(0, serverIndex), nested]);
+	return true;
+}
 
+// === Mutation visitor ===
 // === Mutation visitor ===
 
 function createMutateVisitor(refs: LspRefs): Visitor {
@@ -492,6 +719,9 @@ function createMutateVisitor(refs: LspRefs): Visitor {
 		[refs.changeFile, (p) => buildChangeFile(refs, p)],
 		[refs.saveFile, (p) => buildSaveFile(refs, p)],
 		[refs.sendRequestFn, (p) => buildSendRequest(refs, p)],
+		[refs.isFileOpen, (p) => buildIsFileOpen(refs, p)],
+		[refs.ensureFn, (p) => buildEnsureServer(refs, p)],
+		[refs.touchFn, (p) => buildTouch(refs, p)],
 	]);
 
 	let replaced = 0;
@@ -515,10 +745,6 @@ function createMutateVisitor(refs: LspRefs): Visitor {
 				return;
 			}
 
-			const builder = builders.get(path.node.id.name);
-			if (!builder) return;
-
-			// Only modify functions inside the LSP factory
 			let parent: NodePath | null = path.parentPath;
 			while (parent) {
 				if (
@@ -530,14 +756,22 @@ function createMutateVisitor(refs: LspRefs): Visitor {
 			}
 			if (!parent) return;
 
+			if (path.node.id.name === refs.evictFn) {
+				if (adaptEvictionFunction(path.node, refs)) replaced++;
+				return;
+			}
+
+			const builder = builders.get(path.node.id.name);
+			if (!builder) return;
 			const params = path.node.params
 				.filter((p): p is t.Identifier => t.isIdentifier(p))
 				.map((p) => p.name);
-
 			const replacement = builder(params);
 			if (!replacement) {
 				console.warn(
-					`LSP multi-server: skipped ${path.node.id.name} (unexpected signature)`,
+					"LSP multi-server: skipped " +
+						path.node.id.name +
+						" (unexpected signature)",
 				);
 				return;
 			}

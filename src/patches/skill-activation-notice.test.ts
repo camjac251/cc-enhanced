@@ -66,6 +66,8 @@ async function produce(H) {
   }
   return attachments;
 }
+function reset() { state().conditionalSkills.clear(); state().activatedConditionalSkillNames.clear(); state().dynamicSkills.clear(); state().dynamicSkillDirs.clear(); }
+const modelConverters = { dynamic_skill: (entry) => { if (!entry.skillDir) return []; return [{content: "New skills discovered in " + entry.skillDir, isMeta: true}]; } };
 `;
 
 test("skill-activation-notice tag matches registration name", () => {
@@ -119,6 +121,7 @@ const RUNTIME_FIXTURE = `
 const _state = {
   conditionalSkills: new Map(),
   dynamicSkills: new Map(),
+  dynamicSkillDirs: new Map(),
   activatedConditionalSkillNames: new Set(),
 };
 function state() { return _state; }
@@ -180,8 +183,10 @@ async function produce(H) {
   }
   return attachments;
 }
+function reset() { state().conditionalSkills.clear(); state().activatedConditionalSkillNames.clear(); state().dynamicSkills.clear(); state().dynamicSkillDirs.clear(); }
+const modelConverters = { dynamic_skill: (entry) => { if (!entry.skillDir) return []; return [{content: "New skills discovered in " + entry.skillDir, isMeta: true}]; } };
 
-export { state, activate, produce };
+export { state, activate, produce, reset, modelConverters };
 `;
 
 test("runtime dedup: repeat activations of the same file and skill set drain once", async () => {
@@ -362,12 +367,11 @@ test("dedup key uses NUL separators for injectivity", async () => {
 	const keyExpr = output.slice(keyIdx - 80, keyIdx + 40);
 	assert.ok(keyExpr.includes("\\u0000"));
 });
-
 test("drain targets the dynamic_skill return even with an earlier early-return", async () => {
 	const ast = parse(`
 async function produce(H) {
   let early = [];
-  if (H.bail) return early;
+  if (H.bail) return [];
   let attachments = [];
   let triggers = H.dynamicSkillDirTriggers;
   if (triggers && triggers.length > 0) {
@@ -380,14 +384,18 @@ async function produce(H) {
 ${FIXTURE.slice(FIXTURE.indexOf("function activate"))}`);
 	await runViaPasses(ast);
 	const output = print(ast);
-	const earlyIdx = output.indexOf("return early");
 	const spliceIdx = output.indexOf("__ccPathActivations.splice(0)");
+	const earlyDrainIdx = output.indexOf("__ccPathEarlyAttachments");
 	const attachReturnIdx = output.indexOf("return attachments");
 	assert.notEqual(spliceIdx, -1, "drain must be injected");
-	assert.ok(spliceIdx > earlyIdx, "drain must not precede the early return");
+	assert.notEqual(
+		earlyDrainIdx,
+		-1,
+		"empty-trigger early return must drain pending notices",
+	);
 	assert.ok(
-		spliceIdx < attachReturnIdx,
-		"drain must precede the attachments return",
+		earlyDrainIdx < attachReturnIdx,
+		"early drain must precede the attachments return",
 	);
 });
 
@@ -405,4 +413,29 @@ test("recorded file index targets the matcher first parameter", async () => {
 		false,
 		"record must not read the cwd param",
 	);
+});
+
+test("activation notices stay out of model reminders and reset with the session", async () => {
+	const ast = parse(RUNTIME_FIXTURE.replace(/export\s*\{[^}]*\};?/g, ""));
+	await runViaPasses(ast);
+	const runtime = new Function(
+		`${print(ast)}; return {state, activate, produce, reset, modelConverters};`,
+	)();
+	const skill = { name: "typescript", type: "prompt", paths: ["*.ts"] };
+	runtime.state().conditionalSkills.set(skill.name, skill);
+	runtime.activate(["/work/file.ts"], "/work");
+	const notices = await runtime.produce({ dynamicSkillDirTriggers: [] });
+	assert.equal(notices.length, 1);
+	assert.deepEqual(runtime.modelConverters.dynamic_skill(notices[0]), []);
+	assert.deepEqual(
+		runtime.modelConverters.dynamic_skill({
+			skillDir: "/work/skills",
+			skillNames: ["typescript"],
+		}),
+		[{ content: "New skills discovered in /work/skills", isMeta: true }],
+	);
+	runtime.reset();
+	runtime.state().conditionalSkills.set(skill.name, skill);
+	runtime.activate(["/work/file.ts"], "/work");
+	assert.equal((await runtime.produce({})).length, 1);
 });

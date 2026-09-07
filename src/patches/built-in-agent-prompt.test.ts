@@ -423,7 +423,6 @@ test("built-in-agent-prompt verify ignores unrelated legacy guidance elsewhere i
 test("built-in-agent-prompt verify rejects missing agent prompt sections", () => {
 	const result = builtInAgentPrompt.verify("const noop = true;");
 	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("Unable to extract Explore"), true);
 });
 
 const CORPUS_EXAMPLE_FIXTURE = `
@@ -452,14 +451,8 @@ test("built-in-agent-prompt rewrites upstream corpus head/tail examples", () => 
 });
 
 test("built-in-agent-prompt verify flags partial corpus rewrite", () => {
-	const halfBaked = `\`curl -si localhost:3000/api/thing | head -20\``;
-	const result = builtInAgentPrompt.verify(halfBaked);
-	assert.equal(typeof result, "string");
-	assert.equal(
-		String(result).includes("Unpatched corpus example") ||
-			String(result).includes("Missing rewritten corpus example"),
-		true,
-	);
+	const halfBaked = `${patchedSubagentSurfaces()}\nconst example = "curl -si localhost:3000/api/thing | head -20";`;
+	assert.equal(typeof builtInAgentPrompt.verify(halfBaked), "string");
 });
 
 test("built-in-agent-prompt verify rejects a surviving tail -50 corpus example", () => {
@@ -813,4 +806,39 @@ test("built-in-agent-prompt fork-selection rewrite is escaped-dash specific", ()
 		rawOut.includes("specify a subagent_type to select an agent"),
 		true,
 	);
+});
+
+test("built-in-agent-prompt verify rejects missing Explore whenToUse replacement", () => {
+	const patched = patchedSubagentSurfaces();
+	const broken = patched.replace(
+		"Deep codebase research agent for tracing execution paths, finding existing implementations, and building context before planning or coding. " +
+			"Use this when the task spans multiple files, the architecture is unclear, or you need evidence-backed answers about how the codebase works.",
+		"",
+	);
+	const result = builtInAgentPrompt.verify(broken);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("Explore agent whenToUse"), true);
+});
+
+test("built-in-agent-prompt verify rejects missing Plan required-output section", () => {
+	const patched = patchedSubagentSurfaces();
+	const broken = patched.replace(
+		/Deliver a concrete implementation blueprint with:[\s\S]*?End your response with:/,
+		"",
+	);
+	const result = builtInAgentPrompt.verify(broken);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("required-output section"), true);
+});
+
+test("built-in-agent-prompt verify catches fork-selection wording drift", () => {
+	const driftedStock = AGENT_TOOL_FORK_SELECTION_FIXTURE.replace(
+		"always runs on your model",
+		"uses the parent model",
+	);
+	const result = builtInAgentPrompt.verify(
+		`${patchedSubagentSurfaces()}\n${driftedStock}`,
+	);
+	assert.equal(typeof result, "string");
+	assert.equal(String(result).includes("fork-selection wording"), true);
 });

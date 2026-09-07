@@ -39,6 +39,12 @@ function loadSkill(w, name) {
     paths: L,
   });
 }
+async function loadRaw(items, loadedFrom = "skills") {
+  return Promise.all(items.map(async (frontmatter) => {
+    const localPaths = extractPaths(frontmatter);
+    return makeSkill({skillName: frontmatter.name, loadedFrom, paths: localPaths});
+  }));
+}
 
 function activate(H, $) {
   let q = [];
@@ -314,4 +320,19 @@ function loadA(w, name) {
 	);
 	assert.ok(output.includes("_claudePatchMergeGlobalPaths(L, w)"));
 	assert.ok(output.includes("paths: void 0"));
+});
+
+test("raw loader resolves global paths through its nested scanner callback", async () => {
+	const ast = parse(FIXTURE);
+	await runViaPasses(ast);
+	const output = print(ast);
+	const load = new Function(
+		`${output}; function extractPaths(value) { return value.paths; } function makeSkill(value) { return value; } return loadRaw;`,
+	)();
+	const frontmatter = { name: "external", "global-paths": ["/outside/*.ts"] };
+	const [raw] = await load([frontmatter]);
+	assert.deepEqual(raw.paths, [`${SENTINEL}outside/*.ts`]);
+	const [synced] = await load([frontmatter], "syncedSkills");
+	assert.equal(synced.paths, undefined);
+	assert.equal(skillGlobalPaths.verify(output, ast), true);
 });

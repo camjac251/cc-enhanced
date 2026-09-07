@@ -214,11 +214,28 @@ function buildInheritedSkillListingCapture(
 		t.variableDeclarator(
 			t.identifier(INHERITED_SKILL_LISTINGS),
 			t.callExpression(
-				t.memberExpression(t.identifier(messagesName), t.identifier("filter")),
+				t.memberExpression(
+					t.callExpression(
+						t.memberExpression(
+							t.identifier(messagesName),
+							t.identifier("filter"),
+						),
+						[
+							t.arrowFunctionExpression(
+								[message],
+								t.logicalExpression("&&", isAttachment, isSkillListing),
+							),
+						],
+					),
+					t.identifier("map"),
+				),
 				[
 					t.arrowFunctionExpression(
-						[message],
-						t.logicalExpression("&&", isAttachment, isSkillListing),
+						[t.identifier(SKILL_LISTING_REFRESH_PARAM)],
+						t.memberExpression(
+							t.identifier(SKILL_LISTING_REFRESH_PARAM),
+							t.identifier("attachment"),
+						),
 					),
 				],
 			),
@@ -267,13 +284,23 @@ function isInheritedSkillListingCapture(
 		return false;
 	}
 	if (!t.isCallExpression(declaration.init)) return false;
-	const callee = declaration.init.callee;
-	if (!t.isMemberExpression(callee)) return false;
-	if (!t.isIdentifier(callee.object, { name: messagesName })) return false;
-	if (!isMemberPropertyName(callee, "filter")) return false;
+	const mapCall = declaration.init;
+	if (!t.isMemberExpression(mapCall.callee)) return false;
+	if (!isMemberPropertyName(mapCall.callee, "map")) return false;
+	if (!t.isCallExpression(mapCall.callee.object)) return false;
+	const filterCall = mapCall.callee.object;
+	if (!t.isMemberExpression(filterCall.callee)) return false;
+	if (!t.isIdentifier(filterCall.callee.object, { name: messagesName }))
+		return false;
+	if (!isMemberPropertyName(filterCall.callee, "filter")) return false;
 	return (
-		containsStringLiteral(declaration.init, "attachment") &&
-		containsStringLiteral(declaration.init, "skill_listing")
+		containsStringLiteral(filterCall, "attachment") &&
+		containsStringLiteral(filterCall, "skill_listing") &&
+		nodeContains(
+			mapCall,
+			(node) =>
+				t.isMemberExpression(node) && isMemberPropertyName(node, "attachment"),
+		)
 	);
 }
 
@@ -1054,7 +1081,10 @@ export const skillListingUi: Patch = {
 						name: SKILL_LISTING_SUMMARY_HELPER,
 					})
 				) {
-					helperFound = true;
+					helperFound = t.isNodesEquivalent(
+						path.node,
+						buildSkillListingSummaryHelper(),
+					);
 				}
 			},
 			ObjectExpression(path) {
@@ -1064,7 +1094,19 @@ export const skillListingUi: Patch = {
 				if (!t.isCallExpression(skillNamesProp.value)) return;
 				if (!t.isMemberExpression(skillNamesProp.value.callee)) return;
 				if (!isMemberPropertyName(skillNamesProp.value.callee, "map")) return;
-				attachmentPatched = true;
+				const callback = skillNamesProp.value.arguments[0];
+				if (
+					!t.isArrowFunctionExpression(callback) ||
+					callback.params.length !== 1 ||
+					!t.isIdentifier(callback.params[0])
+				)
+					return;
+				attachmentPatched =
+					t.isMemberExpression(callback.body) &&
+					t.isIdentifier(callback.body.object, {
+						name: callback.params[0].name,
+					}) &&
+					isMemberPropertyName(callback.body, "name");
 			},
 			VariableDeclaration(path) {
 				const candidate = getSkillListingRefreshCandidate(path);

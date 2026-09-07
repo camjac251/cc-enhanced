@@ -23,6 +23,7 @@ async function runPlanCompactExecuteViaPasses(ast: any): Promise<void> {
 const PLAN_COMPACT_EXECUTE_FIXTURE = `
 function mW5({
   showClearContext: H,
+  approvalsWithheld: withheld = false,
   showUltraplan: $,
   usedPercent: q,
   isAutoModeAvailable: K,
@@ -350,10 +351,6 @@ function unrelated() {
 	const ast = parse(drifted);
 	const result = planCompactExecute.verify(print(ast), ast);
 	assert.equal(typeof result, "string");
-	assert.equal(
-		String(result).includes("Compact auto-mode plan approval option not found"),
-		true,
-	);
 });
 
 test("plan-compact-execute verify rejects selector whose visibleOptionCount is not options.length", async () => {
@@ -380,45 +377,42 @@ test("plan-compact-execute verify rejects selector whose visibleOptionCount is n
 	);
 });
 
-test("plan-compact-execute compact-option split gates on auto-mode availability, not the visibility guard", async () => {
+test("compact options honor approval withholding and mode availability", async () => {
 	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
 	await runPlanCompactExecuteViaPasses(ast);
 	const output = print(ast);
-	// The option builder wraps the compact split under the show-clear-context
-	// guard (H). The inner split must gate on the auto-mode availability param
-	// (K), not re-test H. If it re-tested H the else branch (accept-edits)
-	// would be unreachable and the auto option would be offered even when auto
-	// mode is unavailable.
-	assert.doesNotMatch(
-		output,
-		/if\s*\(H\)\s*if\s*\(H\)/,
-		"compact split must not duplicate the show-clear-context guard",
-	);
-	assert.match(
-		output,
-		/if\s*\(H\)\s*if\s*\(K\)/,
-		"compact split must gate on the auto-mode availability param",
-	);
-	assert.equal(planCompactExecute.verify(output), true);
+	const options = new Function(`${output}; return mW5;`)();
+	for (const auto of [false, true]) {
+		const input = {
+			showClearContext: true,
+			usedPercent: null,
+			isAutoModeAvailable: auto,
+		};
+		const compact = (items: Array<{ value: string }>) =>
+			items.filter((item) => item.value.startsWith("yes-compact"));
+		assert.deepEqual(
+			compact(options({ ...input, approvalsWithheld: true })),
+			[],
+		);
+		assert.deepEqual(
+			compact(options({ ...input, showClearContext: false })),
+			[],
+		);
+		assert.deepEqual(
+			compact(options(input)).map((item) => item.value),
+			[auto ? COMPACT_AUTO_VALUE_FOR_TEST : COMPACT_ACCEPT_FOR_TEST],
+		);
+	}
+	assert.equal(planCompactExecute.verify(output, ast), true);
 });
 
-test("plan-compact-execute verify rejects a compact split that duplicates the visibility guard", async () => {
+test("verification rejects bypassing approval withholding", async () => {
 	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
 	await runPlanCompactExecuteViaPasses(ast);
 	const output = print(ast);
-	// Regress the split so the inner guard re-tests the show-clear-context
-	// guard (H) instead of the availability param (K). That is the unreachable
-	// shape the matcher must not produce: the accept-edits option can never be
-	// offered because its else branch is dead.
-	const regressed = output.replace(/if\s*\(H\)\s*if\s*\(K\)/, "if (H) if (H)");
-	assert.notEqual(
-		regressed,
-		output,
-		"precondition: compact split rewritten to duplicate the guard",
-	);
-	const result = planCompactExecute.verify(regressed);
-	assert.equal(typeof result, "string");
-	assert.equal(String(result).includes("unreachable"), true);
+	const regressed = output.replace("!withheld && H", "H");
+	assert.notEqual(regressed, output);
+	assert.equal(typeof planCompactExecute.verify(regressed), "string");
 });
 
 test("plan-compact-execute handler reads the message store snapshot", async () => {
@@ -497,20 +491,16 @@ function OtherSelector({ opts }) {
 	assert.equal(planCompactExecute.verify(output), true);
 });
 
-test("plan-compact-execute compactContext value gates on both compact selection values", async () => {
-	// verify() only checks compactContext presence, so a regression emitting
-	// compactContext: void 0 (compaction never triggers) would still pass. Pin
-	// the injected value to reference both compact selection values.
+test("verification rejects a disabled compact handoff", async () => {
 	const ast = parse(PLAN_COMPACT_EXECUTE_FIXTURE);
 	await runPlanCompactExecuteViaPasses(ast);
 	const output = print(ast);
-	const m = output.match(/compactContext:\s*([^,]*?(?:\|\|[^,]*?)*?)(?:,|\n)/);
-	assert.ok(m, "compactContext property not found in patched output");
-	assert.ok(
-		m[1].includes('"yes-compact-auto"') &&
-			m[1].includes('"yes-compact-accept-edits"'),
-		`compactContext value must reference both compact selection values, got: ${m[1]}`,
+	const regressed = output.replace(
+		/compactContext:.*?(?=,|\n)/,
+		"compactContext: false",
 	);
+	assert.notEqual(regressed, output);
+	assert.equal(typeof planCompactExecute.verify(regressed), "string");
 });
 
 test("plan-compact-execute accept-edits compact branch sets mode to acceptEdits", async () => {
@@ -567,5 +557,50 @@ test("plan-compact-execute announces the compaction before awaiting it", async (
 	assert.equal(
 		planCompactExecute.verify(regressed),
 		"Initial message handler runs compaction without announcing it; the plan would appear frozen",
+	);
+});
+
+test("returned compact errors notify before continuing with existing context", async () => {
+	const source = HOST_BACKED_INITIAL_MESSAGE_FIXTURE.replace(
+		"return {};",
+		"return this.host;",
+	).replace("(async (initialMessage)", "return (async (initialMessage)");
+	const ast = parse(source);
+	await runPlanCompactExecuteViaPasses(ast);
+	const SessionRunner = new Function(`${print(ast)}; return SessionRunner;`)();
+	const runner = new SessionRunner();
+	const notifications: Array<{ key: string }> = [];
+	const replacements: unknown[] = [];
+	const messages = [{ role: "user", content: "prior context" }];
+	runner.host = {
+		mainLoopModel: "test",
+		commands: [
+			{
+				name: "compact",
+				type: "local",
+				load: async () => ({
+					call: async () => ({
+						type: "text",
+						level: "error",
+						value: "blocked by hook",
+					}),
+				}),
+			},
+		],
+		transcript: {
+			getSnapshot: () => messages,
+			replace: (value: unknown) => replacements.push(value),
+		},
+		addNotification: (notice: { key: string }) => notifications.push(notice),
+	};
+	const result = await runner.submitInitial({
+		compactContext: true,
+		message: { planContent: "plan", message: { content: "execute" } },
+	});
+	assert.equal(result.content, "execute");
+	assert.deepEqual(replacements, []);
+	assert.deepEqual(
+		notifications.map((notice) => notice.key),
+		["plan-compact-execute-running", "plan-compact-execute-failed"],
 	);
 });

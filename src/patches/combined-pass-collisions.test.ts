@@ -102,6 +102,7 @@ async function produce(H) {
   }
   return attachments;
 }
+const modelConverters = { dynamic_skill: (entry) => { if (!entry.skillDir) return []; return [{content: "New skills discovered in " + entry.skillDir, isMeta: true}]; } };
 `;
 
 test("generated shared-visitor scenarios pass in every declared order", async () => {

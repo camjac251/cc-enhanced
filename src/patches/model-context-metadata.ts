@@ -7,12 +7,19 @@ import { getObjectPropertyByName, getVerifyAst } from "./ast-helpers.js";
 const CATALOG_ENV = "CLAUDE_CODE_CONFIGURED_MODEL_CATALOG";
 const CATALOG_MARKER = "__ccConfiguredModelIds";
 const AUTO_COMPACT_MARKER = "__ccConfiguredAutoCompactWindow";
+const CONFIGURED_CONTEXT_MARKER = "__ccConfiguredContextWindow";
 
 type SiteState = "stock" | "patched";
 
 interface CatalogAccessorCandidate {
 	path: NodePath<t.FunctionDeclaration>;
 	catalogName: string;
+	state: SiteState;
+}
+
+interface EffectiveContextCandidate {
+	path: NodePath<t.FunctionDeclaration>;
+	modelName: string;
 	state: SiteState;
 }
 
@@ -193,6 +200,100 @@ function classifyCatalogAccessor(
 	if (!getCatalogModelsExpression(statement.argument, parameter.name))
 		return null;
 	return { path, catalogName: parameter.name, state: "stock" };
+}
+
+function isPatchedEffectiveContextBody(body: t.BlockStatement): boolean {
+	if (
+		!t.isVariableDeclaration(body.body[2]) ||
+		!body.body[2].declarations.some((declaration) =>
+			t.isIdentifier(declaration.id, { name: CONFIGURED_CONTEXT_MARKER }),
+		)
+	)
+		return false;
+	const hasMarkerBinding = nodeContains(
+		body,
+		(candidate) =>
+			t.isVariableDeclarator(candidate) &&
+			t.isIdentifier(candidate.id, { name: CONFIGURED_CONTEXT_MARKER }) &&
+			t.isOptionalMemberExpression(candidate.init) &&
+			getMemberName(candidate.init) === "max_input_tokens",
+	);
+	const hasSafeIntegerGuard = nodeContains(
+		body,
+		(candidate) =>
+			t.isCallExpression(candidate) &&
+			t.isMemberExpression(candidate.callee) &&
+			t.isIdentifier(candidate.callee.object, { name: "Number" }) &&
+			getMemberName(candidate.callee) === "isSafeInteger" &&
+			candidate.arguments.length === 1 &&
+			t.isIdentifier(candidate.arguments[0], {
+				name: CONFIGURED_CONTEXT_MARKER,
+			}),
+	);
+	const hasPositiveGuard = nodeContains(
+		body,
+		(candidate) =>
+			t.isBinaryExpression(candidate, { operator: ">" }) &&
+			t.isIdentifier(candidate.left, { name: CONFIGURED_CONTEXT_MARKER }) &&
+			t.isNumericLiteral(candidate.right, { value: 0 }),
+	);
+	const hasReturn = nodeContains(
+		body,
+		(candidate) =>
+			t.isReturnStatement(candidate) &&
+			t.isIdentifier(candidate.argument, { name: CONFIGURED_CONTEXT_MARKER }),
+	);
+	return (
+		hasMarkerBinding && hasSafeIntegerGuard && hasPositiveGuard && hasReturn
+	);
+}
+
+function classifyEffectiveContextResolver(
+	path: NodePath<t.FunctionDeclaration>,
+): EffectiveContextCandidate | null {
+	if (!path.node.id || path.node.params.length !== 2) return null;
+	const [model, provider] = path.node.params;
+	if (!t.isIdentifier(model) || !t.isIdentifier(provider)) return null;
+	if (isPatchedEffectiveContextBody(path.node.body)) {
+		return { path, modelName: model.name, state: "patched" };
+	}
+	const statements = path.node.body.body;
+	if (statements.length !== 4) return null;
+	const [decl, explicit, million, fallback] = statements;
+	if (
+		!t.isVariableDeclaration(decl) ||
+		decl.declarations.length !== 1 ||
+		!t.isIdentifier(decl.declarations[0].id) ||
+		!t.isCallExpression(decl.declarations[0].init) ||
+		decl.declarations[0].init.arguments.length !== 0
+	) {
+		return null;
+	}
+	const declaredName = decl.declarations[0].id.name;
+	if (
+		!t.isIfStatement(explicit) ||
+		!t.isBinaryExpression(explicit.test, { operator: "!==" }) ||
+		!t.isIdentifier(explicit.test.left, { name: declaredName }) ||
+		!isVoidZero(explicit.test.right) ||
+		!t.isReturnStatement(explicit.consequent) ||
+		!t.isIdentifier(explicit.consequent.argument, { name: declaredName })
+	) {
+		return null;
+	}
+	if (
+		!t.isIfStatement(million) ||
+		!t.isCallExpression(million.test) ||
+		million.test.arguments.length !== 2 ||
+		!t.isReturnStatement(million.consequent) ||
+		!t.isReturnStatement(fallback) ||
+		!t.isCallExpression(fallback.argument) ||
+		fallback.argument.arguments.length !== 2 ||
+		!t.isIdentifier(fallback.argument.arguments[0], { name: model.name }) ||
+		!t.isIdentifier(fallback.argument.arguments[1], { name: provider.name })
+	) {
+		return null;
+	}
+	return { path, modelName: model.name, state: "stock" };
 }
 
 function isVoidZero(node: t.Node | null | undefined): boolean {
@@ -403,7 +504,26 @@ function mergeConfiguredModels(${candidate.catalogName}) {
 	}
 	return wrapper.body;
 }
-
+function buildEffectiveContextStatements(
+	candidate: EffectiveContextCandidate,
+	helperName: string,
+): t.Statement[] {
+	const source = parse(
+		`function configuredContext(${candidate.modelName}) {
+  const ${CONFIGURED_CONTEXT_MARKER} = ${helperName}().find(
+    (entry) => entry.id.trim().toLowerCase() === String(${candidate.modelName}).trim().toLowerCase(),
+  )?.max_input_tokens;
+  if (Number.isSafeInteger(${CONFIGURED_CONTEXT_MARKER}) && ${CONFIGURED_CONTEXT_MARKER} > 0) {
+    return ${CONFIGURED_CONTEXT_MARKER};
+  }
+}`,
+	);
+	const wrapper = source.program.body[0];
+	if (!t.isFunctionDeclaration(wrapper)) {
+		throw new Error("model-context-metadata: failed to build context merge");
+	}
+	return wrapper.body.body;
+}
 function buildAutoCompactStatements(
 	candidate: AutoCompactCandidate,
 	helperName: string,
@@ -455,6 +575,11 @@ function applyLatestMetadataIntegration(
 		.filter((candidate): candidate is CatalogAccessorCandidate =>
 			Boolean(candidate),
 		);
+	const contexts = functions
+		.map(classifyEffectiveContextResolver)
+		.filter((candidate): candidate is EffectiveContextCandidate =>
+			Boolean(candidate),
+		);
 	const autoCompact = functions
 		.map(classifyAutoCompactResolver)
 		.filter((candidate): candidate is AutoCompactCandidate =>
@@ -463,10 +588,11 @@ function applyLatestMetadataIntegration(
 	if (
 		helpers.length !== 1 ||
 		accessors.length !== 1 ||
+		contexts.length !== 1 ||
 		autoCompact.length !== 1
 	) {
 		console.warn(
-			`Model context metadata: expected one configured helper, catalog accessor, and auto-compact resolver; found helpers=${helpers.length}, accessors=${accessors.length}, autoCompact=${autoCompact.length}`,
+			`Model context metadata: expected one configured helper, catalog accessor, effective context resolver, and auto-compact resolver; found helpers=${helpers.length}, accessors=${accessors.length}, contexts=${contexts.length}, autoCompact=${autoCompact.length}`,
 		);
 		return false;
 	}
@@ -474,6 +600,13 @@ function applyLatestMetadataIntegration(
 	if (!helperName) return false;
 	if (accessors[0].state === "stock") {
 		accessors[0].path.node.body = buildCatalogBody(accessors[0], helperName);
+	}
+	if (contexts[0].state === "stock") {
+		contexts[0].path.node.body.body.splice(
+			2,
+			0,
+			...buildEffectiveContextStatements(contexts[0], helperName),
+		);
 	}
 	if (autoCompact[0].state === "stock") {
 		autoCompact[0].path.node.body.body.splice(
@@ -484,6 +617,7 @@ function applyLatestMetadataIntegration(
 	}
 	return (
 		classifyCatalogAccessor(accessors[0].path)?.state === "patched" &&
+		classifyEffectiveContextResolver(contexts[0].path)?.state === "patched" &&
 		classifyAutoCompactResolver(autoCompact[0].path)?.state === "patched"
 	);
 }
@@ -519,12 +653,15 @@ export const modelContextMetadata: Patch = {
 		}
 		let helperCount = 0;
 		const accessors: CatalogAccessorCandidate[] = [];
+		const contexts: EffectiveContextCandidate[] = [];
 		const autoCompact: AutoCompactCandidate[] = [];
 		traverse(verifyAst, {
 			FunctionDeclaration(path) {
 				if (isConfiguredCatalogHelper(path)) helperCount += 1;
 				const accessor = classifyCatalogAccessor(path);
 				if (accessor) accessors.push(accessor);
+				const context = classifyEffectiveContextResolver(path);
+				if (context) contexts.push(context);
 				const auto = classifyAutoCompactResolver(path);
 				if (auto) autoCompact.push(auto);
 			},
@@ -537,6 +674,12 @@ export const modelContextMetadata: Patch = {
 		}
 		if (accessors[0].state !== "patched") {
 			return "Configured models are not merged into native runtime metadata";
+		}
+		if (contexts.length !== 1) {
+			return `Effective context resolver is ambiguous or missing (${contexts.length} sites found)`;
+		}
+		if (contexts[0].state !== "patched") {
+			return "Configured maxInputTokens are not applied before native context clamps";
 		}
 		if (autoCompact.length !== 1) {
 			return `Auto-compact resolver is ambiguous or missing (${autoCompact.length} sites found)`;

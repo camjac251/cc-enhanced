@@ -404,3 +404,15 @@ test("agent-listing-ui verify reports ambiguity when two render-shaped cases exi
 		"two render-shaped cases must fail verify with the ambiguity message",
 	);
 });
+
+test("agent summary verifier rejects a dead helper with surviving markers", async () => {
+	const ast = parse(MEMOIZED_AGENT_LISTING_FIXTURE);
+	await runAgentListingUiViaPasses(ast);
+	const output = print(ast);
+	const dead = output.replace(
+		"function _claudePatchFormatAgentListingSummary(attachment) {",
+		'function _claudePatchFormatAgentListingSummary(attachment) { return "";',
+	);
+	assert.notEqual(dead, output);
+	assert.equal(typeof agentListingUi.verify(dead), "string");
+});

@@ -17,7 +17,8 @@ const MANY_IMAGE_DIMENSION_LIMIT = 2000;
 const MANY_IMAGE_COLLECTOR_NAME = "__ccEnhancedCollectManyImageBlock";
 const MANY_IMAGE_DOWNSCALE_HELPER_NAME =
 	"__ccEnhancedDownscaleManyImageMessages";
-const MANY_IMAGE_FALLBACK_RESULT_NAME = "__ccEnhancedDownscaledMidConvFallback";
+const MANY_IMAGE_RESULT_HELPER_NAME =
+	"__ccEnhancedDownscaleNormalizationResult";
 const HEADER_BASE64_SAMPLE_CHARS = 87400;
 
 interface ImageLimitEntry {
@@ -82,10 +83,6 @@ function findParentFunction(
 	const functionPath = path.findParent((parent) => parent.isFunction());
 	if (!functionPath || !t.isFunction(functionPath.node)) return null;
 	return functionPath as NodePath<t.Function>;
-}
-
-function getFunctionBlock(path: NodePath<t.Function>): t.BlockStatement | null {
-	return t.isBlockStatement(path.node.body) ? path.node.body : null;
 }
 
 function getIdentifierParam(
@@ -341,323 +338,211 @@ function buildManyImageDownscaleHelperStatements(
 	});
 }
 
-function functionHasManyImageDownscale(path: NodePath<t.Function>): boolean {
-	let helperSeen = false;
-	let normalizerCallSeen = false;
-	let requestAwaitSeen = false;
-	let fallbackDownscaleSeen = false;
-	let fallbackWrapSeen = false;
-	let collectorSeen = false;
-	let base64DecodeSeen = false;
-	let countLimitSeen = false;
-	let dimensionLimitSeen = false;
-	let documentBlockCountSeen = false;
-	let normalizerFallbackSeen = false;
+interface NormalizationTargets {
+	calls: NodePath<t.CallExpression>[];
+	model: t.Expression;
+}
 
+function measuredNormalization(
+	node: t.Node | null | undefined,
+): t.CallExpression | null {
+	if (!t.isCallExpression(node)) return null;
+	const callback = node.arguments[0];
+	return t.isArrowFunctionExpression(callback) &&
+		callback.params.length === 0 &&
+		t.isCallExpression(callback.body) &&
+		t.isIdentifier(callback.body.callee) &&
+		callback.body.arguments.length === 2
+		? callback.body
+		: null;
+}
+
+function findNormalizationTargets(
+	path: NodePath<t.Function>,
+): NormalizationTargets | null {
+	let normalizer: string | null = null;
+	let model: t.Expression | null = null;
 	path.traverse({
-		FunctionDeclaration(innerPath) {
+		Function(inner) {
+			inner.skip();
+		},
+		VariableDeclarator(inner) {
+			if (normalizer || !t.isObjectPattern(inner.node.id)) return;
+			const pattern = inner.node.id;
 			if (
-				t.isIdentifier(innerPath.node.id, {
-					name: MANY_IMAGE_DOWNSCALE_HELPER_NAME,
-				})
-			) {
-				helperSeen = true;
-			}
-		},
-
-		StringLiteral(innerPath) {
-			if (innerPath.node.value === "document") documentBlockCountSeen = true;
-		},
-
-		Identifier(innerPath) {
-			if (innerPath.node.name === MANY_IMAGE_COLLECTOR_NAME)
-				collectorSeen = true;
-		},
-
-		NumericLiteral(innerPath) {
-			if (innerPath.node.value === MANY_IMAGE_COUNT_LIMIT)
-				countLimitSeen = true;
-			if (innerPath.node.value === MANY_IMAGE_DIMENSION_LIMIT) {
-				dimensionLimitSeen = true;
-			}
-		},
-
-		CallExpression(innerPath) {
-			const { callee } = innerPath.node;
-			if (
-				t.isMemberExpression(callee) &&
-				t.isIdentifier(callee.object, { name: "Buffer" }) &&
-				t.isIdentifier(callee.property, { name: "from" }) &&
-				innerPath.node.arguments.some(
-					(arg) => t.isStringLiteral(arg) && arg.value === "base64",
+				!["messagesForAPI", "midConvFallback", "toolChangeFallback"].every(
+					(key) =>
+						pattern.properties.some(
+							(prop) =>
+								t.isObjectProperty(prop) && getObjectKeyName(prop.key) === key,
+						),
 				)
-			) {
-				base64DecodeSeen = true;
-			}
-			if (
-				t.isIdentifier(callee) &&
-				callee.name !== MANY_IMAGE_DOWNSCALE_HELPER_NAME &&
-				innerPath.node.arguments.length >= 2
-			) {
-				const [blockArg, limitsArg] = innerPath.node.arguments;
-				if (
-					t.isIdentifier(blockArg, { name: "block" }) &&
-					t.isIdentifier(limitsArg, { name: "limits" })
-				) {
-					normalizerCallSeen = true;
-				}
-			}
-		},
-
-		AwaitExpression(innerPath) {
-			const arg = innerPath.node.argument;
-			if (
-				!t.isCallExpression(arg) ||
-				!t.isIdentifier(arg.callee, {
-					name: MANY_IMAGE_DOWNSCALE_HELPER_NAME,
-				})
-			) {
+			)
 				return;
-			}
-			const parent = innerPath.parentPath;
+			let value = inner.node.init;
+			if (t.isAwaitExpression(value)) value = value.argument;
 			if (
-				parent?.isAssignmentExpression() &&
-				t.isIdentifier(parent.node.left)
+				t.isCallExpression(value) &&
+				t.isIdentifier(value.callee, { name: MANY_IMAGE_RESULT_HELPER_NAME })
 			) {
-				requestAwaitSeen = true;
+				const original = value.arguments[0];
+				if (!t.isExpression(original)) return;
+				value = original;
 			}
+			const call = measuredNormalization(value);
+			if (!call || !t.isIdentifier(call.callee)) return;
+			const options = call.arguments[1];
+			if (!t.isIdentifier(options)) return;
+			const binding = inner.scope.getBinding(options.name);
 			if (
-				parent?.isVariableDeclarator() &&
-				t.isIdentifier(parent.node.id, {
-					name: MANY_IMAGE_FALLBACK_RESULT_NAME,
-				})
-			) {
-				fallbackDownscaleSeen = true;
-			}
-		},
-
-		AssignmentExpression(innerPath) {
-			const right = innerPath.node.right;
-			if (
-				innerPath.node.operator === "=" &&
-				t.isArrowFunctionExpression(right) &&
-				!right.async &&
-				t.isIdentifier(right.body, {
-					name: MANY_IMAGE_FALLBACK_RESULT_NAME,
-				})
-			) {
-				fallbackWrapSeen = true;
-			}
-		},
-
-		LogicalExpression(innerPath) {
-			if (innerPath.node.operator !== "??") return;
-			if (!t.isIdentifier(innerPath.node.right, { name: "block" })) return;
-			const left = innerPath.node.left;
-			if (
-				t.isOptionalMemberExpression(left) &&
-				t.isIdentifier(left.property, { name: "block" })
-			) {
-				normalizerFallbackSeen = true;
-			}
+				!binding?.path.isVariableDeclarator() ||
+				!t.isObjectExpression(binding.path.node.init)
+			)
+				return;
+			const property =
+				getObjectProp(binding.path.node.init, "model") ??
+				getObjectProp(binding.path.node.init, "bodyModel");
+			if (!property || !t.isExpression(property.value)) return;
+			normalizer = call.callee.name;
+			model = property.value;
 		},
 	});
-
-	return (
-		helperSeen &&
-		collectorSeen &&
-		base64DecodeSeen &&
-		countLimitSeen &&
-		dimensionLimitSeen &&
-		documentBlockCountSeen &&
-		normalizerFallbackSeen &&
-		normalizerCallSeen &&
-		requestAwaitSeen &&
-		fallbackDownscaleSeen &&
-		fallbackWrapSeen
-	);
-}
-
-interface RequestDownscaleTarget {
-	declarationIndex: number;
-	messagesName: string;
-	fallbackName: string;
-	modelExpr: t.Expression;
-}
-
-function getObjectExpressionPropValue(
-	objectExpr: t.ObjectExpression,
-	keyName: string,
-): t.Expression | null {
-	const prop = getObjectProp(objectExpr, keyName);
-	if (!prop || !t.isExpression(prop.value)) return null;
-	return prop.value;
-}
-
-function findRequestDownscaleTarget(
-	path: NodePath<t.Function>,
-): RequestDownscaleTarget | null {
-	const body = getFunctionBlock(path);
-	if (!body) return null;
-
-	for (let index = 0; index < body.body.length; index++) {
-		const stmt = body.body[index];
-		if (!t.isVariableDeclaration(stmt)) continue;
-		let messagesForApiAlias: string | null = null;
-		let fallbackAlias: string | null = null;
-		let modelExpr: t.Expression | null = null;
-
-		for (const decl of stmt.declarations) {
-			if (!t.isObjectPattern(decl.id)) continue;
-			if (!t.isCallExpression(decl.init)) continue;
-			const [callback] = decl.init.arguments;
+	if (!normalizer || !model) return null;
+	const name: string = normalizer;
+	const binding = path.scope.getBinding(name);
+	const calls: NodePath<t.CallExpression>[] = [];
+	path.traverse({
+		Function(inner) {
+			inner.skip();
+		},
+		CallExpression(inner) {
+			const call = measuredNormalization(inner.node);
 			if (
-				!t.isArrowFunctionExpression(callback) ||
-				callback.params.length !== 0 ||
-				!t.isCallExpression(callback.body)
-			) {
-				continue;
-			}
-			const optionsArg = callback.body.arguments[1];
-			if (!t.isIdentifier(optionsArg)) continue;
-			const optionsDeclaration = stmt.declarations.find(
-				(candidate) =>
-					t.isIdentifier(candidate.id, { name: optionsArg.name }) &&
-					t.isObjectExpression(candidate.init),
-			);
-			if (
-				!optionsDeclaration ||
-				!t.isObjectExpression(optionsDeclaration.init)
-			) {
-				continue;
-			}
-			modelExpr =
-				getObjectExpressionPropValue(optionsDeclaration.init, "model") ??
-				getObjectExpressionPropValue(optionsDeclaration.init, "bodyModel");
-			if (!modelExpr) continue;
-
-			for (const prop of decl.id.properties) {
-				if (!t.isObjectProperty(prop) || !t.isIdentifier(prop.value)) {
-					continue;
-				}
-				const keyName = getObjectKeyName(prop.key);
-				if (keyName === "messagesForAPI") {
-					messagesForApiAlias = prop.value.name;
-				}
-				if (keyName === "midConvFallback") {
-					fallbackAlias = prop.value.name;
-				}
-			}
-		}
-
-		if (!messagesForApiAlias || !fallbackAlias || !modelExpr) continue;
-		let messagesName: string | null = null;
-		let fallbackName: string | null = null;
-		for (let aliasIndex = index; aliasIndex < body.body.length; aliasIndex++) {
-			const aliasStatement = body.body[aliasIndex];
-			if (!t.isVariableDeclaration(aliasStatement)) continue;
-			for (const decl of aliasStatement.declarations) {
-				if (
-					t.isIdentifier(decl.id) &&
-					t.isIdentifier(decl.init, { name: messagesForApiAlias })
-				) {
-					messagesName = decl.id.name;
-				}
-				if (
-					t.isIdentifier(decl.id) &&
-					t.isIdentifier(decl.init, { name: fallbackAlias })
-				) {
-					fallbackName = decl.id.name;
-				}
-			}
-			if (messagesName && fallbackName) {
-				return {
-					declarationIndex: aliasIndex,
-					messagesName,
-					fallbackName,
-					modelExpr,
-				};
-			}
-		}
-	}
-
-	return null;
+				call &&
+				t.isIdentifier(call.callee, { name }) &&
+				inner.scope.getBinding(name) === binding
+			)
+				calls.push(inner);
+		},
+	});
+	return calls.length ? { calls, model } : null;
 }
 
-function buildRequestDownscaleStatements(
-	messagesName: string,
-	fallbackName: string,
-	modelExpr: t.Expression,
+function buildNormalizationResultHelper(
 	imageLimitsResolverName: string,
 ): t.Statement[] {
-	// The fallback rebuild runs in sync callers, so the downscaled fallback is
-	// computed eagerly here (async context) and the fallback stays a sync
-	// function returning the precomputed array. Call sites never need an await.
-	const buildStmts = template.statements(
+	// Fallback callers are synchronous; prepare both rebuilt arrays before
+	// handing the result back to the request pipeline, including prefix retries.
+	return template.statements(
 		`
-		let __ccEnhancedManyImageLimits = {
-			...IMAGE_LIMITS(MODEL),
-			maxWidth: ${MANY_IMAGE_DIMENSION_LIMIT},
-			maxHeight: ${MANY_IMAGE_DIMENSION_LIMIT},
-		};
-		MESSAGES = await ${MANY_IMAGE_DOWNSCALE_HELPER_NAME}(MESSAGES, __ccEnhancedManyImageLimits);
-		if (FALLBACK) {
-			let ${MANY_IMAGE_FALLBACK_RESULT_NAME} = await ${MANY_IMAGE_DOWNSCALE_HELPER_NAME}(
-				FALLBACK(),
-				__ccEnhancedManyImageLimits,
-			);
-			FALLBACK = () => ${MANY_IMAGE_FALLBACK_RESULT_NAME};
+		async function ${MANY_IMAGE_RESULT_HELPER_NAME}(result, model) {
+			const limits = { ...IMAGE_LIMITS(model), maxWidth: ${MANY_IMAGE_DIMENSION_LIMIT}, maxHeight: ${MANY_IMAGE_DIMENSION_LIMIT} };
+			const normalized = { ...result, messagesForAPI: await ${MANY_IMAGE_DOWNSCALE_HELPER_NAME}(result.messagesForAPI, limits) };
+			for (const key of ["midConvFallback", "toolChangeFallback"]) {
+				if (result[key]) {
+					const messages = await ${MANY_IMAGE_DOWNSCALE_HELPER_NAME}(result[key](), limits);
+					normalized[key] = () => messages;
+				}
+			}
+			return normalized;
 		}
 	`,
-		{
-			placeholderPattern: /^(IMAGE_LIMITS|MODEL|MESSAGES|FALLBACK)$/,
-		},
-	);
-	return buildStmts({
-		IMAGE_LIMITS: t.identifier(imageLimitsResolverName),
-		MODEL: t.cloneNode(modelExpr),
-		MESSAGES: t.identifier(messagesName),
-		FALLBACK: t.identifier(fallbackName),
+		{ placeholderPattern: /^IMAGE_LIMITS$/ },
+	)({ IMAGE_LIMITS: t.identifier(imageLimitsResolverName) });
+}
+
+type ImageDownscaleState = {
+	dimensionReaderName: string | null;
+	imageBlockNormalizerName: string | null;
+	imageLimitsResolverName: string | null;
+};
+
+function functionHasManyImageDownscale(
+	path: NodePath<t.Function>,
+	state: ImageDownscaleState,
+): boolean {
+	if (
+		!state.dimensionReaderName ||
+		!state.imageBlockNormalizerName ||
+		!state.imageLimitsResolverName ||
+		!t.isBlockStatement(path.node.body)
+	)
+		return false;
+	const targets = findNormalizationTargets(path);
+	if (!targets) return false;
+	const body = path.node.body;
+	const expected = [
+		...buildManyImageDownscaleHelperStatements(
+			state.imageBlockNormalizerName,
+			state.dimensionReaderName,
+		),
+		...buildNormalizationResultHelper(state.imageLimitsResolverName),
+	];
+	if (
+		!expected.every(
+			(statement) =>
+				body.body.filter((candidate) =>
+					t.isNodesEquivalent(candidate, statement),
+				).length === 1,
+		)
+	)
+		return false;
+	return targets.calls.every((call) => {
+		const wrapper = call.parentPath;
+		return (
+			wrapper.isCallExpression() &&
+			t.isIdentifier(wrapper.node.callee, {
+				name: MANY_IMAGE_RESULT_HELPER_NAME,
+			}) &&
+			wrapper.node.arguments.length === 2 &&
+			wrapper.node.arguments[0] === call.node &&
+			t.isNodesEquivalent(wrapper.node.arguments[1], targets.model) &&
+			wrapper.parentPath.isAwaitExpression()
+		);
 	});
 }
 
 function patchRequestDownscale(
 	path: NodePath<t.Function>,
-	state: {
-		dimensionReaderName: string | null;
-		imageBlockNormalizerName: string | null;
-		imageLimitsResolverName: string | null;
-	},
+	state: ImageDownscaleState,
 ): boolean {
 	if (
 		!path.node.async ||
 		!state.dimensionReaderName ||
 		!state.imageBlockNormalizerName ||
-		!state.imageLimitsResolverName
-	) {
+		!state.imageLimitsResolverName ||
+		!t.isBlockStatement(path.node.body)
+	)
 		return false;
+	if (functionHasManyImageDownscale(path, state)) return true;
+	const targets = findNormalizationTargets(path);
+	if (!targets) return false;
+	// Do not layer a second implementation over incomplete injected helpers.
+	if (
+		path.node.body.body.some(
+			(statement) =>
+				t.isFunctionDeclaration(statement) &&
+				(statement.id?.name === MANY_IMAGE_DOWNSCALE_HELPER_NAME ||
+					statement.id?.name === MANY_IMAGE_RESULT_HELPER_NAME),
+		)
+	)
+		return false;
+	for (const call of targets.calls) {
+		call.replaceWith(
+			t.awaitExpression(
+				t.callExpression(t.identifier(MANY_IMAGE_RESULT_HELPER_NAME), [
+					t.cloneNode(call.node, true),
+					t.cloneNode(targets.model, true),
+				]),
+			),
+		);
 	}
-	if (functionHasManyImageDownscale(path)) return true;
-	const body = getFunctionBlock(path);
-	if (!body) return false;
-	const target = findRequestDownscaleTarget(path);
-	if (!target) return false;
-
-	const helperStatements = buildManyImageDownscaleHelperStatements(
-		state.imageBlockNormalizerName,
-		state.dimensionReaderName,
-	);
-	const requestStatements = buildRequestDownscaleStatements(
-		target.messagesName,
-		target.fallbackName,
-		target.modelExpr,
-		state.imageLimitsResolverName,
-	);
-	body.body.splice(target.declarationIndex, 0, ...helperStatements);
-	body.body.splice(
-		target.declarationIndex + helperStatements.length + 1,
-		0,
-		...requestStatements,
+	path.node.body.body.unshift(
+		...buildManyImageDownscaleHelperStatements(
+			state.imageBlockNormalizerName,
+			state.dimensionReaderName,
+		),
+		...buildNormalizationResultHelper(state.imageLimitsResolverName),
 	);
 	return true;
 }
@@ -736,6 +621,12 @@ export const imageLimits: Patch = {
 		const verifyAst = getVerifyAst(code, ast);
 		if (!verifyAst) return "Unable to parse AST during verification";
 
+		const state: ImageDownscaleState = {
+			dimensionReaderName: null,
+			imageBlockNormalizerName: null,
+			imageLimitsResolverName: null,
+		};
+		traverse(verifyAst, createImageLimitsDiscoverer(state));
 		let downgradedKey: string | null = null;
 		let requestNormalizerSeen = false;
 		let requestDownscaleGuarded = false;
@@ -760,7 +651,7 @@ export const imageLimits: Patch = {
 				const functionPath = findParentFunction(path);
 				if (!functionPath) return;
 				requestNormalizerSeen = true;
-				if (functionHasManyImageDownscale(functionPath)) {
+				if (functionHasManyImageDownscale(functionPath, state)) {
 					requestDownscaleGuarded = true;
 				}
 			},

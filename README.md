@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="Tested with Claude Code 2.1.260" src="https://img.shields.io/badge/tested-Claude_Code_2.1.260-8A2BE2">
+  <img alt="Tested with Claude Code 2.1.263" src="https://img.shields.io/badge/tested-Claude_Code_2.1.263-8A2BE2">
   <img alt="44 patches" src="https://img.shields.io/badge/patches-44-f97316">
   <img alt="Maintenance paused" src="https://img.shields.io/badge/maintenance-paused-dc2626">
   <img alt="Bun 1.4.0" src="https://img.shields.io/badge/Bun-1.4.0-fbf0df?logo=bun&logoColor=000">
@@ -21,7 +21,7 @@
 
 > [!WARNING]
 >
-> Maintenance is paused. I've switched from Claude Code to [oh-my-pi](https://github.com/can1357/oh-my-pi), so this project no longer tracks new upstream releases. Claude Code 2.1.260 is the last version I verified the patches against, and it will stay the last supported target for a while. Issues and pull requests are still welcome, including ones that carry the patches forward to a newer release.
+> Maintenance is paused. I've switched from Claude Code to [oh-my-pi](https://github.com/can1357/oh-my-pi), so ongoing upstream release tracking remains paused. This manual refresh is verified against Claude Code 2.1.263. Issues and pull requests are still welcome, including ones that carry the patches forward to a newer release.
 
 cc-enhanced extracts the JavaScript embedded in an official Claude Code native executable, rebundles split modules into one patch surface when needed, applies a selected set of independently verifiable patches, and repacks the result without changing the native file's fixed layout. The primary `cli-full` profile improves Read and Edit ergonomics, modernizes prompt and tool routing, unlocks runtime and UI controls, and keeps the patched installation recoverable through atomic promotion and rollback.
 

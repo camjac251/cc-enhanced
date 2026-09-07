@@ -1,5 +1,5 @@
 import * as t from "@babel/types";
-import { template, traverse } from "../babel.js";
+import { type NodePath, template, traverse } from "../babel.js";
 import type { Patch, PatchAstPass } from "../types.js";
 import {
 	getObjectPropertyByName,
@@ -162,6 +162,100 @@ function tryPatchMatcher(fn: t.Function): boolean {
 	}
 	return false;
 }
+function buildActivationAttachment(itemName: string): t.ObjectExpression {
+	return t.objectExpression([
+		t.objectProperty(t.identifier("type"), t.stringLiteral("dynamic_skill")),
+		t.objectProperty(
+			t.identifier("skillDir"),
+			t.memberExpression(t.identifier(itemName), t.identifier("file")),
+		),
+		t.objectProperty(
+			t.identifier("skillNames"),
+			t.memberExpression(t.identifier(itemName), t.identifier("names")),
+		),
+		t.objectProperty(
+			t.identifier("displayPath"),
+			t.memberExpression(t.identifier(itemName), t.identifier("file")),
+		),
+		t.objectProperty(t.identifier("activationOnly"), t.booleanLiteral(true)),
+	]);
+}
+
+function buildEarlyDrainBlock(): t.BlockStatement {
+	const arrayName = "__ccPathEarlyAttachments";
+	const drain = t.forOfStatement(
+		t.variableDeclaration("let", [
+			t.variableDeclarator(t.identifier(DRAIN_VAR)),
+		]),
+		t.callExpression(
+			t.memberExpression(t.identifier(STATE), t.identifier("splice")),
+			[t.numericLiteral(0)],
+		),
+		t.expressionStatement(
+			t.callExpression(
+				t.memberExpression(t.identifier(arrayName), t.identifier("push")),
+				[buildActivationAttachment(DRAIN_VAR)],
+			),
+		),
+	);
+	return t.blockStatement([
+		t.variableDeclaration("let", [
+			t.variableDeclarator(t.identifier(arrayName), t.arrayExpression([])),
+		]),
+		drain,
+		t.returnStatement(t.identifier(arrayName)),
+	]);
+}
+
+function tryPatchReset(fn: t.Function): boolean {
+	if (!t.isBlockStatement(fn.body)) return false;
+	const hasSkillReset =
+		!nodeContains(fn.body, (node) => t.isFunction(node)) &&
+		[
+			"conditionalSkills",
+			"activatedConditionalSkillNames",
+			"dynamicSkills",
+			"dynamicSkillDirs",
+		].every((name) =>
+			nodeContains(
+				fn.body,
+				(node) =>
+					t.isCallExpression(node) &&
+					t.isMemberExpression(node.callee) &&
+					isMemberPropertyName(node.callee, "clear") &&
+					t.isMemberExpression(node.callee.object) &&
+					isMemberPropertyName(node.callee.object, name),
+			),
+		);
+	if (!hasSkillReset) return false;
+	if (
+		nodeContains(
+			fn.body,
+			(node) =>
+				t.isCallExpression(node) &&
+				t.isMemberExpression(node.callee) &&
+				(t.isIdentifier(node.callee.object, { name: STATE }) ||
+					t.isIdentifier(node.callee.object, { name: SEEN })),
+		)
+	)
+		return true;
+	fn.body.body.unshift(
+		t.expressionStatement(
+			t.assignmentExpression(
+				"=",
+				t.memberExpression(t.identifier(STATE), t.identifier("length")),
+				t.numericLiteral(0),
+			),
+		),
+		t.expressionStatement(
+			t.callExpression(
+				t.memberExpression(t.identifier(SEEN), t.identifier("clear")),
+				[],
+			),
+		),
+	);
+	return true;
+}
 
 /**
  * Anchor 3: the `dynamic_skill` attachment producer builds an array and returns
@@ -225,30 +319,100 @@ function tryPatchProducer(fn: t.Function): boolean {
 							t.identifier("displayPath"),
 							t.memberExpression(t.identifier(DRAIN_VAR), t.identifier("file")),
 						),
+						t.objectProperty(
+							t.identifier("activationOnly"),
+							t.booleanLiteral(true),
+						),
 					]),
 				],
 			),
 		),
 	);
 	body.splice(returnIdx, 0, drain);
+	traverse(fn.body, {
+		Function(path) {
+			path.skip();
+		},
+		ReturnStatement(path) {
+			if (
+				!t.isArrayExpression(path.node.argument) ||
+				path.node.argument.elements.length !== 0
+			)
+				return;
+			path.replaceWith(buildEarlyDrainBlock());
+		},
+		noScope: true,
+	});
+	return true;
+}
+function modelConverterParameter(
+	path: NodePath<t.Function>,
+): t.Identifier | null {
+	const parent = path.parentPath;
+	if (!parent?.isObjectProperty()) return null;
+	const key = parent.node.key;
+	if (
+		!(
+			t.isIdentifier(key, { name: "dynamic_skill" }) ||
+			t.isStringLiteral(key, { value: "dynamic_skill" })
+		)
+	)
+		return null;
+	if (
+		!t.isBlockStatement(path.node.body) ||
+		!t.isIdentifier(path.node.params[0])
+	)
+		return null;
+	const hasReminder = nodeContains(
+		path.node.body,
+		(node) =>
+			(t.isStringLiteral(node) &&
+				node.value.includes("New skills discovered in")) ||
+			(t.isTemplateElement(node) &&
+				node.value.raw.includes("New skills discovered in")),
+	);
+	return hasReminder ? path.node.params[0] : null;
+}
+function buildModelSuppression(parameter: t.Identifier): t.IfStatement {
+	return t.ifStatement(
+		t.binaryExpression(
+			"===",
+			t.memberExpression(
+				t.cloneNode(parameter),
+				t.identifier("activationOnly"),
+			),
+			t.booleanLiteral(true),
+		),
+		t.returnStatement(t.arrayExpression([])),
+	);
+}
+function tryPatchModelConverter(path: NodePath<t.Function>): boolean {
+	const parameter = modelConverterParameter(path);
+	if (!parameter || !t.isBlockStatement(path.node.body)) return false;
+	const guard = buildModelSuppression(parameter);
+	if (!t.isNodesEquivalent(path.node.body.body[0], guard))
+		path.node.body.body.unshift(guard);
 	return true;
 }
 
 function createSkillActivationNoticePasses(): PatchAstPass[] {
 	let patchedMatcher = false;
 	let patchedProducer = false;
+	let patchedReset = false;
+	let patchedModelConverter = false;
 
 	return [
 		{
 			pass: "mutate",
 			visitor: {
 				Function(path) {
-					if (!patchedMatcher && tryPatchMatcher(path.node)) {
+					if (!patchedMatcher && tryPatchMatcher(path.node))
 						patchedMatcher = true;
-					}
-					if (!patchedProducer && tryPatchProducer(path.node)) {
+					if (!patchedProducer && tryPatchProducer(path.node))
 						patchedProducer = true;
-					}
+					if (!patchedReset && tryPatchReset(path.node)) patchedReset = true;
+					if (!patchedModelConverter && tryPatchModelConverter(path))
+						patchedModelConverter = true;
 				},
 				Program: {
 					exit(path) {
@@ -259,7 +423,10 @@ function createSkillActivationNoticePasses(): PatchAstPass[] {
 									t.isIdentifier(decl.id, { name: STATE }),
 								),
 						);
-						if ((patchedMatcher || patchedProducer) && !alreadyDeclared) {
+						if (
+							(patchedMatcher || patchedProducer || patchedReset) &&
+							!alreadyDeclared
+						) {
 							path.node.body.unshift(buildStateDecl(), buildSeenDecl());
 						}
 						if (!patchedMatcher) {
@@ -272,6 +439,14 @@ function createSkillActivationNoticePasses(): PatchAstPass[] {
 								"skill-activation-notice: could not find dynamic_skill attachment producer",
 							);
 						}
+						if (!patchedReset)
+							console.warn(
+								"skill-activation-notice: could not find skill reset boundary",
+							);
+						if (!patchedModelConverter)
+							console.warn(
+								"skill-activation-notice: could not find dynamic_skill model converter",
+							);
 					},
 				},
 			},
@@ -320,8 +495,24 @@ function verifySkillActivationNotice(ast: t.File): true | string {
 	// silent upstream rename of those fields would otherwise blank the notice
 	// while still satisfying the loose splice-presence check.
 	let drainAttachmentShape = false;
+	let activationOnlyField = false;
+	let resetState = false;
+	let modelConverters = 0;
+	let suppressedModelConverters = 0;
 
 	traverse(ast, {
+		Function(path) {
+			const parameter = modelConverterParameter(path);
+			if (!parameter || !t.isBlockStatement(path.node.body)) return;
+			modelConverters++;
+			if (
+				t.isNodesEquivalent(
+					path.node.body.body[0],
+					buildModelSuppression(parameter),
+				)
+			)
+				suppressedModelConverters++;
+		},
 		VariableDeclarator(path) {
 			if (t.isIdentifier(path.node.id, { name: STATE })) stateDecl = true;
 			if (t.isIdentifier(path.node.id, { name: SEEN })) seenDecl = true;
@@ -337,6 +528,16 @@ function verifySkillActivationNotice(ast: t.File): true | string {
 				if (isMemberPropertyName(callee, "has")) seenGuardHas = true;
 				if (isMemberPropertyName(callee, "add")) seenGuardAdd = true;
 			}
+		},
+		AssignmentExpression(path) {
+			const left = path.node.left;
+			if (
+				t.isMemberExpression(left) &&
+				t.isIdentifier(left.object, { name: STATE }) &&
+				isMemberPropertyName(left, "length") &&
+				t.isNumericLiteral(path.node.right, { value: 0 })
+			)
+				resetState = true;
 		},
 		IfStatement(path) {
 			// Composite dedup check: `if (!SEEN.has(...)) { SEEN.add(...);
@@ -376,6 +577,15 @@ function verifySkillActivationNotice(ast: t.File): true | string {
 			) {
 				return;
 			}
+			const activationOnlyProp = getObjectPropertyByName(
+				path.node,
+				"activationOnly",
+			);
+			if (
+				activationOnlyProp &&
+				t.isBooleanLiteral(activationOnlyProp.value, { value: true })
+			)
+				activationOnlyField = true;
 			const skillNamesProp = getObjectPropertyByName(path.node, "skillNames");
 			const displayPathProp = getObjectPropertyByName(path.node, "displayPath");
 			const referencesDrainVar = (prop: t.ObjectProperty | null) =>
@@ -402,6 +612,12 @@ function verifySkillActivationNotice(ast: t.File): true | string {
 		return "dynamic_skill producer does not drain activation notices";
 	if (!drainAttachmentShape)
 		return "drained dynamic_skill attachment is missing renderer-consumed fields";
+	if (!activationOnlyField)
+		return "activation notice attachment is not marked display-only";
+	if (!resetState)
+		return "activation notice state is not cleared at the skill reset boundary";
+	if (modelConverters !== 1 || suppressedModelConverters !== 1)
+		return "activation-only dynamic_skill attachments still enter model messages";
 	return true;
 }
 
