@@ -214,7 +214,17 @@ async function describeRepositoryPath(
 		}
 		throw error;
 	}
-	if (!pathIsWithin(repoRoot, resolvedTarget)) {
+	// fs.realpath resolves every symlink component, while repoRoot keeps its
+	// unresolved string form (on macOS the fixture root commonly lives under
+	// /var/folders/... which resolves to /private/var/...). Compare against the
+	// resolved root or every in-root link looks like an escape on such hosts.
+	let resolvedRepoRoot = repoRoot;
+	try {
+		resolvedRepoRoot = await fs.realpath(repoRoot);
+	} catch {
+		// Keep the unresolved root when it cannot be resolved.
+	}
+	if (!pathIsWithin(resolvedRepoRoot, resolvedTarget)) {
 		throw new Error(`${portablePath} escapes the repository fingerprint root`);
 	}
 	const targetStat = await fs.stat(resolvedTarget);
