@@ -215,6 +215,27 @@ test("repository symlinks bind safe in-root target bytes and reject escapes", as
 	);
 });
 
+test("symlinked repository paths keep in-root links and reject escapes", async (t) => {
+	const fixture = await makeTempFixture(t, "wf-state-repo-alias-");
+	const aliasRoot = path.join(fixture.tempDir, "repo-alias");
+	await fs.symlink(fixture.repoRoot, aliasRoot, "dir");
+	await fs.symlink("ignored.txt", path.join(fixture.repoRoot, "ignored-link"));
+	execFileSync("git", ["add", "ignored-link"], { cwd: fixture.repoRoot });
+	assert.equal(
+		await fingerprint("patch-audit", aliasRoot, fixture.versionsDir),
+		await fingerprint("patch-audit", fixture.repoRoot, fixture.versionsDir),
+	);
+
+	const externalPath = path.join(fixture.tempDir, "outside.txt");
+	await fs.writeFile(externalPath, "outside\n", "utf8");
+	await fs.symlink(externalPath, path.join(fixture.repoRoot, "escaping-link"));
+	execFileSync("git", ["add", "escaping-link"], { cwd: fixture.repoRoot });
+	await assert.rejects(
+		fingerprint("patch-audit", aliasRoot, fixture.versionsDir),
+		/escapes the repository fingerprint root/,
+	);
+});
+
 test("workflow name participates in the digest", async (t) => {
 	const fixture = await makeTempFixture(t, "wf-state-workflow-");
 	const audit = await fingerprint(
