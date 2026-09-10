@@ -174,6 +174,10 @@ test("base repository hashing binds the Git index, HEAD, and executable state", 
 	);
 	assert.notEqual(committed, staged);
 
+	if (process.platform === "win32") {
+		t.skip("Windows has no executable mode bit for chmod to change");
+		return;
+	}
 	await fs.chmod(trackedPath, 0o755);
 	const executable = await fingerprint(
 		"patch-audit",

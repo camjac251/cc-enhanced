@@ -54,7 +54,13 @@ test("promote validates the candidate before changing active links", async () =>
 	}
 });
 
-test("promote rejects a parseable unpatched candidate before changing links", async () => {
+test("promote rejects a parseable unpatched candidate before changing links", async (t) => {
+	if (process.platform === "win32") {
+		t.skip(
+			"Windows cannot execute the shebang script that stands in for the candidate binary",
+		);
+		return;
+	}
 	const tempDir = await fsp.mkdtemp(
 		path.join(os.tmpdir(), "promote-unpatched-"),
 	);
@@ -92,7 +98,13 @@ test("promote rejects a parseable unpatched candidate before changing links", as
 	}
 });
 
-test("promote records a successful smoke test and changes active links", async () => {
+test("promote records a successful smoke test and changes active links", async (t) => {
+	if (process.platform === "win32") {
+		t.skip(
+			"Windows cannot execute the shebang script that stands in for the candidate binary",
+		);
+		return;
+	}
 	const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "promote-success-"));
 	const versionsDir = path.join(tempDir, "versions");
 	const binLink = path.join(tempDir, "bin", "claude");
@@ -120,7 +132,13 @@ test("promote records a successful smoke test and changes active links", async (
 	}
 });
 
-test("rollback rejects a parseable unpatched target before changing links", async () => {
+test("rollback rejects a parseable unpatched target before changing links", async (t) => {
+	if (process.platform === "win32") {
+		t.skip(
+			"Windows cannot execute the shebang script that stands in for the rollback target binary",
+		);
+		return;
+	}
 	const tempDir = await fsp.mkdtemp(
 		path.join(os.tmpdir(), "rollback-unpatched-"),
 	);
@@ -158,7 +176,13 @@ test("rollback rejects a parseable unpatched target before changing links", asyn
 	}
 });
 
-test("rollback swaps current and previous after a successful smoke test", async () => {
+test("rollback swaps current and previous after a successful smoke test", async (t) => {
+	if (process.platform === "win32") {
+		t.skip(
+			"Windows cannot execute the shebang script that stands in for the rollback target binary",
+		);
+		return;
+	}
 	const tempDir = await fsp.mkdtemp(
 		path.join(os.tmpdir(), "rollback-success-"),
 	);

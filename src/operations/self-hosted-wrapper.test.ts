@@ -32,7 +32,13 @@ const successfulExecutor: SelfHostedWrapperProbeExecutor = {
 	},
 };
 
-test("wrapper operation writes one new executable and emits a path-free receipt", async () => {
+test("wrapper operation writes one new executable and emits a path-free receipt", async (t) => {
+	if (process.platform === "win32") {
+		t.skip(
+			"Windows has no POSIX mode bits, so the wrapper candidate cannot read back as 0755",
+		);
+		return;
+	}
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "cc-enhanced-wrapper-"));
 	try {
 		const wrapperOutput = path.join(root, "exec-claude");
@@ -77,8 +83,11 @@ test("wrapper operation refuses an existing output before probing", async () => 
 	}
 });
 
-test("synthetic wrapper probe preserves every declared control channel", async () => {
-	if (process.platform === "win32") return;
+test("synthetic wrapper probe preserves every declared control channel", async (t) => {
+	if (process.platform === "win32") {
+		t.skip("POSIX wrapper probes require Linux or macOS");
+		return;
+	}
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "cc-enhanced-wrapper-"));
 	try {
 		const wrapperOutput = path.join(root, "exec-claude");
