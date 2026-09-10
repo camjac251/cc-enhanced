@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { accessSync, constants } from "node:fs";
-import { mkdtemp, readdir, readFile, rm, symlink } from "node:fs/promises";
+import { accessSync, constants, rmSync } from "node:fs";
+import { mkdtemp, readdir, readFile, symlink } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ const testRoots = ["src", "scripts"].map((directory) =>
 	path.join(repoRoot, directory),
 );
 const testFilePattern = /\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/;
+const isWindows = process.platform === "win32";
 
 async function collectTestFiles(directory) {
 	const entries = await readdir(directory, { withFileTypes: true });
@@ -50,17 +51,22 @@ async function readBunFloor() {
 	};
 }
 
+// Windows spawns only `.com` and `.exe` files for an extensionless name, in
+// that order, so the lookup mirrors it there.
 function findOnPath(name) {
+	const fileNames = isWindows ? [`${name}.com`, `${name}.exe`] : [name];
 	let unusable;
 	for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
 		if (!directory) continue;
-		const candidate = path.resolve(directory, name);
-		try {
-			accessSync(candidate, constants.X_OK);
-			return { command: candidate };
-		} catch (error) {
-			if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
-				unusable ??= `${candidate}: ${error.code}`;
+		for (const fileName of fileNames) {
+			const candidate = path.resolve(directory, fileName);
+			try {
+				accessSync(candidate, constants.X_OK);
+				return { command: candidate };
+			} catch (error) {
+				if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
+					unusable ??= `${candidate}: ${error.code}`;
+				}
 			}
 		}
 	}
@@ -133,6 +139,7 @@ function resolveTestBun(floor) {
 		attempts.push({ source: "PATH", command: "bun", detail: onPath.detail });
 	}
 
+	let staleMiseVersion;
 	const mise = spawnSync("mise", ["which", "bun"], {
 		cwd: repoRoot,
 		encoding: "utf8",
@@ -154,15 +161,22 @@ function resolveTestBun(floor) {
 	} else {
 		const chosen = consider("mise", miseBun);
 		if (chosen) return chosen;
+		staleMiseVersion = attempts.at(-1).version;
 	}
 
+	const floorText = `${floor.major}.${floor.minor}`;
+	// `mise install` cannot help when mise already resolves an older Bun: the
+	// mise config needs the same bump as packageManager.
+	const remedy = staleMiseVersion
+		? `mise resolves bun ${staleMiseVersion} for this checkout, older than the ${floor.pin} pin in package.json. Raise the Bun version in the checkout's mise config to ${floorText} or newer and run \`mise install\`, or put a newer bun first on PATH.`
+		: "Install the pinned release with `mise install`, or put a newer bun first on PATH.";
 	throw new Error(
 		[
-			`No bun ${floor.major}.${floor.minor} or newer is available for the test suite (package.json pins ${floor.pin}). Tried:`,
+			`No bun ${floorText} or newer is available for the test suite (package.json pins ${floor.pin}). Tried:`,
 			...attempts.map(
 				({ source, command, detail }) => `  ${source} (${command}): ${detail}`,
 			),
-			"Install the pinned release with `mise install`, or put a newer bun first on PATH.",
+			remedy,
 		].join("\n"),
 	);
 }
@@ -210,12 +224,32 @@ if (testFiles.length === 0) {
 	throw new Error(`No test files found under ${testRoots.join(", ")}`);
 }
 
-const shimDir = await createBunShim(bun.command);
+// Windows cannot spawn an extensionless link and needs a privilege to create
+// one, so there the chosen Bun's own directory goes first instead.
+const shimDir = isWindows ? undefined : await createBunShim(bun.command);
+const removeShim = () => {
+	if (shimDir) rmSync(shimDir, { recursive: true, force: true });
+};
+if (shimDir) {
+	for (const signal of ["SIGINT", "SIGTERM"]) {
+		process.once(signal, () => {
+			removeShim();
+			process.kill(process.pid, signal);
+		});
+	}
+}
+
+const pathKey =
+	Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ??
+	"PATH";
+const childEnv = {
+	...process.env,
+	[pathKey]: [shimDir ?? path.dirname(bun.command), process.env[pathKey]]
+		.filter(Boolean)
+		.join(path.delimiter),
+};
+
 try {
-	const childEnv = {
-		...process.env,
-		PATH: [shimDir, process.env.PATH].filter(Boolean).join(path.delimiter),
-	};
 	const startedAt = performance.now();
 	console.log(
 		`Running ${testFiles.length} test files serially with bun ${bun.version} (${bun.source}: ${bun.command})`,
@@ -246,5 +280,5 @@ try {
 		`All ${testFiles.length} test files passed in ${((performance.now() - startedAt) / 1000).toFixed(2)}s`,
 	);
 } finally {
-	await rm(shimDir, { recursive: true, force: true });
+	removeShim();
 }

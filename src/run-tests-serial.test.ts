@@ -17,6 +17,7 @@ const nodePath = execFileSync("node", ["-p", "process.execPath"], {
 interface RunnerFixture {
 	root: string;
 	binDir: string;
+	nodeDir: string;
 	invocationLog: string;
 }
 
@@ -36,7 +37,7 @@ async function makeRunnerFixture(
 		await fs.rm(root, { recursive: true, force: true });
 	});
 	await Promise.all(
-		["scripts", "src", "bin"].map((directory) =>
+		["scripts", "src", "bin", "node-bin"].map((directory) =>
 			fs.mkdir(path.join(root, directory), { recursive: true }),
 		),
 	);
@@ -52,21 +53,27 @@ async function makeRunnerFixture(
 		),
 		fs.writeFile(path.join(root, "src", "alpha.test.ts"), "", "utf8"),
 		fs.writeFile(path.join(root, "src", "beta.test.ts"), "", "utf8"),
+		fs.symlink(nodePath, path.join(root, "node-bin", "node")),
 	]);
 	return {
 		root,
 		binDir: path.join(root, "bin"),
+		nodeDir: path.join(root, "node-bin"),
 		invocationLog: path.join(root, "invocations.log"),
 	};
 }
 
 // Fake Bun that reports `version` and logs each test invocation as JSON. It
 // names itself, and the `bun` first on its PATH, by their real parent directory.
-async function writeFakeBun(file: string, version: string): Promise<void> {
+async function writeFakeBun(
+	file: string,
+	version: string,
+	options: { interruptRunner?: boolean } = {},
+): Promise<void> {
 	await fs.mkdir(path.dirname(file), { recursive: true });
 	await fs.writeFile(
 		file,
-		`#!${nodePath}
+		`#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
 if (process.argv[2] === "--version") {
@@ -85,7 +92,7 @@ if (process.argv[3].endsWith("alpha.test.ts")) {
   process.stdout.write("SKIP synthetic optional dependency unavailable\\n");
   process.stderr.write("WARN synthetic runtime diagnostic\\n");
 }
-`,
+${options.interruptRunner ? 'process.kill(process.ppid, "SIGINT");\nsetTimeout(() => process.exit(0), 500);\n' : ""}`,
 		{ encoding: "utf8", mode: 0o755 },
 	);
 }
@@ -93,7 +100,7 @@ if (process.argv[3].endsWith("alpha.test.ts")) {
 async function writeFakeMise(binDir: string, bunPath: string): Promise<void> {
 	await fs.writeFile(
 		path.join(binDir, "mise"),
-		`#!${nodePath}
+		`#!/usr/bin/env node
 if (process.argv[2] === "which" && process.argv[3] === "bun") {
   process.stdout.write(${JSON.stringify(`${bunPath}\n`)});
   process.exit(0);
@@ -105,7 +112,8 @@ process.exit(2);
 	);
 }
 
-// The runner gets a minimal environment so the real PATH, mise, and the
+// The runner gets a minimal environment: PATH holds only the fixture's fakes
+// and a directory with a single `node` link, so the real PATH, mise, and the
 // outer `bun run` launcher cannot leak into candidate selection.
 function runRunner(fixture: RunnerFixture, env: Record<string, string> = {}) {
 	return spawnSync(
@@ -114,7 +122,7 @@ function runRunner(fixture: RunnerFixture, env: Record<string, string> = {}) {
 		{
 			encoding: "utf8",
 			env: {
-				PATH: fixture.binDir,
+				PATH: [fixture.binDir, fixture.nodeDir].join(path.delimiter),
 				SERIAL_TEST_INVOCATIONS: fixture.invocationLog,
 				...env,
 			},
@@ -169,6 +177,21 @@ test("serial runner runs tests with the bun that launched bun run", async (t) =>
 	);
 });
 
+test("serial runner ignores an npm_execpath that is not bun", async (t) => {
+	const fixture = await makeRunnerFixture(t);
+	const npmCli = path.join(fixture.root, "npm", "npm-cli.js");
+	await writeFakeBun(npmCli, "11.0.0");
+	await writeFakeBun(path.join(fixture.binDir, "bun"), "1.4.0");
+
+	const result = runRunner(fixture, { npm_execpath: npmCli });
+
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(
+		(await readInvocations(fixture)).map(({ bun }) => bun),
+		["bin", "bin"],
+	);
+});
+
 test("serial runner falls back to the mise bun when other candidates are older than the pin", async (t) => {
 	const fixture = await makeRunnerFixture(t);
 	const launcher = path.join(fixture.root, "launcher", "bun");
@@ -194,6 +217,22 @@ test("serial runner falls back to the mise bun when other candidates are older t
 	);
 });
 
+test("serial runner prefers a qualifying PATH bun over the mise bun", async (t) => {
+	const fixture = await makeRunnerFixture(t);
+	const miseBun = path.join(fixture.root, "mise-bun", "bun");
+	await writeFakeBun(path.join(fixture.binDir, "bun"), "1.5.0");
+	await writeFakeBun(miseBun, "1.4.0");
+	await writeFakeMise(fixture.binDir, miseBun);
+
+	const result = runRunner(fixture);
+
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(
+		(await readInvocations(fixture)).map(({ bun }) => bun),
+		["bin", "bin"],
+	);
+});
+
 test("serial runner accepts an older patch on the pinned minor line", async (t) => {
 	const fixture = await makeRunnerFixture(t, "bun@1.4.2");
 	await writeFakeBun(path.join(fixture.binDir, "bun"), "1.4.0");
@@ -204,6 +243,16 @@ test("serial runner accepts an older patch on the pinned minor line", async (t) 
 	assert.equal((await readInvocations(fixture)).length, 2);
 });
 
+test("serial runner accepts a newer major version than the pin", async (t) => {
+	const fixture = await makeRunnerFixture(t);
+	await writeFakeBun(path.join(fixture.binDir, "bun"), "2.0.0");
+
+	const result = runRunner(fixture);
+
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /with bun 2\.0\.0 \(PATH: /);
+});
+
 test("serial runner removes its bun shim directory when it finishes", async (t) => {
 	const fixture = await makeRunnerFixture(t);
 	await writeFakeBun(path.join(fixture.binDir, "bun"), "1.4.0");
@@ -212,8 +261,24 @@ test("serial runner removes its bun shim directory when it finishes", async (t) 
 
 	assert.equal(result.status, 0, result.stderr);
 	const [first] = await readInvocations(fixture);
-	assert.notEqual(first?.pathHead, fixture.binDir);
-	await assert.rejects(fs.access(first?.pathHead ?? ""));
+	assert.ok(first, "the runner did not start a test file");
+	assert.notEqual(first.pathHead, fixture.binDir);
+	await assert.rejects(fs.access(first.pathHead));
+});
+
+test("serial runner removes its bun shim directory when interrupted", async (t) => {
+	const fixture = await makeRunnerFixture(t);
+	await writeFakeBun(path.join(fixture.binDir, "bun"), "1.4.0", {
+		interruptRunner: true,
+	});
+
+	const result = runRunner(fixture);
+
+	assert.equal(result.signal, "SIGINT", result.stderr);
+	const [first] = await readInvocations(fixture);
+	assert.ok(first, "the runner did not start a test file");
+	assert.notEqual(first.pathHead, fixture.binDir);
+	await assert.rejects(fs.access(first.pathHead));
 });
 
 test("serial runner stops before running tests when no bun meets the pin", async (t) => {
@@ -229,5 +294,23 @@ test("serial runner stops before running tests when no bun meets the pin", async
 		/PATH \(.+\/bin\/bun\): 1\.3\.11 is older than 1\.4/,
 	);
 	assert.match(result.stderr, /mise \(mise which bun\): mise not found/);
+	assert.match(result.stderr, /Install the pinned release with `mise install`/);
+	await assert.rejects(fs.access(fixture.invocationLog));
+});
+
+test("serial runner points at the mise config when the mise bun is older than the pin", async (t) => {
+	const fixture = await makeRunnerFixture(t, "bun@1.5.0");
+	const miseBun = path.join(fixture.root, "mise-bun", "bun");
+	await writeFakeBun(miseBun, "1.4.0");
+	await writeFakeMise(fixture.binDir, miseBun);
+
+	const result = runRunner(fixture);
+
+	assert.notEqual(result.status, 0);
+	assert.match(
+		result.stderr,
+		/mise resolves bun 1\.4\.0 for this checkout, older than the bun@1\.5\.0 pin/,
+	);
+	assert.match(result.stderr, /mise config to 1\.5 or newer/);
 	await assert.rejects(fs.access(fixture.invocationLog));
 });
