@@ -13,9 +13,16 @@ concurrency:
 
 jobs:
   required:
-    name: Required / Bun 1.4.0
-    runs-on: ubuntu-latest
+    name: Required / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Check out repository
@@ -39,7 +46,7 @@ jobs:
           printf 'setup-bun version: %s\n' "$SETUP_BUN_VERSION"
           printf 'setup-bun revision: %s\n' "$SETUP_BUN_REVISION"
           {
-            printf '### Required Bun runtime\n\n'
+            printf '### Required Bun runtime (%s)\n\n' "$RUNNER_OS"
             printf -- "- \`bun --version\`: \`%s\`\n" "$bun_version"
             printf -- "- \`bun --revision\`: \`%s\`\n" "$bun_revision"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -47,19 +54,26 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # Formatting, types, and lint do not depend on the host, so they run once.
       - name: Check documentation formatting
+        if: runner.os == 'Linux'
         run: bun run docs:check
 
+      # The routing templates target systemd hosts, and their tests rely on
+      # GNU stat, flock, and systemctl fakes.
       - name: Test subscription routing templates
+        if: runner.os == 'Linux'
         run: |
           docs/subscription-routing/test-service-control.sh
           docs/subscription-routing/test-client-compatibility.sh
           docs/subscription-routing/test-prompt-composition.sh
 
       - name: Typecheck
+        if: runner.os == 'Linux'
         run: bun run typecheck
 
       - name: Lint
+        if: runner.os == 'Linux'
         run: bun run lint
 
       - name: Test

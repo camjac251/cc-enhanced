@@ -149,7 +149,13 @@ const scanner: SelfHostedImageSecretScanner = {
 	},
 };
 
-test("wrapper image operation binds both receipts and adds one inert layer", async () => {
+test("wrapper image operation binds both receipts and adds one inert layer", async (t) => {
+	if (process.platform === "win32") {
+		t.skip(
+			"Windows has no POSIX mode bits, so the wrapper candidate fails the 0755 gate",
+		);
+		return;
+	}
 	const root = await fs.mkdtemp(
 		path.join(os.tmpdir(), "cc-enhanced-wrapper-image-"),
 	);
@@ -229,7 +235,13 @@ test("wrapper image operation rejects drift before creating a context", async ()
 	}
 });
 
-test("wrapper image operation never cleans up an untrusted container ID", async () => {
+test("wrapper image operation never cleans up an untrusted container ID", async (t) => {
+	if (process.platform === "win32") {
+		t.skip(
+			"Windows has no POSIX mode bits, so the wrapper candidate fails the 0755 gate",
+		);
+		return;
+	}
 	const root = await fs.mkdtemp(
 		path.join(os.tmpdir(), "cc-enhanced-wrapper-image-"),
 	);

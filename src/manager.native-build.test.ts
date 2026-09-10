@@ -47,11 +47,21 @@ test("native build names preserve the Windows executable suffix", () => {
 			"linux-x64",
 			"20260820T120000",
 		),
-		"/cache/2.1.240/builds/20260820T120000-claude",
+		path.join(
+			path.dirname("/cache/2.1.240/claude"),
+			"builds",
+			"20260820T120000-claude",
+		),
 	);
 });
 
-test("updateNative activates the artifact returned by buildNative", async () => {
+test("updateNative activates the artifact returned by buildNative", async (t) => {
+	if (process.platform === "win32") {
+		t.skip(
+			"Windows cannot execute the shebang script that stands in for the candidate binary",
+		);
+		return;
+	}
 	const tempDir = await fsp.mkdtemp(
 		path.join(os.tmpdir(), "manager-native-update-"),
 	);

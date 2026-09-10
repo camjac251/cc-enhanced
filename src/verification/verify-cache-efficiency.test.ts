@@ -4,9 +4,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
-const verifierPath = new URL("./verify-cache-efficiency.ts", import.meta.url)
-	.pathname;
+const verifierPath = fileURLToPath(
+	new URL("./verify-cache-efficiency.ts", import.meta.url),
+);
 
 function verifierEnv(): NodeJS.ProcessEnv {
 	const env = { ...process.env };
