@@ -8,7 +8,9 @@ const repoRoot = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
 	"..",
 );
-const testRoot = path.join(repoRoot, "src");
+const testRoots = ["src", "scripts"].map((directory) =>
+	path.join(repoRoot, directory),
+);
 const testFilePattern = /\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/;
 
 async function collectTestFiles(directory) {
@@ -45,11 +47,13 @@ function runTestFile(testFile, extraArgs) {
 	});
 }
 
-const testFiles = (await collectTestFiles(testRoot)).sort((left, right) =>
-	left.localeCompare(right, "en"),
-);
+const testFiles = (
+	await Promise.all(testRoots.map((root) => collectTestFiles(root)))
+)
+	.flat()
+	.sort((left, right) => left.localeCompare(right, "en"));
 if (testFiles.length === 0) {
-	throw new Error(`No test files found under ${testRoot}`);
+	throw new Error(`No test files found under ${testRoots.join(", ")}`);
 }
 
 const startedAt = performance.now();
