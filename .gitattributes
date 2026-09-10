@@ -1,0 +1,3 @@
+# Check out LF on every host. Windows otherwise converts to CRLF, which breaks
+# formatting checks and tests that compare file contents.
+* text=auto eol=lf
