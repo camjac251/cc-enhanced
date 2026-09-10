@@ -162,7 +162,8 @@ async function collectPromptMarkdownFiles(
 		}
 		if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
 		if (GENERATED_MARKDOWN_FILENAMES.has(entry.name)) continue;
-		files.push(path.relative(root, fullPath));
+		// POSIX separators keep reported paths identical on every host.
+		files.push(path.relative(root, fullPath).split(path.sep).join("/"));
 	}
 	return files.sort();
 }
