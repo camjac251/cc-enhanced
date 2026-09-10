@@ -24,7 +24,8 @@ async function collectTestFiles(directory) {
 		if (entry.isDirectory()) {
 			files.push(...(await collectTestFiles(entryPath)));
 		} else if (entry.isFile() && testFilePattern.test(entry.name)) {
-			files.push(path.relative(repoRoot, entryPath));
+			// Forward slashes keep test paths and output identical on every host.
+			files.push(path.relative(repoRoot, entryPath).split(path.sep).join("/"));
 		}
 	}
 	return files;
