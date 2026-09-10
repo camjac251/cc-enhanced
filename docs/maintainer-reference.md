@@ -456,6 +456,8 @@ Triaging failures:
 
 Tests use `bun test` against the `node:test` API shim. Run the suite with `bun run test`, which discovers test files and starts one isolated Bun process per file, sequentially. The process boundary bounds memory and avoids the shim's `checkNotInsideTest` false-positives from concurrent file loads. Do not substitute raw `bun test src/`, even with `--parallel=1`: that keeps the files in one Bun process instead of providing per-file process isolation.
 
+The runner resolves one Bun for every file: the Bun that launched `bun run test`, then `bun` on PATH, then the Bun that `mise which bun` resolves for the checkout. It takes the first one on the minor line pinned by `packageManager` in `package.json` or newer and prints which one it chose. Each test file runs with a private temporary directory first on PATH that holds a `bun` link to that binary, so tests that spawn `bun` get the same Bun, including through `bun run` scripts whose shells re-run mise's PATH hook. When none qualifies it stops before running anything and lists each candidate it tried.
+
 Two bun runtime gotchas bite test fixtures:
 
 - **PATH mutation is ignored for spawn lookups.** Bun snapshots `process.env.PATH` at process startup; in-test mutations don't reach `child_process.execFileSync`. To stub a spawned binary, intercept `execFileSync` directly via `createRequire(import.meta.url)("child_process")` rather than installing a fake on disk and prepending PATH.
