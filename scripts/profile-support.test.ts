@@ -18,9 +18,9 @@ test("profile support CLI emits deterministic Desktop evidence", () => {
 	assert.equal(evidence.surface, "desktop-local");
 	assert.equal(evidence.selectable, false);
 	assert.deepEqual(evidence.summary, {
-		total: 46,
+		total: 45,
 		supported: 0,
-		probeRequired: 31,
+		probeRequired: 30,
 		excluded: 15,
 		notAssessed: 0,
 	});
@@ -57,13 +57,13 @@ test("Desktop evidence is deterministic and Remote evidence remains blocked", ()
 	assert.equal(evidence.readiness, "blocked");
 	assert.equal(evidence.selectable, false);
 	assert.deepEqual(evidence.summary, {
-		total: 46,
+		total: 45,
 		supported: 0,
-		probeRequired: 31,
+		probeRequired: 30,
 		excluded: 15,
 		notAssessed: 0,
 	});
-	assert.equal(evidence.requiredProbes.length, 16);
+	assert.equal(evidence.requiredProbes.length, 17);
 	assert.ok(
 		evidence.requiredProbes.every(({ status }) => status === "not-run"),
 	);
@@ -82,13 +82,13 @@ test("self-hosted evidence is complete, blocked, and path-free", () => {
 	assert.equal(evidence.readiness, "blocked");
 	assert.equal(evidence.selectable, false);
 	assert.deepEqual(evidence.summary, {
-		total: 46,
+		total: 45,
 		supported: 0,
-		probeRequired: 31,
+		probeRequired: 30,
 		excluded: 15,
 		notAssessed: 0,
 	});
-	assert.equal(evidence.requiredProbes.length, 16);
+	assert.equal(evidence.requiredProbes.length, 17);
 	assert.ok(
 		evidence.requiredProbes.every(({ status }) => status === "not-run"),
 	);
