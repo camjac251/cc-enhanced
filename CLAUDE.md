@@ -51,6 +51,7 @@ Native repacking must preserve the original byte length and virtual-address layo
 | Prompt export | `scripts/export-prompts.ts`, `src/prompt-corpus.ts` |
 | Subscription routing setup | `docs/subscription-routing/README.md` |
 | Project workflows | `.claude/workflows/README.md` |
+| Pull request description | `.github/pull_request_template.md` |
 
 Load the relevant heading from `docs/maintainer-reference.md` when a task needs binary-format detail, patch-interaction hazards, the full command catalog, release-diff procedure, prompt artifact semantics, or authoring recipes. Do not load that entire reference by default.
 
