@@ -68,7 +68,7 @@ async function makeRunnerFixture(
 async function writeFakeBun(
 	file: string,
 	version: string,
-	options: { interruptRunner?: boolean } = {},
+	options: { interruptRunner?: boolean; failFile?: string } = {},
 ): Promise<void> {
 	await fs.mkdir(path.dirname(file), { recursive: true });
 	await fs.writeFile(
@@ -92,7 +92,7 @@ if (process.argv[3].endsWith("alpha.test.ts")) {
   process.stdout.write("SKIP synthetic optional dependency unavailable\\n");
   process.stderr.write("WARN synthetic runtime diagnostic\\n");
 }
-${options.interruptRunner ? 'process.kill(process.ppid, "SIGINT");\nsetTimeout(() => process.exit(0), 500);\n' : ""}`,
+${options.failFile ? `if (process.argv[3].endsWith(${JSON.stringify(options.failFile)})) process.exit(1);\n` : ""}${options.interruptRunner ? 'process.kill(process.ppid, "SIGINT");\nsetTimeout(() => process.exit(0), 500);\n' : ""}`,
 		{ encoding: "utf8", mode: 0o755 },
 	);
 }
@@ -153,6 +153,27 @@ test("serial runner preserves successful child diagnostics", async (t) => {
 			"bin: test src/alpha.test.ts --parallel=1",
 			"bin: test src/beta.test.ts --parallel=1",
 		],
+	);
+});
+
+test("serial runner runs every file and lists the failures at the end", async (t) => {
+	const fixture = await makeRunnerFixture(t);
+	await writeFakeBun(path.join(fixture.binDir, "bun"), "1.4.0", {
+		failFile: "alpha.test.ts",
+	});
+
+	const result = runRunner(fixture);
+
+	assert.notEqual(result.status, 0);
+	assert.deepEqual(
+		(await readInvocations(fixture)).map(({ args }) => args),
+		["test src/alpha.test.ts --parallel=1", "test src/beta.test.ts --parallel=1"],
+	);
+	assert.match(result.stdout, /FAIL 1\/2 src\/alpha\.test\.ts/);
+	assert.match(result.stdout, /PASS 2\/2 src\/beta\.test\.ts/);
+	assert.match(
+		result.stderr,
+		/1 of 2 test files failed in [0-9.]+s:\n {2}src\/alpha\.test\.ts/,
 	);
 });
 

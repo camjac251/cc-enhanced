@@ -254,6 +254,8 @@ try {
 	console.log(
 		`Running ${testFiles.length} test files serially with bun ${bun.version} (${bun.source}: ${bun.command})`,
 	);
+	// Every file runs even after a failure, so one run reports all failing files.
+	const failures = [];
 	for (const [index, testFile] of testFiles.entries()) {
 		const fileStartedAt = performance.now();
 		const result = await runTestFile(
@@ -265,20 +267,28 @@ try {
 		const elapsedSeconds = ((performance.now() - fileStartedAt) / 1000).toFixed(
 			2,
 		);
+		const position = `${String(index + 1).padStart(String(testFiles.length).length, " ")}/${testFiles.length}`;
 		if (result.code !== 0) {
 			const signalSuffix = result.signal ? ` (signal ${result.signal})` : "";
-			throw new Error(
-				`Test file failed: ${testFile} after ${elapsedSeconds}s${signalSuffix}`,
+			failures.push(`${testFile}${signalSuffix}`);
+			console.log(
+				`FAIL ${position} ${testFile} (${elapsedSeconds}s)${signalSuffix}`,
 			);
+			continue;
 		}
-		console.log(
-			`PASS ${String(index + 1).padStart(String(testFiles.length).length, " ")}/${testFiles.length} ${testFile} (${elapsedSeconds}s)`,
-		);
+		console.log(`PASS ${position} ${testFile} (${elapsedSeconds}s)`);
 	}
 
-	console.log(
-		`All ${testFiles.length} test files passed in ${((performance.now() - startedAt) / 1000).toFixed(2)}s`,
-	);
+	const totalSeconds = ((performance.now() - startedAt) / 1000).toFixed(2);
+	if (failures.length > 0) {
+		throw new Error(
+			[
+				`${failures.length} of ${testFiles.length} test files failed in ${totalSeconds}s:`,
+				...failures.map((failure) => `  ${failure}`),
+			].join("\n"),
+		);
+	}
+	console.log(`All ${testFiles.length} test files passed in ${totalSeconds}s`);
 } finally {
 	removeShim();
 }
