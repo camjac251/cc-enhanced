@@ -1,6 +1,6 @@
 [tools]
 "github:oven-sh/bun" = "bun-v1.4.0"
-lefthook = "2.1.12"
+lefthook = "2.1.14"
 
 [hooks]
 enter = "lefthook install"
