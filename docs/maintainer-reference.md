@@ -1,6 +1,6 @@
 # cc-enhanced maintainer reference
 
-Detailed architecture, release, prompt-export, and patch-authoring reference. Start with the repository-root `CLAUDE.md`, then load only the sections here that apply to the current task.
+Detailed architecture, release, prompt-export, and patch-authoring reference. Start with the repository-root `AGENTS.md`, then load only the sections here that apply to the current task.
 
 AST-based patcher for the Claude Code CLI. It extracts the `cli.js` JavaScript bundle embedded in the native Bun binary, applies its full suite of verifiable patches, and repacks in place at the original byte length. Tracks the latest upstream release; the README badge is the canonical version anchor and `claude --version` on the promoted binary is the runtime check. Linux x86_64 ships natively; Mach-O and PE require `node-lief`.
 

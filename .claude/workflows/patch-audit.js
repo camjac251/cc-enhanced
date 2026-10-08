@@ -555,9 +555,9 @@ Steps:
 3. Optional, network, skip-on-failure: only if it is convenient and gh is authenticated, also read the GitHub repo description with a single \`gh api repos/camjac251/cc-enhanced --jq '.description'\` and check it for a patch count. If gh is unavailable, unauthenticated, or errors, skip this silently; do not block, retry, or treat it as a finding. Set outcome=partial-evidence only when a LOCAL source could not be read.
 4. Compare each found count against actualPatchCount. count-mismatch findings for any divergence.
 5. Find stale references:
-   - Patches mentioned by tag in README.md, AGENTS.md, CLAUDE.md, or .claude/skills/ that do not exist in src/patches/.
+   - Patches mentioned by tag in README.md, AGENTS.md, or .claude/skills/ that do not exist in src/patches/.
    - Patches that exist in src/patches/ but are not mentioned in BY_TAG.
-   - Group names in CLAUDE.md or README.md that do not match groups in src/patch-metadata.ts.
+   - Group names in AGENTS.md or README.md that do not match groups in src/patch-metadata.ts.
 6. For each finding: kind, location, description, severity, suggestedFix.
 
 outcome:

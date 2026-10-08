@@ -5,8 +5,8 @@ import { parse, print } from "./loader.js";
 import { planDiffUi } from "./patches/plan-diff-ui.js";
 
 // Synthetic cross-patch fixture verifying inter-patch interactions in the
-// merged combined-pass engine. CLAUDE.md's Pipeline Ordering section lists
-// the known interactions; this test locks in the resilience by reproducing
+// merged combined-pass engine. The maintainer reference's Pipeline Ordering
+// section lists the known interactions; this test locks in the resilience by reproducing
 // the shared-visitor scenario in a controlled fixture rather than relying on
 // the full real-bundle dry-run to catch a regression.
 
@@ -37,8 +37,8 @@ async function runPlanDiffUi(ast: any) {
 }
 
 test("plan-diff-ui rewrites Edit renderer's startsWith plan-preview guard to `if (false)`", async () => {
-	// This is the well-known interaction documented in CLAUDE.md's Pipeline
-	// Ordering section: plan-diff-ui's IfStatement mutator rewrites the test
+	// This is the well-known interaction documented in docs/maintainer-reference.md's
+	// Pipeline Ordering section: plan-diff-ui's IfStatement mutator rewrites the test
 	// of any plan-preview guard to `false`. Any later patch that anchors on
 	// the `.startsWith(...)` shape would silently fail; the resilient
 	// approach (per the doc) is to anchor on the surrounding
