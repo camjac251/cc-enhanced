@@ -3,7 +3,6 @@
 set -eu
 
 clodex_wrapper='@CLODEX_CLAUDE_BIN@'
-client_profile='@CLAUDEX_CLIENT_PROFILE@'
 default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
 system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
 
@@ -21,42 +20,45 @@ if [ ! -r "$system_prompt_file" ]; then
 		"$system_prompt_file" >&2
 	exit 1
 fi
-case "$client_profile" in
-enhanced | stock) ;;
-*)
-	printf 'claudex-process-wrapper: unsupported client profile: %s\n' \
-		"$client_profile" >&2
-	exit 2
-	;;
-esac
-
 claude_path=$1
 shift
 
-if [ "$client_profile" = stock ]; then
-	has_parent_prompt=0
-	has_subagent_prompt=0
-	for arg; do
-		case "$arg" in
-		--)
-			break
-			;;
-		--append-system-prompt | --append-system-prompt=* | \
-			--append-system-prompt-file | --append-system-prompt-file=*)
-			has_parent_prompt=1
-			;;
-		--append-subagent-system-prompt | --append-subagent-system-prompt=*)
-			has_subagent_prompt=1
-			;;
-		esac
-	done
+has_parent_prompt=0
+has_subagent_prompt=0
+print_mode=0
+for arg; do
+	case "$arg" in
+	--)
+		break
+		;;
+	--append-system-prompt | --append-system-prompt=* | \
+		--append-system-prompt-file | --append-system-prompt-file=*)
+		has_parent_prompt=1
+		;;
+	--append-subagent-system-prompt | --append-subagent-system-prompt=* | \
+		--append-subagent-system-prompt-file | --append-subagent-system-prompt-file=*)
+		has_subagent_prompt=1
+		;;
+	-p | --print | --print=*)
+		print_mode=1
+		;;
+	esac
+done
 
-	if [ "$has_parent_prompt" -eq 0 ]; then
-		set -- --append-system-prompt-file "$system_prompt_file" "$@"
-	fi
-	if [ "$has_subagent_prompt" -eq 0 ]; then
-		subagent_prompt=$(sed -n '1,$p' "$system_prompt_file")
-		set -- --append-subagent-system-prompt "$subagent_prompt" "$@"
+# Keep the cc-enhanced wrapper on this same composed file if it is the client.
+export CC_ENHANCED_PROMPT_FILE="$system_prompt_file"
+unset CC_ENHANCED_SUBAGENT_PROMPT_FILE
+if [ "$has_parent_prompt" -eq 0 ]; then
+	set -- --append-system-prompt-file "$system_prompt_file" "$@"
+fi
+if [ "$has_subagent_prompt" -eq 0 ]; then
+	if [ "$print_mode" -eq 1 ]; then
+		set -- --append-subagent-system-prompt-file "$system_prompt_file" "$@"
+		export CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT="${CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT:-1}"
+	else
+		# Stock ignores the flag in interactive sessions; cc-enhanced's plugin
+		# delivers this file as SubagentStart additional context instead.
+		export CC_ENHANCED_SUBAGENT_PROMPT_FILE="$system_prompt_file"
 	fi
 fi
 

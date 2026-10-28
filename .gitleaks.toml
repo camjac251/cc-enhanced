@@ -4,7 +4,7 @@ title = "cc-enhanced secret scanning"
 useDefault = true
 
 [[allowlists]]
-description = "Synthetic Sol routing selector"
+description = "Synthetic Sol routing selector in retained Git history"
 condition = "AND"
 targetRules = ["generic-api-key"]
 regexTarget = "line"
@@ -13,3 +13,11 @@ paths = [
   '''^docs/subscription-routing/test-client-compatibility\.sh$''',
 ]
 regexes = ['''clodex:openai-oauth:gpt-5\.6-sol(?:=max)?''']
+
+[[allowlists]]
+description = "systemd-run option following --no-ask-password, not a credential"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+paths = ['''^src/memory-budget\.ts$''']
+regexes = ['''^--expand-environment=no$''']

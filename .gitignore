@@ -9,3 +9,15 @@ dist/
 exported-prompts/
 docs/goals/
 *-dryrun-summary.json
+plugin/.claude-plugin/types/
+
+# Local agent state and generated inspection artifacts
+/.agents/
+/.claude/
+/.codex
+/.impeccable/
+/.omx/
+/.serena/
+/.ruff_cache/
+/.rumdl_cache/
+/harness-map.html

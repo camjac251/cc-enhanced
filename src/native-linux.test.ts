@@ -4,18 +4,20 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { BUN_TRAILER, SIZEOF_MODULE_NEW } from "./bun-format.js";
+import { Manager } from "./manager.js";
 import {
-	copyBunCjsEnvelope,
 	extractClaudeJsFromNativeLinux,
-	repackNativeLinuxBinary,
 	unwrapBunCjsModule,
-	wrapBunCjsModuleBuffer,
 } from "./native-linux.js";
+import { extractJavaScriptFromNativeBinary } from "./native-rebundle.js";
 
 interface FixtureModule {
 	name: Buffer;
 	contents: Buffer;
 	bytecode: Buffer;
+	encoding?: number;
+	loader?: number;
+	moduleFormat?: number;
 }
 
 function buildNativeFixture(modules: FixtureModule[], entryPointId: number) {
@@ -42,8 +44,9 @@ function buildNativeFixture(modules: FixtureModule[], entryPointId: number) {
 		moduleTable.writeUInt32LE(pointers.contents.length, moduleOffset + 12);
 		moduleTable.writeUInt32LE(pointers.bytecode.offset, moduleOffset + 24);
 		moduleTable.writeUInt32LE(pointers.bytecode.length, moduleOffset + 28);
-		moduleTable.writeUInt8(1, moduleOffset + 49);
-		moduleTable.writeUInt8(2, moduleOffset + 50);
+		moduleTable.writeUInt8(modules[index].encoding ?? 1, moduleOffset + 48);
+		moduleTable.writeUInt8(modules[index].loader ?? 1, moduleOffset + 49);
+		moduleTable.writeUInt8(modules[index].moduleFormat ?? 2, moduleOffset + 50);
 	}
 	chunks.push(moduleTable);
 	length += moduleTable.length;
@@ -64,25 +67,16 @@ function buildNativeFixture(modules: FixtureModule[], entryPointId: number) {
 	return { binary };
 }
 
-test("detached Bun CJS envelope rewraps UTF-8 body bytes exactly", () => {
-	const source = [
-		"// @bun @bytecode @bun-cjs",
-		"(function(exports, require, module, __filename, __dirname){",
-		'const greeting = "before";',
-		"});",
-	].join("\n");
-	const wrapper = unwrapBunCjsModule(source);
-	assert.ok(wrapper);
-
-	const replacementBody = Buffer.from('\nconst greeting = "こんにちは";\n');
-	const envelope = copyBunCjsEnvelope(wrapper);
-	const rebuilt = wrapBunCjsModuleBuffer(envelope, replacementBody);
-	const expected = Buffer.from(
-		`${wrapper.prefix}${replacementBody.toString("utf-8")}${wrapper.suffix}`,
-		"utf-8",
-	);
-
-	assert.deepEqual(rebuilt, expected);
+test("Bun CJS extraction unwraps the source body", () => {
+	for (const header of ["// @bun @bun-cjs", "// @bun @bytecode @bun-cjs"]) {
+		const body = '\nconst greeting = "こんにちは";\n';
+		const source =
+			`${header}\n(function(exports, require, module, __filename, __dirname){` +
+			`${body}});`;
+		const wrapper = unwrapBunCjsModule(source);
+		assert.ok(wrapper);
+		assert.equal(wrapper.body, body);
+	}
 });
 
 test("native extraction uses the serialized entry-point module", (t) => {
@@ -114,34 +108,160 @@ test("native extraction uses the serialized entry-point module", (t) => {
 	assert.deepEqual(extracted.claudeJs, targetContents);
 });
 
-test("native repack rewrites the serialized entry-point module", (t) => {
+test("complete extraction preserves a single-module entry unchanged", async (t) => {
+	const contents = Buffer.from('console.log("single source");');
 	const { binary } = buildNativeFixture(
 		[
 			{
-				name: Buffer.from("virtual/dependency.js"),
-				contents: Buffer.from("export const dependency = true;"),
+				name: Buffer.from("/app/entry.js"),
+				contents,
+				bytecode: Buffer.alloc(0),
+			},
+		],
+		0,
+	);
+	const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-single-"));
+	t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+	const target = path.join(directory, "runtime");
+	fs.writeFileSync(target, binary);
+
+	const result = await extractJavaScriptFromNativeBinary(target);
+
+	assert.equal(result.sourceMode, "entry");
+	assert.equal(result.sourceModuleCount, 1);
+	assert.deepEqual(result.code, contents);
+	assert.deepEqual(fs.readFileSync(target), binary);
+});
+
+test("single-module extraction decodes UTF-16 source", async (t) => {
+	const source = 'console.log("日本語");';
+	const { binary } = buildNativeFixture(
+		[
+			{
+				name: Buffer.from("/app/entry.js"),
+				contents: Buffer.from(source, "utf16le"),
+				bytecode: Buffer.alloc(0),
+				encoding: 2,
+			},
+		],
+		0,
+	);
+	const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-utf16-"));
+	t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+	const target = path.join(directory, "runtime");
+	fs.writeFileSync(target, binary);
+
+	assert.equal(
+		extractClaudeJsFromNativeLinux(target).claudeJs.toString("utf8"),
+		source,
+	);
+	const result = await extractJavaScriptFromNativeBinary(target);
+	assert.equal(result.sourceMode, "entry");
+	assert.equal(result.code.toString("utf8"), source);
+});
+
+test("native extraction rejects truncated UTF-16 source", (t) => {
+	const { binary } = buildNativeFixture(
+		[
+			{
+				name: Buffer.from("/app/entry.js"),
+				contents: Buffer.from([0x61]),
+				bytecode: Buffer.alloc(0),
+				encoding: 2,
+			},
+		],
+		0,
+	);
+	const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-utf16-"));
+	t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+	const target = path.join(directory, "runtime");
+	fs.writeFileSync(target, binary);
+
+	assert.throws(
+		() => extractClaudeJsFromNativeLinux(target),
+		/Embedded UTF-16 module has an incomplete code unit/,
+	);
+});
+
+test("complete extraction includes disconnected ESM and CommonJS modules", async (t) => {
+	const { binary } = buildNativeFixture(
+		[
+			{
+				name: Buffer.from("/app/lazy.bin"),
+				contents: Buffer.from(
+					'export const prompt = "disconnected ESM source — 日本語";',
+					"utf16le",
+				),
+				bytecode: Buffer.alloc(0),
+				moduleFormat: 1,
+				encoding: 2,
+			},
+			{
+				name: Buffer.from("/app/entry.js"),
+				contents: Buffer.from('module.exports = { value: "main source" };'),
 				bytecode: Buffer.alloc(0),
 			},
 			{
-				name: Buffer.from("virtual/runtime-entry.bin"),
-				contents: Buffer.from('console.log("entry");'),
-				bytecode: Buffer.alloc(128, 0x5a),
+				name: Buffer.from("/app/commonjs.js"),
+				contents: Buffer.from(
+					'module.exports = { prompt: "disconnected CommonJS source" };',
+				),
+				bytecode: Buffer.alloc(0),
+			},
+			{
+				name: Buffer.from("/app/asset.dat"),
+				contents: Buffer.from("not JavaScript"),
+				bytecode: Buffer.alloc(0),
+				loader: 0,
+				moduleFormat: 0,
 			},
 		],
 		1,
 	);
-	const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-repack-"));
+	const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-complete-"));
 	t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-	const sourcePath = path.join(directory, "runtime");
-	const outputPath = path.join(directory, "runtime-patched");
-	fs.writeFileSync(sourcePath, binary);
-	const replacementContents = Buffer.from('console.log("patched");');
+	const target = path.join(directory, "runtime");
+	fs.writeFileSync(target, binary);
 
-	repackNativeLinuxBinary(sourcePath, replacementContents, outputPath);
+	const result = await extractJavaScriptFromNativeBinary(target);
 
-	assert.equal(fs.statSync(outputPath).size, binary.length);
-	assert.deepEqual(
-		extractClaudeJsFromNativeLinux(outputPath).claudeJs,
-		replacementContents,
+	assert.equal(result.sourceMode, "rebundled");
+	assert.equal(result.sourceModuleCount, 3);
+	const source = result.code.toString("utf8");
+	assert.match(source, /main source/);
+	assert.match(source, /disconnected ESM source/);
+	assert.match(source, /disconnected CommonJS source/);
+	assert.match(source, /日本語|\\u65e5\\u672c\\u8a9e/i);
+	assert.doesNotMatch(source, /not JavaScript/);
+	assert.deepEqual(fs.readFileSync(target), binary);
+});
+
+test("unpacking cannot overwrite the source binary through an alias", async (t) => {
+	const { binary } = buildNativeFixture(
+		[
+			{
+				name: Buffer.from("/app/entry.js"),
+				contents: Buffer.from('console.log("stock source");'),
+				bytecode: Buffer.alloc(0),
+			},
+		],
+		0,
 	);
+	const directory = fs.mkdtempSync(path.join(os.tmpdir(), "native-readonly-"));
+	t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+	const target = path.join(directory, "runtime");
+	const symbolic = path.join(directory, "symbolic");
+	const hard = path.join(directory, "hard");
+	fs.writeFileSync(target, binary);
+	fs.symlinkSync(target, symbolic);
+	fs.linkSync(target, hard);
+	const manager = new Manager();
+
+	for (const output of [target, symbolic, hard]) {
+		await assert.rejects(
+			manager.unpackNativeTarget(target, output, { normalize: false }),
+			/Extraction output must not overwrite the native binary/,
+		);
+		assert.deepEqual(fs.readFileSync(target), binary);
+	}
 });

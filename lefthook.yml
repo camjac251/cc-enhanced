@@ -17,16 +17,16 @@ pre-commit:
       stage_fixed: true
       priority: 1
     format:
-      glob: "{src/**/*.{ts,js,mjs,json},scripts/**/*.{ts,js,mjs},biome.json}"
+      glob: "{src/**/*.{ts,js,mjs,json},scripts/**/*.{ts,js,mjs},tests/**/*.ts,plugin/**/*.{ts,json},mods/**/*.ts,biome.json}"
       run: bun run biome format --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
       priority: 2
     lint:
-      glob: "{src/**/*.{ts,js,mjs,json},scripts/**/*.{ts,js,mjs},biome.json}"
+      glob: "{src/**/*.{ts,js,mjs,json},scripts/**/*.{ts,js,mjs},tests/**/*.ts,plugin/**/*.{ts,json},mods/**/*.ts,biome.json}"
       run: bun run biome check --no-errors-on-unmatched {staged_files}
       priority: 3
     typecheck:
-      glob: "{src/**/*.ts,scripts/**/*.ts,tsconfig.json,package.json}"
+      glob: "{src/**/*.ts,scripts/**/*.ts,tests/**/*.ts,plugin/**/*.ts,mods/**/*.ts,tsconfig.json,package.json}"
       run: bun run typecheck
       priority: 4
 

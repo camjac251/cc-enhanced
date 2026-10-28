@@ -1,50 +1,14 @@
 [tools]
-"github:oven-sh/bun" = "bun-v1.4.0"
+"github:oven-sh/bun" = "bun-v1.4.2"
 lefthook = "2.1.12"
 
 [hooks]
 enter = "lefthook install"
 
-[tasks.patch]
-description = "Safety guard: in-place detect-target patching is disabled; use native:update"
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-echo "In-place detect-target patching is disabled." >&2
-echo "Use: mise run native:update" >&2
-echo "Or:  mise run native:fetch-patch latest && mise run native:promote <build-path>" >&2
-exit 1
-"""
-
-[tasks."patch:target"]
-description = "Patch an explicit target path"
-usage = 'arg "[args]..." help="Arguments passed to bun run patch:target"'
-run = 'eval "set -- ${usage_args-}"; bun run patch:target "$@"'
-
-[tasks."native:backup"]
-description = "Create a backup for an explicit native target"
-usage = 'arg "[args]..." help="Arguments passed to bun run native:backup"'
-run = 'eval "set -- ${usage_args-}"; bun run native:backup "$@"'
-
-[tasks."native:restore"]
-description = "Restore an explicit native target from backup"
-usage = 'arg "[args]..." help="Arguments passed to bun run native:restore"'
-run = 'eval "set -- ${usage_args-}"; bun run native:restore "$@"'
-
 [tasks."native:unpack"]
 description = "Extract embedded JS from a native target"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:unpack"'
 run = 'eval "set -- ${usage_args-}"; bun run native:unpack "$@"'
-
-[tasks."native:unpack-current"]
-description = "Extract embedded JS from the currently-promoted patched binary"
-usage = 'arg "[args]..." help="Arguments passed to bun run native:unpack-current"'
-run = 'eval "set -- ${usage_args-}"; bun run native:unpack-current "$@"'
-
-[tasks."native:repack"]
-description = "Repack JS file back into a native target"
-usage = 'arg "[args]..." help="Arguments passed to bun run native:repack"'
-run = 'eval "set -- ${usage_args-}"; bun run native:repack "$@"'
 
 [tasks."native:pull"]
 description = "Fetch native binary and extract clean formatted JS"
@@ -55,129 +19,6 @@ run = 'eval "set -- ${usage_args-}"; bun run native:pull "$@"'
 description = "Fetch official native Claude binary into local cache"
 usage = 'arg "[args]..." help="Arguments passed to bun run native:fetch"'
 run = 'eval "set -- ${usage_args-}"; bun run native:fetch "$@"'
-
-[tasks."native:fetch-patch"]
-description = "Fetch native Claude binary and patch it"
-usage = 'arg "[args]..." help="Arguments passed to bun run native:fetch-patch"'
-run = 'eval "set -- ${usage_args-}"; bun run native:fetch-patch "$@"'
-
-[tasks."native:update"]
-description = "Fetch, patch, promote, and verify latest Claude binary"
-usage = 'arg "[args]..." help="Arguments passed to bun run native:update"'
-run = 'eval "set -- ${usage_args-}"; bun run native:update "$@"'
-
-[tasks."native:promote"]
-description = "Promote a patched native binary to active launcher"
-usage = 'arg "[args]..." help="Arguments passed to bun run native:promote"'
-run = 'eval "set -- ${usage_args-}"; bun run native:promote "$@"'
-
-[tasks."native:rollback"]
-description = "Roll back to previous promoted binary"
-usage = 'arg "[args]..." help="Arguments passed to bun run native:rollback"'
-run = 'eval "set -- ${usage_args-}"; bun run native:rollback "$@"'
-
-[tasks.status]
-description = "Show current/previous/cached version status"
-run = "bun run status"
-
-[tasks."desktop:status"]
-description = "Inspect an explicit Claude Desktop app and managed Code cache"
-usage = 'arg "[args]..." help="Arguments passed to bun run desktop:status"'
-run = 'eval "set -- ${usage_args-}"; bun run desktop:status "$@"'
-
-[tasks."desktop:compare"]
-description = "Compare two sanitized Desktop inventory evidence documents"
-usage = 'arg "[args]..." help="Arguments passed to bun run desktop:compare"'
-run = 'eval "set -- ${usage_args-}"; bun run desktop:compare "$@"'
-
-[tasks."desktop:inspect"]
-description = "Inspect one inventory-bound Desktop Code artifact without activation"
-usage = 'arg "[args]..." help="Arguments passed to bun run desktop:inspect"'
-run = 'eval "set -- ${usage_args-}"; bun run desktop:inspect "$@"'
-
-[tasks."desktop:sdk-contract"]
-description = "Audit the exact inventory-bound public Desktop Agent SDK contract"
-usage = 'arg "[args]..." help="Arguments passed to bun run desktop:sdk-contract"'
-run = 'eval "set -- ${usage_args-}"; bun run desktop:sdk-contract "$@"'
-
-[tasks."desktop:permission-probe"]
-description = "Generate a consent-gated Desktop Read/Edit/Write probe plan"
-usage = 'arg "[args]..." help="Arguments passed to bun run desktop:permission-probe"'
-run = 'eval "set -- ${usage_args-}"; bun run desktop:permission-probe "$@"'
-
-[tasks."desktop:permission-preflight"]
-description = "Audit receipt-bound readiness for a Desktop stock permission probe"
-usage = 'arg "[args]..." help="Arguments passed to bun run desktop:permission-preflight"'
-run = 'eval "set -- ${usage_args-}"; bun run desktop:permission-preflight "$@"'
-
-[tasks."desktop:candidate"]
-description = "Build and attest a separate offline Desktop Code candidate"
-usage = 'arg "[args]..." help="Arguments passed to bun run desktop:candidate"'
-run = 'eval "set -- ${usage_args-}"; bun run desktop:candidate "$@"'
-
-[tasks."profile:support"]
-description = "Render path-free patch support and readiness for one runtime surface"
-usage = 'arg "[args]..." help="Arguments passed to bun run profile:support"'
-run = 'eval "set -- ${usage_args-}"; bun run profile:support "$@"'
-
-[tasks."remote:plan"]
-description = "Render the deterministic blocked Remote Control readiness plan"
-usage = 'arg "[args]..." help="Arguments passed to bun run remote:plan"'
-run = 'eval "set -- ${usage_args-}"; bun run remote:plan "$@"'
-
-[tasks."remote:doctor"]
-description = "Inspect known Remote Control blockers without starting a session"
-usage = 'arg "[args]..." help="Arguments passed to bun run remote:doctor"'
-run = 'eval "set -- ${usage_args-}"; bun run remote:doctor "$@"'
-
-[tasks."remote:start"]
-description = "Start an explicitly consented receipt-bound Remote Control server"
-usage = 'arg "[args]..." help="Arguments passed to bun run remote:start"'
-run = 'eval "set -- ${usage_args-}"; bun run remote:start "$@"'
-
-[tasks."remote:artifacts"]
-description = "Build and structurally verify Remote Control host candidates"
-usage = 'arg "[args]..." help="Arguments passed to bun run remote:artifacts"'
-run = 'eval "set -- ${usage_args-}"; bun run remote:artifacts "$@"'
-
-[tasks."remote:host"]
-description = "Finalize a Remote Control candidate on an exact matching host"
-usage = 'arg "[args]..." help="Arguments passed to bun run remote:host"'
-run = 'eval "set -- ${usage_args-}"; bun run remote:host "$@"'
-
-[tasks."self-hosted:plan"]
-description = "Render the deterministic blocked self-hosted runner readiness plan"
-usage = 'arg "[args]..." help="Arguments passed to bun run self-hosted:plan"'
-run = 'eval "set -- ${usage_args-}"; bun run self-hosted:plan "$@"'
-
-[tasks."self-hosted:artifacts"]
-description = "Build and structurally verify Linux and macOS self-hosted candidates"
-usage = 'arg "[args]..." help="Arguments passed to bun run self-hosted:artifacts"'
-run = 'eval "set -- ${usage_args-}"; bun run self-hosted:artifacts "$@"'
-
-[tasks."self-hosted:host"]
-description = "Finalize a self-hosted candidate on an exact matching host"
-usage = 'arg "[args]..." help="Arguments passed to bun run self-hosted:host"'
-run = 'eval "set -- ${usage_args-}"; bun run self-hosted:host "$@"'
-
-[tasks."self-hosted:image"]
-description = "Build and verify an untagged immutable self-hosted runner image"
-usage = 'arg "[args]..." help="Arguments passed to bun run self-hosted:image"'
-run = 'eval "set -- ${usage_args-}"; bun run self-hosted:image "$@"'
-
-[tasks."self-hosted:wrapper"]
-description = "Generate and synthetically verify an optional self-hosted runner wrapper"
-usage = 'arg "[args]..." help="Arguments passed to bun run self-hosted:wrapper"'
-run = 'eval "set -- ${usage_args-}"; bun run self-hosted:wrapper "$@"'
-
-[tasks."self-hosted:wrapper-image"]
-description = "Build an untagged wrapper-bound derivative of the verified self-hosted image"
-usage = 'arg "[args]..." help="Arguments passed to bun run self-hosted:wrapper-image"'
-run = 'eval "set -- ${usage_args-}"; bun run self-hosted:wrapper-image "$@"'
-
-[tasks.list]
-description = "List available patches"
-run = "bun run list"
 
 [tasks.inspect]
 description = "AST search tool with breadcrumbs, byte spans, JSON, and context"
@@ -199,47 +40,12 @@ description = "Structural bundle diff between JS files"
 usage = 'arg "[args]..." help="Arguments passed to bun run diff"'
 run = 'eval "set -- ${usage_args-}"; bun run diff "$@"'
 
-[tasks."patch-evidence:compare"]
-description = "Compare sanitized patch evidence from adjacent releases"
-usage = 'arg "[args]..." help="Arguments passed to bun run patch-evidence:compare"'
-run = 'eval "set -- ${usage_args-}"; bun run patch-evidence:compare "$@"'
-
 [tasks."lint:fix"]
 description = "Auto-fix lint and format issues"
 run = "bun run lint:fix"
 
-[tasks."verify:anchors"]
-description = "Compare patched and clean cli.js anchors"
-usage = 'arg "[args]..." help="Arguments passed to bun run verify:anchors"'
-run = 'eval "set -- ${usage_args-}"; bun run verify:anchors "$@"'
-
-[tasks."verify:prompt-surfaces"]
-description = "Verify exported live prompt surfaces"
-usage = 'arg "[args]..." help="Arguments passed to bun run verify:prompt-surfaces"'
-run = 'eval "set -- ${usage_args-}"; bun run verify:prompt-surfaces "$@"'
-
-[tasks."verify:prompt-drift"]
-description = "Verify watched exported prompt surfaces"
-usage = 'arg "[args]..." help="Arguments passed to bun run verify:prompt-drift"'
-run = 'eval "set -- ${usage_args-}"; bun run verify:prompt-drift "$@"'
-
-[tasks."prompts:drift-baseline"]
-description = "Write a watched prompt-surface path-hash baseline from an export"
-usage = 'arg "[args]..." help="Arguments passed to bun run prompts:drift-baseline"'
-run = 'eval "set -- ${usage_args-}"; bun run prompts:drift-baseline "$@"'
-
-[tasks."verify:cache"]
-description = "Run live cache efficiency benchmark when ANTHROPIC_API_KEY is set"
-usage = 'arg "[args]..." help="Arguments passed to bun run verify:cache"'
-run = 'eval "set -- ${usage_args-}"; bun run verify:cache "$@"'
-
-[tasks."verify:cache:agent"]
-description = "Run the cache efficiency benchmark with the agent workload preset"
-usage = 'arg "[args]..." help="Arguments passed to bun run verify:cache:agent"'
-run = 'eval "set -- ${usage_args-}"; bun run verify:cache:agent "$@"'
-
 [tasks."prompts:export"]
-description = "Extract prompt artifacts from promoted binary or clean version"
+description = "Extract stock prompt artifacts from an explicit version or path"
 usage = 'arg "[args]..." help="Arguments passed to bun run prompts:export"'
 run = 'eval "set -- ${usage_args-}"; bun run prompts:export "$@"'
 
@@ -254,12 +60,12 @@ usage = 'arg "[args]..." help="Arguments passed to bun run prompts:bundle"'
 run = 'eval "set -- ${usage_args-}"; bun run prompts:bundle "$@"'
 
 [tasks."prompts:compare"]
-description = "Compare vanilla and patched prompt exports"
+description = "Compare two stock prompt exports"
 usage = 'arg "[args]..." help="Arguments passed to bun run prompts:compare"'
 run = 'eval "set -- ${usage_args-}"; bun run prompts:compare "$@"'
 
 [tasks."prompts:compare:matrix"]
-description = "Compare clean and patched prompt exports across adjacent releases"
+description = "Compare stock prompt exports across adjacent releases"
 usage = 'arg "[args]..." help="Arguments passed to bun run prompts:compare:matrix"'
 run = 'eval "set -- ${usage_args-}"; bun run prompts:compare:matrix "$@"'
 
@@ -282,26 +88,3 @@ run = "bun run format"
 [tasks.test]
 description = "Run the test suite"
 run = "bun run test"
-
-[tasks."verify:patches"]
-description = "Verify patcher health and dry-run patch application for native target"
-run = "bun run verify:patches"
-
-[tasks."verify:patches:matrix"]
-description = "Dry-run patches against the selected latest clean cli.js"
-run = "bun run verify:patches:matrix"
-
-[tasks."verify:native-artifacts"]
-description = "Verify all official native artifacts and write sanitized receipts"
-usage = 'arg "[args]..." help="Arguments passed to bun run verify:native-artifacts"'
-run = 'eval "set -- ${usage_args-}"; bun run verify:native-artifacts "$@"'
-
-[tasks."verify:native-host"]
-description = "Finalize and verify one native artifact on a matching host"
-usage = 'arg "[args]..." help="Arguments passed to bun run verify:native-host"'
-run = 'eval "set -- ${usage_args-}"; bun run verify:native-host "$@"'
-
-[tasks."prompt-drift:baseline"]
-description = "Write a watched prompt-surface path-hash baseline"
-usage = 'arg "[args]..." help="Arguments passed to bun run prompt-drift:baseline"'
-run = 'eval "set -- ${usage_args-}"; bun run prompt-drift:baseline "$@"'

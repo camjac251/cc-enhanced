@@ -1,21 +1,22 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { clearTraverseCache, generator } from "./babel.js";
-import { BUN_MODULE_FORMAT_ESM, type BunEmbeddedModule } from "./bun-format.js";
-import { escapeNonAsciiForBundle, parse } from "./loader.js";
+import * as t from "@babel/types";
+import { generator } from "./babel.js";
+import {
+	BUN_MODULE_FORMAT_CJS,
+	BUN_MODULE_FORMAT_ESM,
+	type BunEmbeddedModule,
+	hasBunCjsHeader,
+} from "./bun-format.js";
+import { parse } from "./loader.js";
 import { extractEmbeddedModulesFromNativeBinary } from "./native.js";
+import { unwrapBunCjsModule } from "./native-linux.js";
 
-const LATIN1_ENCODING = 1;
 const JAVASCRIPT_LOADER = 1;
 const VIRTUAL_ENTRY_SPECIFIER = "cc-enhanced-embedded-entry";
 const VIRTUAL_NAMESPACE = "cc-enhanced-embedded";
-const LAZY_PATCH_SURFACE_ANCHORS = [
-	"the prompt names Claude/Anthropic in any form",
-	"File must be read first",
-	"Error editing file",
-	"Message queued for delivery to",
-] as const;
+export const NATIVE_METADATA_BINDING = "_ccEnhancedNativeMeta";
 
 interface EmbeddedBuildResolveArgs {
 	path: string;
@@ -45,11 +46,11 @@ interface EmbeddedBuildRuntime {
 	build(options: {
 		entrypoints: string[];
 		target: "bun";
-		format: "esm";
+		format: "cjs";
 		splitting: false;
 		treeShaking: false;
 		minify: {
-			whitespace: true;
+			whitespace: false;
 			syntax: boolean;
 			identifiers: boolean;
 		};
@@ -57,6 +58,7 @@ interface EmbeddedBuildRuntime {
 		write: false;
 		logLevel: "silent";
 		throw: false;
+		define: Record<string, string>;
 		plugins: Array<{
 			name: string;
 			setup(build: EmbeddedBuildPluginBuilder): void;
@@ -68,17 +70,19 @@ interface EmbeddedBuildRuntime {
 	}>;
 }
 
-export interface PatchableNativeJavaScript {
+export interface ExtractedNativeJavaScript {
 	code: Buffer;
 	sourceMode: "entry" | "rebundled";
 	sourceModuleCount: number;
 }
 
 function isRebundleJavaScriptModule(module: BunEmbeddedModule): boolean {
+	// Use serialized source metadata, not filenames, text anchors, encoding,
+	// or reachability. JavaScript-like loaders also serialize an ESM/CJS format.
 	return (
-		module.module.encoding === LATIN1_ENCODING &&
-		module.module.loader === JAVASCRIPT_LOADER &&
-		module.module.moduleFormat === BUN_MODULE_FORMAT_ESM
+		module.module.loader === JAVASCRIPT_LOADER ||
+		module.module.moduleFormat === BUN_MODULE_FORMAT_ESM ||
+		module.module.moduleFormat === BUN_MODULE_FORMAT_CJS
 	);
 }
 
@@ -104,6 +108,76 @@ function rewriteEmbeddedRequireCalls(contents: Buffer): Buffer {
 	);
 }
 
+function embeddedModuleSource(contents: Buffer): Buffer {
+	if (!hasBunCjsHeader(contents)) return contents;
+	const wrapper = unwrapBunCjsModule(contents.toString("utf8"));
+	if (!wrapper) {
+		throw new Error("Embedded CommonJS module has an unsupported envelope");
+	}
+	return Buffer.from(wrapper.body, "utf8");
+}
+
+function prepareEmbeddedWorkerEntries(
+	modules: readonly BunEmbeddedModule[],
+	modulesByName: ReadonlyMap<string, BunEmbeddedModule>,
+): {
+	worker: BunEmbeddedModule | undefined;
+	contentsByIndex: Map<number, Buffer>;
+} {
+	let worker: BunEmbeddedModule | undefined;
+	const contentsByIndex = new Map<number, Buffer>();
+	for (const module of modules) {
+		if (
+			!isRebundleJavaScriptModule(module) ||
+			!module.contents.includes("HOOKS_WORKER_URL")
+		)
+			continue;
+		const ast = parse(embeddedModuleSource(module.contents).toString("utf8"));
+		let changed = false;
+		t.traverseFast(ast, (node) => {
+			if (
+				!t.isObjectProperty(node) ||
+				!(
+					(!node.computed &&
+						t.isIdentifier(node.key, { name: "HOOKS_WORKER_URL" })) ||
+					t.isStringLiteral(node.key, { value: "HOOKS_WORKER_URL" })
+				)
+			)
+				return;
+			if (!t.isStringLiteral(node.value))
+				throw new Error(
+					"Embedded worker metadata is not a static module reference",
+				);
+			const target = modulesByName.get(node.value.value);
+			if (
+				!target ||
+				!isRebundleJavaScriptModule(target) ||
+				target.contents.length === 0
+			) {
+				throw new Error(
+					"Embedded worker metadata does not resolve to executable JavaScript",
+				);
+			}
+			if (worker && worker.index !== target.index)
+				throw new Error(
+					"Multiple embedded worker entries require distinct dispatch roles",
+				);
+			worker = target;
+			node.value = t.memberExpression(
+				t.identifier(NATIVE_METADATA_BINDING),
+				t.identifier("path"),
+			);
+			changed = true;
+		});
+		if (changed)
+			contentsByIndex.set(
+				module.index,
+				Buffer.from(generator(ast, { compact: true, comments: false }).code),
+			);
+	}
+	return { worker, contentsByIndex };
+}
+
 export async function rebundleEmbeddedJavaScript(
 	modules: BunEmbeddedModule[],
 	entryPointId: number,
@@ -122,10 +196,18 @@ export async function rebundleEmbeddedJavaScript(
 	const moduleBySyntheticName = new Map<string, BunEmbeddedModule>();
 	for (const module of modules) {
 		if (!isRebundleJavaScriptModule(module)) continue;
+		if (module.contents.includes(NATIVE_METADATA_BINDING))
+			throw new Error(
+				"Embedded source collides with the native metadata binding",
+			);
 		const syntheticName = `module-${module.index}.js`;
 		syntheticByIndex.set(module.index, syntheticName);
 		moduleBySyntheticName.set(syntheticName, module);
 	}
+	const { worker, contentsByIndex } = prepareEmbeddedWorkerEntries(
+		modules,
+		modulesByName,
+	);
 	const entrySyntheticName = syntheticByIndex.get(entry.index);
 	if (!entrySyntheticName) {
 		throw new Error("Embedded entry point has no JavaScript build identity");
@@ -143,19 +225,21 @@ export async function rebundleEmbeddedJavaScript(
 		path.join(os.tmpdir(), "cc-native-rebundle-"),
 	);
 	const virtualEntryPath = path.join(tempDir, "cc-native-entry.js");
+	// Retain every JavaScript module, including out-of-band lazy entries.
+	// Imports in an uncalled function preserve source without initializing it.
 	const lazyModuleSpecifiers = modules
 		.filter(
 			(module) =>
-				module.index !== entry.index &&
-				isRebundleJavaScriptModule(module) &&
-				LAZY_PATCH_SURFACE_ANCHORS.some((anchor) =>
-					module.contents.includes(anchor),
-				),
+				module.index !== entry.index && isRebundleJavaScriptModule(module),
 		)
 		.map((module) => JSON.stringify(module.name));
+	// Both roles share one module graph, but only their own entry is initialized.
+	const startup = worker
+		? `if (require("node:worker_threads").isMainThread) { module.exports = require(${JSON.stringify(VIRTUAL_ENTRY_SPECIFIER)}); } else { module.exports = require(${JSON.stringify(worker.name)}); }\n`
+		: `module.exports = require(${JSON.stringify(VIRTUAL_ENTRY_SPECIFIER)});\n`;
 	await fs.writeFile(
 		virtualEntryPath,
-		`import ${JSON.stringify(VIRTUAL_ENTRY_SPECIFIER)};\nexport * from ${JSON.stringify(VIRTUAL_ENTRY_SPECIFIER)};\nasync function _ccEnhancedRetainLazyModules() {\n  if (globalThis.__ccEnhancedRetainLazyModules === true) {\n    await Promise.all([${lazyModuleSpecifiers.map((specifier) => `import(${specifier})`).join(",")}]);\n  }\n}\nvoid _ccEnhancedRetainLazyModules;\n`,
+		`${startup}async function _ccEnhancedRetainLazyModules() {\n  await Promise.all([${lazyModuleSpecifiers.map((specifier) => `import(${specifier})`).join(",")}]);\n}\nvoid _ccEnhancedRetainLazyModules;\n`,
 		"utf-8",
 	);
 
@@ -163,11 +247,11 @@ export async function rebundleEmbeddedJavaScript(
 		const buildResult = await runtime.build({
 			entrypoints: [virtualEntryPath],
 			target: "bun",
-			format: "esm",
+			format: "cjs",
 			splitting: false,
 			treeShaking: false,
 			minify: {
-				whitespace: true,
+				whitespace: false,
 				syntax: false,
 				identifiers: false,
 			},
@@ -175,6 +259,15 @@ export async function rebundleEmbeddedJavaScript(
 			write: false,
 			logLevel: "silent",
 			throw: false,
+			define: {
+				"import.meta.dir": `${NATIVE_METADATA_BINDING}.dir`,
+				"import.meta.dirname": `${NATIVE_METADATA_BINDING}.dir`,
+				"import.meta.path": `${NATIVE_METADATA_BINDING}.path`,
+				"import.meta.filename": `${NATIVE_METADATA_BINDING}.path`,
+				"import.meta.file": `${NATIVE_METADATA_BINDING}.file`,
+				"import.meta.url": `${NATIVE_METADATA_BINDING}.url`,
+				"import.meta.require": `${NATIVE_METADATA_BINDING}.require`,
+			},
 			plugins: [
 				{
 					name: "embedded-module-reader",
@@ -211,7 +304,11 @@ export async function rebundleEmbeddedJavaScript(
 								const module = moduleBySyntheticName.get(args.path);
 								if (!module) return undefined;
 								return {
-									contents: rewriteEmbeddedRequireCalls(module.contents),
+									contents: rewriteEmbeddedRequireCalls(
+										embeddedModuleSource(
+											contentsByIndex.get(module.index) ?? module.contents,
+										),
+									),
 									loader: "js",
 								};
 							},
@@ -226,40 +323,37 @@ export async function rebundleEmbeddedJavaScript(
 				`Embedded JavaScript rebundle failed (${buildResult.logs.length} diagnostics)`,
 			);
 		}
-		return Buffer.from(await buildResult.outputs[0].arrayBuffer());
+		const output = Buffer.from(await buildResult.outputs[0].arrayBuffer());
+		if (!output.includes(NATIVE_METADATA_BINDING)) return output;
+		const prefix = output.subarray(0, 256).toString("utf8");
+		const wrapper =
+			/^\/\/ @bun @bun-cjs\r?\n\(function\(exports,\s*require,\s*module,\s*__filename,\s*__dirname\)\s*\{/.exec(
+				prefix,
+			);
+		if (!wrapper)
+			throw new Error(
+				"Rebundled native entry has an unsupported CommonJS envelope",
+			);
+		const prelude = Buffer.from(
+			`\nconst ${NATIVE_METADATA_BINDING} = { dir: __dirname, path: __filename, file: require("node:path").basename(__filename), url: require("node:url").pathToFileURL(__filename).href, require };\n`,
+		);
+		return Buffer.concat([
+			output.subarray(0, wrapper[0].length),
+			prelude,
+			output.subarray(wrapper[0].length),
+		]);
 	} finally {
 		modulesByName.clear();
 		syntheticByIndex.clear();
 		moduleBySyntheticName.clear();
+		contentsByIndex.clear();
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}
 }
 
-export function compactRebundledJavaScript(source: Buffer): Buffer {
-	if (source.includes("/$bunfs/root/chunk-")) {
-		throw new Error(
-			"Rebundled JavaScript compaction left embedded module dependencies",
-		);
-	}
-	const ast = parse(source.toString("utf8"));
-	try {
-		const compacted = generator(ast, {
-			compact: true,
-			comments: false,
-			minified: false,
-		}).code;
-		return Buffer.from(
-			escapeNonAsciiForBundle(`// @bun\n${compacted}`),
-			"utf8",
-		);
-	} finally {
-		clearTraverseCache();
-	}
-}
-
-export async function extractPatchableJavaScriptFromNativeBinary(
+export async function extractJavaScriptFromNativeBinary(
 	filePath: string,
-): Promise<PatchableNativeJavaScript> {
+): Promise<ExtractedNativeJavaScript> {
 	const embedded = extractEmbeddedModulesFromNativeBinary(filePath);
 	try {
 		const entry = embedded.modules.find(
@@ -268,8 +362,11 @@ export async function extractPatchableJavaScriptFromNativeBinary(
 		if (!entry) {
 			throw new Error("Could not locate embedded entry-point module");
 		}
+		if (!isRebundleJavaScriptModule(entry)) {
+			throw new Error("Embedded entry point is not a JavaScript module");
+		}
 		const rebundleModules = embedded.modules.filter(isRebundleJavaScriptModule);
-		if (!isRebundleJavaScriptModule(entry) || rebundleModules.length <= 1) {
+		if (rebundleModules.length <= 1) {
 			return {
 				code: Buffer.from(entry.contents),
 				sourceMode: "entry",

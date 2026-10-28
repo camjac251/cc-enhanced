@@ -1,0 +1,12 @@
+{
+	"name": "cc-enhanced",
+	"description": "Plugin-based enhancements for unmodified Claude Code.",
+	"owner": { "name": "camjac251" },
+	"plugins": [
+		{
+			"name": "cc-enhanced",
+			"source": "./plugin",
+			"description": "Tool-routing guidance, batch edits, ranged views, plan and memory diffs, and configured agent model routing for stock Claude Code."
+		}
+	]
+}

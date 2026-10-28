@@ -4,26 +4,17 @@ import {
 	type BunEmbeddedModule,
 	type BunOffsets,
 	detectModuleStructSize,
-	getPointerContent,
+	getModuleContents,
 	listEmbeddedModules,
 	mapEntryPointModule,
 	parseOffsets,
-	replaceEntryPointModuleInPlace,
 	SIZEOF_OFFSETS,
-	toWriteError,
 } from "./bun-format.js";
+import { locateLiefBunSection } from "./native-lief.js";
 import {
-	locateLiefBunSection,
-	type NativeBunSectionLayout,
-} from "./native-lief.js";
-import {
-	copyBunCjsEnvelope,
 	extractClaudeJsFromNativeLinux,
 	isElfBinary,
-	repackNativeLinuxBinary,
 	unwrapBunCjsModule,
-	wrapBunCjsModule,
-	wrapBunCjsModuleBuffer,
 } from "./native-linux.js";
 
 const MACHO_MAGIC_32_BE = Buffer.from([0xfe, 0xed, 0xfa, 0xce]);
@@ -34,12 +25,9 @@ const MACHO_FAT = Buffer.from([0xca, 0xfe, 0xba, 0xbe]);
 const PE_MAGIC = Buffer.from([0x4d, 0x5a]);
 
 interface LiefBunData {
-	binary: Buffer;
 	bunBlob: Buffer;
 	bunOffsets: BunOffsets;
-	sectionHeaderSize: number;
 	moduleStructSize: number;
-	layout: NativeBunSectionLayout;
 }
 
 export type NativeBinaryKind = "elf" | "macho" | "pe" | "unknown";
@@ -52,7 +40,6 @@ export interface NativeEmbeddedModuleSet {
 function parseSectionBunBlob(sectionData: Buffer): {
 	bunBlob: Buffer;
 	bunOffsets: BunOffsets;
-	sectionHeaderSize: number;
 	moduleStructSize: number;
 } {
 	if (sectionData.length < 4) {
@@ -107,28 +94,7 @@ function parseSectionBunBlob(sectionData: Buffer): {
 	const bunOffsets = parseOffsets(offsets);
 	const moduleStructSize = detectModuleStructSize(bunOffsets.modulesPtr.length);
 
-	return { bunBlob, bunOffsets, sectionHeaderSize, moduleStructSize };
-}
-
-function writeFixedLayoutBinary(
-	content: Buffer,
-	sourcePath: string,
-	outputPath: string,
-): void {
-	const tmp = `${outputPath}.tmp`;
-	try {
-		fs.writeFileSync(tmp, content);
-		const mode = fs.statSync(sourcePath).mode;
-		fs.chmodSync(tmp, mode);
-		fs.renameSync(tmp, outputPath);
-	} catch (error) {
-		try {
-			if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
-		} catch {
-			// best-effort cleanup
-		}
-		throw toWriteError(error, outputPath);
-	}
+	return { bunBlob, bunOffsets, moduleStructSize };
 }
 
 function extractLiefBunData(filePath: string): LiefBunData {
@@ -138,15 +104,12 @@ function extractLiefBunData(filePath: string): LiefBunData {
 		layout.fileOffset,
 		layout.fileOffset + layout.fileSize,
 	);
-	const { bunBlob, bunOffsets, sectionHeaderSize, moduleStructSize } =
+	const { bunBlob, bunOffsets, moduleStructSize } =
 		parseSectionBunBlob(sectionData);
 	return {
-		binary,
 		bunBlob,
 		bunOffsets,
-		sectionHeaderSize,
 		moduleStructSize,
-		layout,
 	};
 }
 
@@ -160,7 +123,7 @@ function extractClaudeJsFromBunBlob(
 		bunOffsets,
 		moduleStructSize,
 		(module) => {
-			const contents = getPointerContent(bunBlob, module.contents);
+			const contents = getModuleContents(bunBlob, module);
 			return contents.length > 0 ? contents : undefined;
 		},
 	);
@@ -247,73 +210,4 @@ export function extractEmbeddedModulesFromNativeBinary(
 	throw new Error(`Unsupported native binary: ${filePath}`);
 }
 
-export function repackNativeBinary(
-	filePath: string,
-	modifiedClaudeJs: Buffer,
-	outputPath: string = filePath,
-	allowPackedContentsSpan = false,
-): void {
-	const kind = detectNativeBinaryKind(filePath);
-	if (kind === "elf") {
-		repackNativeLinuxBinary(
-			filePath,
-			modifiedClaudeJs,
-			outputPath,
-			allowPackedContentsSpan,
-		);
-		return;
-	}
-	if (kind !== "macho" && kind !== "pe") {
-		throw new Error(`Unsupported native binary: ${filePath}`);
-	}
-
-	const extracted = extractLiefBunData(filePath);
-	const patchedBinary = Buffer.from(extracted.binary);
-	const bunBlobStart =
-		extracted.layout.fileOffset + extracted.sectionHeaderSize;
-	const bunBlobEnd = bunBlobStart + extracted.bunBlob.length;
-	const sectionEnd = extracted.layout.fileOffset + extracted.layout.fileSize;
-	if (bunBlobEnd > sectionEnd) {
-		throw new Error(
-			`Bun payload range (${bunBlobStart}+${extracted.bunBlob.length}) exceeds ${extracted.layout.sectionName} section`,
-		);
-	}
-	const patchedBunBlob = patchedBinary.subarray(bunBlobStart, bunBlobEnd);
-	replaceEntryPointModuleInPlace(
-		patchedBunBlob,
-		extracted.bunOffsets,
-		extracted.moduleStructSize,
-		modifiedClaudeJs,
-		allowPackedContentsSpan,
-	);
-	const roundTrip = extractClaudeJsFromBunBlob(
-		patchedBunBlob,
-		extracted.bunOffsets,
-		extracted.moduleStructSize,
-	);
-	if (!roundTrip.equals(modifiedClaudeJs)) {
-		throw new Error("Fixed-layout Bun entry-point verification failed");
-	}
-	if (
-		patchedBinary.length !== extracted.binary.length ||
-		!patchedBinary
-			.subarray(0, extracted.layout.fileOffset)
-			.equals(extracted.binary.subarray(0, extracted.layout.fileOffset)) ||
-		!patchedBinary
-			.subarray(sectionEnd)
-			.equals(extracted.binary.subarray(sectionEnd))
-	) {
-		throw new Error(
-			"Fixed-layout native repack changed bytes outside Bun section",
-		);
-	}
-
-	writeFixedLayoutBinary(patchedBinary, filePath, outputPath);
-}
-
-export {
-	copyBunCjsEnvelope,
-	unwrapBunCjsModule,
-	wrapBunCjsModule,
-	wrapBunCjsModuleBuffer,
-};
+export { unwrapBunCjsModule };

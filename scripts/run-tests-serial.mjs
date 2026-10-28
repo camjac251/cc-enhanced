@@ -10,14 +10,21 @@ const repoRoot = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
 	"..",
 );
-const testRoots = ["src", "scripts"].map((directory) =>
+const testRoots = ["src", "scripts", "tests"].map((directory) =>
 	path.join(repoRoot, directory),
 );
 const testFilePattern = /\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/;
 const isWindows = process.platform === "win32";
 
 async function collectTestFiles(directory) {
-	const entries = await readdir(directory, { withFileTypes: true });
+	let entries;
+	try {
+		entries = await readdir(directory, { withFileTypes: true });
+	} catch (error) {
+		// A checkout may omit one of the test roots; an empty run still fails below.
+		if (error?.code === "ENOENT" && testRoots.includes(directory)) return [];
+		throw error;
+	}
 	const files = [];
 	for (const entry of entries) {
 		const entryPath = path.join(directory, entry.name);

@@ -56,38 +56,23 @@ async function writeExport(
 	);
 }
 
-test("four-way prompt report distinguishes release drift from patch impact", async () => {
+test("stock release matrix compares baseline and candidate exports and dependencies", async () => {
 	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "prompt-matrix-"));
-	const previousClean = path.join(tempDir, "previous-clean");
-	const previousPatched = path.join(tempDir, "previous-patched");
-	const currentClean = path.join(tempDir, "current-clean");
-	const currentPatched = path.join(tempDir, "current-patched");
+	const baselineExportDir = path.join(tempDir, "baseline");
+	const candidateExportDir = path.join(tempDir, "candidate");
 	const etcClaudeDir = path.join(tempDir, "etc-claude");
-	const stableDependency = [
-		{
-			id: "prompt-stable",
-			identifiers: [0],
-			identifierMap: { "0": "USER_NAME" },
-			expressionHashMap: { "0": EXPRESSION_HASH_A },
-		},
-	];
 	try {
-		await writeExport(
-			previousClean,
-			"1.0.0",
-			"previous clean",
-			stableDependency,
-		);
-		await writeExport(
-			previousPatched,
-			"1.0.0",
-			"previous patched",
-			stableDependency,
-		);
-		await writeExport(currentClean, "1.1.0", "current clean", stableDependency);
-		await writeExport(currentPatched, "1.1.0", "current patched", [
+		await writeExport(baselineExportDir, "1.0.0", "baseline surface", [
 			{
-				id: "prompt-current",
+				id: "prompt-baseline",
+				identifiers: [0],
+				identifierMap: { "0": "USER_NAME" },
+				expressionHashMap: { "0": EXPRESSION_HASH_A },
+			},
+		]);
+		await writeExport(candidateExportDir, "1.1.0", "candidate surface", [
+			{
+				id: "prompt-candidate",
 				identifiers: [0, 1],
 				identifierMap: { "0": "USER_NAME", "1": "TOOL_NAME" },
 				expressionHashMap: {
@@ -104,40 +89,39 @@ test("four-way prompt report distinguishes release drift from patch impact", asy
 		);
 
 		const result = await comparePromptExportMatrix({
-			previousCleanExportDir: previousClean,
-			previousPatchedExportDir: previousPatched,
-			currentCleanExportDir: currentClean,
-			currentPatchedExportDir: currentPatched,
+			baselineExportDir,
+			candidateExportDir,
 			etcClaudeDir,
 			watchPaths: ["surface.md"],
 		});
 
-		assert.equal(result.comparisons.cleanRelease.files.changed >= 1, true);
-		assert.equal(
-			result.dependencyParity.cleanRelease.exactMultisetParity,
-			true,
-		);
-		assert.equal(
-			result.dependencyParity.previousPatchImpact.exactMultisetParity,
-			true,
-		);
-		assert.equal(
-			result.dependencyParity.currentPatchImpact.exactMultisetParity,
-			false,
-		);
-		assert.equal(result.dependencyParity.currentPatchImpact.slotDelta, 1);
-		assert.equal(
-			result.dependencyParity.currentPatchImpact.addedSignatureCount,
-			1,
-		);
-		assert.equal(
-			result.dependencyParity.currentPatchImpact.removedSignatureCount,
-			1,
-		);
+		assert.deepEqual(result.paths, {
+			baselineExportDir,
+			candidateExportDir,
+			etcClaudeDir,
+		});
+		assert.equal(result.comparison.files.changed, 2);
+		assert.equal(result.comparison.watchedSurfaces.changed, 1);
+		assert.equal(result.dependencies.baseline.slotCount, 1);
+		assert.equal(result.dependencies.candidate.slotCount, 2);
+		assert.deepEqual(result.dependencyParity, {
+			exactMultisetParity: false,
+			coverageComplete: true,
+			promptDelta: 0,
+			templatedPromptDelta: 0,
+			slotDelta: 1,
+			addedSignatureCount: 1,
+			removedSignatureCount: 1,
+		});
 
 		const markdown = formatPromptExportMatrixMarkdown(result);
-		assert.match(markdown, /^# Four-Way Prompt Export Comparison/m);
-		assert.match(markdown, /Current patch impact/);
+		assert.match(markdown, /^# Stock Release Prompt Export Matrix/m);
+		assert.match(markdown, /Baseline export:/);
+		assert.match(markdown, /Candidate export:/);
+		assert.match(
+			markdown,
+			/Stock release drift \| 2 \| 0 \| 0 \| 1 \| changed \| \+1 \| 1 \| 1/,
+		);
 		assert.doesNotMatch(markdown, /USER_NAME|TOOL_NAME/);
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });
@@ -148,15 +132,11 @@ test("dependency analysis reports invalid references without exposing expression
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "prompt-matrix-invalid-"),
 	);
-	const exports = [
-		"previous-clean",
-		"previous-patched",
-		"current-clean",
-		"current-patched",
-	].map((name) => path.join(tempDir, name));
+	const baselineExportDir = path.join(tempDir, "baseline");
+	const candidateExportDir = path.join(tempDir, "candidate");
 	const etcClaudeDir = path.join(tempDir, "etc-claude");
 	try {
-		for (const exportDir of exports) {
+		for (const exportDir of [baselineExportDir, candidateExportDir]) {
 			await writeExport(exportDir, "1.0.0", "surface", [
 				{
 					id: "prompt-invalid",
@@ -169,16 +149,18 @@ test("dependency analysis reports invalid references without exposing expression
 		await fs.mkdir(etcClaudeDir, { recursive: true });
 
 		const result = await comparePromptExportMatrix({
-			previousCleanExportDir: exports[0],
-			previousPatchedExportDir: exports[1],
-			currentCleanExportDir: exports[2],
-			currentPatchedExportDir: exports[3],
+			baselineExportDir,
+			candidateExportDir,
 			etcClaudeDir,
-			watchPaths: ["surface.md"],
 		});
 
-		assert.equal(result.dependencies.previousClean.invalidReferenceCount, 1);
-		assert.equal(result.dependencies.previousClean.unusedMappingCount, 1);
+		for (const stats of [
+			result.dependencies.baseline,
+			result.dependencies.candidate,
+		]) {
+			assert.equal(stats.invalidReferenceCount, 1);
+			assert.equal(stats.unusedMappingCount, 1);
+		}
 		assert.doesNotMatch(JSON.stringify(result), /PRIVATE_EXPRESSION/);
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });
@@ -189,75 +171,36 @@ test("dependency parity distinguishes expressions with the same display token", 
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "prompt-matrix-hash-collision-"),
 	);
-	const previousClean = path.join(tempDir, "previous-clean");
-	const previousPatched = path.join(tempDir, "previous-patched");
-	const currentClean = path.join(tempDir, "current-clean");
-	const currentPatched = path.join(tempDir, "current-patched");
+	const baselineExportDir = path.join(tempDir, "baseline");
+	const candidateExportDir = path.join(tempDir, "candidate");
 	const etcClaudeDir = path.join(tempDir, "etc-claude");
-	const previousDependency = [
-		{
-			id: "prompt-collision",
-			identifiers: [0],
-			identifierMap: { "0": "ALPHA_BETA" },
-			expressionHashMap: { "0": EXPRESSION_HASH_A },
-		},
-	];
-	const currentDependency = [
-		{
-			id: "prompt-collision",
-			identifiers: [0],
-			identifierMap: { "0": "ALPHA_BETA" },
-			expressionHashMap: { "0": EXPRESSION_HASH_B },
-		},
-	];
 	try {
-		await writeExport(
-			previousClean,
-			"1.0.0",
-			"stable surface",
-			previousDependency,
-		);
-		await writeExport(
-			previousPatched,
-			"1.0.0",
-			"stable surface",
-			previousDependency,
-		);
-		await writeExport(
-			currentClean,
-			"1.1.0",
-			"stable surface",
-			currentDependency,
-		);
-		await writeExport(
-			currentPatched,
-			"1.1.0",
-			"stable surface",
-			currentDependency,
-		);
+		for (const [exportDir, version, expressionHash] of [
+			[baselineExportDir, "1.0.0", EXPRESSION_HASH_A],
+			[candidateExportDir, "1.1.0", EXPRESSION_HASH_B],
+		] as const) {
+			await writeExport(exportDir, version, "stable surface", [
+				{
+					id: "prompt-collision",
+					identifiers: [0],
+					identifierMap: { "0": "ALPHA_BETA" },
+					expressionHashMap: { "0": expressionHash },
+				},
+			]);
+		}
 		await fs.mkdir(etcClaudeDir, { recursive: true });
 
 		const result = await comparePromptExportMatrix({
-			previousCleanExportDir: previousClean,
-			previousPatchedExportDir: previousPatched,
-			currentCleanExportDir: currentClean,
-			currentPatchedExportDir: currentPatched,
+			baselineExportDir,
+			candidateExportDir,
 			etcClaudeDir,
-			watchPaths: ["surface.md"],
 		});
 
-		assert.equal(
-			result.dependencyParity.cleanRelease.exactMultisetParity,
-			false,
-		);
-		assert.equal(
-			result.dependencyParity.previousPatchImpact.exactMultisetParity,
-			true,
-		);
-		assert.equal(
-			result.dependencyParity.currentPatchImpact.exactMultisetParity,
-			true,
-		);
+		assert.equal(result.dependencyParity.exactMultisetParity, false);
+		assert.equal(result.dependencyParity.coverageComplete, true);
+		assert.equal(result.dependencyParity.slotDelta, 0);
+		assert.equal(result.dependencyParity.addedSignatureCount, 1);
+		assert.equal(result.dependencyParity.removedSignatureCount, 1);
 		assert.doesNotMatch(JSON.stringify(result), /ALPHA_BETA/);
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });
@@ -268,64 +211,182 @@ test("prompt export comparison rejects corpora without expression hashes", async
 	const tempDir = await fs.mkdtemp(
 		path.join(os.tmpdir(), "prompt-matrix-hashless-corpus-"),
 	);
-	const previousClean = path.join(tempDir, "previous-clean");
-	const previousPatched = path.join(tempDir, "previous-patched");
-	const currentClean = path.join(tempDir, "current-clean");
-	const currentPatched = path.join(tempDir, "current-patched");
+	const baselineExportDir = path.join(tempDir, "baseline");
+	const candidateExportDir = path.join(tempDir, "candidate");
 	const etcClaudeDir = path.join(tempDir, "etc-claude");
-	const hashlessDependency = [
-		{
-			id: "prompt-hashless",
-			identifiers: [0],
-			identifierMap: { "0": "ALPHA_BETA" },
-		},
-	];
-	const currentDependency = [
-		{
-			id: "prompt-current",
-			identifiers: [0],
-			identifierMap: { "0": "ALPHA_BETA" },
-			expressionHashMap: { "0": EXPRESSION_HASH_A },
-		},
-	];
 	try {
-		await writeExport(
-			previousClean,
-			"1.0.0",
-			"stable surface",
-			hashlessDependency,
-		);
-		await writeExport(
-			previousPatched,
-			"1.0.0",
-			"stable surface",
-			hashlessDependency,
-		);
-		await writeExport(
-			currentClean,
-			"1.1.0",
-			"stable surface",
-			currentDependency,
-		);
-		await writeExport(
-			currentPatched,
-			"1.1.0",
-			"stable surface",
-			currentDependency,
-		);
+		await writeExport(baselineExportDir, "1.0.0", "stable surface", [
+			{
+				id: "prompt-hashless",
+				identifiers: [0],
+				identifierMap: { "0": "ALPHA_BETA" },
+			},
+		]);
+		await writeExport(candidateExportDir, "1.1.0", "stable surface", [
+			{
+				id: "prompt-candidate",
+				identifiers: [0],
+				identifierMap: { "0": "ALPHA_BETA" },
+				expressionHashMap: { "0": EXPRESSION_HASH_A },
+			},
+		]);
 		await fs.mkdir(etcClaudeDir, { recursive: true });
 
 		await assert.rejects(
 			() =>
 				comparePromptExportMatrix({
-					previousCleanExportDir: previousClean,
-					previousPatchedExportDir: previousPatched,
-					currentCleanExportDir: currentClean,
-					currentPatchedExportDir: currentPatched,
+					baselineExportDir,
+					candidateExportDir,
 					etcClaudeDir,
-					watchPaths: ["surface.md"],
 				}),
 			/missing expressionHashMap/,
+		);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("dependency parity preserves signature multiplicity without depending on display labels", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "prompt-matrix-parity-"),
+	);
+	const baselineExportDir = path.join(tempDir, "baseline");
+	const candidateExportDir = path.join(tempDir, "candidate");
+	const etcClaudeDir = path.join(tempDir, "etc-claude");
+	try {
+		for (const [exportDir, displayToken] of [
+			[baselineExportDir, "BASELINE_LABEL"],
+			[candidateExportDir, "CANDIDATE_LABEL"],
+		] as const) {
+			await writeExport(
+				exportDir,
+				"1.0.0",
+				"stable surface",
+				["first", "second"].map((id) => ({
+					id,
+					identifiers: [0],
+					identifierMap: { "0": displayToken },
+					expressionHashMap: { "0": EXPRESSION_HASH_A },
+				})),
+			);
+		}
+		await fs.mkdir(etcClaudeDir, { recursive: true });
+
+		const result = await comparePromptExportMatrix({
+			baselineExportDir,
+			candidateExportDir,
+			etcClaudeDir,
+		});
+
+		assert.equal(result.dependencyParity.exactMultisetParity, true);
+		assert.equal(result.dependencyParity.coverageComplete, true);
+		assert.equal(result.dependencies.baseline.uniqueSignatureCount, 1);
+		assert.deepEqual(
+			Object.values(result.dependencies.baseline.signatureCounts),
+			[2],
+		);
+		assert.deepEqual(
+			result.dependencies.baseline.signatureCounts,
+			result.dependencies.candidate.signatureCounts,
+		);
+		assert.match(
+			formatPromptExportMatrixMarkdown(result),
+			/Stock release drift \| 1 \| 0 \| 0 \| 0 \| exact \| 0 \| 0 \| 0/,
+		);
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("matrix rejects invalid corpus schemas and expression hash mappings", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "prompt-matrix-schema-"),
+	);
+	const baselineExportDir = path.join(tempDir, "baseline");
+	const candidateExportDir = path.join(tempDir, "candidate");
+	const etcClaudeDir = path.join(tempDir, "etc-claude");
+	const invalidCases: { corpus: unknown; message: RegExp }[] = [
+		{
+			corpus: { prompts: null },
+			message: /Invalid prompt corpus schema/,
+		},
+		{
+			corpus: {
+				prompts: [
+					{
+						identifiers: [0],
+						identifierMap: { "0": "VALUE" },
+						expressionHashMap: { "0": "invalid-hash" },
+					},
+				],
+			},
+			message: /invalid expression hash/,
+		},
+		{
+			corpus: {
+				prompts: [
+					{
+						identifiers: [0],
+						identifierMap: { "0": "VALUE" },
+						expressionHashMap: {},
+					},
+				],
+			},
+			message: /identifier and expression hash mappings differ/,
+		},
+	];
+	try {
+		await writeExport(baselineExportDir, "1.0.0", "surface", []);
+		await writeExport(candidateExportDir, "1.1.0", "surface", []);
+		await fs.mkdir(etcClaudeDir, { recursive: true });
+		for (const { corpus, message } of invalidCases) {
+			await fs.writeFile(
+				path.join(candidateExportDir, "prompt-corpus.json"),
+				JSON.stringify(corpus),
+				"utf8",
+			);
+			await assert.rejects(
+				() =>
+					comparePromptExportMatrix({
+						baselineExportDir,
+						candidateExportDir,
+						etcClaudeDir,
+					}),
+				message,
+			);
+		}
+	} finally {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("missing prompt corpora report unknown dependency parity instead of exact parity", async () => {
+	const tempDir = await fs.mkdtemp(
+		path.join(os.tmpdir(), "prompt-matrix-missing-"),
+	);
+	const baselineExportDir = path.join(tempDir, "baseline");
+	const candidateExportDir = path.join(tempDir, "candidate");
+	const etcClaudeDir = path.join(tempDir, "etc-claude");
+	try {
+		await writeExport(baselineExportDir, "1.0.0", "surface", []);
+		await writeExport(candidateExportDir, "1.1.0", "surface", []);
+		await fs.rm(path.join(candidateExportDir, "prompt-corpus.json"));
+		await fs.mkdir(etcClaudeDir, { recursive: true });
+
+		const result = await comparePromptExportMatrix({
+			baselineExportDir,
+			candidateExportDir,
+			etcClaudeDir,
+		});
+
+		assert.equal(result.dependencies.baseline.hashCoverageComplete, true);
+		assert.equal(result.dependencies.candidate.present, false);
+		assert.equal(result.dependencies.candidate.hashCoverageComplete, false);
+		assert.equal(result.dependencyParity.coverageComplete, false);
+		assert.equal(result.dependencyParity.exactMultisetParity, false);
+		assert.match(
+			formatPromptExportMatrixMarkdown(result),
+			/Stock release drift \| 0 \| 0 \| 1 \| 0 \| unknown \| 0 \| 0 \| 0/,
 		);
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });

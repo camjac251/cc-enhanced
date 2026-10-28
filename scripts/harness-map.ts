@@ -1,10 +1,9 @@
 #!/usr/bin/env bun
 /**
- * Build a self-contained HTML map of the live Claude Code harness.
+ * Build a self-contained HTML map of Claude Code prompt exports and configuration.
  *
  * Sources (all read-only):
- * - newest exported-prompts/<label> dir (bundle inventories; never parses cli.js)
- * - the promoted binary via src/promote status (version + live tag roster)
+ * - newest stock exported-prompts/<label> dir (bundle inventories; never parses cli.js)
  * - the platform's managed config dir (managed CLAUDE.md, appended system-prompt.md)
  * - project CLAUDE.md, .claude/{skills,agents,workflows,rules,agent-memory*}
  * - ~/.claude/{skills,agents,workflows,output-styles,plugins,agent-memory}
@@ -31,7 +30,6 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
-import { status } from "../src/promote.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
@@ -175,13 +173,6 @@ interface SettingsLayerInfo {
 	permissionCounts: { allow: number; deny: number; ask: number } | null;
 }
 
-interface PromotedInfo {
-	buildPath: string;
-	version: string;
-	patchTags: string[];
-	isPatched: boolean;
-}
-
 interface ExportInfo {
 	dirPath: string;
 	label: string;
@@ -226,7 +217,6 @@ interface HarnessModel {
 	repoRoot: string;
 	projectRoot: string;
 	policyFilePath: string;
-	promoted: PromotedInfo | null;
 	exportInfo: ExportInfo | null;
 	layers: LayerCard[];
 	composition: CompositionSegment[];
@@ -404,43 +394,20 @@ function isPathActivated(
 	return /path-activat/i.test(description);
 }
 
-function findPromoted(): PromotedInfo | null {
-	let current: ReturnType<typeof status>["current"];
-	try {
-		current = status().current;
-	} catch {
-		return null;
-	}
-	if (!current) return null;
-	const versionFromPath = current.binaryPath.match(/(\d+\.\d+\.\d+)/)?.[1];
-	return {
-		buildPath: current.binaryPath,
-		version: current.version?.version ?? versionFromPath ?? "unknown",
-		patchTags: current.version?.patchedTags ?? [],
-		isPatched: current.version?.isPatched ?? false,
-	};
-}
-
 function findExportDir(override?: string): string | null {
 	if (override) return path.resolve(override);
 	const root = path.join(repoRoot, "exported-prompts");
 	let best: string | null = null;
 	let bestMtime = 0;
-	let bestPatched = false;
 	for (const name of listDir(root)) {
+		if (name.endsWith("_patched")) continue;
 		const dirPath = path.join(root, name);
 		try {
 			const stat = fs.statSync(dirPath);
 			if (!stat.isDirectory()) continue;
-			const patched = name.endsWith("_patched");
-			// A patched export always outranks a clean one; recency breaks ties.
-			if (
-				(patched && !bestPatched) ||
-				(patched === bestPatched && stat.mtimeMs > bestMtime)
-			) {
+			if (stat.mtimeMs > bestMtime) {
 				best = dirPath;
 				bestMtime = stat.mtimeMs;
-				bestPatched = patched;
 			}
 		} catch {}
 	}
@@ -967,13 +934,6 @@ function buildLayers(model: HarnessModel): LayerCard[] {
 			detail: `${counts.sections ?? "?"} section templates, ${counts.tools ?? "?"} tool docs in export`,
 		});
 	}
-	if (model.promoted && model.promoted.patchTags.length > 0) {
-		prefix.push({
-			name: "In-place patch rewrites",
-			origin: "ours",
-			detail: `${model.promoted.patchTags.length} patch tags reported by the promoted binary`,
-		});
-	}
 	if (model.policyFile) {
 		prefix.push({
 			name: "Appended policy file",
@@ -985,8 +945,7 @@ function buildLayers(model: HarnessModel): LayerCard[] {
 		prefix.push({
 			name: "Nothing found",
 			origin: "mixed",
-			detail:
-				"no prompt export, patched binary, or policy file on this machine",
+			detail: "no prompt export or policy file on this machine",
 		});
 	}
 	const context: LayerConstituent[] = [];
@@ -1025,7 +984,7 @@ function buildLayers(model: HarnessModel): LayerCard[] {
 	return [
 		{
 			title: "System prompt (cached prefix)",
-			origin: model.promoted?.isPatched ? "mixed" : "upstream",
+			origin: model.policyFile ? "mixed" : "upstream",
 			summary: "Assembled per session from bundle section templates.",
 			constituents: prefix,
 		},
@@ -1622,7 +1581,6 @@ function ruleRowHtml(file: RuleFile): string {
 }
 
 function renderOverview(model: HarnessModel): ViewSpec {
-	const promoted = model.promoted;
 	const stages = model.layers
 		.map(
 			(layer) => `<li class="stage stage-${layer.origin}">
@@ -1665,19 +1623,9 @@ function renderOverview(model: HarnessModel): ViewSpec {
 							`<tr data-filter="${escapeHtml(`${row.mechanism} ${row.surfaces}`.toLowerCase())}"><td class="mono">${escapeHtml(row.mechanism)}</td><td>${escapeHtml(row.when)}</td><td>${escapeHtml(row.surfaces)}</td></tr>`,
 					)
 					.join("")}</tbody></table></div>`;
-	const patchChips = (promoted?.patchTags ?? [])
-		.map((tag) => chip(tag, "loc"))
-		.join("");
-	const roster = promoted
-		? promoted.patchTags.length > 0
-			? `<p class="doc-meta"><code>${escapeHtml(promoted.buildPath)}</code></p>
-<details class="patch-roster"><summary>${promoted.patchTags.length} patch tags reported by the binary</summary><p class="links">${patchChips}</p></details>`
-			: `<p class="empty">Promoted binary reports no patch tags.</p>`
-		: `<p class="empty">Promoted binary not found.</p>`;
 	const localNav: Array<[string, string]> = [["assembly", "assembly"]];
 	if (composition !== "") localNav.push(["composition", "composition"]);
 	localNav.push(["fires", "what fires when"]);
-	localNav.push(["roster", "patch roster"]);
 	return {
 		id: "overview",
 		label: "Overview",
@@ -1688,9 +1636,7 @@ function renderOverview(model: HarnessModel): ViewSpec {
 <ol class="stages">${stages}</ol>
 ${composition}
 <h3 class="bench" id="fires">What fires when</h3>
-${triggers}
-<h3 class="bench" id="roster">Patch roster</h3>
-${roster}`,
+${triggers}`,
 	};
 }
 
@@ -1983,7 +1929,6 @@ ${rules}`,
 }
 
 function renderHtml(model: HarnessModel): string {
-	const promoted = model.promoted;
 	const specs: ViewSpec[] = [
 		renderOverview(model),
 		renderPromptView(model),
@@ -2001,18 +1946,13 @@ function renderHtml(model: HarnessModel): string {
 			return `<li><a href="#/${spec.id}" data-nav="${spec.id}"><span class="nav-label">${escapeHtml(spec.label)}</span><span class="nav-count" data-total="${total}">${total}</span></a></li>`;
 		})
 		.join("");
-	const verSub = promoted
-		? promoted.isPatched
-			? `patched · ${promoted.patchTags.length} tags live`
-			: "clean binary"
-		: "no promoted binary";
 	return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Harness Map · ${escapeHtml(promoted?.version ?? "unknown")}</title>
+<title>Harness Map · ${escapeHtml(model.exportInfo?.label ?? "no export")}</title>
 <style>
 :root {
 	color-scheme: light dark;
@@ -2078,9 +2018,8 @@ a:hover { text-decoration-thickness: 2px; }
 .frame { display: grid; grid-template-columns: 252px minmax(0, 1fr); gap: 44px; max-width: 1560px; margin: 0 auto; padding: 28px 36px 96px; }
 .rail { position: sticky; top: 24px; align-self: start; max-height: calc(100vh - 48px); overflow-y: auto; padding-right: 2px; }
 .mark { font-family: var(--mono); font-size: 13px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-2); margin: 0 0 2px; }
-.ver { font-family: var(--mono); font-size: 26px; font-weight: 700; margin: 0; font-variant-numeric: tabular-nums; }
-.ver-sub { font-family: var(--mono); font-size: 13px; color: var(--ink-2); margin: 3px 0 18px; }
-.ver-sub.is-patched { color: var(--ours); }
+.export-label { font-family: var(--mono); font-size: 26px; font-weight: 700; margin: 0; font-variant-numeric: tabular-nums; }
+.export-meta { font-family: var(--mono); font-size: 13px; color: var(--ink-2); margin: 3px 0 18px; }
 .filterbox { margin: 0 0 16px; }
 #filter { width: 100%; font-family: var(--mono); font-size: 16px; background: var(--well); color: var(--ink); border: 1px solid var(--seam); border-radius: 4px; padding: 9px 10px; min-height: 40px; }
 #filter::placeholder { color: var(--ink-2); }
@@ -2217,7 +2156,6 @@ ul.plain li span { color: var(--ink-2); }
 .g-node.g-loc { fill: var(--ours); }
 .g-label { font-family: var(--mono); font-size: 13px; fill: var(--ink); }
 .memgraph a:hover .g-label, .memgraph a:focus .g-label { fill: var(--upstream); }
-.patch-roster { margin-top: 10px; }
 .no-match { color: var(--ink-2); font-style: italic; border: 1px dashed var(--seam); border-radius: 4px; padding: 14px 16px; margin: 10px 0; }
 @media (prefers-reduced-motion: no-preference) {
 	:root { interpolate-size: allow-keywords; }
@@ -2259,7 +2197,7 @@ mono for measurement; teal marks upstream, amber marks ours. Tokens: chassis, pl
 well, seam, ink, upstream, ours, alert.
 STORY: land on assembly spine and measured composition, then drill into folded
 inventories through the rail; one filter reaches every view.
-FIRST VIEWPORT: rail (wordmark, version, patch state, filter, counted nav) beside
+FIRST VIEWPORT: rail (wordmark, export label, filter, counted nav) beside
 masthead and the assembly spine with its composition meter.
 FORM: engineering datasheet; chosen from a seven-candidate derivation, rut named.
 FINISH: verified by regeneration, structural checks, and rubric critique.
@@ -2268,8 +2206,8 @@ FINISH: verified by regeneration, structural checks, and rubric critique.
 <div class="frame">
 <div class="rail">
 <p class="mark">Harness map</p>
-<p class="ver">${escapeHtml(promoted?.version ?? "?")}</p>
-<p class="ver-sub${promoted?.isPatched ? " is-patched" : ""}">${escapeHtml(verSub)}</p>
+<p class="export-label">${escapeHtml(model.exportInfo?.label ?? "none found")}</p>
+<p class="export-meta">Prompt export</p>
 <div class="filterbox" role="search">
 <label class="visually-hidden" for="filter">Filter all inventories</label>
 <input id="filter" type="search" placeholder="Filter everything…" autocomplete="off" spellcheck="false">
@@ -2282,7 +2220,7 @@ FINISH: verified by regeneration, structural checks, and rubric critique.
 <main id="main">
 <header class="masthead">
 <h1>Claude Code harness, mapped</h1>
-<p class="meta">Generated ${escapeHtml(model.generatedAt)} · export <b>${escapeHtml(model.exportInfo?.label ?? "none found")}</b> · binary <b>${escapeHtml(path.basename(promoted?.buildPath ?? "none"))}</b></p>
+<p class="meta">Generated ${escapeHtml(model.generatedAt)} · export <b>${escapeHtml(model.exportInfo?.label ?? "none found")}</b></p>
 </header>
 
 ${viewsHtml}
@@ -2481,7 +2419,6 @@ function buildModel(options: HarnessMapOptions): HarnessModel {
 		repoRoot,
 		projectRoot,
 		policyFilePath,
-		promoted: findPromoted(),
 		exportInfo,
 		layers: [],
 		composition: [],
@@ -2537,7 +2474,7 @@ async function main(): Promise<void> {
 	const argv = await yargs(hideBin(process.argv))
 		.option("export-dir", {
 			type: "string",
-			describe: "Prompt export directory (default: newest patched export)",
+			describe: "Prompt export directory (default: newest stock export)",
 		})
 		.option("out", {
 			type: "string",
@@ -2574,8 +2511,7 @@ async function main(): Promise<void> {
 	console.log(`Model JSON:  ${jsonPath}`);
 	console.log(
 		[
-			`version=${model.promoted?.version ?? "?"}`,
-			`patchTags=${model.promoted?.patchTags.length ?? 0}`,
+			`export=${model.exportInfo?.label ?? "none"}`,
 			`skills=${model.skills.length}`,
 			`agents=${model.agents.length}`,
 			`workflows=${model.workflows.length}`,

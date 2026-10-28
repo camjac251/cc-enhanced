@@ -5,19 +5,19 @@ import {
 	countForbiddenPromptDashStyle,
 	type PromptDashStyleCounts,
 } from "../prompt-dash-style.js";
-import { PROMPT_SURFACE_REVIEW_PATHS } from "./prompt-surface-rules.js";
 
 export interface PromptExportCompareInput {
-	baseExportDir: string;
-	patchedExportDir: string;
+	baselineExportDir: string;
+	candidateExportDir: string;
 	etcClaudeDir: string;
+	/** Defaults to the union of Markdown paths discovered in both stock exports. */
 	watchPaths?: readonly string[];
 	minOverlapLineLength?: number;
 }
 
 export interface PromptExportCompareResult {
-	baseExportDir: string;
-	patchedExportDir: string;
+	baselineExportDir: string;
+	candidateExportDir: string;
 	etcClaudeDir: string;
 	files: FileInventoryComparison;
 	manifest: ManifestComparison;
@@ -28,8 +28,8 @@ export interface PromptExportCompareResult {
 }
 
 export interface FileInventoryComparison {
-	baseFiles: number;
-	patchedFiles: number;
+	baselineFiles: number;
+	candidateFiles: number;
 	common: number;
 	unchanged: number;
 	changed: number;
@@ -45,23 +45,23 @@ export interface FileInventoryComparison {
 }
 
 export interface ManifestComparison {
-	baseManifestPath: string;
-	patchedManifestPath: string;
-	basePresent: boolean;
-	patchedPresent: boolean;
+	baselineManifestPath: string;
+	candidateManifestPath: string;
+	baselinePresent: boolean;
+	candidatePresent: boolean;
 	countDeltas: ManifestCountDelta[];
 }
 
 export interface ManifestCountDelta {
 	key: string;
-	base: number | null;
-	patched: number | null;
+	baseline: number | null;
+	candidate: number | null;
 	delta: number | null;
 }
 
 export interface UnicodeDashStyleComparison {
-	base: UnicodeDashCorpusStats;
-	patched: UnicodeDashCorpusStats;
+	baseline: UnicodeDashCorpusStats;
+	candidate: UnicodeDashCorpusStats;
 	delta: PromptDashStyleCounts;
 	changedFiles: UnicodeDashFileComparison[];
 }
@@ -73,8 +73,8 @@ export interface UnicodeDashCorpusStats extends PromptDashStyleCounts {
 
 export interface UnicodeDashFileComparison {
 	file: string;
-	base: PromptDashStyleCounts;
-	patched: PromptDashStyleCounts;
+	baseline: PromptDashStyleCounts;
+	candidate: PromptDashStyleCounts;
 	delta: PromptDashStyleCounts;
 }
 
@@ -96,22 +96,22 @@ export interface WatchedSurfaceStatus {
 export interface EtcLayerComparison {
 	files: EtcPromptFileComparison[];
 	totalCandidateLines: number;
-	totalExactLinesInPatchedExport: number;
-	patchedMarkdownFiles: number;
-	patchedComparableLines: number;
+	totalExactLinesInCandidateExport: number;
+	candidateMarkdownFiles: number;
+	candidateComparableLines: number;
 }
 
 export interface EtcPromptFileComparison {
 	file: string;
 	candidateLines: number;
-	exactLinesInPatchedExport: number;
+	exactLinesInCandidateExport: number;
 	exactPct: number;
 }
 
 export interface PolicyTermComparison {
 	id: string;
 	label: string;
-	patchedExportFiles: number;
+	candidateExportFiles: number;
 	etcFiles: number;
 }
 
@@ -272,33 +272,33 @@ async function collectFiles(
 }
 
 function compareFileInventory(
-	baseFiles: Map<string, CollectedFile>,
-	patchedFiles: Map<string, CollectedFile>,
+	baselineFiles: Map<string, CollectedFile>,
+	candidateFiles: Map<string, CollectedFile>,
 ): FileInventoryComparison {
-	const basePaths = new Set(baseFiles.keys());
-	const patchedPaths = new Set(patchedFiles.keys());
+	const baselinePaths = new Set(baselineFiles.keys());
+	const candidatePaths = new Set(candidateFiles.keys());
 	const changedFiles: string[] = [];
 	const addedFiles: string[] = [];
 	const removedFiles: string[] = [];
 	let unchanged = 0;
 
-	for (const relativePath of [...patchedPaths].sort()) {
-		if (!basePaths.has(relativePath)) {
+	for (const relativePath of [...candidatePaths].sort()) {
+		if (!baselinePaths.has(relativePath)) {
 			addedFiles.push(relativePath);
 			continue;
 		}
-		const base = baseFiles.get(relativePath);
-		const patched = patchedFiles.get(relativePath);
-		if (!base || !patched) continue;
-		if (base.hash === patched.hash) {
+		const baseline = baselineFiles.get(relativePath);
+		const candidate = candidateFiles.get(relativePath);
+		if (!baseline || !candidate) continue;
+		if (baseline.hash === candidate.hash) {
 			unchanged++;
 		} else {
 			changedFiles.push(relativePath);
 		}
 	}
 
-	for (const relativePath of [...basePaths].sort()) {
-		if (!patchedPaths.has(relativePath)) removedFiles.push(relativePath);
+	for (const relativePath of [...baselinePaths].sort()) {
+		if (!candidatePaths.has(relativePath)) removedFiles.push(relativePath);
 	}
 
 	const changedByTopLevel: Record<string, number> = {};
@@ -318,10 +318,10 @@ function compareFileInventory(
 	}
 
 	return {
-		baseFiles: basePaths.size,
-		patchedFiles: patchedPaths.size,
-		common: [...basePaths].filter((relativePath) =>
-			patchedPaths.has(relativePath),
+		baselineFiles: baselinePaths.size,
+		candidateFiles: candidatePaths.size,
+		common: [...baselinePaths].filter((relativePath) =>
+			candidatePaths.has(relativePath),
 		).length,
 		unchanged,
 		changed: changedFiles.length,
@@ -377,55 +377,55 @@ function collectNumberLeaves(
 }
 
 async function compareManifests(
-	baseExportDir: string,
-	patchedExportDir: string,
+	baselineExportDir: string,
+	candidateExportDir: string,
 ): Promise<ManifestComparison> {
-	const base = await readManifest(baseExportDir);
-	const patched = await readManifest(patchedExportDir);
+	const baseline = await readManifest(baselineExportDir);
+	const candidate = await readManifest(candidateExportDir);
 	const keys = new Set([
-		...Object.keys(base.counts),
-		...Object.keys(patched.counts),
+		...Object.keys(baseline.counts),
+		...Object.keys(candidate.counts),
 	]);
 	const countDeltas: ManifestCountDelta[] = [];
 
 	for (const key of [...keys].sort()) {
-		const baseValue = base.counts[key] ?? null;
-		const patchedValue = patched.counts[key] ?? null;
-		if (baseValue === patchedValue) continue;
+		const baselineValue = baseline.counts[key] ?? null;
+		const candidateValue = candidate.counts[key] ?? null;
+		if (baselineValue === candidateValue) continue;
 		countDeltas.push({
 			key: key.replace(/^manifest\./, ""),
-			base: baseValue,
-			patched: patchedValue,
+			baseline: baselineValue,
+			candidate: candidateValue,
 			delta:
-				baseValue === null || patchedValue === null
+				baselineValue === null || candidateValue === null
 					? null
-					: patchedValue - baseValue,
+					: candidateValue - baselineValue,
 		});
 	}
 
 	return {
-		baseManifestPath: base.path,
-		patchedManifestPath: patched.path,
-		basePresent: base.present,
-		patchedPresent: patched.present,
+		baselineManifestPath: baseline.path,
+		candidateManifestPath: candidate.path,
+		baselinePresent: baseline.present,
+		candidatePresent: candidate.present,
 		countDeltas,
 	};
 }
 
 function compareWatchedSurfaces(
-	baseFiles: Map<string, CollectedFile>,
-	patchedFiles: Map<string, CollectedFile>,
+	baselineFiles: Map<string, CollectedFile>,
+	candidateFiles: Map<string, CollectedFile>,
 	watchPaths: readonly string[],
 ): WatchedSurfaceComparison {
 	const surfaces = watchPaths.map((file): WatchedSurfaceStatus => {
-		const base = baseFiles.get(file);
-		const patched = patchedFiles.get(file);
-		if (!base && !patched) return { file, status: "missing" };
-		if (!base && patched) return { file, status: "added" };
-		if (base && !patched) return { file, status: "removed" };
+		const baseline = baselineFiles.get(file);
+		const candidate = candidateFiles.get(file);
+		if (!baseline && !candidate) return { file, status: "missing" };
+		if (!baseline && candidate) return { file, status: "added" };
+		if (baseline && !candidate) return { file, status: "removed" };
 		return {
 			file,
-			status: base?.hash === patched?.hash ? "unchanged" : "changed",
+			status: baseline?.hash === candidate?.hash ? "unchanged" : "changed",
 		};
 	});
 
@@ -469,20 +469,20 @@ function countPolicyFiles(
 
 async function compareEtcLayer(
 	etcClaudeDir: string,
-	patchedMarkdownFiles: Map<string, CollectedFile>,
+	candidateMarkdownFiles: Map<string, CollectedFile>,
 	minOverlapLineLength: number,
 ): Promise<EtcLayerComparison> {
 	const etcMarkdownFiles = await collectFiles(etcClaudeDir, {
 		includeContent: true,
 		onlyMarkdown: true,
 	});
-	const patchedLines = collectMarkdownComparableLines(
-		patchedMarkdownFiles,
+	const candidateExportLines = collectMarkdownComparableLines(
+		candidateMarkdownFiles,
 		minOverlapLineLength,
 	);
 	const files: EtcPromptFileComparison[] = [];
 	let totalCandidateLines = 0;
-	let totalExactLinesInPatchedExport = 0;
+	let totalExactLinesInCandidateExport = 0;
 
 	for (const file of etcMarkdownFiles.values()) {
 		const candidateLines = extractComparableLines(
@@ -490,7 +490,7 @@ async function compareEtcLayer(
 			minOverlapLineLength,
 		);
 		const exactLines = [...candidateLines].filter((line) =>
-			patchedLines.has(line),
+			candidateExportLines.has(line),
 		);
 		const exactPct =
 			candidateLines.size === 0
@@ -499,11 +499,11 @@ async function compareEtcLayer(
 		files.push({
 			file: file.relativePath,
 			candidateLines: candidateLines.size,
-			exactLinesInPatchedExport: exactLines.length,
+			exactLinesInCandidateExport: exactLines.length,
 			exactPct,
 		});
 		totalCandidateLines += candidateLines.size;
-		totalExactLinesInPatchedExport += exactLines.length;
+		totalExactLinesInCandidateExport += exactLines.length;
 	}
 
 	files.sort((left, right) => left.file.localeCompare(right.file));
@@ -511,20 +511,23 @@ async function compareEtcLayer(
 	return {
 		files,
 		totalCandidateLines,
-		totalExactLinesInPatchedExport,
-		patchedMarkdownFiles: patchedMarkdownFiles.size,
-		patchedComparableLines: patchedLines.size,
+		totalExactLinesInCandidateExport,
+		candidateMarkdownFiles: candidateMarkdownFiles.size,
+		candidateComparableLines: candidateExportLines.size,
 	};
 }
 
 function comparePolicyTerms(
-	patchedMarkdownFiles: Map<string, CollectedFile>,
+	candidateMarkdownFiles: Map<string, CollectedFile>,
 	etcMarkdownFiles: Map<string, CollectedFile>,
 ): PolicyTermComparison[] {
 	return POLICY_TERMS.map((term) => ({
 		id: term.id,
 		label: term.label,
-		patchedExportFiles: countPolicyFiles(patchedMarkdownFiles, term.pattern),
+		candidateExportFiles: countPolicyFiles(
+			candidateMarkdownFiles,
+			term.pattern,
+		),
 		etcFiles: countPolicyFiles(etcMarkdownFiles, term.pattern),
 	}));
 }
@@ -577,27 +580,27 @@ function countMarkdownDashStyle(
 }
 
 function compareUnicodeDashStyle(
-	baseMarkdownFiles: Map<string, CollectedFile>,
-	patchedMarkdownFiles: Map<string, CollectedFile>,
+	baselineMarkdownFiles: Map<string, CollectedFile>,
+	candidateMarkdownFiles: Map<string, CollectedFile>,
 ): UnicodeDashStyleComparison {
 	const allPaths = new Set([
-		...baseMarkdownFiles.keys(),
-		...patchedMarkdownFiles.keys(),
+		...baselineMarkdownFiles.keys(),
+		...candidateMarkdownFiles.keys(),
 	]);
 	const changedFiles: UnicodeDashFileComparison[] = [];
 
 	for (const file of [...allPaths].sort()) {
-		const base = countForbiddenPromptDashStyle(
-			baseMarkdownFiles.get(file)?.content ?? "",
+		const baseline = countForbiddenPromptDashStyle(
+			baselineMarkdownFiles.get(file)?.content ?? "",
 		);
-		const patched = countForbiddenPromptDashStyle(
-			patchedMarkdownFiles.get(file)?.content ?? "",
+		const candidate = countForbiddenPromptDashStyle(
+			candidateMarkdownFiles.get(file)?.content ?? "",
 		);
-		const delta = subtractDashCounts(patched, base);
+		const delta = subtractDashCounts(candidate, baseline);
 		if (delta.total === 0 && delta.enDash === 0 && delta.emDash === 0) {
 			continue;
 		}
-		changedFiles.push({ file, base, patched, delta });
+		changedFiles.push({ file, baseline, candidate, delta });
 	}
 
 	changedFiles.sort(
@@ -606,30 +609,30 @@ function compareUnicodeDashStyle(
 			left.file.localeCompare(right.file),
 	);
 
-	const base = countMarkdownDashStyle(baseMarkdownFiles);
-	const patched = countMarkdownDashStyle(patchedMarkdownFiles);
+	const baseline = countMarkdownDashStyle(baselineMarkdownFiles);
+	const candidate = countMarkdownDashStyle(candidateMarkdownFiles);
 	return {
-		base,
-		patched,
-		delta: subtractDashCounts(patched, base),
+		baseline,
+		candidate,
+		delta: subtractDashCounts(candidate, baseline),
 		changedFiles,
 	};
 }
 
 export async function comparePromptExports({
-	baseExportDir,
-	patchedExportDir,
+	baselineExportDir,
+	candidateExportDir,
 	etcClaudeDir,
-	watchPaths = PROMPT_SURFACE_REVIEW_PATHS,
+	watchPaths,
 	minOverlapLineLength = DEFAULT_MIN_OVERLAP_LINE_LENGTH,
 }: PromptExportCompareInput): Promise<PromptExportCompareResult> {
-	const baseFiles = await collectFiles(baseExportDir);
-	const patchedFiles = await collectFiles(patchedExportDir);
-	const baseMarkdownFiles = await collectFiles(baseExportDir, {
+	const baselineFiles = await collectFiles(baselineExportDir);
+	const candidateFiles = await collectFiles(candidateExportDir);
+	const baselineMarkdownFiles = await collectFiles(baselineExportDir, {
 		includeContent: true,
 		onlyMarkdown: true,
 	});
-	const patchedMarkdownFiles = await collectFiles(patchedExportDir, {
+	const candidateMarkdownFiles = await collectFiles(candidateExportDir, {
 		includeContent: true,
 		onlyMarkdown: true,
 	});
@@ -637,28 +640,36 @@ export async function comparePromptExports({
 		includeContent: true,
 		onlyMarkdown: true,
 	});
+	const stockWatchPaths =
+		watchPaths ??
+		[
+			...new Set([
+				...baselineMarkdownFiles.keys(),
+				...candidateMarkdownFiles.keys(),
+			]),
+		].sort();
 
 	return {
-		baseExportDir,
-		patchedExportDir,
+		baselineExportDir,
+		candidateExportDir,
 		etcClaudeDir,
-		files: compareFileInventory(baseFiles, patchedFiles),
-		manifest: await compareManifests(baseExportDir, patchedExportDir),
+		files: compareFileInventory(baselineFiles, candidateFiles),
+		manifest: await compareManifests(baselineExportDir, candidateExportDir),
 		unicodeDashStyle: compareUnicodeDashStyle(
-			baseMarkdownFiles,
-			patchedMarkdownFiles,
+			baselineMarkdownFiles,
+			candidateMarkdownFiles,
 		),
 		watchedSurfaces: compareWatchedSurfaces(
-			baseFiles,
-			patchedFiles,
-			watchPaths,
+			baselineFiles,
+			candidateFiles,
+			stockWatchPaths,
 		),
 		etcLayer: await compareEtcLayer(
 			etcClaudeDir,
-			patchedMarkdownFiles,
+			candidateMarkdownFiles,
 			minOverlapLineLength,
 		),
-		policyTerms: comparePolicyTerms(patchedMarkdownFiles, etcMarkdownFiles),
+		policyTerms: comparePolicyTerms(candidateMarkdownFiles, etcMarkdownFiles),
 	};
 }
 
@@ -703,21 +714,21 @@ export function formatPromptExportComparisonMarkdown(
 	const lines: string[] = [
 		"# Prompt Export Comparison",
 		"",
-		`Base export: \`${result.baseExportDir}\``,
-		`Patched export: \`${result.patchedExportDir}\``,
+		`Baseline export: \`${result.baselineExportDir}\``,
+		`Candidate export: \`${result.candidateExportDir}\``,
 		`Runtime policy dir: \`${result.etcClaudeDir}\``,
 		"",
 		"## File Inventory",
 		"",
 		"| Metric | Count |",
 		"|---|---:|",
-		`| Base files | ${result.files.baseFiles} |`,
-		`| Patched files | ${result.files.patchedFiles} |`,
+		`| Baseline files | ${result.files.baselineFiles} |`,
+		`| Candidate files | ${result.files.candidateFiles} |`,
 		`| Common files | ${result.files.common} |`,
 		`| Unchanged common files | ${result.files.unchanged} |`,
 		`| Changed common files | ${result.files.changed} |`,
-		`| Added patched-only files | ${result.files.added} |`,
-		`| Removed base-only files | ${result.files.removed} |`,
+		`| Added candidate-only files | ${result.files.added} |`,
+		`| Removed baseline-only files | ${result.files.removed} |`,
 		"",
 	];
 
@@ -725,12 +736,12 @@ export function formatPromptExportComparisonMarkdown(
 		lines.push(
 			"## Manifest Count Deltas",
 			"",
-			"| Count | Base | Patched | Delta |",
+			"| Count | Baseline | Candidate | Delta |",
 			"|---|---:|---:|---:|",
 			...result.manifest.countDeltas.map(
 				(delta) =>
-					`| \`${delta.key}\` | ${formatNumber(delta.base)} | ${formatNumber(
-						delta.patched,
+					`| \`${delta.key}\` | ${formatNumber(delta.baseline)} | ${formatNumber(
+						delta.candidate,
 					)} | ${formatDelta(delta.delta)} |`,
 			),
 			"",
@@ -740,23 +751,23 @@ export function formatPromptExportComparisonMarkdown(
 	lines.push(
 		"## Unicode Dash Style",
 		"",
-		"| Metric | Base | Patched | Delta |",
+		"| Metric | Baseline | Candidate | Delta |",
 		"|---|---:|---:|---:|",
-		`| Markdown files | ${result.unicodeDashStyle.base.markdownFiles} | ${result.unicodeDashStyle.patched.markdownFiles} | ${formatDelta(
-			result.unicodeDashStyle.patched.markdownFiles -
-				result.unicodeDashStyle.base.markdownFiles,
+		`| Markdown files | ${result.unicodeDashStyle.baseline.markdownFiles} | ${result.unicodeDashStyle.candidate.markdownFiles} | ${formatDelta(
+			result.unicodeDashStyle.candidate.markdownFiles -
+				result.unicodeDashStyle.baseline.markdownFiles,
 		)} |`,
-		`| Files with Unicode dash punctuation | ${result.unicodeDashStyle.base.filesWithDashes} | ${result.unicodeDashStyle.patched.filesWithDashes} | ${formatDelta(
-			result.unicodeDashStyle.patched.filesWithDashes -
-				result.unicodeDashStyle.base.filesWithDashes,
+		`| Files with Unicode dash punctuation | ${result.unicodeDashStyle.baseline.filesWithDashes} | ${result.unicodeDashStyle.candidate.filesWithDashes} | ${formatDelta(
+			result.unicodeDashStyle.candidate.filesWithDashes -
+				result.unicodeDashStyle.baseline.filesWithDashes,
 		)} |`,
-		`| En dash characters | ${result.unicodeDashStyle.base.enDash} | ${result.unicodeDashStyle.patched.enDash} | ${formatDelta(
+		`| En dash characters | ${result.unicodeDashStyle.baseline.enDash} | ${result.unicodeDashStyle.candidate.enDash} | ${formatDelta(
 			result.unicodeDashStyle.delta.enDash,
 		)} |`,
-		`| Em dash characters | ${result.unicodeDashStyle.base.emDash} | ${result.unicodeDashStyle.patched.emDash} | ${formatDelta(
+		`| Em dash characters | ${result.unicodeDashStyle.baseline.emDash} | ${result.unicodeDashStyle.candidate.emDash} | ${formatDelta(
 			result.unicodeDashStyle.delta.emDash,
 		)} |`,
-		`| Total Unicode dash punctuation | ${result.unicodeDashStyle.base.total} | ${result.unicodeDashStyle.patched.total} | ${formatDelta(
+		`| Total Unicode dash punctuation | ${result.unicodeDashStyle.baseline.total} | ${result.unicodeDashStyle.candidate.total} | ${formatDelta(
 			result.unicodeDashStyle.delta.total,
 		)} |`,
 		"",
@@ -766,7 +777,7 @@ export function formatPromptExportComparisonMarkdown(
 		.slice(0, sampleLimit)
 		.map(
 			(file) =>
-				`| \`${file.file}\` | ${file.base.total} | ${file.patched.total} | ${formatDelta(
+				`| \`${file.file}\` | ${file.baseline.total} | ${file.candidate.total} | ${formatDelta(
 					file.delta.total,
 				)} |`,
 		);
@@ -774,7 +785,7 @@ export function formatPromptExportComparisonMarkdown(
 		lines.push(
 			"### Unicode Dash File Deltas",
 			"",
-			"| File | Base | Patched | Delta |",
+			"| File | Baseline | Candidate | Delta |",
 			"|---|---:|---:|---:|",
 			...dashRows,
 			"",
@@ -843,26 +854,26 @@ export function formatPromptExportComparisonMarkdown(
 	lines.push(
 		"## /etc Claude Code Layer",
 		"",
-		`Patched Markdown corpus: ${result.etcLayer.patchedMarkdownFiles} files, ${result.etcLayer.patchedComparableLines} comparable lines.`,
+		`Candidate Markdown corpus: ${result.etcLayer.candidateMarkdownFiles} files, ${result.etcLayer.candidateComparableLines} comparable lines.`,
 		`Runtime /etc policy corpus: ${result.etcLayer.files.length} Markdown files, ${result.etcLayer.totalCandidateLines} comparable lines.`,
-		`Exact /etc lines found in patched export: ${result.etcLayer.totalExactLinesInPatchedExport}.`,
+		`Exact /etc lines found in candidate export: ${result.etcLayer.totalExactLinesInCandidateExport}.`,
 		"",
-		"| /etc file | Candidate lines | Exact lines in patched export | Exact % |",
+		"| /etc file | Comparable lines | Exact lines in candidate export | Exact % |",
 		"|---|---:|---:|---:|",
 		...result.etcLayer.files.map(
 			(file) =>
-				`| \`${file.file}\` | ${file.candidateLines} | ${file.exactLinesInPatchedExport} | ${file.exactPct}% |`,
+				`| \`${file.file}\` | ${file.candidateLines} | ${file.exactLinesInCandidateExport} | ${file.exactPct}% |`,
 		),
 		"",
 		"Interpretation: `/etc/claude-code/system-prompt.md`, `CLAUDE.md`, and `.claude/rules/*.md` are runtime policy/context layers. They should not normally appear verbatim in the exported bundle prompts.",
 		"",
 		"## Policy Term Presence",
 		"",
-		"| Term | Patched export Markdown files | /etc Markdown files |",
+		"| Term | Candidate export Markdown files | /etc Markdown files |",
 		"|---|---:|---:|",
 		...result.policyTerms.map(
 			(term) =>
-				`| ${term.label} | ${term.patchedExportFiles} | ${term.etcFiles} |`,
+				`| ${term.label} | ${term.candidateExportFiles} | ${term.etcFiles} |`,
 		),
 		"",
 	);

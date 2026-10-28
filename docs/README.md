@@ -2,42 +2,31 @@
 
 [Project overview](../README.md)
 
-cc-enhanced documentation is organized by task. The root README is the public landing page; operational detail lives here so release status, patch behavior, and maintainer internals do not compete for attention.
+cc-enhanced runs stock Claude Code with a standard marketplace plugin and a shell PATH wrapper for system-prompt appends. `install.sh` handles setup without Bun or a build step; Claude Code updates itself. The executable is not modified. The tested upstream version is **2.1.312**; only the latest upstream form is maintained.
 
-## Use the patched CLI
-
-| Goal | Guide |
-| --- | --- |
-| Install dependencies, patch the current release, verify activation, or roll back | [Getting started](getting-started.md) |
-| Understand every registered patch and its exact effect | [Patch catalog](patches.md) |
-| Configure patch selection, runtime variables, models, file opening, and prompt policy | [Configuration](configuration.md) |
-| Run lifecycle, evidence, prompt-export, inspection, or release-diff commands | [CLI and inspection reference](cli-reference.md) |
-
-## Work with other targets
+## Use cc-enhanced
 
 | Goal | Guide |
 | --- | --- |
-| Construct or inspect Desktop, Remote Control, and self-hosted candidates without overstating live support | [Target workflows](target-workflows.md) |
-| Configure the optional direct-plus-mixed-model launcher setup | [Subscription routing](subscription-routing/README.md) |
+| Install, update the plugin, or uninstall | [Getting started](getting-started.md) |
+| Configure saved settings, shell prompt appends, and effort | [Configuration](configuration.md) |
+| Find setup, verification, and inspection commands | [CLI and inspection reference](cli-reference.md) |
+| Set up optional subscription routing | [Subscription routing](subscription-routing/README.md) |
 
-Reserved target profiles are intentionally separate from the supported `cli-full` profile. Structural candidates, matching-host execution, stock-client presentation, and live control-plane behavior are different evidence classes; a passing earlier class never implies a later one.
+## Maintain the mod and auditing tools
 
-## Maintain the patcher
+The [maintainer reference](maintainer-reference.md) covers mod authoring, declaration refreshes, live verification, release updates, native extraction, binary-format inspection, prompt exports, and memory containment. Read the hard rules in [AGENTS.md](../AGENTS.md) before maintenance work.
 
-The [maintainer reference](maintainer-reference.md) owns architecture, binary-format constraints, command internals, patch authoring, traversal interactions, prompt exports, drift verification, release cadence, and testing. Repository-specific safety invariants also live in `AGENTS.md` and must be followed before native lifecycle or release work.
+Stock prompt exports describe the upstream bundle. They do not include runtime mod changes or managed prompt appends. Use live mod verification to establish what the model actually receives.
 
-The most useful source entrypoints are:
+## Legacy patch-based version
 
-| Area | Files |
-| --- | --- |
-| Patch contract and execution | [`src/types.ts`](../src/types.ts), [`src/patch-runner.ts`](../src/patch-runner.ts), [`src/ast-pass-engine.ts`](../src/ast-pass-engine.ts) |
-| Patch registry and metadata | [`src/patches/index.ts`](../src/patches/index.ts), [`src/patch-metadata.ts`](../src/patch-metadata.ts) |
-| Native lifecycle | [`src/manager.ts`](../src/manager.ts), [`src/native.ts`](../src/native.ts), [`src/bun-format.ts`](../src/bun-format.ts) |
-| Target capabilities and profiles | [`src/profiles/`](../src/profiles/), [`src/targets/`](../src/targets/), [`src/operations/`](../src/operations/) |
-| Prompt policy and verification | [`src/patches/prompt-policy.ts`](../src/patches/prompt-policy.ts), [`src/verification/`](../src/verification/) |
+The old native patcher remains in Git history. Its patch catalog, target profiles, native lifecycle, and verification procedures do not apply to main. The [project overview](../README.md#what-changed-from-the-legacy-patcher) links the last public patcher revision and lists behavior that was replaced or dropped.
 
 ## Documentation conventions
 
-Markdown prose uses one logical line per paragraph. Long prose lines are intentional: the formatter is configured with `proseWrap: never`, and Markdown line-length linting is disabled. Structural line breaks remain in code blocks, tables, lists, blockquotes, and other syntax where a newline changes rendering or meaning.
+Use one logical line per prose paragraph. The formatter uses `proseWrap: never`; structural line breaks remain in code blocks, tables, lists, and blockquotes. Describe observable behavior rather than minified upstream implementation details. Keep examples aligned with `package.json` and distinguish inspected behavior from exercised runtime verification.
 
-Internal relative links are preferred so documentation works from a checkout and on GitHub. The live patch registry remains the patch-count source of truth; when its count changes, update the root badge, root summary, and [patch catalog](patches.md) together.
+```bash
+bun run docs:check
+```

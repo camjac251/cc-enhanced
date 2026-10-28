@@ -2,7 +2,6 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import * as parser from "@babel/parser";
 import * as t from "@babel/types";
 import chalk from "chalk";
 import * as Diff from "diff";
@@ -36,8 +35,7 @@ type FocusMode =
 	| "removals"
 	| "rewrites"
 	| "prompts"
-	| "settings"
-	| "patches";
+	| "settings";
 
 interface BundleMetadata {
 	file: string;
@@ -108,7 +106,6 @@ interface BundleDiffReport {
 	commandCandidates: CommandCandidate[];
 	inventory: InventoryDiff;
 	releaseSummary: ReleaseSummary;
-	patchRelevance: PatchRelevance[];
 	promptExport?: PromptExportCheck;
 }
 
@@ -222,24 +219,6 @@ interface CommandCandidate {
 	descriptions: string[];
 	flags: string[];
 	prompts: string[];
-}
-
-interface PatchRelevance {
-	tag: string;
-	confidence: "none" | "review" | "medium" | "high";
-	directRemoved: PatchAnchorHit[];
-	rewrites: PatchRewriteHit[];
-	countChanged: PatchAnchorHit[];
-}
-
-interface PatchAnchorHit {
-	anchor: string;
-	change: SurfaceChange;
-}
-
-interface PatchRewriteHit {
-	anchor: string;
-	rewrite: RewriteCandidate;
 }
 
 interface PromptExportCheck {
@@ -392,7 +371,6 @@ const FOCUS_MODES: FocusMode[] = [
 	"rewrites",
 	"prompts",
 	"settings",
-	"patches",
 ];
 
 const TOKEN_STOPWORDS = new Set([
@@ -515,7 +493,7 @@ async function main() {
 						choices: FOCUS_MODES,
 						default: "all",
 						description:
-							"Show a focused report section (commands, env, inventory, release, removals, rewrites, prompts, settings, patches)",
+							"Show a focused report section (commands, env, inventory, release, removals, rewrites, prompts, settings)",
 					})
 					.option("markdown", {
 						type: "boolean",
@@ -593,12 +571,12 @@ async function main() {
 				),
 		)
 		.command(
-			["ast <original> <patched>", "diff <original> <patched>"],
+			["ast <before> <after>", "diff <before> <after>"],
 			"Compare two JS files by identifiable AST nodes",
 			(yargs) => {
 				return yargs
-					.positional("original", { type: "string", demandOption: true })
-					.positional("patched", { type: "string", demandOption: true })
+					.positional("before", { type: "string", demandOption: true })
+					.positional("after", { type: "string", demandOption: true })
 					.option("context", { alias: "c", type: "number", default: 2 });
 			},
 			(argv) =>
@@ -1540,12 +1518,6 @@ function buildBundleDiffReport(
 			commandCandidates,
 			rewriteCandidates,
 		}),
-		patchRelevance: buildPatchRelevance(
-			added,
-			removed,
-			countChanged,
-			rewriteCandidates,
-		),
 	};
 	if (promptExportDir) {
 		report.promptExport = buildPromptExportCheck(promptExportDir, added);
@@ -2454,209 +2426,6 @@ function isNearLine(
 	);
 }
 
-export function buildPatchRelevance(
-	added: SurfaceChange[],
-	removed: SurfaceChange[],
-	countChanged: SurfaceChange[],
-	rewrites: RewriteCandidate[],
-	patchesDir: string = path.join(SOURCE_DIR, "patches"),
-): PatchRelevance[] {
-	if (!fs.existsSync(patchesDir)) return [];
-
-	const files = fs
-		.readdirSync(patchesDir)
-		.filter((file) => file.endsWith(".ts"))
-		.filter((file) => !file.endsWith(".test.ts"))
-		.filter((file) => !["index.ts", "ast-helpers.ts"].includes(file));
-
-	return files
-		.map((file) => {
-			const tag = path.basename(file, ".ts");
-			const anchors = extractPatchAnchors(path.join(patchesDir, file));
-			const directRemoved = findPatchAnchorHits(anchors, removed)
-				.filter((hit) => !patchAnchorStillExists(hit.anchor, added))
-				.slice(0, 8);
-			const countHits = findPatchAnchorHits(anchors, countChanged).slice(0, 6);
-			const rewriteHits = findPatchRewriteHits(anchors, rewrites).slice(0, 6);
-			const confidence = getPatchRelevanceConfidence(
-				directRemoved,
-				rewriteHits,
-				countHits,
-			);
-			return {
-				tag,
-				confidence,
-				directRemoved,
-				rewrites: rewriteHits,
-				countChanged: countHits,
-			};
-		})
-		.filter(
-			(result) =>
-				result.confidence !== "none" ||
-				result.directRemoved.length > 0 ||
-				result.rewrites.length > 0 ||
-				result.countChanged.length > 0,
-		)
-		.sort(
-			(a, b) =>
-				patchConfidenceRank(b.confidence) - patchConfidenceRank(a.confidence),
-		);
-}
-
-export function extractPatchAnchors(file: string): string[] {
-	const source = fs.readFileSync(file, "utf-8");
-	const anchors = new Set<string>();
-	let ast: t.File;
-	try {
-		ast = parser.parse(source, {
-			sourceType: "module",
-			plugins: ["typescript"],
-			tokens: false,
-		});
-	} catch {
-		return [];
-	}
-
-	const consider = (raw: string) => {
-		const value = raw.replace(/\s+/g, " ").trim();
-		if (!isUsefulPatchAnchor(value)) return;
-		anchors.add(normalizeSurfaceValue(value, false) ?? value);
-	};
-
-	traverse(ast, {
-		StringLiteral(nodePath: any) {
-			if (isPatchDiagnosticLiteral(nodePath)) return;
-			consider(nodePath.node.value);
-		},
-		TemplateLiteral(nodePath: any) {
-			if (isPatchDiagnosticLiteral(nodePath)) return;
-			consider(templateShape(nodePath.node));
-			for (const quasi of nodePath.node.quasis) {
-				consider(quasi.value.cooked ?? quasi.value.raw);
-			}
-		},
-	});
-
-	return [...anchors].sort((a, b) => b.length - a.length).slice(0, 120);
-}
-
-function isPatchDiagnosticLiteral(nodePath: any): boolean {
-	if (nodePath.parentPath?.isReturnStatement?.()) return true;
-
-	const callPath = nodePath.findParent?.((parent: any) =>
-		parent.isCallExpression?.(),
-	);
-	if (!callPath) return false;
-	const callee = callPath.node.callee;
-	if (!t.isMemberExpression(callee) || callee.computed) return false;
-	if (!t.isIdentifier(callee.object, { name: "console" })) return false;
-	// A non-computed member property is an Identifier or a PrivateName, never a
-	// string literal.
-	const propertyName = t.isIdentifier(callee.property)
-		? callee.property.name
-		: null;
-	return propertyName === "warn" || propertyName === "error";
-}
-
-function isUsefulPatchAnchor(value: string): boolean {
-	if (value.length < 6 || value.length > 220) return false;
-	if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(value)) return false;
-	if (/^[./\w-]+\.ts$/.test(value)) return false;
-	if (value.includes("node:") || value.includes("@babel/")) return false;
-	return /[A-Za-z]/.test(value);
-}
-
-function findPatchAnchorHits(
-	anchors: string[],
-	changes: SurfaceChange[],
-): PatchAnchorHit[] {
-	const hits: PatchAnchorHit[] = [];
-	for (const anchor of anchors) {
-		const normalizedAnchor = normalizeForPatchMatch(anchor);
-		for (const change of changes) {
-			if (surfaceMatchesPatchAnchor(change.value, normalizedAnchor)) {
-				hits.push({ anchor, change });
-				break;
-			}
-		}
-	}
-	return hits;
-}
-
-function findPatchRewriteHits(
-	anchors: string[],
-	rewrites: RewriteCandidate[],
-): PatchRewriteHit[] {
-	const hits: PatchRewriteHit[] = [];
-	for (const anchor of anchors) {
-		const normalizedAnchor = normalizeForPatchMatch(anchor);
-		for (const rewrite of rewrites) {
-			if (
-				surfaceMatchesPatchAnchor(rewrite.oldChange.value, normalizedAnchor) &&
-				!surfaceMatchesPatchAnchor(rewrite.newChange.value, normalizedAnchor)
-			) {
-				hits.push({ anchor, rewrite });
-				break;
-			}
-		}
-	}
-	return hits;
-}
-
-function patchAnchorStillExists(
-	anchor: string,
-	added: SurfaceChange[],
-): boolean {
-	const normalizedAnchor = normalizeForPatchMatch(anchor);
-	return added.some((change) =>
-		surfaceMatchesPatchAnchor(change.value, normalizedAnchor),
-	);
-}
-
-function surfaceMatchesPatchAnchor(
-	value: string,
-	normalizedAnchor: string,
-): boolean {
-	const normalizedValue = normalizeForPatchMatch(value);
-	if (
-		normalizedAnchor.length >= 18 &&
-		normalizedValue.includes(normalizedAnchor)
-	) {
-		return true;
-	}
-	return (
-		normalizedAnchor.includes(normalizedValue) && normalizedValue.length >= 18
-	);
-}
-
-function normalizeForPatchMatch(value: string): string {
-	return (
-		normalizeSurfaceValue(value, false)
-			?.toLowerCase()
-			.replace(/\s+/g, " ")
-			.trim() ?? ""
-	);
-}
-
-function getPatchRelevanceConfidence(
-	directRemoved: PatchAnchorHit[],
-	rewrites: PatchRewriteHit[],
-	countChanged: PatchAnchorHit[],
-): PatchRelevance["confidence"] {
-	if (directRemoved.length >= 2 || rewrites.length >= 2) return "high";
-	if (directRemoved.length === 1 || rewrites.length === 1) return "medium";
-	if (countChanged.length > 0) return "review";
-	return "none";
-}
-
-function patchConfidenceRank(confidence: PatchRelevance["confidence"]): number {
-	if (confidence === "high") return 3;
-	if (confidence === "medium") return 2;
-	if (confidence === "review") return 1;
-	return 0;
-}
-
 function buildPromptExportCheck(
 	promptExportDir: string,
 	added: SurfaceChange[],
@@ -3076,9 +2845,6 @@ function renderBundleDiffMarkdown(
 		);
 		appendMarkdownPromptExport(lines, report.promptExport, limit);
 	}
-	if (focus === "all" || focus === "patches") {
-		appendMarkdownPatchRelevance(lines, report.patchRelevance, limit);
-	}
 	if (focus === "all") {
 		appendMarkdownClusters(
 			lines,
@@ -3236,25 +3002,6 @@ function appendMarkdownClusters(
 	lines.push("");
 }
 
-function appendMarkdownPatchRelevance(
-	lines: string[],
-	relevance: PatchRelevance[],
-	limit: number,
-): void {
-	if (relevance.length === 0) return;
-	lines.push("## Patch Relevance", "");
-	for (const patch of relevance.slice(0, limit)) {
-		lines.push(`- \`${patch.tag}\`: ${patch.confidence}`);
-		for (const hit of patch.directRemoved.slice(0, 2)) {
-			lines.push(`  - removed: ${escapeMarkdownInline(hit.anchor)}`);
-		}
-		for (const hit of patch.rewrites.slice(0, 2)) {
-			lines.push(`  - rewrite: ${escapeMarkdownInline(hit.anchor)}`);
-		}
-	}
-	lines.push("");
-}
-
 function appendMarkdownPromptExport(
 	lines: string[],
 	check: PromptExportCheck | undefined,
@@ -3297,7 +3044,6 @@ function sliceBundleDiffReport(
 		commandCandidates: report.commandCandidates.slice(0, limit),
 		inventory: sliceInventoryDiff(report.inventory, limit),
 		releaseSummary: sliceReleaseSummary(report.releaseSummary, limit),
-		patchRelevance: report.patchRelevance.slice(0, limit),
 		promptExport: report.promptExport
 			? {
 					...report.promptExport,
@@ -3444,9 +3190,6 @@ function printBundleDiffReport(
 			);
 		}
 		printPromptExportCheck(report.promptExport, limit);
-	}
-	if (focus === "all" || focus === "patches") {
-		printPatchRelevance(report.patchRelevance.slice(0, limit));
 	}
 	if (focus === "all") {
 		printChanges(
@@ -3646,31 +3389,6 @@ function printReleaseSummary(summary: ReleaseSummary, limit: number): void {
 	console.log();
 }
 
-function printPatchRelevance(relevance: PatchRelevance[]): void {
-	if (relevance.length === 0) return;
-
-	console.log(chalk.bold("Patch relevance"));
-	for (const patch of relevance) {
-		console.log(`  ${patch.tag}: ${chalk.gray(patch.confidence)}`);
-		for (const hit of patch.directRemoved.slice(0, 3)) {
-			console.log(
-				`    removed anchor: ${truncateForDisplay(hit.anchor, 95)} -> ${truncateForDisplay(hit.change.value, 95)}`,
-			);
-		}
-		for (const hit of patch.rewrites.slice(0, 3)) {
-			console.log(
-				`    rewrite anchor: ${truncateForDisplay(hit.anchor, 95)} -> ${truncateForDisplay(hit.rewrite.newChange.value, 95)}`,
-			);
-		}
-		for (const hit of patch.countChanged.slice(0, 2)) {
-			console.log(
-				`    count changed: ${truncateForDisplay(hit.anchor, 95)} -> ${truncateForDisplay(hit.change.value, 95)}`,
-			);
-		}
-	}
-	console.log();
-}
-
 function printPromptExportCheck(
 	check: PromptExportCheck | undefined,
 	limit: number,
@@ -3851,9 +3569,9 @@ function getNodeSignature(node: any): string {
 }
 
 async function runAstDiff(argv: any) {
-	const { original, patched } = argv;
+	const { before, after } = argv;
 
-	console.log(chalk.blue(`Comparing ${original} -> ${patched}...`));
+	console.log(chalk.blue(`Comparing ${before} -> ${after}...`));
 
 	const map1 = new Map<string, string>();
 	const map2 = new Map<string, string>();
@@ -3888,8 +3606,8 @@ async function runAstDiff(argv: any) {
 	};
 
 	console.log(chalk.gray("Scanning structure..."));
-	collect(original, map1);
-	collect(patched, map2);
+	collect(before, map1);
+	collect(after, map2);
 
 	let changes = 0;
 

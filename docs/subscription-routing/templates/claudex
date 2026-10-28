@@ -14,8 +14,6 @@ prompt_composer='@CLAUDEX_PROMPT_COMPOSER@'
 default_system_prompt_file="$HOME/.config/claudex-clodex/system-prompt.md"
 system_prompt_file=${CLAUDEX_SYSTEM_PROMPT_FILE:-$default_system_prompt_file}
 requested_model=''
-auto_mode_model=''
-routed_model_id=''
 
 case "${1:-}" in
 fable)
@@ -28,42 +26,17 @@ opus)
 	;;
 sol)
 	requested_model='sol'
-	auto_mode_model='sol'
-	routed_model_id='clodex:openai-oauth:gpt-5.6-sol'
 	shift
 	;;
 terra)
 	requested_model='terra'
-	auto_mode_model='terra'
-	routed_model_id='clodex:openai-oauth:gpt-5.6-terra'
 	shift
 	;;
 luna)
 	requested_model='luna'
-	auto_mode_model='luna'
-	routed_model_id='clodex:openai-oauth:gpt-5.6-luna'
 	shift
 	;;
 esac
-
-# A routed model's larger window is opt-in per launch and never saved. GPT-5.6 prices the
-# full request at a higher rate above 272,000 input tokens, so the default stop
-# stays under that line and this shortcut is the deliberate way across it.
-context_stop=''
-if [ "${1:-}" = '--max-context' ]; then
-	if [ -z "$routed_model_id" ]; then
-		printf '%s\n' \
-			'claudex: --max-context is only valid after a sol, terra, or luna shortcut' >&2
-		exit 2
-	fi
-	context_stop="$routed_model_id=max"
-	shift
-fi
-if [ "${1:-}" = '--1m' ]; then
-	printf '%s\n' \
-		'claudex: use --max-context after a sol, terra, or luna shortcut' >&2
-	exit 2
-fi
 
 has_model=0
 for arg; do
@@ -74,9 +47,15 @@ for arg; do
 	--model | --model=*)
 		has_model=1
 		;;
+	--max-context | --1m)
+		printf '%s\n' \
+			'claudex: context overrides require native client patches and are no longer supported; configure the routed model in Clodex' >&2
+		exit 2
+		;;
 	--append-system-prompt | --append-system-prompt=* | \
 		--append-system-prompt-file | --append-system-prompt-file=* | \
-		--append-subagent-system-prompt | --append-subagent-system-prompt=*)
+		--append-subagent-system-prompt | --append-subagent-system-prompt=* | \
+		--append-subagent-system-prompt-file | --append-subagent-system-prompt-file=*)
 		printf '%s\n' \
 			'claudex: routed prompt flags are managed by the launcher; use CLAUDEX_SYSTEM_PROMPT_FILE to replace the reviewed prompt file' >&2
 		exit 2
@@ -169,161 +148,19 @@ unset \
 	CLAUDE_CONFIG_DIR CLAUDE_CODE_BILLING_LABEL CLAUDE_CODE_USE_VERTEX \
 	CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_GATEWAY \
 	CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY CLAUDE_CODE_MAX_CONTEXT_TOKENS \
-	CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_MODEL_ALIAS_SOL CLAUDE_CODE_MODEL_ALIASES \
-	CLAUDE_CODE_AUTO_MODE_MODEL \
-	CLAUDE_CODE_CONFIGURED_MODEL_CATALOG CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY \
-	CLAUDE_CODE_ALWAYS_ENABLE_EFFORT CLAUDE_CODE_EFFORT_LEVEL \
+	CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_EFFORT_LEVEL \
 	CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY ENABLE_TOOL_SEARCH \
 	CCR_INTERNAL_HOME_DIR CCR_PROFILE_SURFACE CCR_NODE_BIN CCR_CLAUDE_CODE_BIN \
 	CCR_REAL_CLAUDE_CODE_BIN CCR_CLAUDE_CODE_AUTH_HELPER CCR_CLAUDE_CODE_CONFIG_MODE \
 	CCR_CLAUDE_CODE_MANAGED_SETTINGS CCR_CLAUDE_CODE_WRAPPER CODEXL_CLAUDE_CODE_BIN
 
 export CLODEX_HOME="$clodex_home"
+export CC_ENHANCED_AGENT_ROUTING_CONFIG="$clodex_home/config.json"
 export CLODEX_CREDENTIAL_HELPER="$credential_helper"
 export CLODEX_CLAUDE_PATH="$claude_path"
 export CLODEX_REQUIRE_SERVER=1
 export CLAUDEX_SYSTEM_PROMPT_FILE="$system_prompt_file"
 export CLAUDE_CODE_PROCESS_WRAPPER="$launcher_process_wrapper"
-export CLAUDE_CODE_APPEND_SYSTEM_PROMPT_FILE="$system_prompt_file"
-export CLAUDE_CODE_BILLING_LABEL='Claude Max + ChatGPT Pro'
-export CLAUDE_CODE_MODEL_ALIASES='{"sol":"clodex:openai-oauth:gpt-5.6-sol","terra":"clodex:openai-oauth:gpt-5.6-terra","luna":"clodex:openai-oauth:gpt-5.6-luna"}'
-if [ -n "$auto_mode_model" ]; then
-	export CLAUDE_CODE_AUTO_MODE_MODEL="$auto_mode_model"
-fi
-# Clodex reports resolved model metadata; the mapping to Claude Code's catalog
-# schema lives here, because that schema is this patcher's, not Clodex's. Probe
-# the command contract first so an unsupported release fails without printing
-# an unrelated unknown-option error.
-clodex_models_help=$("$clodex_bin" models --help 2>&1) || clodex_models_help=''
-clodex_json_supported=0
-clodex_context_supported=0
-case "$clodex_models_help" in
-*'--json'*) clodex_json_supported=1 ;;
-esac
-case "$clodex_models_help" in
-*'--context'*) clodex_context_supported=1 ;;
-esac
-
-if [ "$clodex_json_supported" -ne 1 ] || [ "$clodex_context_supported" -ne 1 ]; then
-	if [ -n "$context_stop" ]; then
-		printf '%s\n' \
-			'claudex: --max-context requires a Clodex build with models --json and --context support' >&2
-	else
-		printf '%s\n' 'claudex: Clodex models --json and --context support is required' >&2
-	fi
-	exit 1
-fi
-
-clodex_metadata=''
-if [ -n "$context_stop" ]; then
-	clodex_metadata=$("$clodex_bin" models --json --context "$context_stop") || clodex_metadata=''
-else
-	clodex_metadata=$("$clodex_bin" models --json) || clodex_metadata=''
-fi
-clodex_catalog=''
-if [ -n "$clodex_metadata" ]; then
-	required_max_model=${context_stop%=*}
-	clodex_catalog=$(
-		CLODEX_MODEL_METADATA="$clodex_metadata" \
-			CLAUDEX_REQUIRED_MAX_MODEL="$required_max_model" "$node_bin" <<'NODE'
-// Every bound below is Claude Code's own. It refuses to start on a violation, so
-// an out-of-range optional value is dropped rather than passed through. A max
-// request must still resolve one exact model with a bounded effective context.
-const VALID_EFFORT = ['low', 'medium', 'high', 'xhigh', 'max'];
-const BASE_EFFORT = ['low', 'medium', 'high'];
-const ROUTED_MODEL_IDS = [
-  'clodex:openai-oauth:gpt-5.6-sol',
-  'clodex:openai-oauth:gpt-5.6-terra',
-  'clodex:openai-oauth:gpt-5.6-luna',
-];
-const routedModelSet = new Set(ROUTED_MODEL_IDS);
-const requiredMaxModel = process.env.CLAUDEX_REQUIRED_MAX_MODEL ?? '';
-let models;
-try {
-  const raw = process.env.CLODEX_MODEL_METADATA ?? '';
-  if (raw.length > 1_000_000) process.exit(1);
-  models = JSON.parse(raw);
-} catch {
-  process.exit(1);
-}
-if (!Array.isArray(models) || models.length === 0 || models.length > 64) process.exit(1);
-const bounded = (value, min, max) =>
-  Number.isSafeInteger(value) && value >= min && value <= max ? value : undefined;
-const entriesById = new Map();
-const seen = new Set();
-let requiredMaxResolved = requiredMaxModel === '';
-for (const model of models) {
-  if (model === null || Array.isArray(model) || typeof model !== 'object') process.exit(1);
-  const id = typeof model?.id === 'string' ? model.id.trim() : '';
-  if (!id || id.length > 512 || /[\u0000-\u001f\u007f]/.test(id)) process.exit(1);
-  if (!routedModelSet.has(id)) continue;
-  const normalizedId = id.toLowerCase();
-  if (seen.has(normalizedId)) process.exit(1);
-  seen.add(normalizedId);
-  const displayName = model.displayName === undefined
-    ? id
-    : typeof model.displayName === 'string'
-      ? model.displayName.trim()
-      : '';
-  if (!displayName || displayName.length > 512 || /[\u0000-\u001f\u007f]/.test(displayName)) {
-    process.exit(1);
-  }
-  const maxInputTokens = bounded(model.context?.effective, 1, 1000000);
-  const maxOutputTokens = bounded(model.maxOutputTokens, 4096, 1000000);
-  const autoCompactWindow = model.context?.stop === 'max' && maxInputTokens !== undefined
-    ? bounded(Math.floor(maxInputTokens * 0.9), 100000, 1000000)
-    : undefined;
-  if (
-    id === requiredMaxModel
-    && model.context?.stop === 'max'
-    && maxInputTokens !== undefined
-    && autoCompactWindow !== undefined
-  ) {
-    requiredMaxResolved = true;
-  }
-  // Providers advertise levels Claude Code rejects outright, such as `none`.
-  const levels = Array.isArray(model.effort?.levels)
-    ? [...new Set(model.effort.levels.filter(level => VALID_EFFORT.includes(level)))]
-    : [];
-  const usable = BASE_EFFORT.every(level => levels.includes(level));
-  const defaultEffort =
-    usable && typeof model.effort?.default === 'string' && levels.includes(model.effort.default)
-      ? model.effort.default
-      : undefined;
-  entriesById.set(id, {
-    id,
-    displayName,
-    description: 'ChatGPT Pro subscription route',
-    ...(maxInputTokens === undefined ? {} : { maxInputTokens }),
-    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
-    ...(autoCompactWindow === undefined ? {} : { autoCompactWindow }),
-    ...(usable ? { effortLevels: levels } : {}),
-    ...(defaultEffort === undefined ? {} : { defaultEffort }),
-  });
-}
-const entries = ROUTED_MODEL_IDS.flatMap(id => {
-  const entry = entriesById.get(id);
-  return entry === undefined ? [] : [entry];
-});
-if (entries.length === 0 || !requiredMaxResolved) process.exit(1);
-process.stdout.write(JSON.stringify(entries));
-NODE
-	) || clodex_catalog=''
-fi
-case "$clodex_catalog" in
-'['*']') ;;
-*)
-	if [ -n "$context_stop" ]; then
-		printf '%s\n' \
-			'claudex: --max-context could not resolve bounded Clodex model metadata' >&2
-	else
-		printf '%s\n' 'claudex: could not resolve routed GPT-5.6 model metadata' >&2
-	fi
-	exit 1
-	;;
-esac
-export CLAUDE_CODE_CONFIGURED_MODEL_CATALOG="$clodex_catalog"
-export CLAUDE_CODE_MODEL_PICKER_SESSION_ONLY=1
 export ENABLE_TOOL_SEARCH=true
 
 exec 9>"$session_lock"

@@ -13,10 +13,8 @@ const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
 
 interface ComparePromptMatrixOptions {
-	previousCleanExportDir: string;
-	previousPatchedExportDir: string;
-	currentCleanExportDir: string;
-	currentPatchedExportDir: string;
+	baselineExportDir: string;
+	candidateExportDir: string;
 	etcClaudeDir: string;
 	json: boolean;
 	output?: string;
@@ -34,7 +32,7 @@ function parseOptions(): ComparePromptMatrixOptions {
 	const argv = yargs(rawArgs)
 		.scriptName("compare-prompt-matrix")
 		.usage(
-			"$0 <previous-clean> <previous-patched> <current-clean> <current-patched> <etc-claude-dir>",
+			"$0 <baseline-export-dir> <candidate-export-dir> <etc-claude-dir> [options]",
 		)
 		.option("json", {
 			type: "boolean",
@@ -54,9 +52,9 @@ function parseOptions(): ComparePromptMatrixOptions {
 		.strictOptions()
 		.parseSync();
 	const positional = argv._.map(String).filter((value) => value !== "$0");
-	if (positional.length !== 5) {
+	if (positional.length !== 3) {
 		throw new Error(
-			`Expected exactly 5 positional arguments, got ${positional.length}.`,
+			`Expected exactly 3 positional arguments, got ${positional.length}.`,
 		);
 	}
 	if (
@@ -66,11 +64,9 @@ function parseOptions(): ComparePromptMatrixOptions {
 		throw new Error("--min-overlap-line-length must be a positive integer");
 	}
 	return {
-		previousCleanExportDir: resolveFromRepo(positional[0] as string),
-		previousPatchedExportDir: resolveFromRepo(positional[1] as string),
-		currentCleanExportDir: resolveFromRepo(positional[2] as string),
-		currentPatchedExportDir: resolveFromRepo(positional[3] as string),
-		etcClaudeDir: resolveFromRepo(positional[4] as string),
+		baselineExportDir: resolveFromRepo(positional[0] as string),
+		candidateExportDir: resolveFromRepo(positional[1] as string),
+		etcClaudeDir: resolveFromRepo(positional[2] as string),
 		json: argv.json,
 		output: argv.output ? resolveFromRepo(argv.output) : undefined,
 		minOverlapLineLength: argv.minOverlapLineLength,
@@ -86,7 +82,7 @@ async function main(): Promise<void> {
 	if (options.output) {
 		await fs.mkdir(path.dirname(options.output), { recursive: true });
 		await fs.writeFile(options.output, output, "utf8");
-		console.log(`Wrote four-way prompt comparison: ${options.output}`);
+		console.log(`Wrote stock release prompt matrix: ${options.output}`);
 		return;
 	}
 	process.stdout.write(output);

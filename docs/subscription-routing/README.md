@@ -13,75 +13,37 @@ flowchart LR
     Router -->|GPT-5.6 Sol, Terra, Luna:<br/>protocol translation| Pro["OpenAI<br/>ChatGPT Pro OAuth"]
 ```
 
-`claudex` is the opt-in launcher that enables the isolated Clodex path for its Claude Code process tree. Clodex then exposes GPT-5.6 Sol, Terra, and Luna inside Claude Code through the configured ChatGPT Pro OAuth route. A normal `claude` launch does not enable Clodex and remains on the native Anthropic subscription path.
+`claudex` is an opt-in launcher for an isolated Clodex route. Clodex handles provider OAuth, native-model passthrough, protocol translation, and lifecycle logging. A normal `claude` launch remains on its direct Anthropic path. Routing does not replace normal login, settings, plugins, skills, agents, session history, or project configuration.
 
-The direct and routed launchers intentionally coexist. `claude` remains the baseline. `claudex` enables Clodex only for that process tree, including fresh agents and workflow workers; Clodex performs the routing. The launcher does not replace the normal login, settings, status line, plugins, skills, agents, session history, or project configuration.
+cc-enhanced is a **standard marketplace plugin** with `install.sh` and a shell PATH wrapper. Claude Code remains official and updates itself. The plugin resolves explicitly requested per-worker aliases at `agent.spawn` using the routed launcher's `CC_ENHANCED_AGENT_ROUTING_CONFIG` file. It does not supply a model picker/catalog, context-window overrides, an expanded Agent schema, or child network-environment changes. The [legacy patcher revision](../../README.md#what-changed-from-the-legacy-patcher) retains the old setup for historical reference.
 
-Two client profiles are supported:
+The templates retain model shortcuts, prompt composition, process wrapping, credential isolation, and guarded service restarts. Shortcuts do not add aliases to the stock picker or built-in tool schemas. Per-worker alias resolution uses the config's `modelAliases` entries and canonical `clodex:<providerId>:<modelId>` IDs. This plugin path does not require Clodex client patching.
 
-- **Enhanced client:** the current cc-enhanced build owns all client changes and exposes the complete model catalog, picker, context, prompt, arbitrary-agent model/effort routing, and workflow behavior.
-- **Stock client:** an official Claude Code installation uses Clodex's own client patch for first-class routed aliases in `/model`, Agent, and Workflow calls. The routing wrapper and system-prompt propagation are otherwise the same. A completely untouched stock binary can route a top-level canonical model ID, but it does not provide the full per-call alias experience and is not the documented stock profile.
+`clodex patch` is a Clodex operation, not part of cc-enhanced. If you need it, use a separately managed Claude Code installation and follow Clodex's current compatibility requirements. Do not modify the official executable used with cc-enhanced: doing so invalidates stock-binary verification and can be overwritten by Claude Code's own updater. The administration wrapper delegates Clodex commands; it no longer detects an enhanced profile or rejects patching on your behalf.
 
-The package targets WSL or Linux x86_64 with a systemd user session. Clodex is portable to other platforms, but the supplied service and PasswordVault bridge are platform-specific.
-
-## How the profiles differ
-
-In the enhanced profile, the cc-enhanced patcher owns the native binary, patch catalog, aliases, context and effort metadata, Agent and Workflow model/effort selection, and prompt propagation. Do not run `clodex patch`.
-
-In the stock profile, Clodex is the only client patch owner. Its patch builds the routed model surfaces from the saved favorite and alias. Run `clodex patch` after every stock Claude Code update or routed-model change.
-
-Never apply both patchers to the same binary. Clodex handles provider OAuth, selective routing, protocol translation, and lifecycle logging in both profiles.
+This setup targets WSL or Linux x86_64 with a systemd user session. The service and supplied Windows PasswordVault bridge are platform-specific. A source-level template check does not establish live provider, alias, Agent, or Workflow compatibility.
 
 ## Prerequisites
 
 Install:
 
 - Git and [mise](https://mise.jdx.dev/);
-- a systemd user session and common POSIX utilities;
+- a systemd user session and common POSIX utilities, including GNU `timeout` for inference smoke tests;
 - `jq`;
 - Windows PowerShell and `wslpath` when using the supplied WSL PasswordVault helper.
 
-## 1. Select a client profile
+## 1. Select the client command
 
-### Enhanced client
-
-Start from the parent directory where you want the source checkout:
+Confirm the intended client works directly:
 
 ```sh
-export CLAUDEX_CLIENT_PROFILE=enhanced
-
-(
-set -eu
-
-git clone \
-  --branch main \
-  --single-branch \
-  https://github.com/camjac251/cc-enhanced.git \
-  cc-enhanced
-
-cd cc-enhanced
-mise install
-mise run native:update -- latest
-
-claude --version
-mise run status
-)
-```
-
-The update performs the real-bundle patch verification, promotes by atomic symlink replacement, and verifies the promoted client.
-
-### Stock client
-
-Keep the official `claude` command installed and confirm it works directly:
-
-```sh
-export CLAUDEX_CLIENT_PROFILE=stock
-
 claude --version
 claude
 ```
 
-Do not install cc-enhanced over that binary. Complete the Clodex, credential, wrapper, prompt, and model-selection steps below, then run `clodex patch`.
+For the standard cc-enhanced plugin and shell wrapper, follow [Getting started](../getting-started.md). If Clodex client changes are required, select a separate installation before rendering the routing launchers. The render recipe captures `command -v claude`; inspect that value before installation so it does not point at the wrong client. With cc-enhanced's PATH block loaded, that command selects its prompt wrapper rather than replacing the official executable.
+
+Run the remaining setup commands from this `docs/subscription-routing` directory. No `CLAUDEX_CLIENT_PROFILE` variable is needed.
 
 ## 2. Install Clodex globally with mise
 
@@ -136,15 +98,10 @@ node_bin=$(mise which node)
 clodex_bin=${CLODEX_BIN_PATH:-$(command -v clodex)}
 clodex_wrapper=$(command -v clodex-claude)
 claude_bin=$(command -v claude)
-client_profile=${CLAUDEX_CLIENT_PROFILE:-enhanced}
 credential_helper=${CLODEX_CREDENTIAL_HELPER_PATH:-"$HOME/.local/libexec/claudex-credential-helper"}
 launcher_process_wrapper="$HOME/.local/libexec/claudex-process-wrapper"
 prompt_composer="$HOME/.local/libexec/claudex-compose-system-prompt"
 
-case "$client_profile" in
-  enhanced|stock) ;;
-  *) printf '%s\n' 'client profile must be enhanced or stock' >&2; exit 1 ;;
-esac
 case "$credential_helper" in
   /*) ;;
   *) printf '%s\n' 'credential helper path must be absolute' >&2; exit 1 ;;
@@ -187,7 +144,6 @@ sed \
   templates/clodex-service >"$rendered_dir/clodex-service"
 sed \
   -e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
-  -e "s|@CLAUDEX_CLIENT_PROFILE@|$client_profile|g" \
   templates/claudex-process-wrapper >"$rendered_dir/claudex-process-wrapper"
 sed \
   -e "s|@NODE_BIN@|$node_bin|g" \
@@ -240,11 +196,11 @@ clodex upstream-proxy tools direct
 clodex upstream-proxy status
 ```
 
-The Anthropic and OpenAI switches are independent. `tools original` restores the network environment from before the local bridge, `tools direct` clears proxy, bypass-list, and extra-CA variables, and `tools upstream` gives child commands only the configured upstream proxy. The parent Claude Code process continues to use the local Clodex bridge in every mode. The URL and policy live in the isolated Clodex config; `status` redacts an embedded password.
+The Anthropic and OpenAI proxy switches are independent. Child-tool modes describe Clodex policy: `tools original` requests the pre-bridge environment, `tools direct` clears proxy/bypass/CA settings, and `tools upstream` selects the upstream proxy. Their effect on a child process depends on the client integration that consumes Clodex's handoff; the cc-enhanced mod does not implement that behavior.
 
-Provider-route changes take effect when the idle routing service is next started. If it is already running, let routed sessions finish and use the guarded `clodex-service restart`. Child-tool changes also require a new `claudex` parent so its process tree receives the new handoff markers. The enhanced profile gets that handoff from cc-enhanced's `child-network-env` patch; the stock profile gets the equivalent behavior from `clodex patch`. Never apply both patchers to one client binary.
+Provider-route changes take effect when the idle routing service next starts. Let routed sessions finish before using `clodex-service restart`; child-tool changes also require a fresh routed parent. Verify child network behavior on the actual selected client rather than assuming the former native behavior remains.
 
-The rendered launcher snapshots the caller's proxy, bypass, and CA variables before the local bridge starts. The enhanced client restores that snapshot for ordinary child commands, while the parent client and nested wrapped client launches keep the local route. Do not set `CLODEX_ORIGINAL_NETWORK_ENV` manually; the launcher validates and owns it.
+The launcher snapshots proxy, bypass, and CA variables into `CLODEX_ORIGINAL_NETWORK_ENV` before the bridge starts. This snapshot is preserved for Clodex, not a guarantee that stock Claude Code restores it for every child. Do not set the marker manually; the launcher owns and validates it.
 
 ## 5. Install and compose the routed prompt
 
@@ -285,100 +241,62 @@ In the model manager, favorite each routed model from provider `openai-oauth` an
 | `gpt-5.6-terra` | `terra` |
 | `gpt-5.6-luna`  | `luna`  |
 
-For the enhanced profile, stop here. The administration wrapper rejects `clodex patch` because cc-enhanced already owns the binary.
+Saved favorites and aliases configure Clodex; they do not change stock Claude Code's model picker or Agent schema. cc-enhanced resolves per-worker aliases through `agent.spawn`, including Workflow calls. It does not inject provider context limits or a model catalog into the stock client. Do not run `clodex patch` against the official executable used with cc-enhanced; any separately managed client modification is outside this setup.
 
-For the stock profile, apply Clodex's model patch after saving the favorite and alias:
+Keep provider credentials out of `~/.claude/settings.json`. Routing remains scoped to the routed process tree.
 
-```sh
-clodex patch
-```
+### Context limits
 
-Run that command again after every stock Claude Code update or after changing the routed favorite or alias.
+`claudex --max-context` and the older `--1m` spelling are rejected. The launcher no longer generates `CLAUDE_CODE_CONFIGURED_MODEL_CATALOG`, queries model metadata to set headroom, or advertises a larger context window to Claude Code.
 
-Both documented profiles expose `low`, `medium`, `high`, `xhigh`, and `max` for every routed GPT-5.6 model, with `medium` as the model default. The enhanced profile gets those capabilities from `CLAUDE_CODE_CONFIGURED_MODEL_CATALOG`; the stock profile gets them from Clodex's client patch. Clodex preserves the selected `xhigh` or `max` value when it builds the provider request.
-
-`effort-stack` is needed only for `max` plus ultracode workflows. It is not required for ordinary routed `xhigh` or `max` selection.
-
-Do not put the route, alias, base URL, or credentials in `~/.claude/settings.json`. The launcher injects these values only into routed processes.
-
-### Context window and the 272K pricing boundary
-
-The routed GPT-5.6 context window is a cost dial, not just a capacity number. OpenAI prices prompts above **272,000 input tokens at 2x input and 1.5x output for the full request**, not just the overage. That is why the catalog reports a 272,000 default rather than the model's published ceiling, and why the launcher's standard stop stays under the line.
-
-The launcher generates `CLAUDE_CODE_CONFIGURED_MODEL_CATALOG` from Clodex, so the numbers live in one place:
-
-| Stop | Raw window | Reported (95% headroom) | Auto-compaction |
-| --- | --- | --- | --- |
-| `standard` (default) | 272,000 | 258,400 | model window |
-| `max` (`claudex <alias> --max-context`) | account ceiling | 95% of it | 90% of reported |
-
-The 95% headroom mirrors the Codex catalog's own `effective_context_window` convention. The ceiling is account-scoped and read from the Codex catalog at model-refresh time, so it is not a fixed number; a plan with a smaller ceiling gets a smaller `max` stop rather than a value that would be clamped upstream.
-
-The launcher calls `clodex models --json` and maps the result to Claude Code's catalog schema itself, so that schema stays this patcher's concern rather than Clodex's. It probes `clodex models --help` first and fails closed when `--json` or `--context` is unavailable, when metadata is malformed, or when none of the three routed models resolves. This avoids silently advertising stale capabilities. Point `CLODEX_BIN_PATH` at a build with both metadata flags when the packaged Clodex on `PATH` predates them; the install recipe and `verify-static.sh` honor the same override.
-
-`--max-context` applies only to the selected `sol`, `terra`, or `luna` launch and is never saved. The retired `--1m` spelling is rejected with the replacement name. To change a saved default directly in Clodex:
-
-```sh
-clodex models --context sol=max --save
-clodex models --context sol=standard --save
-clodex models --context terra=max --save
-clodex models --context luna=max --save
-```
-
-Clodex also warns once per session, from the provider's own returned token count, when a request actually crosses the boundary. Claude Code counts tokens in Anthropic shape and the provider counts them after translation, so window math alone cannot see a crossing that the reported usage can.
-
-Whether the higher rate reaches ChatGPT-plan credits is not documented on the Codex rate card; it is documented for API pricing. Treat the boundary as real either way: the larger stop carries roughly 3x the input tokens per turn regardless of any multiplier.
+Configure routed-model context in Clodex using the controls supported by your installed version. Check `clodex models --help` and provider/account limits rather than relying on the former enhanced catalog's values. Larger contexts can change cost and usage; this launcher does not impose a provider pricing boundary.
 
 ## 7. Verify
 
 ```sh
-./verify-static.sh          # enhanced profile
-./verify-static.sh --stock  # stock profile, after clodex patch
+./verify-static.sh
+./verify-live.sh
 ```
 
-```sh
-./verify-live.sh          # enhanced profile
-./verify-live.sh --stock  # stock profile
-```
+The scripts no longer take an enhanced/stock selector. Static verification checks rendered installation contracts; the live verifier checks the installed service and client setup. Neither substitutes for exercising the routed behaviors you depend on.
 
 Opt-in direct, passthrough, and translated inference smoke tests:
 
 ```sh
-./verify-live.sh --smoke                       # enhanced profile, Sol route
-./verify-live.sh --smoke --model=terra         # enhanced profile, Terra route
-./verify-live.sh --stock --smoke --model=luna  # stock profile, Luna route
+./verify-live.sh --smoke
+./verify-live.sh --smoke --model=terra
+./verify-live.sh --smoke --model=luna
 ```
 
-The smoke flag consumes subscription usage. It is not part of static installation validation and checks one routed model per invocation; use `--model=sol`, `--model=terra`, or `--model=luna` deliberately.
+`--smoke` consumes subscription usage and checks one routed model per invocation. Use `--model=sol`, `--model=terra`, or `--model=luna` deliberately. It tests translation first, then direct Claude and routed Claude passthrough, stopping on the first failure and naming that stage. Each call has a 90-second deadline and session-only short timeout/no-retry settings. Calls run sequentially from an empty temporary workspace with a minimal prompt, no tools or MCP servers, no stdin, one turn, and no session persistence. Safe mode excludes user/project instructions, plugins, hooks, and memory while retaining authentication; administrator-managed policy can still apply. This checks provider transport, not plugin behavior. Use `bun run verify:mods --binary <stock-binary> --live` and the interactive probes for mod behavior.
 
-After installation, confirm each parent shortcut, a fresh Agent using an existing local agent type plus an explicit routed `model` and `effort`, and an equivalently routed Workflow worker. On the enhanced profile, enter auto mode from one routed parent and confirm its classifier request uses the same route. Confirm a normal `claude` session still uses only native models.
+Confirm each shortcut and any supported per-call Agent/Workflow routing on the selected client. Confirm a normal `claude` session still uses its direct route. Do not infer worker-model support from a successful top-level model call.
 
 ## Usage
 
 ```sh
-claude                           # direct client; no routing environment
-claudex                          # routed session; preserve the saved native parent
-claudex fable                    # Fable parent through native passthrough
-claudex opus                     # Opus parent through native passthrough
-claudex sol                      # Sol parent and auto classifier when auto mode is active
-claudex terra                    # Terra parent and auto classifier when auto mode is active
-claudex luna                     # Luna parent and auto classifier when auto mode is active
-claudex luna --max-context       # Luna with its larger window for this launch only
-claudex sol --permission-mode auto # enter routed auto mode immediately
-clodex providers list            # isolated provider administration
-clodex models                    # isolated favorites and aliases
-clodex-service restart           # guarded restart after routed clients are idle
+claude                    # direct client; no routing environment
+claudex                   # routed session; preserve the saved parent choice
+claudex fable             # native-model passthrough shortcut
+claudex opus              # native-model passthrough shortcut
+claudex sol               # routed alias, when supported by the selected client
+claudex terra
+claudex luna
+claudex --model <model-id> # explicit model instead of a shortcut
+clodex providers list     # isolated provider administration
+clodex models             # isolated favorites and aliases
+clodex-service restart    # guarded restart after routed clients are idle
 ```
 
-Inside any parent, route whatever agent type already exists in your setup. For example, a request for the existing `security-reviewer` on Luna at maximum effort becomes an Agent call with `subagent_type: "security-reviewer"`, `model: "luna"`, and `effort: "max"`. The selected definition keeps its prompt, tools, permissions, skills, and other fields. The same per-call effort reaches a named teammate when the Agent call also includes `name`.
+Do not combine a shortcut with an explicit `--model`. Routed prompt flags are managed by the wrapper; use `CLAUDEX_SYSTEM_PROMPT_FILE` for an intentional prompt replacement.
 
-Workflow calls already accept the same controls natively: `agent(prompt, { agentType: "security-reviewer", model: "luna", effort: "max" })`. Apply them only to the workers the user requested. Do not generate Sol/Terra/Luna-specific agent definitions, encode provider IDs in prompts or workflow source, or set launch-wide subagent overrides for a one-worker request.
+For per-worker routing, use Workflow `agent(prompt, { agentType: "security-reviewer", model: "luna", effort: "max" })`. The hook keeps the selected agent type and requested effort, rewriting only a configured alias into its canonical model ID. Full IDs, unknown models, omitted models, forks, and resumes keep stock behavior. The built-in Agent tool still restricts its `model` field to stock aliases; do not send routed aliases or arbitrary IDs there. Without Workflow, a normal agent definition can declare a full routed model ID. Do not replace the chosen specialist or change the parent model as a workaround.
 
-`/model` changes the main session model; it does not retarget an individual worker even when that worker is displayed. Fresh Agent and Workflow workers receive per-call routing. Forks continue to inherit the parent model, effort, and context.
+The process wrapper selects the composed prompt for both contexts. Print mode uses stock append flags; interactive subagents receive additional message context from the cc-enhanced plugin. An explicit caller append takes precedence. `/model` selects the parent, not an individual worker. Local stub probes establish client routing and effort propagation, not paid-provider availability or protocol translation.
+
+The launcher no longer overrides the auto-mode classifier model. Enabling auto mode does not establish that its classifier follows the routed parent; stock or separately integrated client behavior applies.
 
 The isolated Clodex home is `~/.local/share/claudex-clodex`.
-
-On the enhanced profile, each routed shortcut sets `CLAUDE_CODE_AUTO_MODE_MODEL` to its own alias for that process. Auto mode remains off until selected with Shift+Tab or `--permission-mode auto`. Once active, both the acting model and the separate classifier request resolve through that alias. This intentionally removes the independent native classifier boundary. Native shortcuts clear inherited auto-model overrides, and the patched client preserves its upstream classifier selection whenever the variable is unset. The stock profile ignores this cc-enhanced-only override.
 
 ## Safe updates and restarts
 
@@ -409,17 +327,17 @@ The unit remains disabled by design. A WSL shutdown stops the running user servi
 
 For a client update:
 
-1. Enhanced profile: run `mise run native:update -- latest`.
-2. Stock profile: update Claude Code normally, then run `clodex patch`.
-3. Rerender the launchers if the mise data directory, selected client profile, credential-helper path, or `command -v claude` changed.
+1. For the official Claude Code installation used with cc-enhanced, allow its own updater or run `claude update`. Plugin updates are separate: GitHub/git marketplace sources can auto-update; local-checkout users pull changes, run `claude plugin update cc-enhanced@cc-enhanced` or rerun `./install.sh`, then reload plugins or start a new session. Do not apply Clodex's client modification to that official executable.
+2. For a separate Clodex-managed client, update it and follow Clodex's instructions for refreshing its integration.
+3. Rerender the launchers if the mise data directory, credential-helper path, or selected client path changed.
 4. Reinstall the routing overlay if its reviewed template changed.
-5. Run the applicable static and live verification commands.
+5. Run static and live setup checks, then deliberately exercise any required provider and worker routes.
 
 ## Troubleshooting
 
 ### A routed model is missing from `/model`
 
-Launch with `claudex`, not `claude`, then run the applicable static verifier. For a stock client, rerun `clodex patch`.
+Launch through `claudex` and run the static verifier. Stock Claude Code does not gain picker aliases from the cc-enhanced mod. If you use Clodex's separate client integration, check its compatibility and refresh instructions; do not patch the official executable used with cc-enhanced.
 
 ### The routed launcher is blank or slow
 
@@ -431,6 +349,10 @@ journalctl --user-unit claudex-clodex.service --since today --no-pager
 ```
 
 If authentication remains invalid, rerun `clodex providers auth openai`. Do not print credential-helper output or set provider API-key variables.
+
+### Saved aliases exist but requests fail
+
+A running service, an `auth: helper (OAuth)` provider entry, or cached `clodex models --json` metadata does not prove that the serving route has a valid credential. Use `clodex models --list` to resolve live routes. An OpenAI token-refresh 401 requires interactive reauthentication with `clodex providers auth openai`; do not replace aliases or print credential-helper output to work around it. Anthropic rate-limit or usage-limit errors are separate from Clodex translation and require account availability before the direct and passthrough smoke stages can pass.
 
 ### Routed agents stay idle or return package-import 502s
 
@@ -504,4 +426,4 @@ systemctl --user daemon-reload
 )
 ```
 
-Delete the supplied helper files only after provider removal confirms credential deletion. Removing the routed setup does not alter the promoted client, the normal Claude configuration, or the Claude Max login.
+Delete the supplied helper files only after provider removal confirms credential deletion. Removing this routed setup does not restore a separately modified client or alter normal Claude configuration or the Claude Max login. To remove cc-enhanced itself, run `./install.sh --uninstall` from its checkout. That removes its plugin, marketplace, shell blocks, and PATH wrapper, leaving saved settings and the official Claude Code installation in place.

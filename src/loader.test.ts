@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
 import { test } from "node:test";
-import { detectInstalledClaudeTarget } from "./installation-detection.js";
 import { formatParseDiagnostic, parse, print } from "./loader.js";
-import { extractClaudeJsFromNativeBinary } from "./native.js";
 
 test("loader falls back from module mode to script mode when needed", () => {
 	const ast = parse("with (Math) { console.log(max(1, 2)); }\n");
@@ -74,20 +71,4 @@ test("loader prints escaped non-ASCII bundle output", () => {
 	assert.equal(output.includes("\\u65e5\\u672c\\u8a9e"), true);
 	assert.equal(output.includes("\\ud83d\\ude80"), true);
 	assert.doesNotThrow(() => parse(output));
-});
-
-const detectedClaudeTarget = detectInstalledClaudeTarget();
-
-test("loader can parse a detected installed Claude bundle when available", {
-	timeout: 30000,
-	skip: detectedClaudeTarget ? false : "No installed Claude target detected",
-}, () => {
-	assert.ok(detectedClaudeTarget);
-	const bundle =
-		detectedClaudeTarget.kind === "cli.js"
-			? fs.readFileSync(detectedClaudeTarget.targetPath, "utf8")
-			: extractClaudeJsFromNativeBinary(
-					detectedClaudeTarget.targetPath,
-				).toString("utf8");
-	assert.doesNotThrow(() => parse(bundle));
 });

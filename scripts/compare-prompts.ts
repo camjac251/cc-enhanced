@@ -13,8 +13,8 @@ const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
 
 interface ComparePromptOptions {
-	baseExportDir: string;
-	patchedExportDir: string;
+	baselineExportDir: string;
+	candidateExportDir: string;
 	etcClaudeDir: string;
 	json: boolean;
 	output?: string;
@@ -35,7 +35,7 @@ function parseOptions(): ComparePromptOptions {
 	const argv = yargs(rawArgs)
 		.scriptName("compare-prompts")
 		.usage(
-			"$0 <base-export-dir> <patched-export-dir> <etc-claude-dir> [options]",
+			"$0 <baseline-export-dir> <candidate-export-dir> <etc-claude-dir> [options]",
 		)
 		.option("json", {
 			type: "boolean",
@@ -77,8 +77,8 @@ function parseOptions(): ComparePromptOptions {
 	}
 
 	return {
-		baseExportDir: resolveFromRepo(positional[0] as string),
-		patchedExportDir: resolveFromRepo(positional[1] as string),
+		baselineExportDir: resolveFromRepo(positional[0] as string),
+		candidateExportDir: resolveFromRepo(positional[1] as string),
 		etcClaudeDir: resolveFromRepo(positional[2] as string),
 		json: argv.json,
 		output: argv.output ? resolveFromRepo(argv.output) : undefined,

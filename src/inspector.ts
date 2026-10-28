@@ -4,6 +4,7 @@ import chalk from "chalk";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { traverse } from "./babel.js";
+import { withHeavyOperationGuard } from "./heavy-operation-guard.js";
 import { parse } from "./loader.js";
 
 interface LoadedFile {
@@ -578,7 +579,10 @@ async function main() {
 						}),
 				);
 			},
-			(argv) => runSearch(argv),
+			(argv) =>
+				withHeavyOperationGuard({ operation: "bundle inspection" }, () =>
+					runSearch(argv),
+				),
 		)
 		.command(
 			"prompts <file> [query]",
@@ -593,7 +597,10 @@ async function main() {
 						}),
 				);
 			},
-			(argv) => runPrompts(argv),
+			(argv) =>
+				withHeavyOperationGuard({ operation: "bundle inspection" }, () =>
+					runPrompts(argv),
+				),
 		)
 		.command(
 			"view <file> [range]",
@@ -607,7 +614,10 @@ async function main() {
 						default: "1:50",
 					});
 			},
-			(argv) => runView(argv),
+			(argv) =>
+				withHeavyOperationGuard({ operation: "bundle inspection" }, () =>
+					runView(argv),
+				),
 		)
 		.help()
 		.strict()

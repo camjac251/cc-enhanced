@@ -12,8 +12,32 @@ export const SIZEOF_STRING_POINTER = 8;
 export const SIZEOF_MODULE_OLD = 4 * SIZEOF_STRING_POINTER + 4;
 export const SIZEOF_MODULE_NEW = 6 * SIZEOF_STRING_POINTER + 4;
 export const BUN_MODULE_FORMAT_ESM = 1;
+export const BUN_MODULE_FORMAT_CJS = 2;
 
-export const BUSY_FILE_CODES = new Set(["ETXTBSY", "EBUSY", "EPERM"]);
+const CJS_HEADERS = ["// @bun @bun-cjs", "// @bun @bytecode @bun-cjs"].map(
+	(text) => ({ text, bytes: Buffer.from(text) }),
+);
+
+export function hasBunCjsHeader(source: string | Buffer): boolean {
+	for (const { text, bytes } of CJS_HEADERS) {
+		if (typeof source === "string") {
+			if (
+				source.startsWith(text) &&
+				(source.length === text.length ||
+					source[text.length] === "\n" ||
+					source[text.length] === "\r")
+			)
+				return true;
+		} else if (
+			source.length >= bytes.length &&
+			source.compare(bytes, 0, bytes.length, 0, bytes.length) === 0
+		) {
+			const next = source[bytes.length];
+			if (next === undefined || next === 10 || next === 13) return true;
+		}
+	}
+	return false;
+}
 
 export interface StringPointer {
 	offset: number;
@@ -45,6 +69,7 @@ export interface BunEmbeddedModule {
 	index: number;
 	moduleEntryOffset: number;
 	name: string;
+	/** Source bytes, decoded to UTF-8 when serialized as UTF-16. */
 	contents: Buffer;
 	module: BunModule;
 }
@@ -134,31 +159,17 @@ export function getPointerContent(buffer: Buffer, ptr: StringPointer): Buffer {
 	return buffer.subarray(ptr.offset, ptr.offset + ptr.length);
 }
 
-export function mapModules<T>(
-	bunBlob: Buffer,
-	bunOffsets: BunOffsets,
-	moduleStructSize: number,
-	visitor: (
-		module: BunModule,
-		moduleName: string,
-		index: number,
-	) => T | undefined,
-): T | undefined {
-	const modulesList = getPointerContent(bunBlob, bunOffsets.modulesPtr);
-	const moduleCount = Math.floor(modulesList.length / moduleStructSize);
-	for (let i = 0; i < moduleCount; i++) {
-		const module = parseModule(
-			modulesList,
-			i * moduleStructSize,
-			moduleStructSize,
-		);
-		const moduleName = getPointerContent(bunBlob, module.name).toString(
-			"utf-8",
-		);
-		const result = visitor(module, moduleName, i);
-		if (result !== undefined) return result;
+export function getModuleContents(buffer: Buffer, module: BunModule): Buffer {
+	const contents = getPointerContent(buffer, module.contents);
+	// Bun's serialized encoding 2 stores little-endian UTF-16 source.
+	// https://github.com/oven-sh/bun/blob/main/src/standalone_graph/StandaloneModuleGraph.rs
+	if (module.encoding === 2) {
+		if (contents.length % 2 !== 0) {
+			throw new Error("Embedded UTF-16 module has an incomplete code unit");
+		}
+		return Buffer.from(contents.toString("utf16le"), "utf8");
 	}
-	return undefined;
+	return contents;
 }
 
 export function mapEntryPointModule<T>(
@@ -177,14 +188,6 @@ export function mapEntryPointModule<T>(
 		moduleStructSize,
 	);
 	return visitor(module, moduleIndex);
-}
-
-export interface BunEntryPointReplacement {
-	moduleIndex: number;
-	storageModuleIndex: number;
-	moduleEntryOffset: number;
-	bytecodeOffset: number;
-	bytecodeCapacity: number;
 }
 
 function assertBoundedRange(
@@ -256,249 +259,8 @@ export function listEmbeddedModules(
 			index,
 			moduleEntryOffset,
 			name: getPointerContent(bunBlob, module.name).toString("utf-8"),
-			contents: getPointerContent(bunBlob, module.contents),
+			contents: getModuleContents(bunBlob, module),
 			module,
 		};
 	});
-}
-
-interface BunModuleEntry {
-	index: number;
-	entryOffset: number;
-	module: BunModule;
-}
-
-function replaceEntryPointAcrossPackedContents(
-	bunBlob: Buffer,
-	bunOffsets: BunOffsets,
-	moduleStructSize: number,
-	modules: BunModuleEntry[],
-	moduleIndex: number,
-	modifiedClaudeJs: Buffer,
-): BunEntryPointReplacement | null {
-	const populated = modules
-		.filter((candidate) => candidate.module.contents.length > 0)
-		.sort(
-			(left, right) =>
-				left.module.contents.offset - right.module.contents.offset,
-		);
-	if (populated.length < 2) return null;
-	const storageOffset = populated[0].module.contents.offset;
-	const storageEnd = populated.reduce(
-		(end, candidate) =>
-			Math.max(
-				end,
-				candidate.module.contents.offset + candidate.module.contents.length,
-			),
-		storageOffset,
-	);
-	const storageCapacity = storageEnd - storageOffset;
-	if (modifiedClaudeJs.length > storageCapacity) return null;
-	const moduleTableStart = bunOffsets.modulesPtr.offset;
-	const moduleTableEnd = moduleTableStart + bunOffsets.modulesPtr.length;
-	if (storageOffset < moduleTableEnd && storageEnd > moduleTableStart) {
-		return null;
-	}
-	for (let index = 1; index < populated.length; index += 1) {
-		const previous = populated[index - 1].module.contents;
-		const current = populated[index].module.contents;
-		const previousEnd = previous.offset + previous.length;
-		if (current.offset < previousEnd) return null;
-		const gap = bunBlob.subarray(previousEnd, current.offset);
-		if (!gap.every((byte) => byte === 0)) return null;
-	}
-	if (storageOffset > 0xffff_ffff || modifiedClaudeJs.length > 0xffff_ffff) {
-		return null;
-	}
-
-	modifiedClaudeJs.copy(bunBlob, storageOffset);
-	if (modifiedClaudeJs.length < storageCapacity) {
-		bunBlob[storageOffset + modifiedClaudeJs.length] = 0;
-	}
-	for (const candidate of modules) {
-		if (candidate.index === moduleIndex) {
-			bunBlob.writeUInt32LE(storageOffset, candidate.entryOffset + 8);
-			bunBlob.writeUInt32LE(
-				modifiedClaudeJs.length,
-				candidate.entryOffset + 12,
-			);
-		} else {
-			bunBlob.writeUInt32LE(0, candidate.entryOffset + 8);
-			bunBlob.writeUInt32LE(0, candidate.entryOffset + 12);
-		}
-		bunBlob.writeUInt32LE(0, candidate.entryOffset + 16);
-		bunBlob.writeUInt32LE(0, candidate.entryOffset + 20);
-		bunBlob.writeUInt32LE(0, candidate.entryOffset + 24);
-		bunBlob.writeUInt32LE(0, candidate.entryOffset + 28);
-		if (moduleStructSize === SIZEOF_MODULE_NEW) {
-			bunBlob.writeUInt32LE(0, candidate.entryOffset + 32);
-			bunBlob.writeUInt32LE(0, candidate.entryOffset + 36);
-			bunBlob.writeUInt32LE(0, candidate.entryOffset + 40);
-			bunBlob.writeUInt32LE(0, candidate.entryOffset + 44);
-		}
-		if (candidate.index !== moduleIndex) {
-			const flagsOffset = moduleStructSize === SIZEOF_MODULE_NEW ? 48 : 32;
-			bunBlob.fill(
-				0,
-				candidate.entryOffset + flagsOffset,
-				candidate.entryOffset + flagsOffset + 4,
-			);
-		}
-	}
-	return {
-		moduleIndex,
-		storageModuleIndex: moduleIndex,
-		moduleEntryOffset: modules[moduleIndex].entryOffset,
-		bytecodeOffset: storageOffset,
-		bytecodeCapacity: storageCapacity,
-	};
-}
-
-export function replaceEntryPointModuleInPlace(
-	bunBlob: Buffer,
-	bunOffsets: BunOffsets,
-	moduleStructSize: number,
-	modifiedClaudeJs: Buffer,
-	allowPackedContentsSpan = false,
-): BunEntryPointReplacement {
-	assertBoundedRange(
-		"Module table",
-		bunOffsets.modulesPtr.offset,
-		bunOffsets.modulesPtr.length,
-		bunBlob.length,
-	);
-	if (
-		moduleStructSize !== SIZEOF_MODULE_OLD &&
-		moduleStructSize !== SIZEOF_MODULE_NEW
-	) {
-		throw new Error(`Unsupported Bun module struct size: ${moduleStructSize}`);
-	}
-	if (bunOffsets.modulesPtr.length % moduleStructSize !== 0) {
-		throw new Error(
-			`Bun module table length (${bunOffsets.modulesPtr.length}) is not divisible by module struct size (${moduleStructSize})`,
-		);
-	}
-
-	const moduleCount = bunOffsets.modulesPtr.length / moduleStructSize;
-	const moduleIndex = bunOffsets.entryPointId;
-	if (moduleIndex >= moduleCount) {
-		throw new Error(
-			`Bun entry-point module index (${moduleIndex}) exceeds module count (${moduleCount})`,
-		);
-	}
-
-	const modules = Array.from({ length: moduleCount }, (_, index) => {
-		const entryOffset = bunOffsets.modulesPtr.offset + index * moduleStructSize;
-		assertBoundedRange(
-			index === moduleIndex ? "Entry-point module" : `Module ${index}`,
-			entryOffset,
-			moduleStructSize,
-			bunBlob.length,
-		);
-		const module = parseModule(bunBlob, entryOffset, moduleStructSize);
-		assertBoundedRange(
-			index === moduleIndex
-				? "Entry-point bytecode"
-				: `Module ${index} bytecode`,
-			module.bytecode.offset,
-			module.bytecode.length,
-			bunBlob.length,
-		);
-		return { index, entryOffset, module };
-	});
-	const entry = modules[moduleIndex];
-	const storage = modules
-		.filter(
-			(candidate) =>
-				candidate.module.bytecode.length >= modifiedClaudeJs.length,
-		)
-		.sort((left, right) => {
-			if (left.index === moduleIndex) return -1;
-			if (right.index === moduleIndex) return 1;
-			return left.module.bytecode.length - right.module.bytecode.length;
-		})[0];
-
-	if (!storage) {
-		if (allowPackedContentsSpan) {
-			const replacement = replaceEntryPointAcrossPackedContents(
-				bunBlob,
-				bunOffsets,
-				moduleStructSize,
-				modules,
-				moduleIndex,
-				modifiedClaudeJs,
-			);
-			if (replacement) return replacement;
-		}
-		const largestCapacity = modules.reduce(
-			(largest, candidate) =>
-				Math.max(largest, candidate.module.bytecode.length),
-			0,
-		);
-		throw new Error(
-			`Modified JS (${modifiedClaudeJs.length} bytes) exceeds bytecode area (${largestCapacity} bytes)`,
-		);
-	}
-	if (modifiedClaudeJs.length > 0xffff_ffff) {
-		throw new Error(
-			`Modified JS (${modifiedClaudeJs.length} bytes) exceeds Bun pointer capacity`,
-		);
-	}
-
-	const moduleTableEnd =
-		bunOffsets.modulesPtr.offset + bunOffsets.modulesPtr.length;
-	const bytecodeEnd =
-		storage.module.bytecode.offset + storage.module.bytecode.length;
-	if (
-		storage.module.bytecode.offset < moduleTableEnd &&
-		bytecodeEnd > bunOffsets.modulesPtr.offset
-	) {
-		throw new Error("Replacement bytecode overlaps Bun module metadata");
-	}
-
-	modifiedClaudeJs.copy(bunBlob, storage.module.bytecode.offset);
-	if (modifiedClaudeJs.length < storage.module.bytecode.length) {
-		bunBlob[storage.module.bytecode.offset + modifiedClaudeJs.length] = 0;
-	}
-	bunBlob.writeUInt32LE(storage.module.bytecode.offset, entry.entryOffset + 8);
-	bunBlob.writeUInt32LE(modifiedClaudeJs.length, entry.entryOffset + 12);
-	bunBlob.writeUInt32LE(0, entry.entryOffset + 24);
-	bunBlob.writeUInt32LE(0, entry.entryOffset + 28);
-	if (moduleStructSize === SIZEOF_MODULE_NEW) {
-		bunBlob.writeUInt32LE(0, entry.entryOffset + 32);
-		bunBlob.writeUInt32LE(0, entry.entryOffset + 36);
-	}
-	if (storage.index !== moduleIndex) {
-		bunBlob.writeUInt32LE(0, storage.entryOffset + 24);
-		bunBlob.writeUInt32LE(0, storage.entryOffset + 28);
-	}
-
-	return {
-		moduleIndex,
-		storageModuleIndex: storage.index,
-		moduleEntryOffset: entry.entryOffset,
-		bytecodeOffset: storage.module.bytecode.offset,
-		bytecodeCapacity: storage.module.bytecode.length,
-	};
-}
-
-export function toWriteError(error: unknown, targetPath: string): Error {
-	const fallback =
-		error instanceof Error ? error.message : String(error ?? "Unknown error");
-	if (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		typeof (error as { code: unknown }).code === "string"
-	) {
-		const code = (error as { code: string }).code;
-		if (BUSY_FILE_CODES.has(code)) {
-			return new Error(
-				`Cannot write patched binary to ${targetPath} while it is in use (${code}). Close running Claude processes and retry.`,
-			);
-		}
-	}
-	return new Error(
-		`Failed writing patched binary to ${targetPath}: ${fallback}`,
-	);
 }

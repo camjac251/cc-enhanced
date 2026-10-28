@@ -3,14 +3,12 @@ import {
 	BUN_TRAILER,
 	type BunOffsets,
 	detectModuleStructSize,
-	getPointerContent,
+	getModuleContents,
+	hasBunCjsHeader,
 	mapEntryPointModule,
 	parseOffsets,
-	replaceEntryPointModuleInPlace,
 	SIZEOF_OFFSETS,
-	toWriteError,
 } from "./bun-format.js";
-import { emitMemoryCheckpoint } from "./profiling.js";
 
 const ELF_MAGIC = Buffer.from([0x7f, 0x45, 0x4c, 0x46]); // \x7fELF
 
@@ -30,17 +28,11 @@ interface BunCjsWrapper {
 	suffix: string;
 }
 
-export interface BunCjsByteEnvelope {
-	prefix: Buffer;
-	suffix: Buffer;
-}
-
-const BUN_CJS_HEADER = "// @bun @bytecode @bun-cjs";
 const BUN_CJS_WRAPPER_RE =
 	/^\(function\s*\(exports,\s*require,\s*module,\s*__filename,\s*__dirname\)\s*\{$/;
 
 export function unwrapBunCjsModule(code: string): BunCjsWrapper | null {
-	if (!code.startsWith(BUN_CJS_HEADER)) return null;
+	if (!hasBunCjsHeader(code)) return null;
 
 	const headerEnd = code.indexOf("\n");
 	if (headerEnd < 0) return null;
@@ -63,29 +55,6 @@ export function unwrapBunCjsModule(code: string): BunCjsWrapper | null {
 		body: code.slice(bodyStart + 1, suffixStart),
 		suffix: code.slice(suffixStart),
 	};
-}
-
-export function wrapBunCjsModule(wrapper: BunCjsWrapper, body: string): string {
-	return `${wrapper.prefix}${body}${wrapper.suffix}`;
-}
-
-export function copyBunCjsEnvelope(
-	wrapper: Pick<BunCjsWrapper, "prefix" | "suffix">,
-): BunCjsByteEnvelope {
-	return {
-		prefix: Buffer.from(wrapper.prefix, "utf-8"),
-		suffix: Buffer.from(wrapper.suffix, "utf-8"),
-	};
-}
-
-export function wrapBunCjsModuleBuffer(
-	envelope: BunCjsByteEnvelope,
-	body: Buffer,
-): Buffer {
-	return Buffer.concat(
-		[envelope.prefix, body, envelope.suffix],
-		envelope.prefix.length + body.length + envelope.suffix.length,
-	);
 }
 
 function parseLinuxBunBlob(binary: Buffer): {
@@ -180,28 +149,6 @@ function parseLinuxBunBlob(binary: Buffer): {
 	throw new Error("Bun trailer not found in binary");
 }
 
-/**
- * Rebuild Bun blob by appending new claude content to existing data
- * and patching the module entry in-place (Linux overlay strategy).
- */
-
-function writeBinaryAtomically(targetPath: string, content: Buffer): void {
-	const tmp = `${targetPath}.tmp`;
-	const mode = fs.statSync(targetPath).mode;
-	try {
-		fs.writeFileSync(tmp, content);
-		fs.chmodSync(tmp, mode);
-		fs.renameSync(tmp, targetPath);
-	} catch (error) {
-		try {
-			if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
-		} catch {
-			// best-effort cleanup
-		}
-		throw toWriteError(error, targetPath);
-	}
-}
-
 export function isElfBinary(filePath: string): boolean {
 	try {
 		const fd = fs.openSync(filePath, "r");
@@ -226,7 +173,7 @@ export function extractClaudeJsFromNativeLinux(
 		bunOffsets,
 		moduleStructSize,
 		(module) => {
-			const contents = getPointerContent(bunBlob, module.contents);
+			const contents = getModuleContents(bunBlob, module);
 			return contents.length > 0 ? contents : undefined;
 		},
 	);
@@ -244,42 +191,4 @@ export function extractClaudeJsFromNativeLinux(
 		tailValue,
 		claudeJs,
 	};
-}
-
-export function repackNativeLinuxBinary(
-	filePath: string,
-	modifiedClaudeJs: Buffer,
-	outputPath: string = filePath,
-	allowPackedContentsSpan = false,
-): void {
-	const extracted = extractClaudeJsFromNativeLinux(filePath);
-	emitMemoryCheckpoint("linux-repack.extracted");
-
-	const patchedBinary = Buffer.from(extracted.binary);
-	emitMemoryCheckpoint("linux-repack.binary-copied");
-	const dataStart = extracted.bunBlobStart;
-	const patchedBunBlob = patchedBinary.subarray(
-		dataStart,
-		dataStart + extracted.bunBlob.length,
-	);
-	replaceEntryPointModuleInPlace(
-		patchedBunBlob,
-		extracted.bunOffsets,
-		extracted.moduleStructSize,
-		modifiedClaudeJs,
-		allowPackedContentsSpan,
-	);
-
-	if (outputPath === filePath) {
-		writeBinaryAtomically(filePath, patchedBinary);
-		emitMemoryCheckpoint("linux-repack.written");
-		return;
-	}
-	try {
-		fs.writeFileSync(outputPath, patchedBinary);
-		fs.chmodSync(outputPath, fs.statSync(filePath).mode);
-		emitMemoryCheckpoint("linux-repack.written");
-	} catch (error) {
-		throw toWriteError(error, outputPath);
-	}
 }

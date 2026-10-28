@@ -54,6 +54,20 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Prepare Linux memory containment
+        if: runner.os == 'Linux'
+        run: |
+          user_id="$(id -u)"
+          export XDG_RUNTIME_DIR="/run/user/$user_id"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$user_id.service"
+          systemctl --user show-environment >/dev/null
+          {
+            printf 'XDG_RUNTIME_DIR=%s\n' "$XDG_RUNTIME_DIR"
+            printf 'DBUS_SESSION_BUS_ADDRESS=%s\n' "$DBUS_SESSION_BUS_ADDRESS"
+          } >> "$GITHUB_ENV"
+
       # Formatting, types, and lint do not depend on the host, so they run once.
       - name: Check documentation formatting
         if: runner.os == 'Linux'

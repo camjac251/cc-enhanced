@@ -5,7 +5,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildPatchRelevance, extractPatchAnchors } from "./diff.js";
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -355,105 +354,6 @@ test("loadDiffConfig surfaces a clear error on malformed JSON", {
 			assert.match(message, /Invalid JSON in bundle diff config/);
 			assert.match(message, /broken\.json/);
 		}
-	} finally {
-		fs.rmSync(tempDir, { recursive: true, force: true });
-	}
-});
-
-test("extractPatchAnchors captures multi-line backtick template literals", () => {
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "patch-anchor-"));
-	try {
-		const fixturePath = path.join(tempDir, "fake-patch.ts");
-		fs.writeFileSync(
-			fixturePath,
-			[
-				"export const STATIC_PROMPT: string = `Inspect fixture records.",
-				"",
-				"Use this tool for direct fixture access.",
-				"",
-				"Range parameter (for text files only, supported bat-style forms):",
-				"- 30:40 - lines 30 to 40",
-				"- 40: - line 40 to end of file`;",
-				"",
-				'const SHORT_ANCHOR = "Failed to set fixture level";',
-				'console.warn("Patch mutator: Could not find fixture prompt flow to patch");',
-				"function verify(): true | string {",
-				'  return "Missing fallback from fixture child prompt to fixture parent prompt";',
-				"}",
-				"",
-				"export function noop(): void {}",
-				"",
-			].join("\n"),
-		);
-
-		const anchors = extractPatchAnchors(fixturePath);
-		assert.ok(
-			anchors.some((anchor) =>
-				anchor.toLowerCase().includes("inspect fixture records"),
-			),
-			"expected the multi-line backtick prose to be captured as an anchor",
-		);
-		assert.ok(
-			anchors.some((anchor) =>
-				anchor.toLowerCase().includes("range parameter"),
-			),
-			"expected mid-template prose to be captured as an anchor",
-		);
-		assert.ok(
-			anchors.some((anchor) =>
-				anchor.toLowerCase().includes("failed to set fixture level"),
-			),
-			"expected single-quoted string anchor to be captured",
-		);
-		assert.ok(
-			!anchors.some((anchor) => anchor.includes("Could not find")),
-			"expected patcher warning diagnostics to be skipped",
-		);
-		assert.ok(
-			!anchors.some((anchor) => anchor.includes("Missing fallback")),
-			"expected verifier failure diagnostics to be skipped",
-		);
-	} finally {
-		fs.rmSync(tempDir, { recursive: true, force: true });
-	}
-});
-
-test("patch relevance ignores rewritten surfaces when the anchor survives", {
-	timeout: 15000,
-}, () => {
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "patch-drift-"));
-	try {
-		const patchPath = path.join(tempDir, "synthetic-anchor.ts");
-		fs.writeFileSync(
-			patchPath,
-			'export const FIXTURE_ANCHOR = "Durable fixture heading";\n',
-		);
-
-		const context = {
-			line: 1,
-			usage: "string",
-			ast: "Program > StringLiteral",
-			objectLabels: [],
-		};
-		const removed = {
-			kind: "user-message",
-			value: "Durable fixture heading with old wording",
-			count: 1,
-			contexts: [context],
-			delta: -1,
-		};
-		const added = {
-			kind: "user-message",
-			value: "Durable fixture heading with new wording",
-			count: 1,
-			contexts: [context],
-			delta: 1,
-		};
-
-		assert.deepEqual(
-			buildPatchRelevance([added] as any, [removed] as any, [], [], tempDir),
-			[],
-		);
 	} finally {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	}

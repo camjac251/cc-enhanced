@@ -1,11 +1,10 @@
-// @babel/{traverse,generator,template} expose their entry point as the default
+// @babel/{traverse,generator} expose their entry point as the default
 // export. Re-exporting them here keeps call sites short and gives the whole
 // codebase a single place to adapt if those entry points move again.
 import generator from "@babel/generator";
-import template from "@babel/template";
 import traverse from "@babel/traverse";
 
-export { generator, template, traverse };
+export { generator, traverse };
 
 /**
  * Drop @babel/traverse's global path/scope cache.

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { type AddressInfo, createServer, type Server } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { assertMemoryBudget } from "./memory-budget.js";
 
 export interface HeavyOperationGuardOptions {
 	operation: string;
@@ -139,6 +140,7 @@ export async function withHeavyOperationGuard<T>(
 ): Promise<T> {
 	const lease = await acquireHeavyOperationGuard(options);
 	try {
+		assertMemoryBudget();
 		return await work(lease);
 	} finally {
 		await lease.release();

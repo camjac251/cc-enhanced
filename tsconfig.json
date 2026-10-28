@@ -11,6 +11,6 @@
 		"forceConsistentCasingInFileNames": true,
 		"noEmit": true
 	},
-	"include": ["src/**/*", "scripts/**/*"],
+	"include": ["src/**/*", "scripts/**/*", "tests/**/*", "plugin/**/*.ts", "types/**/*.d.ts", "mods/**/*.ts"],
 	"exclude": ["node_modules"]
 }

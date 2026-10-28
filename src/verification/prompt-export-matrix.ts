@@ -9,10 +9,8 @@ import {
 const SHA256_RE = /^[a-f0-9]{64}$/;
 
 export interface PromptExportMatrixInput {
-	previousCleanExportDir: string;
-	previousPatchedExportDir: string;
-	currentCleanExportDir: string;
-	currentPatchedExportDir: string;
+	baselineExportDir: string;
+	candidateExportDir: string;
 	etcClaudeDir: string;
 	watchPaths?: readonly string[];
 	minOverlapLineLength?: number;
@@ -43,30 +41,16 @@ export interface PromptDependencyComparison {
 
 export interface PromptExportMatrixResult {
 	paths: {
-		previousCleanExportDir: string;
-		previousPatchedExportDir: string;
-		currentCleanExportDir: string;
-		currentPatchedExportDir: string;
+		baselineExportDir: string;
+		candidateExportDir: string;
 		etcClaudeDir: string;
 	};
-	comparisons: {
-		cleanRelease: PromptExportCompareResult;
-		patchedRelease: PromptExportCompareResult;
-		previousPatchImpact: PromptExportCompareResult;
-		currentPatchImpact: PromptExportCompareResult;
-	};
+	comparison: PromptExportCompareResult;
 	dependencies: {
-		previousClean: PromptDependencyStats;
-		previousPatched: PromptDependencyStats;
-		currentClean: PromptDependencyStats;
-		currentPatched: PromptDependencyStats;
+		baseline: PromptDependencyStats;
+		candidate: PromptDependencyStats;
 	};
-	dependencyParity: {
-		cleanRelease: PromptDependencyComparison;
-		patchedRelease: PromptDependencyComparison;
-		previousPatchImpact: PromptDependencyComparison;
-		currentPatchImpact: PromptDependencyComparison;
-	};
+	dependencyParity: PromptDependencyComparison;
 }
 
 function sha256(value: string): string {
@@ -274,74 +258,19 @@ function compareDependencyStats(
 export async function comparePromptExportMatrix(
 	input: PromptExportMatrixInput,
 ): Promise<PromptExportMatrixResult> {
-	const compare = (baseExportDir: string, patchedExportDir: string) =>
-		comparePromptExports({
-			baseExportDir,
-			patchedExportDir,
-			etcClaudeDir: input.etcClaudeDir,
-			watchPaths: input.watchPaths,
-			minOverlapLineLength: input.minOverlapLineLength,
-		});
-
-	const cleanRelease = await compare(
-		input.previousCleanExportDir,
-		input.currentCleanExportDir,
-	);
-	const patchedRelease = await compare(
-		input.previousPatchedExportDir,
-		input.currentPatchedExportDir,
-	);
-	const previousPatchImpact = await compare(
-		input.previousCleanExportDir,
-		input.previousPatchedExportDir,
-	);
-	const currentPatchImpact = await compare(
-		input.currentCleanExportDir,
-		input.currentPatchedExportDir,
-	);
-
-	const previousClean = await collectPromptDependencies(
-		input.previousCleanExportDir,
-	);
-	const previousPatched = await collectPromptDependencies(
-		input.previousPatchedExportDir,
-	);
-	const currentClean = await collectPromptDependencies(
-		input.currentCleanExportDir,
-	);
-	const currentPatched = await collectPromptDependencies(
-		input.currentPatchedExportDir,
-	);
+	const comparison = await comparePromptExports(input);
+	const baseline = await collectPromptDependencies(input.baselineExportDir);
+	const candidate = await collectPromptDependencies(input.candidateExportDir);
 
 	return {
 		paths: {
-			previousCleanExportDir: input.previousCleanExportDir,
-			previousPatchedExportDir: input.previousPatchedExportDir,
-			currentCleanExportDir: input.currentCleanExportDir,
-			currentPatchedExportDir: input.currentPatchedExportDir,
+			baselineExportDir: input.baselineExportDir,
+			candidateExportDir: input.candidateExportDir,
 			etcClaudeDir: input.etcClaudeDir,
 		},
-		comparisons: {
-			cleanRelease,
-			patchedRelease,
-			previousPatchImpact,
-			currentPatchImpact,
-		},
-		dependencies: {
-			previousClean,
-			previousPatched,
-			currentClean,
-			currentPatched,
-		},
-		dependencyParity: {
-			cleanRelease: compareDependencyStats(previousClean, currentClean),
-			patchedRelease: compareDependencyStats(previousPatched, currentPatched),
-			previousPatchImpact: compareDependencyStats(
-				previousClean,
-				previousPatched,
-			),
-			currentPatchImpact: compareDependencyStats(currentClean, currentPatched),
-		},
+		comparison,
+		dependencies: { baseline, candidate },
+		dependencyParity: compareDependencyStats(baseline, candidate),
 	};
 }
 
@@ -352,43 +281,30 @@ function signed(value: number): string {
 export function formatPromptExportMatrixMarkdown(
 	result: PromptExportMatrixResult,
 ): string {
-	const comparisonRows = [
-		["Clean release drift", "cleanRelease"],
-		["Patched release drift", "patchedRelease"],
-		["Previous patch impact", "previousPatchImpact"],
-		["Current patch impact", "currentPatchImpact"],
-	] as const;
+	const { comparison, dependencyParity: parity } = result;
+	const watchedChanges =
+		comparison.watchedSurfaces.changed +
+		comparison.watchedSurfaces.added +
+		comparison.watchedSurfaces.removed +
+		comparison.watchedSurfaces.missing;
+	const parityStatus = parity.coverageComplete
+		? parity.exactMultisetParity
+			? "exact"
+			: "changed"
+		: "unknown";
 	const lines = [
-		"# Four-Way Prompt Export Comparison",
+		"# Stock Release Prompt Export Matrix",
 		"",
-		`Previous clean: \`${result.paths.previousCleanExportDir}\``,
-		`Previous patched: \`${result.paths.previousPatchedExportDir}\``,
-		`Current clean: \`${result.paths.currentCleanExportDir}\``,
-		`Current patched: \`${result.paths.currentPatchedExportDir}\``,
+		`Baseline export: \`${result.paths.baselineExportDir}\``,
+		`Candidate export: \`${result.paths.candidateExportDir}\``,
 		`Runtime policy dir: \`${result.paths.etcClaudeDir}\``,
 		"",
 		"## Comparison Matrix",
 		"",
 		"| Comparison | Changed files | Added | Removed | Watched changes | Dependency parity | Slot delta | Added signatures | Removed signatures |",
 		"| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: |",
+		`| Stock release drift | ${comparison.files.changed} | ${comparison.files.added} | ${comparison.files.removed} | ${watchedChanges} | ${parityStatus} | ${signed(parity.slotDelta)} | ${parity.addedSignatureCount} | ${parity.removedSignatureCount} |`,
 	];
-	for (const [label, key] of comparisonRows) {
-		const comparison = result.comparisons[key];
-		const parity = result.dependencyParity[key];
-		const watchedChanges =
-			comparison.watchedSurfaces.changed +
-			comparison.watchedSurfaces.added +
-			comparison.watchedSurfaces.removed +
-			comparison.watchedSurfaces.missing;
-		const parityStatus = parity.coverageComplete
-			? parity.exactMultisetParity
-				? "exact"
-				: "changed"
-			: "unknown";
-		lines.push(
-			`| ${label} | ${comparison.files.changed} | ${comparison.files.added} | ${comparison.files.removed} | ${watchedChanges} | ${parityStatus} | ${signed(parity.slotDelta)} | ${parity.addedSignatureCount} | ${parity.removedSignatureCount} |`,
-		);
-	}
 	lines.push(
 		"",
 		"## Interpolation Dependency Health",
@@ -397,10 +313,8 @@ export function formatPromptExportMatrixMarkdown(
 		"| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
 	);
 	for (const [label, stats] of [
-		["Previous clean", result.dependencies.previousClean],
-		["Previous patched", result.dependencies.previousPatched],
-		["Current clean", result.dependencies.currentClean],
-		["Current patched", result.dependencies.currentPatched],
+		["Baseline", result.dependencies.baseline],
+		["Candidate", result.dependencies.candidate],
 	] as const) {
 		lines.push(
 			`| ${label} | ${stats.present ? "present" : "missing"} | ${stats.hashCoverageComplete ? "complete" : "incomplete"} | ${stats.promptCount} | ${stats.templatedPromptCount} | ${stats.slotCount} | ${stats.uniqueSignatureCount} | ${stats.invalidReferenceCount} | ${stats.unusedMappingCount} |`,

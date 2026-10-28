@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { getProtectedPaths } from "./promote.js";
 import {
 	type CpuArchitecture,
 	type HostOperatingSystem,
@@ -386,11 +386,41 @@ async function resolveVersionChannel(
 	);
 }
 
-function evictOldVersions(cacheDir: string): void {
+/**
+ * Real paths of the Claude Code executables this machine runs: whatever the
+ * official `claude` link and the official installer's current/previous version
+ * links resolve to. The download cache is audit-only, but an installation can
+ * still point into it, so eviction must never delete what these resolve to.
+ */
+export function installedBinaryTargets(
+	env: NodeJS.ProcessEnv = process.env,
+): string[] {
+	const versions =
+		env.CC_ENHANCED_OFFICIAL_VERSIONS ??
+		path.join(os.homedir(), ".local", "share", "claude", "versions");
+	const command =
+		env.CC_ENHANCED_CLAUDE_LINK ??
+		path.join(os.homedir(), ".local", "bin", "claude");
+	const targets = new Set<string>();
+	for (const link of [
+		command,
+		path.join(versions, "current"),
+		path.join(versions, "previous"),
+	]) {
+		try {
+			targets.add(fs.realpathSync(link));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	}
+	return [...targets];
+}
+
+export function evictOldVersions(cacheDir: string): void {
 	const keep = Number(process.env.CLAUDE_PATCHER_CACHE_KEEP) || 2;
 	if (!fs.existsSync(cacheDir)) return;
 
-	const protectedPaths = getProtectedPaths();
+	const protectedPaths = installedBinaryTargets();
 	const entries = fs
 		.readdirSync(cacheDir)
 		.filter((e) => /^\d+\.\d+\.\d+/.test(e));
@@ -399,8 +429,19 @@ function evictOldVersions(cacheDir: string): void {
 	let kept = 0;
 	for (const entry of entries) {
 		const entryPath = path.resolve(path.join(cacheDir, entry));
-		if (protectedPaths.has(entryPath)) {
-			// Never evict versions referenced by current/previous symlinks
+		const versionRoot = fs.realpathSync(entryPath);
+		if (
+			protectedPaths.some((binaryPath) => {
+				const relative = path.relative(versionRoot, binaryPath);
+				return (
+					relative === "" ||
+					(relative !== ".." &&
+						!relative.startsWith(`..${path.sep}`) &&
+						!path.isAbsolute(relative))
+				);
+			})
+		) {
+			// Keep every executable an installed claude still runs.
 			continue;
 		}
 		kept++;

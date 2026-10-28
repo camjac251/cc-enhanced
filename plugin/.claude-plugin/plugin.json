@@ -1,0 +1,15 @@
+{
+	"name": "cc-enhanced",
+	"version": "2.1.0",
+	"description": "Tool-routing guidance, batch edits, ranged views, plan and memory diffs, and configured agent model routing for stock Claude Code.",
+	"author": {
+		"name": "camjac251"
+	},
+	"homepage": "https://github.com/camjac251/cc-enhanced",
+	"repository": "https://github.com/camjac251/cc-enhanced",
+	"license": "MIT",
+	"types": "./state.d.ts",
+	"metadata": {
+		"minimumClaudeCodeVersion": "2.1.300"
+	}
+}

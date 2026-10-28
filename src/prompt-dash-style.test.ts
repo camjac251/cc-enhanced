@@ -1,20 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-	containsForbiddenPromptDashStyle,
-	countForbiddenPromptDashStyle,
-	findForbiddenPromptDashStyle,
-} from "./prompt-dash-style.js";
-
-test("containsForbiddenPromptDashStyle detects en and em dash punctuation", () => {
-	assert.equal(containsForbiddenPromptDashStyle("Use 1–3 retries."), true);
-	assert.equal(containsForbiddenPromptDashStyle("Stop — ask first."), true);
-	assert.equal(containsForbiddenPromptDashStyle("Use 1-3 retries."), false);
-	assert.equal(
-		containsForbiddenPromptDashStyle("ordinary prompt prose"),
-		false,
-	);
-});
+import { countForbiddenPromptDashStyle } from "./prompt-dash-style.js";
 
 test("countForbiddenPromptDashStyle counts dash kinds separately", () => {
 	assert.deepEqual(countForbiddenPromptDashStyle("alpha–beta — gamma"), {
@@ -24,11 +10,12 @@ test("countForbiddenPromptDashStyle counts dash kinds separately", () => {
 	});
 });
 
-test("findForbiddenPromptDashStyle reports the first dash style match", () => {
-	assert.deepEqual(findForbiddenPromptDashStyle("alpha–beta — gamma"), {
-		character: "–",
-		index: 5,
-		label: "en dash",
-	});
-	assert.deepEqual(findForbiddenPromptDashStyle("alpha-beta"), null);
+test("countForbiddenPromptDashStyle ignores ASCII hyphens and ordinary prose", () => {
+	for (const text of ["", "Use 1-3 retries.", "ordinary prompt prose"]) {
+		assert.deepEqual(countForbiddenPromptDashStyle(text), {
+			enDash: 0,
+			emDash: 0,
+			total: 0,
+		});
+	}
 });

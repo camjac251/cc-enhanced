@@ -6,11 +6,61 @@ import * as path from "node:path";
 import { test } from "node:test";
 import {
 	detectNativeReleasePlatform,
+	evictOldVersions,
 	fetchNativeRelease,
 	formatNativeDownloadFailure,
 	getNativeBinaryCandidates,
 	resolveNativeReleasePlatform,
 } from "./native-release.js";
+
+test("cache eviction keeps releases that the claude command or the official installer still runs", {
+	skip: process.platform === "win32",
+}, () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "cc-evict-"));
+	const saved = {
+		CC_ENHANCED_OFFICIAL_VERSIONS: process.env.CC_ENHANCED_OFFICIAL_VERSIONS,
+		CC_ENHANCED_CLAUDE_LINK: process.env.CC_ENHANCED_CLAUDE_LINK,
+		CLAUDE_PATCHER_CACHE_KEEP: process.env.CLAUDE_PATCHER_CACHE_KEEP,
+	};
+	try {
+		const cache = path.join(root, "cache");
+		for (const version of ["1.0.1", "1.0.2", "1.0.3", "1.0.4", "1.0.5"]) {
+			fs.mkdirSync(path.join(cache, version, "linux-x64", "builds"), {
+				recursive: true,
+			});
+			fs.writeFileSync(path.join(cache, version, "linux-x64", "claude"), "");
+		}
+		const patched = path.join(cache, "1.0.1", "linux-x64", "builds", "patched");
+		fs.writeFileSync(patched, "");
+		const official = path.join(root, "official-versions");
+		fs.mkdirSync(official, { recursive: true });
+		fs.symlinkSync(patched, path.join(official, "current"));
+		const bin = path.join(root, "bin");
+		fs.mkdirSync(bin);
+		fs.symlinkSync(
+			path.join(cache, "1.0.2", "linux-x64", "claude"),
+			path.join(bin, "claude"),
+		);
+		process.env.CC_ENHANCED_OFFICIAL_VERSIONS = official;
+		process.env.CC_ENHANCED_CLAUDE_LINK = path.join(bin, "claude");
+		process.env.CLAUDE_PATCHER_CACHE_KEEP = "2";
+
+		evictOldVersions(cache);
+
+		assert.deepEqual(fs.readdirSync(cache).sort(), [
+			"1.0.1",
+			"1.0.2",
+			"1.0.4",
+			"1.0.5",
+		]);
+	} finally {
+		for (const [key, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
 
 test("getNativeBinaryCandidates prefers native executable name for each platform", () => {
 	assert.deepEqual(getNativeBinaryCandidates("linux-x64"), [
@@ -231,4 +281,72 @@ test("fetchNativeRelease resolves latest to newer npm next tag when available", 
 	assert.equal(result.binaryUrl, `${bucketUrl}/${npmNext}/linux-x64/claude`);
 	assert.equal(fs.readFileSync(result.binaryPath, "utf-8"), binaryContent);
 	assert.ok(requests.includes(registryUrl));
+});
+
+test("cache eviction protects the installed claude through cache aliases", async (t) => {
+	const originalFetch = globalThis.fetch;
+	const originalEnv = {
+		CC_ENHANCED_CLAUDE_LINK: process.env.CC_ENHANCED_CLAUDE_LINK,
+		CC_ENHANCED_OFFICIAL_VERSIONS: process.env.CC_ENHANCED_OFFICIAL_VERSIONS,
+		CLAUDE_PATCHER_CACHE_KEEP: process.env.CLAUDE_PATCHER_CACHE_KEEP,
+	};
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "cc-native-protected-"));
+	const cache = path.join(root, "cache");
+	const cacheAlias = path.join(root, "cache-alias");
+	const home = path.join(root, "install");
+	t.after(() => {
+		globalThis.fetch = originalFetch;
+		for (const [key, value] of Object.entries(originalEnv)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		fs.rmSync(root, { recursive: true, force: true });
+	});
+	fs.mkdirSync(home, { recursive: true });
+	for (const version of ["1.0.0", "1.1.0", "2.0.0", "3.0.0"]) {
+		const directory = path.join(cache, version, "linux-x64");
+		fs.mkdirSync(directory, { recursive: true });
+		fs.writeFileSync(path.join(directory, "claude"), `stock ${version}`);
+	}
+	fs.symlinkSync(cache, cacheAlias, "dir");
+	fs.symlinkSync(
+		path.join(cacheAlias, "1.0.0", "linux-x64", "claude"),
+		path.join(home, "claude"),
+	);
+	process.env.CC_ENHANCED_CLAUDE_LINK = path.join(home, "claude");
+	process.env.CC_ENHANCED_OFFICIAL_VERSIONS = path.join(root, "official");
+	process.env.CLAUDE_PATCHER_CACHE_KEEP = "1";
+	const bucketUrl = "https://native.example/releases";
+	const binaryContent = "stock 4.0.0";
+	const checksum = createHash("sha256").update(binaryContent).digest("hex");
+	globalThis.fetch = (async (input: string | URL | Request) => {
+		const url = String(input);
+		if (url === `${bucketUrl}/4.0.0/manifest.json`) {
+			return new Response(
+				JSON.stringify({
+					platforms: { "linux-x64": { checksum } },
+				}),
+			);
+		}
+		if (url === `${bucketUrl}/4.0.0/linux-x64/claude`) {
+			return new Response(binaryContent);
+		}
+		return new Response("missing", { status: 404 });
+	}) as typeof fetch;
+
+	const result = await fetchNativeRelease({
+		spec: "4.0.0",
+		platform: "linux-x64",
+		bucketUrl,
+		cacheDir: cacheAlias,
+	});
+
+	assert.equal(
+		fs.readFileSync(path.join(home, "claude"), "utf8"),
+		"stock 1.0.0",
+	);
+	assert.equal(fs.existsSync(path.join(cache, "1.1.0")), false);
+	assert.equal(fs.existsSync(path.join(cache, "2.0.0")), false);
+	assert.equal(fs.existsSync(path.join(cache, "3.0.0")), true);
+	assert.equal(fs.readFileSync(result.binaryPath, "utf8"), binaryContent);
 });

@@ -6,17 +6,6 @@ clodex_bin='@CLODEX_BIN@'
 credential_helper='@CLODEX_CREDENTIAL_HELPER@'
 claude_bin='@CLAUDE_BIN@'
 
-if [ "${1:-}" = 'patch' ]; then
-	claude_version=$("$claude_bin" --version)
-	case "$claude_version" in
-	*'(Claude Code; patched:'*)
-		printf '%s\n' \
-			'clodex: binary patching is disabled because cc-enhanced already owns the client binary' >&2
-		exit 2
-		;;
-	esac
-fi
-
 for required_file in "$clodex_bin" "$credential_helper" "$claude_bin"; do
 	if [ ! -x "$required_file" ]; then
 		printf 'clodex: required executable is missing: %s\n' "$required_file" >&2

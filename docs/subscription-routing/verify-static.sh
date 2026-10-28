@@ -7,22 +7,10 @@ fail() {
 	exit 1
 }
 
-profile=enhanced
-case "$#" in
-0) ;;
-1)
-	if [ "$1" = '--stock' ]; then
-		profile=stock
-	else
-		printf '%s\n' 'usage: verify-static.sh [--stock]' >&2
-		exit 2
-	fi
-	;;
-*)
-	printf '%s\n' 'usage: verify-static.sh [--stock]' >&2
+if [ "$#" -ne 0 ]; then
+	printf '%s\n' 'usage: verify-static.sh' >&2
 	exit 2
-	;;
-esac
+fi
 
 setup_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 provider_id=openai-oauth
@@ -30,9 +18,6 @@ provider_id=openai-oauth
 for command_name in cmp dd grep mise mktemp od rg sed stat wc; do
 	command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is unavailable"
 done
-grep -F "install -d -m 700 \"\$HOME/.local/share/claudex-clodex\"" \
-	"$setup_dir/README.md" >/dev/null ||
-	fail "installation guide does not create the Clodex home"
 "$setup_dir/test-service-control.sh"
 "$setup_dir/test-client-compatibility.sh"
 "$setup_dir/test-prompt-composition.sh"
@@ -100,7 +85,6 @@ sed \
 	fail "installed service controller does not match the reviewed template"
 sed \
 	-e "s|@CLODEX_CLAUDE_BIN@|$clodex_wrapper|g" \
-	-e "s|@CLAUDEX_CLIENT_PROFILE@|$profile|g" \
 	"$setup_dir/templates/claudex-process-wrapper" |
 	cmp -s - "$launcher_process_wrapper" ||
 	fail "installed portable process wrapper does not match the reviewed template"
@@ -154,31 +138,7 @@ cmp -s "$expected_prompt" "$system_prompt" ||
 	fail "installed routed prompt is stale or differs from the reviewed template"
 
 claude_version=$("$claude_bin" --version)
-if [ "$profile" = enhanced ]; then
-	for patch_tag in \
-		billing-label \
-		claude-api-scope \
-		configured-model-catalog \
-		model-aliases \
-		model-context-metadata \
-		model-picker-session-only \
-		skill-listing-ui \
-		subagent-model-tag \
-		subagent-system-prompt \
-		sys-prompt-file \
-		workflow-safety; do
-		case "$claude_version" in
-		*"$patch_tag"*) ;;
-		*) fail "required client patch is missing: $patch_tag" ;;
-		esac
-	done
-else
-	case "$claude_version" in
-	*'(Claude Code; patched:'*)
-		fail "stock verification cannot target a cc-enhanced client"
-		;;
-	esac
-fi
+[ -n "$claude_version" ] || fail "Claude Code version is empty"
 
 "$node_bin" - "$config_file" "$provider_id" <<'NODE'
 const fs = require('node:fs');
@@ -202,8 +162,4 @@ for (const aliasName of ['sol', 'terra', 'luna']) {
 }
 NODE
 
-if [ "$profile" = enhanced ]; then
-	printf '%s\n' 'static setup verification passed'
-else
-	printf '%s\n' 'stock static setup verification passed'
-fi
+printf '%s\n' 'stock static setup verification passed'

@@ -1,133 +1,112 @@
 <h1 align="center">cc-enhanced</h1>
 
-<p align="center"><strong>Verifiable AST patches for the latest Claude Code native CLI</strong></p>
+<p align="center"><strong>Stock Claude Code with a standard plugin and system-prompt wrapper</strong></p>
 
 <p align="center">
   <a href="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="Tested with Claude Code 2.1.263" src="https://img.shields.io/badge/tested-Claude_Code_2.1.263-8A2BE2">
-  <img alt="44 patches" src="https://img.shields.io/badge/patches-44-f97316">
+  <img alt="Tested with Claude Code 2.1.312" src="https://img.shields.io/badge/tested-Claude_Code_2.1.312-8A2BE2">
+  <img alt="Mod-only" src="https://img.shields.io/badge/architecture-mod--only-f97316">
   <img alt="Maintenance paused" src="https://img.shields.io/badge/maintenance-paused-dc2626">
-  <img alt="Bun 1.4.0" src="https://img.shields.io/badge/Bun-1.4.0-fbf0df?logo=bun&logoColor=000">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2563eb"></a>
 </p>
 
 <p align="center">
   <a href="docs/getting-started.md">Get started</a> ·
-  <a href="docs/patches.md">Patch catalog</a> ·
   <a href="docs/configuration.md">Configuration</a> ·
-  <a href="docs/target-workflows.md">Desktop and remote targets</a> ·
+  <a href="docs/cli-reference.md">Commands</a> ·
   <a href="docs/README.md">Documentation</a>
 </p>
 
 > [!WARNING]
 >
-> Maintenance is paused. I've switched from Claude Code to [oh-my-pi](https://github.com/can1357/oh-my-pi), so ongoing upstream release tracking remains paused. This manual refresh is verified against Claude Code 2.1.263. Issues and pull requests are still welcome, including ones that carry the patches forward to a newer release.
+> Maintenance is paused. I've switched from Claude Code to [oh-my-pi](https://github.com/can1357/oh-my-pi), so ongoing upstream release tracking remains paused. This manual refresh is verified against Claude Code 2.1.312. Issues and pull requests are still welcome, including updates to the mod for newer releases.
 
-cc-enhanced extracts the JavaScript embedded in an official Claude Code native executable, rebundles split modules into one patch surface when needed, applies a selected set of independently verifiable patches, and repacks the result without changing the native file's fixed layout. The primary `cli-full` profile improves Read and Edit ergonomics, modernizes prompt and tool routing, unlocks runtime and UI controls, and keeps the patched installation recoverable through atomic promotion and rollback.
+cc-enhanced runs an **unmodified official Claude Code executable** with a standard marketplace plugin. The mod changes prompt guidance, tool descriptions, and selected session behavior, and adds two tools for batch editing and ranged text viewing. A small PATH wrapper appends a system-prompt file for shell launches. Claude Code updates itself. There is no native patching, rebundling for execution, or repacking.
 
-> [!IMPORTANT]
->
-> This repository contains patch source and build tooling only. It does not publish or redistribute Claude Code binaries, application bundles, container images, npm packages, credentials, session state, or generated private evidence.
-
-## What it changes
-
-| Area | Highlights |
-| --- | --- |
-| Read and Edit | `bat`-style Read ranges, whitespace rendering, batched `edits[]`, safer content-addressed edits, and structured diff presentation. |
-| Tool policy | Optional removal of legacy built-ins, modern shell and MCP routing, preserved `NotebookEdit` support for Desktop-oriented candidates, and clearer task-output handling. |
-| Prompt harness | Stronger repository policy, focused agent roles, current code-search guidance, model routing metadata, and prompt-surface drift checks. |
-| Runtime | Cache policy, larger file limits, feature gates, model catalogs and aliases, session controls, and update protection. |
-| Terminal UX | Visible patch signatures, expanded results, plan diffs, queued follow-ups, skill and agent notices, and configurable file links. |
-| Native lifecycle | Official artifact fetching, split-module rebundling, fixed-layout repacking, receipt-bound verification, atomic promotion, rollback, and guarded cross-platform candidate workflows. |
-
-The complete behavior and source link for every tag lives in the [44-patch catalog](docs/patches.md).
+This repository contains the plugin, `install.sh`, and development tools. It does not publish Claude Code binaries, application bundles, container images, credentials, session state, or private verification evidence. No Bun or plugin build step is needed to install or run it.
 
 ## Quick start
 
-```bash
-mise install
-bun install --frozen-lockfile
-
-mise run native:update
-
-claude --version
-mise run status
-```
-
-`native:update` fetches the current official release, builds and verifies a separate candidate, and promotes it only after all selected patch gates pass. Rollback is an atomic symlink exchange:
+Install official Claude Code, then clone this repository and run the setup script:
 
 ```bash
-mise run native:rollback
+curl -fsSL https://claude.ai/install.sh | bash
+git clone https://github.com/camjac251/cc-enhanced.git
+cd cc-enhanced
+./install.sh
 ```
 
-See [Getting started](docs/getting-started.md) for requirements, patch selection, runtime tooling, traffic settings, and verification levels.
+Open a new shell afterwards. Setup installs `cc-enhanced@cc-enhanced`, adds unset settings defaults, installs Explore/Plan user-agent defaults when those names are unused, and prepends its wrapper directory to your shell's PATH. It does not replace the official executable. See [Getting started](docs/getting-started.md) for requirements, setup options, and shell changes.
 
-## How it works
+Claude Code keeps updating itself; `claude update` remains its own update command. For the default local-checkout plugin source, pull repository changes, run `claude plugin update cc-enhanced@cc-enhanced` or rerun `./install.sh`, then use `/reload-plugins` or start a new session. GitHub/git marketplace sources can receive plugin auto-updates. Setup warns if Claude Code updates are disabled.
 
-```mermaid
-flowchart LR
-    upstream["Official native executable"] --> extract["Extract or rebundle embedded JavaScript"]
-    extract --> prompts["Prompt string transforms"]
-    prompts --> ast["One shared AST pass<br/>discover → mutate → finalize"]
-    ast --> verify{"Every selected verifier passes?"}
-    verify -- no --> abort["Abort without writing"]
-    verify -- yes --> signature["Inject patch signature"]
-    signature --> repack["Repack at the original byte length and layout"]
-    repack --> promote["Atomic promotion"]
-    promote -. rollback .-> promote
+To uninstall the plugin, marketplace, wrapper, and shell blocks:
+
+```bash
+./install.sh --uninstall
 ```
 
-Structural patches share one parsed AST and run in registration order. Each patch owns its verifier, failed tags are reported together, and no artifact is written when any required verification fails. Native lifecycle operations are serialized by a process-tree lease because bundle parsing, repacking, prompt export, and full verification are memory-heavy.
+Uninstall removes unchanged installer-owned agent defaults and leaves custom agents and settings keys in place. There is no cc-enhanced binary update, rollback, restore, or status command.
 
-## Profiles and target surfaces
+## What changes
 
-| Surface | Patch policy | Selection state | What is still required |
-| --- | --: | --- | --- |
-| Standalone CLI (`cli-full`) | 44 registered patches | Supported and selectable | A real latest-bundle verification before release or promotion claims. |
-| Desktop-local | 30 probe-required candidates, 15 exclusions | Reserved and build-only | Exact target receipts plus stock and patched Read/Edit/tool approval and presentation probes. |
-| Remote Control | 30 probe-required candidates, 15 exclusions | Reserved and build-only | Matching-host proof and separate web, mobile, and Desktop client compatibility evidence. |
-| Self-hosted runner | 30 probe-required candidates, 15 exclusions | Reserved and build-only | Runner registration, child execution, deployment, and client qualification. |
-
-> [!NOTE]
->
-> The target work did not remove or minimize the CLI patch roster. `cli-full` remains the exact ordered 44-patch profile. The surface catalog contains one additional profile-only `tools-off-desktop` variant, making 45 classified entries for Desktop, Remote Control, and self-hosted planning.
-
-Offline construction, matching-host execution, stock-client rendering, and live control-plane operation are separate proof levels. A passing earlier level never promotes a reserved profile or establishes later compatibility. The [target workflow guide](docs/target-workflows.md) explains the commands, client UI risks, Remote Control path, self-hosted path, and upkeep model.
-
-## Documentation
-
-| Guide | Use it for |
+| Surface | Behavior |
 | --- | --- |
-| [Getting started](docs/getting-started.md) | Install, patch, activate, select tags, verify, and roll back. |
-| [Patch catalog](docs/patches.md) | Review every registered patch and its exact effect. |
-| [Configuration](docs/configuration.md) | Configure patch selection, prompt policy, models, file opening, and runtime controls. |
-| [CLI and inspection reference](docs/cli-reference.md) | Run lifecycle, prompt export, bundle inspection, evidence, and release-diff commands. |
-| [Target workflows](docs/target-workflows.md) | Build or assess Desktop, Remote Control, and self-hosted candidates without overstating support. |
-| [Subscription routing](docs/subscription-routing/README.md) | Maintain the optional direct-plus-mixed-model launcher setup. |
-| [Maintainer reference](docs/maintainer-reference.md) | Understand binary formats, patch interactions, release procedures, prompt drift, and authoring rules. |
+| Batch editing | `mcp__cc-enhanced__batch_edit` edits a file without a prior Read. It matches every `old_string` against the file's current content, validates the whole sequential batch, then makes one real Edit call per change; a stale or ambiguous `old_string` refuses the batch before anything changes. The Edit calls go through Edit's permission prompts and hooks. On a mid-batch failure the mod writes the original bytes back directly, including BOM and CRLF; that restore does not ask permission and is not recorded in rewind history. It accepts round-trippable UTF-8 text. |
+| Text viewing | `mcp__cc-enhanced__view` provides numbered ranges and visible whitespace. It checks Read permission first, defaults `*.output` files to the last 500 lines, and accepts UTF-8 files up to 4 MiB. Use core Read for larger files, nontext content, or approval flows. |
+| Prompt guidance | Session guidance and selected TodoWrite, Bash, Agent, Read, and Edit descriptions steer tool use. The mod strengthens CLAUDE.md instruction framing, narrows Claude API skill guidance to API/SDK work, and refreshes tool descriptions on resume. |
+| Tool and agent visibility | Glob, Grep, WebSearch, WebFetch, and NotebookEdit receive deferred routing-only descriptions and are denied if invoked. The `statusline-setup` and `claude-code-guide` agents are hidden. Transcript tool groups stay expanded. |
+| Plan and memory diffs | Completed Edit/Write rows show the full path and actual additions/deletions, including new-file contents. Each change appears once in compact and expanded transcripts; failed or unavailable diffs stay stock. |
+| Agent definitions and routing | Setup supplies read-only Explore/Plan defaults under bare names without replacing existing definitions. Routed launches resolve configured Clodex aliases at `agent.spawn`, including Workflow workers, while preserving agent type and effort. The stock Agent model schema is unchanged. |
+| Setup and shell wrapper | Setup adds unset defaults for one-hour prompt-cache TTLs, ultracode, the Read output-token budget, and plugin auto-updates. The wrapper appends the selected file to parent and print-mode subagent system prompts; interactive subagents receive it through the plugin as additional message context. See [configuration](docs/configuration.md) for settings and prompt overrides. |
 
-## Development and verification
+The built-in Read and Edit schemas remain stock, and stock Edit still asks for a prior Read; `batch_edit` is the path without one, for a single change or many. Ranges belong to `view`. Auto mode is the default permission mode in Claude Code 2.1.312, and it runs batch edits without prompting. In manual-approval mode, every change in a batch asks for approval separately. Ultracode still requires workflows and a supported model. The plugin and saved settings apply across Claude Code surfaces, including Desktop and VS Code. Only shells that load the PATH block receive the wrapper's system-prompt appends; clients that launch their own Claude Code do not.
+
+## What changed from the legacy patcher
+
+The last public patch-based release, verified against Claude Code 2.1.263, remains available in [Git history](https://github.com/camjac251/cc-enhanced/tree/c2d2e6f83d9cab30a35f8da8fdd7dd477ebf043a). Main now uses plugin hooks and stock launch controls.
+
+Some former changes now come from stock Claude Code, saved settings, or the shell wrapper: Monitor availability, per-call Agent effort, 2576px image handling, prompt-cache TTLs, the Read token budget, system-prompt appends, ultracode, and the default effort setting.
+
+The following legacy behavior is **not retained**:
+
+- Core Read `range` and core Edit `edits[]` parameters, relaxed stale-read checks, changed-file reminder limits, and mtime-churn handling. The new tools cover ranged viewing and batch editing, not the other changes.
+- Cache breakpoint, tail, and decimation policies; downscaling beyond 20 images; custom model aliases/catalogs; full model IDs in Agent calls; session-only model picking; and the old effort environment-seed/session-override behavior.
+- Billing labels, WSL file-link opening, child network-environment handoff, MCP plugin-style allowlist names, and LSP multi-server/filename routing.
+- Compact-and-execute UI, Tab-to-queue, skill path invocation/global paths/activation notices, and skill/agent listing previews. Plan/memory diffs now use plugin UI rendering rather than native changes.
+- Auto-dream bypass, the subagent CLAUDE.md inclusion gate, worker prompt rewrites, memory/dream wording, dash normalization, hiding `/security-review`, and the patched signature. Explore/Plan guidance now uses normal user-agent definitions instead of rewriting built-ins.
+
+The optional [subscription-routing setup](docs/subscription-routing/README.md) supplies a config-file marker for per-worker alias resolution. It does not add a model picker/catalog or a `claudex --max-context` override, and does not require patching the official executable.
+
+## Verification and memory containment
+
+For development, install the pinned runtimes with `mise install` and dependencies with `bun install --frozen-lockfile`. Run checks sequentially:
 
 ```bash
 bun run docs:check
 bun run typecheck
 bun run lint
 bun run test
-mise run verify:patches
+bun run verify:mods --binary /path/to/stock/claude --live
 ```
 
-`bun run test` deliberately executes one test file at a time to bound memory. Fixture tests validate contracts and edge cases; only `mise run verify:patches` against a real native bundle proves that the current upstream release still matches and verifies. See the [CLI reference](docs/cli-reference.md) for prompt exports, matrix checks, and release-diff tooling.
+The live mod gate validates the shipped plugin, stages its engine tests, and drives real CLI sessions against a local Messages stub. It checks model-visible tool descriptions, both added tools, successful and failed batch edits, view behavior, disabled-tool denial, resume refresh, and task/fork modes. Unit tests or `claude --version` alone do not establish those behaviors. This is a maintainer gate, not an installation step. Claude Code's early-access mod API can change before the plugin is updated.
 
-## Distribution and safety
+On Linux/WSL, heavy commands use a verified cgroup-v2 scope with at most **16 GiB aggregate RAM**, reduced to half available headroom, **zero swap**, and whole-group OOM termination. A working systemd user manager is required. Nested commands share the same budget; `CC_ENHANCED_MEMORY_MAX_MIB` can only lower it. Native extraction, bundle diffs, and prompt export remain memory-heavy even though patching is gone. Other platforms report that this wrapper provides no kernel memory limit. See [memory limits](docs/cli-reference.md#memory-limits).
 
-- Generated candidates and evidence belong under ignored repository-local cache paths or another explicit private location.
-- CI installs dependencies, checks documentation, typechecks, lints, and runs the serial test suite; it does not upload release assets or patched builds.
-- Desktop-managed artifacts are not mutated by the offline candidate builder.
-- Remote Control and self-hosted live actions remain explicit, receipt-bound operations with their own trust and consent gates.
+## Documentation
+
+| Guide | Use it for |
+| --- | --- |
+| [Getting started](docs/getting-started.md) | Install, update the plugin, uninstall, and understand runtime requirements. |
+| [Configuration](docs/configuration.md) | Set saved defaults, wrapper prompt overrides, effort, and memory limits. |
+| [CLI and inspection reference](docs/cli-reference.md) | Run setup, plugin updates, verification, native extraction, prompt export, and release diffs. |
+| [Maintainer reference](docs/maintainer-reference.md) | Author mods, refresh declarations, review upstream releases, and maintain auditing tools. |
+| [Subscription routing](docs/subscription-routing/README.md) | Maintain the optional Clodex routing setup and its separate client requirements. |
 
 ## Disclaimer
 
-This project is not affiliated with, endorsed by, or connected to Anthropic, PBC or any of its affiliates. "Claude" and "Claude Code" are trademarks of Anthropic, PBC. This tool modifies a locally obtained Claude Code executable, which may not be permitted under applicable terms. Users are responsible for their own compliance and use it at their own risk.
+This project is not affiliated with, endorsed by, or connected to Anthropic, PBC or any of its affiliates. "Claude" and "Claude Code" are trademarks of Anthropic, PBC. cc-enhanced does not modify the Claude Code executable: it runs stock Claude Code with a plugin and shell-wrapper prompt options. Users remain responsible for compliance with applicable terms and use it at their own risk.
 
 ## License
 
