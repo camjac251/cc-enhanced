@@ -1,9 +1,9 @@
 <h1 align="center">cc-enhanced</h1>
 
-<p align="center"><strong>Verifiable AST patches for the latest Claude Code native CLI</strong></p>
+<p align="center"><strong>Legacy AST patches for Claude Code 2.1.263</strong></p>
 
 <p align="center">
-  <a href="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml?query=branch%3Alegacy%2Fpatcher-2.1.263"><img alt="Legacy branch CI" src="https://github.com/camjac251/cc-enhanced/actions/workflows/ci.yml/badge.svg?branch=legacy%2Fpatcher-2.1.263"></a>
   <img alt="Tested with Claude Code 2.1.263" src="https://img.shields.io/badge/tested-Claude_Code_2.1.263-8A2BE2">
   <img alt="44 patches" src="https://img.shields.io/badge/patches-44-f97316">
   <img alt="Maintenance paused" src="https://img.shields.io/badge/maintenance-paused-dc2626">
@@ -21,7 +21,7 @@
 
 > [!WARNING]
 >
-> Maintenance is paused. I've switched from Claude Code to [oh-my-pi](https://github.com/can1357/oh-my-pi), so ongoing upstream release tracking remains paused. This manual refresh is verified against Claude Code 2.1.263. Issues and pull requests are still welcome, including ones that carry the patches forward to a newer release.
+> This is the frozen `legacy/patcher-2.1.263` branch. **Claude Code 2.1.263 is the last confirmed supported patcher release.** Disregard claims that later patched versions were confirmed. Maintenance and upstream release tracking remain paused after my switch to [oh-my-pi](https://github.com/can1357/oh-my-pi). Do not target `latest`, `next`, or `stable` with this archive. The separate stock-plugin implementation lives on [main](https://github.com/camjac251/cc-enhanced/tree/main); its checks do not extend legacy support.
 
 cc-enhanced extracts the JavaScript embedded in an official Claude Code native executable, rebundles split modules into one patch surface when needed, applies a selected set of independently verifiable patches, and repacks the result without changing the native file's fixed layout. The primary `cli-full` profile improves Read and Edit ergonomics, modernizes prompt and tool routing, unlocks runtime and UI controls, and keeps the patched installation recoverable through atomic promotion and rollback.
 
@@ -48,13 +48,13 @@ The complete behavior and source link for every tag lives in the [44-patch catal
 mise install
 bun install --frozen-lockfile
 
-mise run native:update
+mise run native:update -- 2.1.263
 
 claude --version
 mise run status
 ```
 
-`native:update` fetches the current official release, builds and verifies a separate candidate, and promotes it only after all selected patch gates pass. Rollback is an atomic symlink exchange:
+The explicit `2.1.263` argument pins the official release fetched by `native:update`; omitting it would fetch `latest`, which is outside this archive's confirmed support. The command builds and verifies a separate candidate, then promotes it only after all selected patch gates pass. Other documentation in this archive describes the historical workflow, not support for newer versions. Rollback is an atomic symlink exchange:
 
 ```bash
 mise run native:rollback
@@ -83,7 +83,7 @@ Structural patches share one parsed AST and run in registration order. Each patc
 
 | Surface | Patch policy | Selection state | What is still required |
 | --- | --: | --- | --- |
-| Standalone CLI (`cli-full`) | 44 registered patches | Supported and selectable | A real latest-bundle verification before release or promotion claims. |
+| Standalone CLI (`cli-full`) | 44 registered patches | Confirmed for 2.1.263 only | Real-bundle verification before building or promoting a candidate. |
 | Desktop-local | 30 probe-required candidates, 15 exclusions | Reserved and build-only | Exact target receipts plus stock and patched Read/Edit/tool approval and presentation probes. |
 | Remote Control | 30 probe-required candidates, 15 exclusions | Reserved and build-only | Matching-host proof and separate web, mobile, and Desktop client compatibility evidence. |
 | Self-hosted runner | 30 probe-required candidates, 15 exclusions | Reserved and build-only | Runner registration, child execution, deployment, and client qualification. |
@@ -116,7 +116,7 @@ bun run test
 mise run verify:patches
 ```
 
-`bun run test` deliberately executes one test file at a time to bound memory. Fixture tests validate contracts and edge cases; only `mise run verify:patches` against a real native bundle proves that the current upstream release still matches and verifies. See the [CLI reference](docs/cli-reference.md) for prompt exports, matrix checks, and release-diff tooling.
+`bun run test` deliberately executes one test file at a time to bound memory. Fixture tests validate contracts and edge cases; real-bundle verification remains necessary before building or promoting a candidate. Passing automated checks does not make a newer version a confirmed supported release: this archive's support boundary remains 2.1.263. See the [CLI reference](docs/cli-reference.md) for historical prompt exports, matrix checks, and release-diff tooling.
 
 ## Distribution and safety
 
