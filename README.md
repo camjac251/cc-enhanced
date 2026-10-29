@@ -19,7 +19,7 @@
 
 > [!WARNING]
 >
-> Maintenance is paused. I've switched from Claude Code to [oh-my-pi](https://github.com/can1357/oh-my-pi), so ongoing upstream release tracking remains paused. This manual refresh is verified against Claude Code 2.1.312. Issues and pull requests are still welcome, including updates to the mod for newer releases.
+> Maintenance is paused. I've switched from Claude Code to [oh-my-pi](https://github.com/can1357/oh-my-pi), so ongoing upstream release tracking remains paused. **Claude Code 2.1.263 is the last confirmed supported legacy patcher release**, preserved on [`legacy/patcher-2.1.263`](https://github.com/camjac251/cc-enhanced/tree/legacy/patcher-2.1.263). Automated checks of the separate stock-plugin implementation on `main` cover 2.1.312; they do not establish support for newer legacy patcher versions. Issues and pull requests are still welcome.
 
 cc-enhanced runs an **unmodified official Claude Code executable** with a standard marketplace plugin. The mod changes prompt guidance, tool descriptions, and selected session behavior, and adds two tools for batch editing and ranged text viewing. A small PATH wrapper appends a system-prompt file for shell launches. Claude Code updates itself. There is no native patching, rebundling for execution, or repacking.
 
@@ -64,7 +64,15 @@ The built-in Read and Edit schemas remain stock, and stock Edit still asks for a
 
 ## What changed from the legacy patcher
 
-The last public patch-based release, verified against Claude Code 2.1.263, remains available in [Git history](https://github.com/camjac251/cc-enhanced/tree/c2d2e6f83d9cab30a35f8da8fdd7dd477ebf043a). Main now uses plugin hooks and stock launch controls.
+If you want the legacy native patcher and its 44-patch catalog, use [`legacy/patcher-2.1.263`](https://github.com/camjac251/cc-enhanced/tree/legacy/patcher-2.1.263). **2.1.263 is its last confirmed supported Claude Code version.** Disregard claims that later patched versions were confirmed; later checkpoints are not confirmed supported releases. The branch is frozen, not actively maintained.
+
+Clone it into a separate directory so it does not replace your stock-plugin checkout:
+
+```bash
+git clone --branch legacy/patcher-2.1.263 --single-branch https://github.com/camjac251/cc-enhanced.git cc-enhanced-legacy
+```
+
+Follow that branch's README for the legacy workflow. Main's `install.sh` installs the stock plugin, not the legacy patcher.
 
 Some former changes now come from stock Claude Code, saved settings, or the shell wrapper: Monitor availability, per-call Agent effort, 2576px image handling, prompt-cache TTLs, the Read token budget, system-prompt appends, ultracode, and the default effort setting.
 

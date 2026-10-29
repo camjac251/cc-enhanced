@@ -16,7 +16,7 @@ The root `.claude-plugin/marketplace.json` exposes `./plugin` as `cc-enhanced@cc
 
 `install.sh` adds or refreshes the marketplace, installs and updates the plugin, writes the wrapper, and adds unset settings, shell blocks, and non-overwriting Explore/Plan user-agent defaults unless opted out. No Bun is required for setup or runtime. The plugin, agents, and saved settings apply across Claude Code surfaces; only wrapper launches receive its prompt appends. Uninstall removes installer-owned files, including unchanged agent defaults, while preserving custom agents and settings. There is no custom binary lifecycle. Native extraction and bundle analysis are read-only maintenance tools.
 
-The old patch-based architecture remains in the [last public patcher revision](../README.md#what-changed-from-the-legacy-patcher). Its native writers, target profiles, and patch verification procedures do not apply to main.
+The old patch-based architecture is preserved on [`legacy/patcher-2.1.263`](https://github.com/camjac251/cc-enhanced/tree/legacy/patcher-2.1.263), whose last confirmed supported Claude Code version is 2.1.263. Later legacy support claims must not be treated as confirmation. Its native writers, target profiles, and patch verification procedures do not apply to main, and stock-plugin checks on newer versions do not extend legacy support.
 
 ## File map
 

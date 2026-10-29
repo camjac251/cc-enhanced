@@ -21,7 +21,7 @@ Stock prompt exports describe the upstream bundle. They do not include runtime m
 
 ## Legacy patch-based version
 
-The old native patcher remains in Git history. Its patch catalog, target profiles, native lifecycle, and verification procedures do not apply to main. The [project overview](../README.md#what-changed-from-the-legacy-patcher) links the last public patcher revision and lists behavior that was replaced or dropped.
+The archived native patcher is available on [`legacy/patcher-2.1.263`](https://github.com/camjac251/cc-enhanced/tree/legacy/patcher-2.1.263). Claude Code 2.1.263 is its last confirmed supported version; later checkpoints are not confirmed supported releases. Its patch catalog, target profiles, native lifecycle, and verification procedures do not apply to main. The [project overview](../README.md#what-changed-from-the-legacy-patcher) explains how to obtain the archive and lists behavior that was replaced or dropped.
 
 ## Documentation conventions
 
