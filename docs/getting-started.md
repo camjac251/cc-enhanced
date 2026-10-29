@@ -2,17 +2,39 @@
 
 [Documentation home](README.md) · [Configuration](configuration.md) · [CLI reference](cli-reference.md)
 
-cc-enhanced installs a standard marketplace plugin and a PATH wrapper for system-prompt appends. Claude Code remains the official, unmodified installation and updates itself. The current tested release is **2.1.312**. The project targets the latest upstream form, without older-version compatibility fallbacks.
+cc-enhanced can run as a standard marketplace plugin alone, or with an optional setup script that adds a PATH wrapper and defaults. Claude Code remains the official, unmodified installation and updates itself. Automated stock-plugin checks cover **2.1.312**; these are separate from confirmed legacy patcher support. The project targets the latest upstream form, without older-version compatibility fallbacks.
 
 ## Requirements
 
-- macOS or Linux, Bash, and Git.
-- Official Claude Code 2.1.300 or later on PATH, with normal authentication for your own sessions. When installing from this checkout, setup refuses an older version and tells you to run `claude update`. Another `--source` revision may have a different minimum. This minimum supports workflow `agent.spawn` routing; maintainers still target and live-test only the latest release.
-- `jq` to add unset settings defaults automatically and to preserve marketplace update preferences when `--source` is used with existing settings. Without it, default setup prints a settings snippet for you to apply.
+- Plugin-only installation: the current official Claude Code with plugin/mod support and Git to fetch the marketplace. Normal authentication is needed for your own sessions.
+- The plugin's declared API minimum is Claude Code 2.1.300. Direct plugin installation does not run the setup script's minimum-version check, so check `claude --version` and update the official client if needed. This is not the legacy 2.1.263 patcher.
+- The optional setup script additionally requires macOS or Linux and Bash. It uses `jq` to add unset settings defaults automatically and to preserve marketplace update preferences when `--source` is used with existing settings. Without `jq`, default setup prints a settings snippet for you to apply.
 
 No Bun, mise, build step, or systemd setup is needed to install or run the plugin. Those development dependencies and memory-containment requirements apply only to repository maintenance commands.
 
 ## Install
+
+### Plugin only
+
+Run from your own terminal:
+
+```bash
+claude plugin install cc-enhanced --marketplace camjac251/cc-enhanced --scope user
+```
+
+Claude Code registers the GitHub marketplace and installs the plugin at user scope. No manual checkout or `install.sh` is required. Start a new session or use `/reload-plugins` in an existing session, then inspect it with:
+
+```bash
+claude plugin details cc-enhanced
+```
+
+The plugin's added tools, prompt/tool guidance, visibility policy, and transcript behavior apply. This path does not add the PATH wrapper, external system-prompt file appends, installer settings defaults, or Explore/Plan user-agent defaults. It does not install Clodex, LSP servers, or external shell/search tools. See [runtime tools and behavior](#runtime-tools-and-behavior), especially the built-in tools the plugin denies.
+
+Claude Code still records its normal plugin registration and enabled state in settings. Plugin-only means the setup script's extra changes are omitted, not that installation writes no settings.
+
+If you previously used the full setup, run `./install.sh --uninstall` from that checkout first, then open a fresh shell and use the plugin-only command above. Uninstall leaves saved settings and custom agents in place; review those separately if you want stock defaults. Reinstalling the plugin by itself does not remove an existing wrapper.
+
+### Plugin plus shell setup
 
 ```bash
 curl -fsSL https://claude.ai/install.sh | bash
@@ -62,6 +84,25 @@ The user-scope plugin, agent definitions, and saved settings apply across Claude
 ## Updates and uninstall
 
 Claude Code updates itself independently. `claude update` remains the official update command; cc-enhanced does not intercept it.
+
+### Plugin-only installs
+
+To fetch the latest marketplace and update the user-scoped plugin:
+
+```bash
+claude plugin marketplace update cc-enhanced
+claude plugin update cc-enhanced@cc-enhanced --scope user
+```
+
+To remove the user-scoped plugin:
+
+```bash
+claude plugin uninstall cc-enhanced@cc-enhanced --scope user
+```
+
+Start a new session or use `/reload-plugins` after changes. These commands do not remove a wrapper or settings defaults left by an earlier setup-script installation. See the official [plugin command reference](https://code.claude.com/docs/en/plugins/cli-reference) for other scopes and lifecycle controls.
+
+### Setup-script installs
 
 For the default local-checkout source, pull repository changes, then run:
 

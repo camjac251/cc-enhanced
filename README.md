@@ -27,6 +27,22 @@ This repository contains the plugin, `install.sh`, and development tools. It doe
 
 ## Quick start
 
+### Plugin only
+
+With the current official Claude Code installed (plugin API minimum: 2.1.300), run this from your terminal:
+
+```bash
+claude plugin install cc-enhanced --marketplace camjac251/cc-enhanced --scope user
+```
+
+Start a new Claude Code session or run `/reload-plugins` in an existing one. Claude Code fetches the marketplace and installs the plugin; no manual checkout, `install.sh`, Bun, mise, or build step is needed.
+
+This installs the plugin's tools, guidance, and session behavior only. It does **not** install the PATH wrapper, append an external system-prompt file, add setup settings defaults, or install the Explore/Plan user-agent defaults. It also does not install Clodex, LSP servers, or the external utilities the guidance recommends. Review [what changes](#what-changes) before enabling it, including the disabled built-in tools.
+
+See [plugin-only installation and migration](docs/getting-started.md#plugin-only) and [update/removal commands](docs/getting-started.md#plugin-only-installs). If you already ran `install.sh`, installing the plugin alone does not remove that setup.
+
+### Plugin plus shell setup
+
 Install official Claude Code, then clone this repository and run the setup script:
 
 ```bash
