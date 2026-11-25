@@ -1,6 +1,6 @@
 {
 	"name": "cc-enhanced",
-	"version": "2.2.0",
+	"version": "2.2.1",
 	"description": "Tool-routing guidance, batch edits, ranged views, plan and memory diffs, configured agent model routing, and a configurable status line for stock Claude Code.",
 	"author": {
 		"name": "camjac251"

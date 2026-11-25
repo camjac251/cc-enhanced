@@ -17,6 +17,10 @@ const EFFORT_STORE_KEY = "statuslineEffort";
 /** Every open session shares one fetch through the plugin store. */
 const USAGE_TTL_MS = 5 * 60_000;
 const USAGE_RETRY_MS = 2 * 60_000;
+/** A session about to fetch claims it; others reuse their copy meanwhile. */
+const USAGE_CLAIM_MS = 30_000;
+/** Older than this, figures from the usage endpoint are marked stale. */
+const USAGE_STALE_MS = 3 * USAGE_TTL_MS;
 const TICK_MS = 60_000;
 const FIVE_MINUTES_MS = 5 * 60_000;
 const ONE_HOUR_MS = 60 * 60_000;
@@ -97,6 +101,8 @@ type ScopedLimit = Limit & { label: string };
 export type UsageSnapshot = {
 	fetchedAt: number;
 	retryAt?: number;
+	/** Another session is fetching until then. */
+	fetchingUntil?: number;
 	fiveHour?: Limit;
 	sevenDay?: Limit;
 	scoped: ScopedLimit[];
@@ -221,11 +227,19 @@ export async function refreshUsage(
 	const cached = storedUsage(await $.store.get(USAGE_STORE_KEY));
 	if (cached) {
 		if (cached.retryAt !== undefined && now < cached.retryAt) return cached;
+		if (cached.fetchingUntil !== undefined && now < cached.fetchingUntil)
+			return cached;
 		if (now - cached.fetchedAt < USAGE_TTL_MS && !windowResetSince(cached, now))
 			return cached;
 	}
 	const authorization = await $.session.authorize();
 	if (authorization?.kind !== "bearer") return cached;
+	// The store has no compare-and-set: a claim narrows, not closes, the window
+	// in which two sessions fetch together. The result written below drops it.
+	await $.store.set(USAGE_STORE_KEY, {
+		...(cached ?? { fetchedAt: 0, scoped: [] }),
+		fetchingUntil: now + USAGE_CLAIM_MS,
+	});
 	let next: UsageSnapshot;
 	try {
 		const response = await $.http.fetch(USAGE_URL, {
@@ -328,7 +342,6 @@ async function recordStep(
 			cacheAfter(previous.value, usage, await $.clock.now()),
 		);
 	}
-	$.ui.invalidate("ui.render");
 }
 
 function width(spans: readonly Span[]): number {
@@ -747,12 +760,14 @@ function percentSegment(
 	limit: Limit,
 	priority: number,
 	suffix: Span[] = [],
+	marker: Span[] = [],
 ): Segment {
 	return {
 		priority,
 		variants: [
 			[
 				label(name),
+				...marker,
 				{ text: formatPercent(limit.percent), ...tier(limit.percent) },
 				...suffix,
 			],
@@ -766,6 +781,12 @@ function statusSegments(
 ): Segment[] {
 	const { now } = view.clock;
 	const segments: Segment[] = [];
+	// The engine's own limits are current; the usage endpoint's copy can lag
+	// when refreshes keep failing.
+	const stale: Span[] =
+		view.usage !== undefined && now - view.usage.fetchedAt > USAGE_STALE_MS
+			? [label("~")]
+			: [];
 	if (options.cost && view.costUsd !== undefined) {
 		const cost: Span[] = [
 			label("$"),
@@ -777,11 +798,10 @@ function statusSegments(
 			variants: [[label("session:"), ...cost], [label("s:"), ...cost], cost],
 		});
 	}
-	const fiveHour = live(
-		sessionLimit(view, "five_hour") ?? view.usage?.fiveHour,
-		now,
-	);
+	const fiveHourEngine = sessionLimit(view, "five_hour");
+	const fiveHour = live(fiveHourEngine ?? view.usage?.fiveHour, now);
 	if (options.fiveHour && fiveHour) {
+		const marker = fiveHourEngine ? [] : stale;
 		const percent: Span = {
 			text: formatPercent(fiveHour.percent),
 			...tier(fiveHour.percent),
@@ -797,17 +817,15 @@ function statusSegments(
 		segments.push({
 			priority: 100,
 			variants: [
-				[label("usage:"), percent, ...remaining, ...clock],
-				[label("u:"), percent, ...remaining],
-				[label("u:"), percent],
-				[percent],
+				[label("usage:"), ...marker, percent, ...remaining, ...clock],
+				[label("u:"), ...marker, percent, ...remaining],
+				[label("u:"), ...marker, percent],
+				[...marker, percent],
 			],
 		});
 	}
-	const sevenDay = live(
-		sessionLimit(view, "seven_day") ?? view.usage?.sevenDay,
-		now,
-	);
+	const sevenDayEngine = sessionLimit(view, "seven_day");
+	const sevenDay = live(sevenDayEngine ?? view.usage?.sevenDay, now);
 	if (options.weekly && sevenDay) {
 		const reset =
 			sevenDay.resetsAt === undefined
@@ -821,12 +839,17 @@ function statusSegments(
 							})`,
 						),
 					];
-		segments.push(percentSegment("7d:", sevenDay, 15, reset));
+		segments.push(
+			percentSegment("7d:", sevenDay, 15, reset, sevenDayEngine ? [] : stale),
+		);
 	}
 	if (options.modelLimits) {
 		for (const row of view.usage?.scoped ?? []) {
 			const scoped = live(row, now);
-			if (scoped) segments.push(percentSegment(`${scoped.label}:`, scoped, 14));
+			if (scoped)
+				segments.push(
+					percentSegment(`${scoped.label}:`, scoped, 14, [], stale),
+				);
 		}
 	}
 	const cache = view.cache;
@@ -998,6 +1021,33 @@ function logFailure($: EngineInterface, what: string, error: unknown): void {
 let ticker: Timer | undefined;
 
 /**
+ * The footer last drawn and the frame it was laid out for; `null` when the
+ * site was left to a statusLine command. A refresh redraws only on change.
+ */
+let drawn:
+	| { columns: number; maxRows: number; rows: string }
+	| null
+	| undefined;
+
+/** Redraws when the footer's text would differ from what is on screen. */
+async function redrawIfChanged(
+	$: EngineInterface,
+	options: StatuslineOptions,
+): Promise<void> {
+	if (drawn === null) return;
+	if (drawn !== undefined) {
+		const rows = statuslineRows(
+			await gather($),
+			options,
+			drawn.columns,
+			drawn.maxRows,
+		);
+		if (JSON.stringify(rows) === drawn.rows) return;
+	}
+	$.ui.invalidate("ui.render");
+}
+
+/**
  * What outlives one conversation. `/clear` starts a new session state without
  * a session start, but this module, each model's effort, the account's limits
  * and the person's settings stay; only the cache figures belong to one thread.
@@ -1037,7 +1087,7 @@ export async function startStatusline(
 					facts.usage = usage;
 				}
 			}
-			$.ui.invalidate("ui.render");
+			await redrawIfChanged($, options);
 		} catch (error) {
 			logFailure($, "refresh failed", error);
 		}
@@ -1075,6 +1125,7 @@ export function registerStatuslineMods(
 		if (e.agentId === undefined) {
 			try {
 				await recordStep($, e.model, e.effort, result.usage);
+				await redrawIfChanged($, options);
 			} catch (error) {
 				logFailure($, "could not record a step", error);
 			}
@@ -1091,7 +1142,7 @@ export function registerStatuslineMods(
 		if (EFFORT_LEVELS.has(level)) {
 			try {
 				await rememberEffort($, await $.session.model(), level);
-				$.ui.invalidate("ui.render");
+				await redrawIfChanged($, options);
 			} catch (error) {
 				logFailure($, "could not record /effort", error);
 			}
@@ -1102,8 +1153,14 @@ export function registerStatuslineMods(
 	on("ui.render", { component: "StatusLine" }, async ($, e, next) => {
 		if (e.surface !== "terminal") return next(e);
 		if (options.mode === "auto") {
-			if (e.props.isManaged || e.props.text !== null || facts.commandConfigured)
+			if (
+				e.props.isManaged ||
+				e.props.text !== null ||
+				facts.commandConfigured
+			) {
+				drawn = null;
 				return next(e);
+			}
 		}
 		let rows: Span[][];
 		try {
@@ -1117,6 +1174,11 @@ export function registerStatuslineMods(
 			logFailure($, "could not draw", error);
 			return next(e);
 		}
+		drawn = {
+			columns: e.props.columns,
+			maxRows: e.props.maxRows,
+			rows: JSON.stringify(rows),
+		};
 		if (rows.length === 0) return next(e);
 		// The line takes the statusLine command's place where one is replaced;
 		// other mods' rows at this site still draw beneath it.

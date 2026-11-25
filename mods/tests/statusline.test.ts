@@ -142,6 +142,47 @@ test("an explicit /effort level shows at once; a bare /effort waits for a reques
 	expect((await rows($))[0]).toContain("[effort:high]");
 });
 
+test("a refresh redraws the footer only when its text would change", async ($, on) => {
+	// No countdown and no cache timer: nothing on the line moves with the clock.
+	const clock = world(on, {
+		usage: {
+			...USAGE,
+			rateLimits: USAGE.rateLimits?.filter(
+				(limit) => limit.kind === "seven_day",
+			),
+		},
+	});
+	let draws = 0;
+	on("ui.render", { component: "StatusLine" }, (_$, e, next) => {
+		draws++;
+		return next(e);
+	});
+	await $.session.start({
+		cwd: "/home/tester/projects/demo",
+		surface: "terminal",
+		isInteractive: true,
+	});
+	const ui = await $.ui.mount({ plugin: "cc-enhanced", ...footer() });
+	await clock.advance(1);
+	const settled = draws;
+	await clock.advance(3 * 60_000);
+	expect(draws).toBe(settled);
+	await $.command.run({
+		command: "effort",
+		args: "high",
+		origin: { kind: "composer" },
+		presentation: { isFullscreen: false, columns: 200 },
+	});
+	// Redraws land on the next frame.
+	await clock.advance(100);
+	expect(draws).toBeGreaterThan(settled);
+	const texts = (await ui.findAll({ type: "Text" })).map(
+		(element) => element.text,
+	);
+	expect(texts.some((text) => text.includes("[effort:high]"))).toBe(true);
+	await ui.unmount();
+});
+
 test("a cost that includes an unpriced model is marked", async ($, on) => {
 	world(on, { usage: { ...USAGE, cost: { usd: 1.5, hasUnknownPrice: true } } });
 	const [, status] = await rows($);
@@ -230,6 +271,49 @@ test("an interactive start shows the model's last requested effort, not the effo
 	// Once it is five minutes old, the next tick refreshes it.
 	await clock.advance(4 * 60_000);
 	expect(fetches).toHaveLength(2);
+});
+
+test("another session's fresh fetch claim defers this fetch, and a long-unrefreshed copy is marked stale", async ($, on) => {
+	const fetches: string[] = [];
+	const clock = world(on, {
+		authorized: true,
+		fetches,
+		store: {
+			statuslineUsage: {
+				fetchedAt: NOW - 20 * 60_000,
+				fetchingUntil: NOW + 30_000,
+				scoped: [{ label: "fable", percent: 12, resetsAt: WEEKLY_RESET }],
+			},
+		},
+		usageBody: {
+			limits: [
+				{
+					kind: "weekly_scoped",
+					percent: 9,
+					resets_at: new Date(WEEKLY_RESET).toISOString(),
+					scope: {
+						model: { id: "claude-fable-5-1", display_name: "Fable 5.1" },
+					},
+				},
+			],
+		},
+	});
+	await $.session.start({
+		cwd: "/home/tester/projects/demo",
+		surface: "terminal",
+		isInteractive: true,
+	});
+	const [, before] = await rows($);
+	expect(fetches).toEqual([]);
+	// Twenty minutes old: the endpoint's figure is marked; the engine's 7d is not.
+	expect(before).toContain("fable:~12%");
+	expect(before).toContain("7d:37%");
+	// Once the claim lapses, this session fetches and the mark goes.
+	await clock.advance(60_000);
+	expect(fetches).toHaveLength(1);
+	const [, after] = await rows($);
+	expect(after).toContain("fable:9%");
+	expect(after).not.toContain("~");
 });
 
 test("a print-mode start neither fetches nor starts a refresh timer", async ($, on) => {
