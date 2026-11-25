@@ -18,6 +18,9 @@ type FixtureOptions = {
 	failure?: "deny" | "error" | "staged";
 	mutateOnFailure?: boolean;
 	permission?: "allow" | "ask" | "deny";
+	editPermission?: "allow" | "ask" | "deny";
+	/** The engine's verdict for batch_edit itself: rules and mode, not Edit's. */
+	ownPermission?: "allow" | "ask" | "deny";
 	invalidBytes?: string;
 	ignoreRestore?: boolean;
 };
@@ -29,6 +32,14 @@ function base64(text: string): string {
 		).join(""),
 	);
 }
+/** Refused at `tool.check` it reads as `deny`; failed at the run, a tool error. */
+function refusal(result: {
+	deny?: string;
+	isError?: true;
+	text?: string;
+}): string | undefined {
+	return result.deny ?? (result.isError ? result.text : undefined);
+}
 
 function mockFile(on: On, original: string, options: FixtureOptions = {}) {
 	const fixture = {
@@ -36,6 +47,7 @@ function mockFile(on: On, original: string, options: FixtureOptions = {}) {
 		calls: [] as EditInput[],
 		writes: [] as string[],
 		events: [] as string[],
+		editChecks: 0,
 	};
 	on("tool.check", { tool: "Read" }, (_$, e) => {
 		expect(e.input).toEqual({ file_path: PATH });
@@ -45,6 +57,18 @@ function mockFile(on: On, original: string, options: FixtureOptions = {}) {
 			reason: "fixture permission",
 		};
 	});
+	on("tool.check", { tool: "Edit" }, (_$, e) => {
+		expect(e.input).toMatchObject({ file_path: PATH });
+		fixture.editChecks++;
+		return {
+			decision: options.editPermission ?? "allow",
+			reason: "fixture edit permission",
+		};
+	});
+	on("tool.check", { tool: TOOL }, () => ({
+		decision: options.ownPermission ?? "ask",
+		reason: "fixture batch_edit permission",
+	}));
 	on("fs.read", (_$, e) => {
 		expect(e.path).toBe(PATH);
 		expect(e.as).toBe("bytes");
@@ -120,8 +144,8 @@ for (const [name, edits] of [
 	test(`batch_edit performs no core Edit for ${name}`, async ($, on) => {
 		const fixture = mockFile(on, "alpha tail\n");
 		const result = await $.tool.call({ tool: TOOL, file_path: PATH, edits });
-		expect(result.deny).toContain("Batch edit rejected:");
-		expect(result.deny).toContain("No edits applied.");
+		expect(refusal(result)).toContain("Batch edit rejected:");
+		expect(refusal(result)).toContain("No edits applied.");
 		expect(fixture.content).toBe("alpha tail\n");
 		expect(fixture.calls).toEqual([]);
 		expect(fixture.writes).toEqual([]);
@@ -242,9 +266,9 @@ for (const failure of ["deny", "error", "staged"] as const) {
 			"restore",
 			"read bytes",
 		]);
-		expect(result.deny).toContain("Batch edit failed at edit 2:");
-		expect(result.deny).toContain("2. Failed; later edits were not run.");
-		expect(result.deny).toContain(
+		expect(refusal(result)).toContain("Batch edit failed at edit 2:");
+		expect(refusal(result)).toContain("2. Failed; later edits were not run.");
+		expect(refusal(result)).toContain(
 			"Rollback succeeded: original bytes restored",
 		);
 	});
@@ -263,7 +287,7 @@ test("batch_edit does not write on an unchanged first-call denial", async ($, on
 	expect(fixture.calls.length).toBe(1);
 	expect(fixture.writes).toEqual([]);
 	expect(fixture.content).toBe("alpha\n");
-	expect(result.deny).toContain(
+	expect(refusal(result)).toContain(
 		"Rollback not needed: original bytes are unchanged.",
 	);
 });
@@ -284,7 +308,7 @@ test("batch_edit reports a rollback that did not restore the original bytes", as
 	});
 	expect(fixture.content).toBe("gamma beta\n");
 	expect(fixture.writes).toEqual(["alpha beta\n"]);
-	expect(result.deny).toContain(
+	expect(refusal(result)).toContain(
 		"Rollback failed: restored bytes did not match the original.",
 	);
 });
@@ -300,9 +324,66 @@ for (const permission of ["ask", "deny"] as const) {
 		expect(fixture.events).toEqual(["check Read"]);
 		expect(fixture.calls).toEqual([]);
 		expect(fixture.writes).toEqual([]);
-		expect(result.deny).toContain(`Read permission is ${permission}`);
+		expect(refusal(result)).toContain(`Read permission is ${permission}`);
 	});
 }
+
+test("batch_edit is refused before any read or Edit when Edit is denied, even on a mod's own call", async ($, on) => {
+	const fixture = mockFile(on, "alpha\n", { editPermission: "deny" });
+	const input = {
+		file_path: PATH,
+		edits: [{ old_string: "alpha", new_string: "beta" }],
+	};
+	const verdict = await $.tool.check({ tool: TOOL, input });
+	expect(verdict.decision).toBe("deny");
+	expect(verdict.reason).toContain(`Edit is denied for ${PATH}`);
+	// A mod's own call skips deny rules, but not this hook's refusal.
+	const result = await $.tool.call({ tool: TOOL, ...input });
+	expect(refusal(result)).toContain(`Edit is denied for ${PATH}`);
+	expect(fixture.events).toEqual([]);
+	expect(fixture.calls).toEqual([]);
+	expect(fixture.writes).toEqual([]);
+});
+
+test("batch_edit is allowed when Edit allows every change", async ($, on) => {
+	const input = {
+		file_path: PATH,
+		edits: [
+			{ old_string: "alpha", new_string: "beta" },
+			{ old_string: "tail", new_string: "end" },
+		],
+	};
+	const allowed = mockFile(on, "alpha tail\n");
+	expect((await $.tool.check({ tool: TOOL, input })).decision).toBe("allow");
+	expect(allowed.editChecks).toBe(2);
+});
+
+for (const ownPermission of ["ask", "allow"] as const) {
+	test(`batch_edit asks when Edit would ask, with its own verdict ${ownPermission}`, async ($, on) => {
+		mockFile(on, "alpha\n", { editPermission: "ask", ownPermission });
+		const verdict = await $.tool.check({
+			tool: TOOL,
+			input: {
+				file_path: PATH,
+				edits: [{ old_string: "alpha", new_string: "beta" }],
+			},
+		});
+		expect(verdict.decision).toBe("ask");
+	});
+}
+
+test("batch_edit stays refused when its own rule denies it, whatever Edit allows", async ($, on) => {
+	const fixture = mockFile(on, "alpha\n", { ownPermission: "deny" });
+	const verdict = await $.tool.check({
+		tool: TOOL,
+		input: {
+			file_path: PATH,
+			edits: [{ old_string: "alpha", new_string: "beta" }],
+		},
+	});
+	expect(verdict.decision).toBe("deny");
+	expect(fixture.editChecks).toBe(0);
+});
 
 test("batch_edit rejects bytes that a text rollback could not preserve", async ($, on) => {
 	const fixture = mockFile(on, "alpha\n", {
@@ -315,7 +396,7 @@ test("batch_edit rejects bytes that a text rollback could not preserve", async (
 	});
 	expect(fixture.calls).toEqual([]);
 	expect(fixture.writes).toEqual([]);
-	expect(result.deny).toContain("Only roundtrippable UTF-8 text files");
+	expect(refusal(result)).toContain("Only roundtrippable UTF-8 text files");
 });
 
 test("batch_edit registers nondeferred after session.start completes", async ($, on) => {

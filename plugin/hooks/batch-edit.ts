@@ -312,5 +312,63 @@ export function registerBatchEditMods(on: On): void {
 		};
 	});
 
-	on("tool.call", { tool: BATCH_EDIT_TOOL }, ($, e) => executeBatchEdit($, e));
+	// A mod's own `$.tool.call` raises no prompt and skips deny rules, so the
+	// core Edit calls inside a batch are unguarded. The batch is decided here,
+	// as Edit would decide each of its changes, and served only once allowed.
+	on("tool.check", { tool: BATCH_EDIT_TOOL }, async ($, e, next) => {
+		const own = await next(e);
+		if (own.decision === "deny") return own;
+		let request: BatchEditInput;
+		try {
+			request = parseBatchEditInput(e.input);
+		} catch {
+			// The run refuses malformed input before it touches the file.
+			return own;
+		}
+		const verdicts = await Promise.all(
+			request.edits.map((edit) =>
+				$.tool.check({
+					tool: "Edit",
+					input: {
+						file_path: request.file_path,
+						old_string: edit.old_string,
+						new_string: edit.new_string,
+						replace_all: edit.replace_all,
+					},
+				}),
+			),
+		);
+		const denied = verdicts.find((verdict) => verdict.decision === "deny");
+		if (denied) {
+			return {
+				decision: "deny",
+				reason: `Edit is denied for ${request.file_path}${denied.reason ? `: ${denied.reason}` : ""}. No edits applied.`,
+			};
+		}
+		if (verdicts.every((verdict) => verdict.decision === "allow")) {
+			return {
+				decision: "allow",
+				reason: "Edit is allowed for every change in this batch.",
+			};
+		}
+		// Edit would ask. An allow for the whole batch tool must not skip that.
+		return own.decision === "ask"
+			? own
+			: {
+					decision: "ask",
+					reason: `Edit asks before changing ${request.file_path}.`,
+				};
+	}).catch(() => ({
+		decision: "deny",
+		reason: "batch_edit could not check Edit permission. No edits applied.",
+	}));
+	on("tool.run", { tool: BATCH_EDIT_TOOL }, ($, e) =>
+		executeBatchEdit($, e),
+	).catch((_$, e, next) =>
+		next.called
+			? next(e)
+			: {
+					deny: "batch_edit failed unexpectedly. Inspect the file before retrying.",
+				},
+	);
 }
