@@ -331,14 +331,20 @@ async function verifyResumedToolDescriptions(
 			"-p",
 			"Continue the isolated resume probe.",
 		]);
+		// A resumed thread keeps its recorded descriptions, as it keeps recorded
+		// sections, so the prompt cache survives; the mod does not force a rewrite.
+		const withoutDescriptions = (request: ModelRequest) =>
+			toolContracts(request).map(({ description: _, ...contract }) => contract);
 		assert.deepEqual(
-			toolContracts(resumed),
-			toolContracts(current),
-			"Resume must refresh descriptions without changing schemas, inventory, or placement",
+			withoutDescriptions(resumed),
+			withoutDescriptions(current),
+			"Resume must keep tool schemas, inventory, and placement",
 		);
 		assert(
-			!JSON.stringify(resumed.tools).includes(oldDescription),
-			"Resume reused recorded stale tool descriptions",
+			resumed.tools
+				?.find(({ name }) => name === "Bash")
+				?.description?.includes(oldDescription),
+			"Resume did not keep the recorded tool description",
 		);
 		const system =
 			typeof resumed.system === "string"
@@ -349,7 +355,7 @@ async function verifyResumedToolDescriptions(
 			"Resume unexpectedly rewrote recorded system sections",
 		);
 		console.log(
-			`Plugin mods: persisted resume ${attempt} refreshed descriptors and retained recorded sections.`,
+			`Plugin mods: persisted resume ${attempt} kept recorded descriptors and sections with unchanged tools.`,
 		);
 	}
 }

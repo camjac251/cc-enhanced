@@ -1,15 +1,91 @@
 {
 	"name": "cc-enhanced",
-	"version": "2.1.0",
-	"description": "Tool-routing guidance, batch edits, ranged views, plan and memory diffs, and configured agent model routing for stock Claude Code.",
+	"version": "2.2.0",
+	"description": "Tool-routing guidance, batch edits, ranged views, plan and memory diffs, configured agent model routing, and a configurable status line for stock Claude Code.",
 	"author": {
 		"name": "camjac251"
 	},
 	"homepage": "https://github.com/camjac251/cc-enhanced",
 	"repository": "https://github.com/camjac251/cc-enhanced",
 	"license": "MIT",
-	"types": "./state.d.ts",
-	"metadata": {
-		"minimumClaudeCodeVersion": "2.1.300"
+	"types": "./types/state.d.ts",
+	"network": { "hosts": ["api.anthropic.com"] },
+	"userConfig": {
+		"statusline": {
+			"type": "string",
+			"title": "Status line",
+			"description": "auto draws the cc-enhanced status line only when no statusLine command is configured; replace draws it in place of that command's output; off leaves the footer stock.",
+			"options": ["auto", "replace", "off"],
+			"default": "auto"
+		},
+		"statusline_path": {
+			"type": "boolean",
+			"title": "Status line: path",
+			"description": "Show the working directory.",
+			"default": true
+		},
+		"statusline_path_link": {
+			"type": "boolean",
+			"title": "Status line: path link",
+			"description": "Make the path a file link. Turn off in terminals without hyperlink support, which print the link's URL beside it.",
+			"default": true
+		},
+		"statusline_model": {
+			"type": "boolean",
+			"title": "Status line: model",
+			"description": "Show the session's model.",
+			"default": true
+		},
+		"statusline_effort": {
+			"type": "boolean",
+			"title": "Status line: effort",
+			"description": "Show this model's effort: /effort <level> updates it at once, otherwise each main-conversation request's level does.",
+			"default": true
+		},
+		"statusline_cost": {
+			"type": "boolean",
+			"title": "Status line: session cost",
+			"description": "Show what this session has cost.",
+			"default": true
+		},
+		"statusline_five_hour": {
+			"type": "boolean",
+			"title": "Status line: 5-hour usage",
+			"description": "Show the 5-hour usage window and its reset.",
+			"default": true
+		},
+		"statusline_weekly": {
+			"type": "boolean",
+			"title": "Status line: weekly usage",
+			"description": "Show the 7-day usage window and its reset.",
+			"default": true
+		},
+		"statusline_model_limits": {
+			"type": "boolean",
+			"title": "Status line: per-model weekly limits",
+			"description": "Fetch and show per-model weekly limits from your Claude account, at most every five minutes across sessions.",
+			"default": true
+		},
+		"statusline_cache": {
+			"type": "boolean",
+			"title": "Status line: prompt cache",
+			"description": "Show the live prompt-cache lifetime and the last response's cache reads and writes.",
+			"default": true
+		},
+		"statusline_context": {
+			"type": "boolean",
+			"title": "Status line: context",
+			"description": "Show context-window tokens and percent used.",
+			"default": true
+		},
+		"statusline_agents": {
+			"type": "boolean",
+			"title": "Agent rows",
+			"description": "Draw each subagent and teammate row in the agent list as name, model, effort, context, burn rate, elapsed time, and current task.",
+			"default": true
+		}
+	},
+	"engines": {
+		"claude-code": ">=2.1.332"
 	}
 }

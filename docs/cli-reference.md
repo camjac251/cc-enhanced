@@ -35,9 +35,9 @@ bun run lint
 bun run test
 ```
 
-`verify:mods` stages `plugin/` exactly as shipped, adds `mods/tests/` to the temporary test copy, validates it with `claude plugin validate --strict`, and runs `claude plugin test`. `--live` additionally drives real stock CLI sessions against a local Messages stub with `--plugin-dir`. `verify:minimum` downloads the version in `plugin.json`'s `metadata.minimumClaudeCodeVersion` and runs the same checks without `--live`, because live checks assert the latest release's prompt wording. Setup does not run these maintainer gates.
+`verify:mods` stages `plugin/` exactly as shipped, adds `mods/tests/` to the temporary test copy, validates it with `claude plugin validate --strict`, and runs `claude plugin test`. `--live` additionally drives real stock CLI sessions against a local Messages stub with `--plugin-dir`. `verify:minimum` downloads the version in `plugin.json`'s `engines["claude-code"]` range (`>=x.y.z`) and runs the same checks without `--live`, because live checks assert the latest release's prompt wording. Setup does not run these maintainer gates.
 
-The live checks cover model-visible descriptions, both registered tools, successful batch editing and failure without changed file bytes, ranged viewing, disabled-tool denial, persisted resume description refresh, and default/legacy task modes with fork on/off. They do not make provider requests or prove client-specific behavior in an IDE extension or Desktop. Use the latest **stock executable**, not the shell wrapper, as `--binary`; on the standard Linux install, resolve it with `readlink -f ~/.local/bin/claude`.
+The live checks cover model-visible descriptions, both registered tools, successful batch editing and failure without changed file bytes, ranged viewing, disabled-tool denial, resumed sessions keeping recorded descriptions, and default/legacy task modes with fork on/off. They do not make provider requests or prove client-specific behavior in an IDE extension or Desktop. Use the latest **stock executable**, not the shell wrapper, as `--binary`; on the standard Linux install, resolve it with `readlink -f ~/.local/bin/claude`.
 
 ## Native extraction and release inspection
 

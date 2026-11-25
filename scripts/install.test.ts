@@ -210,7 +210,7 @@ test("install refuses a Claude Code older than the plugin's declared minimum, co
 			"utf8",
 		),
 	);
-	const minimum: string = manifest.metadata.minimumClaudeCodeVersion;
+	const minimum: string = manifest.engines["claude-code"].replace(/^>=/, "");
 	const [major, minor, patch] = minimum.split(".").map(Number);
 	const run = (version: string) =>
 		spawnSync(

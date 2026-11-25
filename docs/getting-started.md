@@ -2,12 +2,12 @@
 
 [Documentation home](README.md) · [Configuration](configuration.md) · [CLI reference](cli-reference.md)
 
-cc-enhanced can run as a standard marketplace plugin alone, or with an optional setup script that adds a PATH wrapper and defaults. Claude Code remains the official, unmodified installation and updates itself. Automated stock-plugin checks cover **2.1.312**; these are separate from confirmed legacy patcher support. The project targets the latest upstream form, without older-version compatibility fallbacks.
+cc-enhanced can run as a standard marketplace plugin alone, or with an optional setup script that adds a PATH wrapper and defaults. Claude Code remains the official, unmodified installation and updates itself. Automated stock-plugin checks cover **2.1.332**; these are separate from confirmed legacy patcher support. The project targets the latest upstream form, without older-version compatibility fallbacks.
 
 ## Requirements
 
 - Plugin-only installation: the current official Claude Code with plugin/mod support and Git to fetch the marketplace. Normal authentication is needed for your own sessions.
-- The plugin's declared API minimum is Claude Code 2.1.300. Direct plugin installation does not run the setup script's minimum-version check, so check `claude --version` and update the official client if needed. This is not the legacy 2.1.263 patcher.
+- The plugin requires Claude Code 2.1.332 or later, the first release with the status line render site. Its manifest declares that range under `engines`, but Claude Code does not refuse to load it on an older client: 2.1.323 and later note the mismatch at install (a local-folder source still loads), and earlier releases ignore the field. Check `claude --version` and run `claude update` if needed. This is not the legacy 2.1.263 patcher.
 - The optional setup script additionally requires macOS or Linux and Bash. It uses `jq` to add unset settings defaults automatically and to preserve marketplace update preferences when `--source` is used with existing settings. Without `jq`, default setup prints a settings snippet for you to apply.
 
 No Bun, mise, build step, or systemd setup is needed to install or run the plugin. Those development dependencies and memory-containment requirements apply only to repository maintenance commands.

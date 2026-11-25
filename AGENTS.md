@@ -11,7 +11,7 @@ Stock Claude Code with a standard marketplace plugin, a setup script and shell P
 - Never expose upstream internals such as minified identifiers, reconstructed module names, or source names in comments, docs, logs, memory, or diff configuration. Describe behavior.
 - Keep `types/claude-code.d.ts` and `types/claude-code-tools.d.ts` declarations verbatim. Refresh them from the latest stock binary using `CLAUDE_CODE_PLUGIN_DIR_WATCH=1` on a `--plugin-dir` launch. Check generated version headers and byte hashes; a successful hook invocation does not prove declarations refreshed.
 - Built-in tool schemas cannot be changed through the mod API. Add a separate tool rather than advertising unsupported parameters on Read, Edit, or another built-in.
-- Register tools with `isDeferred: false` in `session.start`, after `await next(e)`. Keep registration and resume description refresh together; invalidation is fire-and-forget, so preserve the host round trip before returning.
+- Register tools with `isDeferred: false` in `session.start`, after `await next(e)`, then invalidate `tool.describe`; invalidation is fire-and-forget, so finish a host round trip before returning. A resumed thread keeps the tool descriptions it recorded unless a `tool.describe` answer sets `breakPromptCache`; keep that stock default, which preserves the prompt cache.
 - Run `bun run verify:mods --binary <latest-stock-binary> --live` before claiming a mod works. Fixtures and plugin-engine tests alone are insufficient.
 - Run heavy tasks sequentially, including every `mise run ...` task, mod verification, native extraction, diffs, prompt exports, and the full test suite. Never start a second heavy task while another is active. The process-tree lease is a safety guard, not permission to launch concurrently.
 - On Linux/WSL, use configured `mise`/`bun run` aliases or `bun run bounded -- <command>` for heavy commands and ad-hoc bundle investigations. The kernel-enforced process-tree ceiling is at most 16 GiB, reduced to half available headroom, with swap disabled. Nested commands share that budget. Do not bypass the guard, raise the ceiling, or retry a killed workload unbounded. A memory-limit failure is not successful verification; do not activate on that evidence. Validate containment with small fixtures rather than reproducing a host OOM.
@@ -43,7 +43,8 @@ Memory cleanup in bundle parsing, `src/babel.ts`, `src/diff.ts`, and `scripts/ex
 | Unit tests, engine tests, and live verification | `tests/unit/`, `mods/tests/`, `src/verify-mod.ts` |
 | Upstream mod API contracts | `types/claude-code.d.ts`, `types/claude-code-tools.d.ts` |
 | Prompt policy and transforms | `plugin/hooks/policy.ts`, `plugin/hooks/prompt-transforms.ts`, `plugin/hooks/prompts.ts` |
-| Transcript diffs and session-local path state | `plugin/hooks/transcript.ts`, `plugin/state.d.ts` |
+| Transcript diffs and session-local path state | `plugin/hooks/transcript.ts`, `plugin/types/state.d.ts` |
+| Status line and its options | `plugin/hooks/statusline.ts`, `userConfig` in `plugin/.claude-plugin/plugin.json` |
 | User-agent defaults and ownership | `templates/agents/`, `install.sh` |
 | Official release fetch and extraction | `src/native-release.ts`, `src/native.ts`, `src/native-linux.ts`, `src/native-lief.ts` |
 | Embedded data and inspection bundle | `src/bun-format.ts`, `src/native-rebundle.ts` |

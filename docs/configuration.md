@@ -81,6 +81,29 @@ cc-enhanced does not implement `CLAUDE_CODE_MODEL_ALIASES`, `CLAUDE_CODE_CONFIGU
 
 Use Workflow `agent(prompt, { agentType, model: "luna", effort: "max" })` for per-worker routing. The built-in Agent tool still accepts only stock model aliases; do not send it arbitrary routed IDs. The hook changes only the model, preserving the selected agent type, task, and stock effort handling. See the [subscription-routing guide](subscription-routing/README.md).
 
+## Status line
+
+The plugin draws a status line at Claude Code's footer site, under the prompt, in terminal sessions. By default (`auto`) it draws only when no `statusLine` command is configured, so an existing command keeps its line; set `statusline` to `replace` to draw over a command's output, or remove that setting. Rows other mods draw there stay. Two rows show `~/path [Model (1M)] [effort:level]` and `❯ session:$ │ usage:5h% countdown (reset) │ 7d:% (weekday) │ <model>:% │ cache:<lifetime> r: w: │ context:tokens/window %`. With one spare row, the model joins the second row. Fields shorten or drop by importance to fit the width.
+
+| Option | Default | Shows |
+| --- | --- | --- |
+| `statusline` | `auto` | `auto` draws only without a `statusLine` command, `replace` draws over one, `off` keeps the stock footer |
+| `statusline_path` | on | Working directory |
+| `statusline_path_link` | on | The path as a file link; turn off in terminals without hyperlink support, which print the URL beside it |
+| `statusline_model` | on | Model, named from its id, with the window when it is at least 1M |
+| `statusline_effort` | on | This model's effort: set at once by `/effort <level>`, else the last main-conversation request's level, remembered across `/clear` and new sessions. A bare `/effort` picker choice shows after your next message; nothing shows before a model's first request |
+| `statusline_cost` | on | Claude Code's own `/cost` estimate for this session, priced locally at list rates (on a subscription, plan usage is not billed in dollars); `?` marks a total that includes a model with no known price. It resets with `/clear`, `/resume`, and new sessions |
+| `statusline_five_hour` | on | 5-hour usage, countdown, and reset time |
+| `statusline_weekly` | on | 7-day usage and reset |
+| `statusline_model_limits` | on | Per-model weekly limits from your Claude account |
+| `statusline_cache` | on | Live prompt-cache lifetime and the last response's cache reads and writes |
+| `statusline_context` | on | Context tokens, window, and percent |
+| `statusline_agents` | on | Agent-list rows as `name · model · effort · tokens/window % · burn/m · elapsed · task`, from what each agent's last request carried; narrow rows shed burn, effort, task, model, then elapsed |
+
+Change options in `/config` (rows under cc-enhanced) or in `settings.json` under `pluginConfigs["cc-enhanced@cc-enhanced"].options`. Context, cost, effort, cache, and the 5-hour and 7-day windows come from the engine; no model or pricing table is kept. Per-model limits come from Claude's account usage endpoint through the session's own credential, which the mod never sees; every session shares one copy, refreshed at most every five minutes and backed off on `retry-after`. A session signed in without a Claude account shows no per-model limits. Usage percentages turn yellow from 75% and bold red from 90%.
+
+The footer is the main session's line, also while you view an agent: Claude Code does not tell the footer site which agent is viewed, and that agent's own context and effort are in its row. Agent rows replace the `subagentStatusLine` setting, which Claude Code removed in 2.1.323 and now ignores. They also draw in the Desktop and VS Code agent lists, where Desktop shows one line.
+
 ## Mod tool policy
 
 The mod's policy is fixed rather than selected through environment tags:

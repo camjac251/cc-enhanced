@@ -2,7 +2,7 @@
 
 [Project overview](../README.md)
 
-cc-enhanced runs stock Claude Code with a standard marketplace plugin and a shell PATH wrapper for system-prompt appends. `install.sh` handles setup without Bun or a build step; Claude Code updates itself. The executable is not modified. The tested upstream version is **2.1.312**; only the latest upstream form is maintained.
+cc-enhanced runs stock Claude Code with a standard marketplace plugin and a shell PATH wrapper for system-prompt appends. `install.sh` handles setup without Bun or a build step; Claude Code updates itself. The executable is not modified. The tested upstream version is **2.1.332**; only the latest upstream form is maintained.
 
 ## Use cc-enhanced
 

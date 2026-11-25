@@ -360,13 +360,14 @@ version_lt() {
 	return 1
 }
 
-# The plugin's manifest records the oldest Claude Code that loads it. Only
-# this checkout's manifest is at hand, so the check applies when installing
-# from this checkout; another --source may be a different revision.
+# The manifest's `engines` range names the oldest Claude Code that loads
+# cc-enhanced. Claude Code only notes a mismatch (and older releases ignore the
+# field), so setup refuses here instead. Only this checkout's manifest is at
+# hand, so the check applies when installing from this checkout.
 require_minimum_version() {
 	local claude="$1" minimum have
 	[[ "$source_spec" == "$script_dir" ]] || return 0
-	minimum=$(sed -n 's/.*"minimumClaudeCodeVersion": *"\([0-9.]*\)".*/\1/p' \
+	minimum=$(sed -n 's/.*"claude-code": *">=\([0-9.]*\)".*/\1/p' \
 		"$script_dir/plugin/.claude-plugin/plugin.json")
 	[[ -n "$minimum" ]] || return 0
 	have=$("$claude" --version 2>/dev/null | awk 'NR == 1 { print $1 }')

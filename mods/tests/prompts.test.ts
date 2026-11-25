@@ -424,7 +424,7 @@ test("description rewrites neither target aliases nor tools supplied by plugins"
 			"Bash",
 			`Executes a bash command and returns its output.\n- ${BASH_IMPORTANT_SOURCE}.`,
 		],
-	]) {
+	] as const) {
 		expect(
 			await $.tool.describe({
 				tool,

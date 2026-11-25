@@ -17,8 +17,9 @@ function environment(
 	on("env.get", (_$, e) => ({ value: values[e.name] }));
 	on("fs.read", (_$, e) => {
 		reads.push(e.path);
-		if (!(e.path in files)) throw new Error("ENOENT");
-		return { value: files[e.path] };
+		const text = files[e.path];
+		if (text === undefined) throw new Error("ENOENT");
+		return { value: text };
 	});
 	return reads;
 }

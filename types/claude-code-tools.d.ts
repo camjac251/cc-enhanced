@@ -62,6 +62,8 @@ declare module 'claude-code' {
       pin?: boolean
       /** list only: the maximum number of artifacts to return (default 25). */
       limit?: number
+      /** list only: the `next_page_token` a listing of the same scope gave, to list the artifacts after it. */
+      page_token?: string
       /** list: which listing to return. 'mine' is the default. The others are 'shared', 'all' and 'files' (with `url`). See **Calls**. */
       scope?: "mine" | "shared" | "all" | "types" | "files"
       /** publish: the fallback title for an HTML page whose file has no <title>. It is a name, not a summary, and Claude keeps it the same across redeploys. */
@@ -99,7 +101,7 @@ declare module 'claude-code' {
       url?: string
       /** reply: id of the comment thread to reply into. resolve: the thread to mark resolved. read: read just this one thread (the size cap can still elide a very long thread). Thread ids come from action "read" and from comment notifications. */
       thread_id?: string
-      /** reply only: the reply text. Plain text, at most 4096 bytes of UTF-8. */
+      /** reply only: the reply text, at most 4096 bytes of UTF-8. Use few Markdown marks: the claude.ai comment card renders light Markdown, some other views show marks as typed, and links, tables and HTML always show as typed. */
       text?: string
       /** read only: continue a listing that ended with a "more threads not listed" line — pass the cursor value that line names to render the threads it could not fit. */
       cursor?: string
@@ -211,7 +213,7 @@ declare module 'claude-code' {
       cron: string
       /** The prompt to enqueue at each fire time. */
       prompt: string
-      /** true (default) = fire on every cron match until deleted or auto-expired after 7 days. false = fire once at the next match, then auto-delete. Use false for "remind me at X" one-shot requests with pinned minute/hour/dom/month. */
+      /** true (default) = fire on every cron match until deleted or auto-expired after 30 days. false = fire once at the next match, then auto-delete. Use false for "remind me at X" one-shot requests with pinned minute/hour/dom/month. */
       recurring?: boolean
       /** Has no effect — durable persistence is not available. All jobs are session-only (in-memory, gone when this Claude session ends). */
       durable?: boolean
@@ -237,11 +239,11 @@ declare module 'claude-code' {
       files?: Array<{
         /** Path within the project, e.g. components/button/index.html */
         path: string
-        /** Path on disk to read file contents from, relative to the localDir approved at finalize_plan. Preferred for anything you have on disk: the tool reads, encodes, and uploads directly so the contents never enter the model context. Mutually exclusive with data. */
+        /** Path on disk to read file contents from, relative to the localDir approved at finalize_plan. Use the same path as `path`, differing only where the server stores a plainer name. The tool reads, encodes, and uploads directly so the contents never enter the model context. Mutually exclusive with data. */
         localPath?: string
-        /** Inline file contents (UTF-8 text, or base64 when encoding is "base64"). For small dynamic content only — anything you have on disk should use localPath instead. */
+        /** Inline file contents (UTF-8 text, or base64 when encoding is "base64"). Do not use: write the content to a file at `path` under the localDir approved at finalize_plan, and pass localPath. */
         data?: string
-        /** Set to "base64" for binary inline data */
+        /** Do not use: localPath files are encoded automatically */
         encoding?: "base64"
         mimeType?: string
       }>
@@ -316,15 +318,16 @@ declare module 'claude-code' {
       }>
     }
     ExitWorktree: {
-      /** "keep" leaves the worktree and branch on disk; "remove" deletes both. */
+      /** "keep" leaves the worktree and branch on disk; "remove" deletes the worktree and, unless a hook made it or git refuses, its branch. */
       action: "keep" | "remove"
-      /** Required true when action is "remove" and the worktree has uncommitted files or unmerged commits. The tool will refuse and list them otherwise. */
+      /** Required true when action is "remove" and the worktree has uncommitted files or unmerged commits. The tool will refuse and list them otherwise. It also removes the worktree under any task still running there, so set it only after the user has confirmed. */
       discard_changes?: boolean
     }
     FetchInboxMessage: {
       /** The file_id from the session-inbox notification you received */
       file_id: string
     }
+    GetGoal: {}
     GetTask: {
       /** The taskId from the result that moved the command to the background */
       taskId: string
@@ -334,6 +337,8 @@ declare module 'claude-code' {
       channel?: string
       /** Not available in this build; leave unset. */
       q?: string
+      /** The cursor the last line of a long listing gave, for its next page. Omit to list from the start. */
+      cursor?: string
     }
     ListConnectors: {
       /** Optional filter; omit to list everything. */
@@ -362,6 +367,18 @@ declare module 'claude-code' {
       character: number
       /** The symbol name or partial name to search for (workspaceSymbol only). Most language servers return no results for an empty query, so always provide it when using workspaceSymbol. */
       query?: string
+    }
+    McpTaskCheck: {
+      /** The id of the background task, the same as for TaskStop. */
+      task_id: string
+    }
+    McpTaskResumePolling: {
+      /** The id of the background MCP task, as its notification gave it. */
+      task_id: string
+    }
+    McpTaskShowQuestion: {
+      /** The id of the background MCP task, as its notification gave it. */
+      task_id: string
     }
     memory_list: {
       /** Id of the memory store to list. Omit to list the memory stores available in this session (id, description, writable or read-only, and the path of its index document). */
@@ -416,6 +433,10 @@ declare module 'claude-code' {
       /** A short phrase naming what the task needs the user's own browser for. */
       reason?: string
     }
+    PauseGoal: {
+      /** What blocks you and what you need from the user, who reads this. At most 500 characters. */
+      reason: string
+    }
     Poll: {}
     Projects: {
       method: "project_info" | "project_read" | "project_search" | "project_write" | "project_delete" | "project_memory_list" | "project_memory_read"
@@ -443,15 +464,16 @@ declare module 'claude-code' {
         description: string
         /** memory file paths where this procedure was observed */
         evidence?: string[]
-        /** The complete SKILL.md exactly as it should be saved: frontmatter plus the full body. When the user saves, the body below the frontmatter becomes the skill's entire instructions and the name and description come from the fields above; other frontmatter keys are not kept. For an improvement this replaces the existing skill's SKILL.md entirely, so read that skill's current SKILL.md first and include everything worth keeping, not only the changes. */
-        skillMd: string
+        /** For an improvement, in place of skillMd: your changes to the skill's SKILL.md, applied in order. They apply to that file as it is now, not to an earlier proposal of yours. The card shows the whole updated file. The name and description come from the fields above, not from the frontmatter. */
+        edits?: Array<{
+          /** Text to replace. It must occur exactly once in that SKILL.md */
+          old_string: string
+          /** Text to put in its place */
+          new_string: string
+        }>
+        /** For a new skill or a full rewrite. The complete SKILL.md exactly as it should be saved: frontmatter plus the full body. When the user saves, the body below the frontmatter becomes the skill's entire instructions and the name and description come from the fields above; other frontmatter keys are not kept. For an improvement this replaces the existing skill's SKILL.md entirely, so read that skill's current SKILL.md first and include everything worth keeping, not only the changes. */
+        skillMd?: string
       }>
-    }
-    ProposeGoal: {
-      /** The completion condition to propose, written so a separate evaluator can verify it from the conversation (e.g. "all tests in test/auth pass (bun test exits 0)"). At most 500 characters — the user must be able to read the whole condition in the approval dialog. */
-      condition: string
-      /** Whether to ask the user for approval before the goal is set. Defaults to true — an approval dialog is shown. Set false ONLY when the user's own words in this conversation stated this outcome as what they want; the goal is then set directly, with a visible notice in the transcript, and the user can clear it with /goal clear. */
-      ask_user?: boolean
     }
     PublishPlugin: {
       /** The plugin's folder on this machine: the one that holds .claude-plugin/plugin.json, or a mod's hooks/ where there is no manifest yet. */
@@ -525,7 +547,7 @@ declare module 'claude-code' {
     PushNotification: {
       /** The notification body. Keep it under 200 characters; mobile OSes truncate. */
       message: string
-      status: "proactive"
+      status?: "proactive"
     }
     Read: {
       /** The absolute path to the file to read */
@@ -552,13 +574,17 @@ declare module 'claude-code' {
       uri: string
     }
     ReadNotifications: {}
+    ReadWidgetContext: {
+      /** A widget_id as a reminder or an earlier answer named it, to read only that view; omit it to read every held view. */
+      widget_id?: string
+    }
     RemoteTrigger: {
       action: "list" | "get" | "create" | "update" | "run" | "create_webhook_trigger" | "list_runs" | "get_run_log"
       /** Required for get, update, run, and list_runs */
       trigger_id?: string
       /** Required for get_run_log: a run session id (cse_… or session_…, from list_runs) */
       session_id?: string
-      /** next_cursor from a previous list_runs or get_run_log page */
+      /** The next_cursor from the previous page of the same listing (list_runs with the same trigger_id, or get_run_log with the same session_id), passed back unchanged. Not an offset, a count or an event number. */
       cursor?: string
       /** Required for create and update; optional for run */
       body?: {}
@@ -572,7 +598,7 @@ declare module 'claude-code' {
         file: string
         /** 1-indexed line the finding anchors to */
         line?: number
-        /** One-sentence statement of the defect */
+        /** Statement of the defect */
         summary: string
         /** Compressed label for compact UI (≤60 chars): the claim alone, no rationale or consequence clause */
         short_summary?: string
@@ -580,6 +606,8 @@ declare module 'claude-code' {
         failure_scenario: string
         /** Short kebab-case slug of the finding type, e.g. "correctness", "simplification", "efficiency", "test-coverage" */
         category?: string
+        /** Set when the review instructions ask for it. important: a bug the change adds or makes worse; pre_existing: a bug that was there before the change; nit: a minor issue */
+        severity?: "important" | "pre_existing" | "nit"
         /** Set when a verify pass ran; absent on inline-only reviews */
         verdict?: "CONFIRMED" | "PLAUSIBLE"
         /** Set ONLY when re-reporting after applying fixes: what happened to this finding */
@@ -645,6 +673,42 @@ declare module 'claude-code' {
       /** Ask a session ON THIS MACHINE to send you ONE notice when it next goes idle (finishes its turn with nothing queued) or exits — opt-in, one-shot, no polling. With a message: deliver it now AND subscribe. Without a message (omit it): a pure subscription that costs the other session nothing. */
       notify_when_idle?: boolean
     }
+    SendToProject: {
+      /** Name for the new project — normally the repository or folder name the skill reported. Kept to one line of at most 46 characters. */
+      project_name: string
+      /** Only when /send-to-project named an existing Claude Project to send to: its id as the command gave it, unchanged. Omit to create a new project. */
+      project_id?: string
+      /** Add this folder’s GitHub origin as the project’s repository. The tool reads the remote from git itself; pass false when the folder has no GitHub origin or the user said not to add it. */
+      attach_git_remote: boolean
+      /** Where this tool’s description says it sends one message: summary alone, which is the message. Otherwise the brief you drafted of the work to carry on, in the propose_project_setup shape: summary (2–3 plain sentences, no markdown: what the work is, where it stands and what is left; it is also saved in project memory), sessions (≤4 threads for work left unfinished: title, self-contained prompt, one-line description, basis, who ∈ claude|you, produces ∈ pr|doc|decision), routines (≤3 scheduled tasks, only when asked for or when a check was run by hand on more than one day: name, 5-field UTC cron at most hourly, prompt, description), and, for a new project only (never with project_id), instructions (standing rules that recurred, as a few short bullet lines; never a description of the project or the work), icon (one of Projects, Folder, Code, Database, HandHeart, Beaker, Wrench, Activity, Chart, Team, Users, Book, Box, Note, File, Lightbulb, Palette, Star, Flag, Home, Sun, Clock, Calendar, Scroll, …) and color. Leave name out: project_name names a new project and an existing one keeps its own. evidence.sessions_matched = how many of the quoted sessions the brief draws on (the tool fills the other counts). Every field is optional; send only what the work supports. Shown to the user on the confirmation pane, or on Claude Desktop’s permission card. After their Yes on the pane, or a click on Desktop’s card that Desktop attests, the brief is posted as the project’s setup card as given (a new project’s icon, color and instructions are set on the project at create instead of going on the setup card). After any other allow (another host application, a hook, or a Desktop build that does not attest clicks), everything goes on the setup card for the user to confirm. No thread starts on approval in either case: the setup card lists them and the user starts each one there. */
+      proposal: {
+        name?: string
+        icon?: "Projects" | "Folder" | "Code" | "Database" | "HandHeart" | "Beaker" | "Wrench" | "Activity" | "Chart" | "Team" | "Users" | "Book" | "Box" | "Note" | "File" | "Lightbulb" | "Palette" | "Star" | "Flag" | "Home" | "Sun" | "Clock" | "Calendar" | "Scroll" | "Moon" | "MoonStars" | "SunHorizon" | "Owl" | "Atom" | "DNA" | "Orbit" | "Globe" | "Cloud" | "Hammer" | "Key" | "Lock" | "Camera" | "Microphone" | "CoffeeCup" | "Gift" | "Ghost" | "GraduationCap" | "Library" | "Spreadsheet" | "Slides" | "Checklist" | "Clipboard" | "Image" | "Bookmark" | "Bank" | "Signpost" | "MapPin" | "Mailbox" | "Heart" | "Lightning" | "Shapes" | "Goal" | "Scale" | "Eye" | "Binoculars" | "Bullhorn" | "PaperPlane" | "ChartLine" | "Timer"
+        color?: "red" | "orange" | "green" | "aqua" | "blue" | "violet" | "magenta"
+        summary?: string
+        instructions?: string
+        routines?: {
+          name: string
+          cron_expression: string
+          prompt: string
+          description?: string
+        }[]
+        sessions?: Array<{
+          title: string
+          prompt: string
+          description: string
+          basis: string
+          who: "claude" | "you"
+          produces: "pr" | "doc" | "decision"
+        }>
+        evidence?: {
+          sessions_matched?: number
+          sessions_considered?: number
+          window_days?: number
+        }
+      }
+    }
+    SendToProjectContext: {}
     SendUserFile: {
       /** File paths (absolute or relative to cwd) to send to the user. Always pass an array, even for a single file. */
       files: string[]
@@ -659,10 +723,16 @@ declare module 'claude-code' {
       /** The message for the user. Supports markdown formatting. */
       message: string
     }
+    SetGoal: {
+      /** The completion condition to set, written so a separate evaluator can verify it from the conversation (e.g. "all tests in test/auth pass (bun test exits 0)"). At most 500 characters — the user must be able to read the whole condition in the approval dialog. */
+      condition: string
+      /** Whether to ask the user for approval before the goal is set. Defaults to true — an approval dialog is shown. Set false ONLY when the user's own words in this conversation stated this outcome as what they want; the goal is then set directly, with a visible notice in the transcript, and the user can clear it with /goal clear. While a goal is active the dialog is shown whatever this says. */
+      ask_user?: boolean
+    }
     ShareOnboardingGuide: {
-      /** 'check' (default): if ONBOARDING.md is present locally, uploads it to the most-recent guide (creates one if none exist); otherwise reports the existing link without uploading. 'update': upload to a specific guide by short_code. 'create': always make a new link. 'delete': remove a guide. */
+      /** 'check' (default): if ONBOARDING.md is present locally, uploads it to the most-recent guide (creates one if none exist); otherwise reports the existing link without uploading. 'update': upload to a specific guide by short_code. 'create': always make a new link. 'delete': remove the guide named by short_code; with no short_code, nothing is deleted and the user's guides are listed. */
       mode: "check" | "update" | "create" | "delete"
-      /** Short code of a specific guide to target (returned by a previous call). Honored by check, update, and delete — skips the org-wide lookup and targets this guide directly. */
+      /** Short code of one guide, from an earlier call's result. Required by delete. With check or update, targets that guide instead of the most recently updated one. */
       short_code?: string
     }
     ShowOnboardingRolePicker: {}
@@ -752,7 +822,7 @@ declare module 'claude-code' {
       /** Query to find deferred tools. Use "select:<tool_name>" for direct selection, or keywords to search. */
       query: string
       /** Maximum number of results to return (default: 5) */
-      max_results: number
+      max_results?: number
     }
     WaitForMcpServers: {
       /** Server names to wait for (default: all pending) */
@@ -787,8 +857,24 @@ declare module 'claude-code' {
       args?: unknown
       /** Path to a workflow script file on disk. Every Workflow invocation persists its script under the session directory and returns the path in the tool result. To iterate, edit that file with Write/Edit and re-invoke Workflow with the same `scriptPath` instead of re-sending the full script. Takes precedence over `script` and `name`. */
       scriptPath?: string
-      /** Run ID of a prior Workflow invocation to resume from. Completed agent() calls with unchanged (prompt, opts) return their cached results instantly; only edited or new calls re-run. Same-session only. Stop the prior run first (TaskStop) before resuming. */
+      /** Run ID of a prior Workflow invocation to resume from. The cache is positional: agent() calls replay from cache up to the first call that failed, no longer matches the earlier run (edited, added, removed or reordered) or never started in it; that call and every call after it run again, even when their own (prompt, opts) are unchanged. A call a usage limit refused, or one still running when the run stopped, usually runs again without ending reuse: finished calls after it still come from cache. Same-session only. Stop the prior run first (TaskStop) before resuming. */
       resumeFromRunId?: string
+    }
+    WrapUp: {
+      /** Two or three short sentences to the user, under 300 characters if you can: what is now true or changed, then where it stands, including what is not done or not verified. */
+      recap: string
+      /** The one decision that is the user's call, under 100 characters if you can: a choice, a go-ahead, an approval. No reason, no recommendation, no list of the options the buttons give. */
+      ask?: string
+      /** true when your work stops here until the user answers; omit when the answer can wait. */
+      blocked?: boolean
+      /** One or two buttons that answer ask, your recommendation first; a second only when it is a realistic alternative. Needs ask. */
+      actions?: Array<{
+        /** A reply: the button's text, which a click sends you as the user's message. 1-3 plain words, at most 24 characters ("Yes, fix 1", "Not now"). The first button is your pick, so no need to say so. Each word starts with a letter or digit. No quotes, code marks, arrows, emoji, @ or =. Write & only between blanks. */
+        label: string
+      } | {
+        /** One of the app's own buttons, which asks you to check this turn's changes (verify) or, on an open pull request, to fix its failing checks, address its requested changes or resolve its merge conflicts. The app shows it only while that applies, so prefer a reply. */
+        action: "verify" | "fix_ci" | "address_comments" | "resolve_conflicts"
+      }>
     }
     Write: {
       /** The absolute path to the file to write (must be absolute, not relative) */
@@ -796,6 +882,7 @@ declare module 'claude-code' {
       /** The content to write to the file */
       content: string
     }
+    Yield: {}
   }
 }
 
@@ -821,6 +908,8 @@ declare module 'claude-code' {
         text: string
         /** Auto mode's warning to show above `text`: a SECURITY WARNING, or a note that the review could not run */
         warning?: string
+        /** Id of the subagent's own SubagentHandback tool_use block that sent the report, not of the call that started the agent. Copies of one report repeat it. Show the report even when no such block is loaded */
+        toolUseId?: string
       }
       content: Array<{
         type: "text"
@@ -869,8 +958,19 @@ declare module 'claude-code' {
       prompt: string
       worktreePath?: string
       worktreeBranch?: string
+      /** @internal Where a mod isolated the agent in its parent's own folder and its work was kept: the labels it is found under. No worktreePath comes with it */
+      inPlace?: {
+        vcs: string
+        branch?: string
+      }
       /** @internal False when the calling agent cannot continue this agent with a follow-up message (it holds no messaging tool); absent means it can. */
       canContinueAgent?: boolean
+      /** @internal The subagent's TaskCreate and TaskUpdate calls that succeeded, in order: each call's tool, its input as the model wrote it, and its result text. The subagent writes the session's task list, and no other row of the main transcript shows these calls. A missing member does not mean that no call ran. A host may read it, so a later build only adds keys to a call: see "For another program that reads a sub-agent's task calls" in docs/task-list-across-compaction.md */
+      taskCalls?: Array<{
+        name: "TaskCreate" | "TaskUpdate"
+        input: unknown
+        result: string
+      }>
     } | {
       status: "async_launched"
       isAsync?: true
@@ -890,6 +990,8 @@ declare module 'claude-code' {
       canReadOutputFile?: boolean
       /** @internal False when the calling agent cannot continue this agent with a follow-up message (it holds no messaging tool); absent means it can. */
       canContinueAgent?: boolean
+      /** @internal True when this foreground agent was moved to the background because nobody had answered its permission prompt (drives the model-facing text; not a stable API) */
+      waitsAtPermissionPrompt?: boolean
       /** @internal True when this unisolated write-capable agent was launched into a working directory where another one is already running and a worktree could have been made here (drives a model-facing note; not a stable consumer field) */
       sharesCwd?: boolean
     } | {
@@ -966,6 +1068,7 @@ declare module 'claude-code' {
       instructions_chars?: number
       instructions_clipped?: boolean
       instructions_unavailable?: string
+      viewer_note?: string
       init_references?: {
         docs: {
           path: string
@@ -996,6 +1099,7 @@ declare module 'claude-code' {
           created_at?: string
           rel?: string
           audience?: string
+          outsiders_may_have_written?: true
           default?: string
         }[]
         more?: boolean
@@ -1015,6 +1119,7 @@ declare module 'claude-code' {
           chars: number
           clipped?: boolean
         }[]
+        token_files?: string[]
         unavailable?: string
       }
     } | {
@@ -1047,6 +1152,7 @@ declare module 'claude-code' {
       faviconSent?: true
       iconDropped?: true
       audience?: string
+      folder_audience?: "others" | "unknown"
       seq?: number
       unchanged?: true
       merged_over?: {
@@ -1078,11 +1184,14 @@ declare module 'claude-code' {
         rel?: "mine" | "shared"
         external?: true
         role?: "editor" | "commenter" | "reader" | "viewer"
+        outsidersMayHaveWritten?: true
+        listedKind?: string
         pinned?: boolean
       }>
       truncated?: boolean
       total?: number
       total_at_least?: true
+      next_page_token?: string
       pins_enabled?: boolean
       scope?: "shared" | "all"
       external_listed?: true
@@ -1108,6 +1217,7 @@ declare module 'claude-code' {
         type_url: string
         description?: string
         tier?: string
+        third_party?: boolean
       }[]
       query?: string
       more?: boolean
@@ -1120,6 +1230,7 @@ declare module 'claude-code' {
         type_url: string
         description?: string
         tier?: string
+        third_party?: boolean
         release?: string
         files: string[]
         files_omitted?: number
@@ -1128,6 +1239,7 @@ declare module 'claude-code' {
         instructions_chars?: number
         instructions_clipped?: boolean
         instructions_unavailable?: string
+        viewer_note?: string
         capabilities: string[]
         creatable?: boolean
       }
@@ -1160,6 +1272,7 @@ declare module 'claude-code' {
           created_at?: string
           rel?: string
           audience?: string
+          outsiders_may_have_written?: true
           default?: string
         }[]
         more?: boolean
@@ -1175,6 +1288,7 @@ declare module 'claude-code' {
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
         }
         match_of?: number
         ask_first?: boolean
@@ -1183,6 +1297,7 @@ declare module 'claude-code' {
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
         }[]
         types_more?: boolean
         dashboard_type?: {
@@ -1190,12 +1305,21 @@ declare module 'claude-code' {
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
         }
         motion_type?: {
           title: string
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
+        }
+        whiteboard_type?: {
+          title: string
+          type_url: string
+          description?: string
+          tier?: string
+          third_party?: boolean
         }
         types_unavailable?: boolean
         types_ruled?: boolean
@@ -1215,6 +1339,7 @@ declare module 'claude-code' {
             created_at?: string
             rel?: string
             audience?: string
+            outsiders_may_have_written?: true
             default?: string
           }[]
           more?: boolean
@@ -1235,6 +1360,7 @@ declare module 'claude-code' {
             chars: number
             clipped?: boolean
           }[]
+          token_files?: string[]
           unavailable?: string
         }
         design_guidance?: boolean
@@ -1618,6 +1744,9 @@ declare module 'claude-code' {
           sha256: string
           live?: true
         }[]
+        can_publish?: boolean
+        owned?: boolean
+        audience?: "owner" | "users" | "org" | "public" | "agent_scoped" | "unknown"
         cowritten?: true
         outside_writer?: true
         public_read?: true
@@ -1812,6 +1941,7 @@ declare module 'claude-code' {
       instructions_chars?: number
       instructions_clipped?: boolean
       instructions_unavailable?: string
+      viewer_note?: string
       init_references?: {
         docs: {
           path: string
@@ -1842,6 +1972,7 @@ declare module 'claude-code' {
           created_at?: string
           rel?: string
           audience?: string
+          outsiders_may_have_written?: true
           default?: string
         }[]
         more?: boolean
@@ -1861,6 +1992,7 @@ declare module 'claude-code' {
           chars: number
           clipped?: boolean
         }[]
+        token_files?: string[]
         unavailable?: string
       }
     } | {
@@ -1893,6 +2025,7 @@ declare module 'claude-code' {
       faviconSent?: true
       iconDropped?: true
       audience?: string
+      folder_audience?: "others" | "unknown"
       seq?: number
       unchanged?: true
       merged_over?: {
@@ -1924,11 +2057,14 @@ declare module 'claude-code' {
         rel?: "mine" | "shared"
         external?: true
         role?: "editor" | "commenter" | "reader" | "viewer"
+        outsidersMayHaveWritten?: true
+        listedKind?: string
         pinned?: boolean
       }>
       truncated?: boolean
       total?: number
       total_at_least?: true
+      next_page_token?: string
       pins_enabled?: boolean
       scope?: "shared" | "all"
       external_listed?: true
@@ -1954,6 +2090,7 @@ declare module 'claude-code' {
         type_url: string
         description?: string
         tier?: string
+        third_party?: boolean
       }[]
       query?: string
       more?: boolean
@@ -1966,6 +2103,7 @@ declare module 'claude-code' {
         type_url: string
         description?: string
         tier?: string
+        third_party?: boolean
         release?: string
         files: string[]
         files_omitted?: number
@@ -1974,6 +2112,7 @@ declare module 'claude-code' {
         instructions_chars?: number
         instructions_clipped?: boolean
         instructions_unavailable?: string
+        viewer_note?: string
         capabilities: string[]
         creatable?: boolean
       }
@@ -2006,6 +2145,7 @@ declare module 'claude-code' {
           created_at?: string
           rel?: string
           audience?: string
+          outsiders_may_have_written?: true
           default?: string
         }[]
         more?: boolean
@@ -2021,6 +2161,7 @@ declare module 'claude-code' {
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
         }
         match_of?: number
         ask_first?: boolean
@@ -2029,6 +2170,7 @@ declare module 'claude-code' {
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
         }[]
         types_more?: boolean
         dashboard_type?: {
@@ -2036,12 +2178,21 @@ declare module 'claude-code' {
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
         }
         motion_type?: {
           title: string
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
+        }
+        whiteboard_type?: {
+          title: string
+          type_url: string
+          description?: string
+          tier?: string
+          third_party?: boolean
         }
         types_unavailable?: boolean
         types_ruled?: boolean
@@ -2061,6 +2212,7 @@ declare module 'claude-code' {
             created_at?: string
             rel?: string
             audience?: string
+            outsiders_may_have_written?: true
             default?: string
           }[]
           more?: boolean
@@ -2081,6 +2233,7 @@ declare module 'claude-code' {
             chars: number
             clipped?: boolean
           }[]
+          token_files?: string[]
           unavailable?: string
         }
         design_guidance?: boolean
@@ -2464,6 +2617,9 @@ declare module 'claude-code' {
           sha256: string
           live?: true
         }[]
+        can_publish?: boolean
+        owned?: boolean
+        audience?: "owner" | "users" | "org" | "public" | "agent_scoped" | "unknown"
         cowritten?: true
         outside_writer?: true
         public_read?: true
@@ -2658,6 +2814,7 @@ declare module 'claude-code' {
       instructions_chars?: number
       instructions_clipped?: boolean
       instructions_unavailable?: string
+      viewer_note?: string
       init_references?: {
         docs: {
           path: string
@@ -2688,6 +2845,7 @@ declare module 'claude-code' {
           created_at?: string
           rel?: string
           audience?: string
+          outsiders_may_have_written?: true
           default?: string
         }[]
         more?: boolean
@@ -2707,6 +2865,7 @@ declare module 'claude-code' {
           chars: number
           clipped?: boolean
         }[]
+        token_files?: string[]
         unavailable?: string
       }
     } | {
@@ -2739,6 +2898,7 @@ declare module 'claude-code' {
       faviconSent?: true
       iconDropped?: true
       audience?: string
+      folder_audience?: "others" | "unknown"
       seq?: number
       unchanged?: true
       merged_over?: {
@@ -2770,11 +2930,14 @@ declare module 'claude-code' {
         rel?: "mine" | "shared"
         external?: true
         role?: "editor" | "commenter" | "reader" | "viewer"
+        outsidersMayHaveWritten?: true
+        listedKind?: string
         pinned?: boolean
       }>
       truncated?: boolean
       total?: number
       total_at_least?: true
+      next_page_token?: string
       pins_enabled?: boolean
       scope?: "shared" | "all"
       external_listed?: true
@@ -2800,6 +2963,7 @@ declare module 'claude-code' {
         type_url: string
         description?: string
         tier?: string
+        third_party?: boolean
       }[]
       query?: string
       more?: boolean
@@ -2812,6 +2976,7 @@ declare module 'claude-code' {
         type_url: string
         description?: string
         tier?: string
+        third_party?: boolean
         release?: string
         files: string[]
         files_omitted?: number
@@ -2820,6 +2985,7 @@ declare module 'claude-code' {
         instructions_chars?: number
         instructions_clipped?: boolean
         instructions_unavailable?: string
+        viewer_note?: string
         capabilities: string[]
         creatable?: boolean
       }
@@ -2852,6 +3018,7 @@ declare module 'claude-code' {
           created_at?: string
           rel?: string
           audience?: string
+          outsiders_may_have_written?: true
           default?: string
         }[]
         more?: boolean
@@ -2867,6 +3034,7 @@ declare module 'claude-code' {
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
         }
         match_of?: number
         ask_first?: boolean
@@ -2875,6 +3043,7 @@ declare module 'claude-code' {
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
         }[]
         types_more?: boolean
         dashboard_type?: {
@@ -2882,12 +3051,21 @@ declare module 'claude-code' {
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
         }
         motion_type?: {
           title: string
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
+        }
+        whiteboard_type?: {
+          title: string
+          type_url: string
+          description?: string
+          tier?: string
+          third_party?: boolean
         }
         types_unavailable?: boolean
         types_ruled?: boolean
@@ -2907,6 +3085,7 @@ declare module 'claude-code' {
             created_at?: string
             rel?: string
             audience?: string
+            outsiders_may_have_written?: true
             default?: string
           }[]
           more?: boolean
@@ -2927,6 +3106,7 @@ declare module 'claude-code' {
             chars: number
             clipped?: boolean
           }[]
+          token_files?: string[]
           unavailable?: string
         }
         design_guidance?: boolean
@@ -3310,6 +3490,9 @@ declare module 'claude-code' {
           sha256: string
           live?: true
         }[]
+        can_publish?: boolean
+        owned?: boolean
+        audience?: "owner" | "users" | "org" | "public" | "agent_scoped" | "unknown"
         cowritten?: true
         outside_writer?: true
         public_read?: true
@@ -3504,6 +3687,7 @@ declare module 'claude-code' {
       instructions_chars?: number
       instructions_clipped?: boolean
       instructions_unavailable?: string
+      viewer_note?: string
       init_references?: {
         docs: {
           path: string
@@ -3534,6 +3718,7 @@ declare module 'claude-code' {
           created_at?: string
           rel?: string
           audience?: string
+          outsiders_may_have_written?: true
           default?: string
         }[]
         more?: boolean
@@ -3553,6 +3738,7 @@ declare module 'claude-code' {
           chars: number
           clipped?: boolean
         }[]
+        token_files?: string[]
         unavailable?: string
       }
     } | {
@@ -3585,6 +3771,7 @@ declare module 'claude-code' {
       faviconSent?: true
       iconDropped?: true
       audience?: string
+      folder_audience?: "others" | "unknown"
       seq?: number
       unchanged?: true
       merged_over?: {
@@ -3616,11 +3803,14 @@ declare module 'claude-code' {
         rel?: "mine" | "shared"
         external?: true
         role?: "editor" | "commenter" | "reader" | "viewer"
+        outsidersMayHaveWritten?: true
+        listedKind?: string
         pinned?: boolean
       }>
       truncated?: boolean
       total?: number
       total_at_least?: true
+      next_page_token?: string
       pins_enabled?: boolean
       scope?: "shared" | "all"
       external_listed?: true
@@ -3646,6 +3836,7 @@ declare module 'claude-code' {
         type_url: string
         description?: string
         tier?: string
+        third_party?: boolean
       }[]
       query?: string
       more?: boolean
@@ -3658,6 +3849,7 @@ declare module 'claude-code' {
         type_url: string
         description?: string
         tier?: string
+        third_party?: boolean
         release?: string
         files: string[]
         files_omitted?: number
@@ -3666,6 +3858,7 @@ declare module 'claude-code' {
         instructions_chars?: number
         instructions_clipped?: boolean
         instructions_unavailable?: string
+        viewer_note?: string
         capabilities: string[]
         creatable?: boolean
       }
@@ -3698,6 +3891,7 @@ declare module 'claude-code' {
           created_at?: string
           rel?: string
           audience?: string
+          outsiders_may_have_written?: true
           default?: string
         }[]
         more?: boolean
@@ -3713,6 +3907,7 @@ declare module 'claude-code' {
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
         }
         match_of?: number
         ask_first?: boolean
@@ -3721,6 +3916,7 @@ declare module 'claude-code' {
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
         }[]
         types_more?: boolean
         dashboard_type?: {
@@ -3728,12 +3924,21 @@ declare module 'claude-code' {
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
         }
         motion_type?: {
           title: string
           type_url: string
           description?: string
           tier?: string
+          third_party?: boolean
+        }
+        whiteboard_type?: {
+          title: string
+          type_url: string
+          description?: string
+          tier?: string
+          third_party?: boolean
         }
         types_unavailable?: boolean
         types_ruled?: boolean
@@ -3753,6 +3958,7 @@ declare module 'claude-code' {
             created_at?: string
             rel?: string
             audience?: string
+            outsiders_may_have_written?: true
             default?: string
           }[]
           more?: boolean
@@ -3773,6 +3979,7 @@ declare module 'claude-code' {
             chars: number
             clipped?: boolean
           }[]
+          token_files?: string[]
           unavailable?: string
         }
         design_guidance?: boolean
@@ -4156,6 +4363,9 @@ declare module 'claude-code' {
           sha256: string
           live?: true
         }[]
+        can_publish?: boolean
+        owned?: boolean
+        audience?: "owner" | "users" | "org" | "public" | "agent_scoped" | "unknown"
         cowritten?: true
         outside_writer?: true
         public_read?: true
@@ -4380,6 +4590,8 @@ declare module 'claude-code' {
       backgroundedByTurnAbort?: boolean
       /** @internal True if the command was moved to the background so a message queued for the model could reach it */
       backgroundedToDeliverMessage?: boolean
+      /** @internal True if that message was a subagent's message or report, and the command had run for a minute, or was a person's, and the command waited by sleeping */
+      backgroundedForAgentReport?: true
       /** Set when the command hit its timeout and was auto-backgrounded; the timeout value in ms */
       timedOutAfterMs?: number
       /** @internal True if the async subagent foreground cap shortened the command's timeout */
@@ -4388,6 +4600,8 @@ declare module 'claude-code' {
       backgroundCwdHint?: string
       /** True when this backgrounded command is terminated at its caller's final response, so no completion notification can follow (a synchronous subagent's command, or a headless session that takes no further input and is not waiting for background commands); absent when the command survives */
       backgroundEndsWithFinalResponse?: true
+      /** True when the subagent that owns this backgrounded command parks for its end and is woken by it */
+      backgroundWakesOwner?: true
       /** Flag to indicate if sandbox mode was overridden */
       dangerouslyDisableSandbox?: boolean
       /** Semantic interpretation for non-error exit codes with special meaning */
@@ -4400,6 +4614,12 @@ declare module 'claude-code' {
       persistedOutputPath?: string
       /** Total size of the output in bytes (set when output is too large for inline) */
       persistedOutputSize?: number
+      /** @internal True when stdout holds the first part of the persisted output, a line saying that the middle was left out, and then its last lines */
+      stdoutHoldsOutputEnd?: boolean
+      /** @internal Tells the model that the kernel killed a process for lack of memory while the command ran */
+      memoryLimitNote?: string
+      /** @internal One line of advice for the model after a finished command, set by a rule in a feature flag */
+      triggeredNote?: string
       /** Model-facing note listing readFileState entries whose mtime bumped during this command (set when WRITE_COMMAND_MARKERS matches) */
       staleReadFileStateHint?: string
       /** Model-facing system-reminder appended when a gh command reports a GitHub API rate-limit error */
@@ -4444,6 +4664,8 @@ declare module 'claude-code' {
         skipped?: true
         shared?: true
       }
+      /** @internal The image files that went to the model with this result, for rendering. */
+      viewedImagePaths?: string[]
     }
     ClaudeDesign: {
       operation: string
@@ -4457,9 +4679,18 @@ declare module 'claude-code' {
       durable?: boolean
       /** Epoch ms of the job's next run, the scheduler's per-job offset included */
       nextFireAt?: number
+      /** Age at which a recurring job ends; 0 = never */
+      maxAgeMs?: number
+      /** Other session-only one-shot tasks that have yet to fire */
+      otherOneShots?: {
+        id: string
+        humanSchedule: string
+        prompt: string
+      }[]
     }
     CronDelete: {
       id: string
+      endedLoopWakeup?: true
     }
     CronList: {
       jobs: Array<{
@@ -4492,6 +4723,9 @@ declare module 'claude-code' {
       ownerDisplayName?: string
       isOwned?: boolean
       canEdit?: boolean
+      moveState?: "moving" | "moved"
+      movedTo?: string
+      movedToHeldBy?: "you" | "owner" | "someone_else"
     } | {
       method: "list_files"
       notice?: string
@@ -4568,6 +4802,8 @@ declare module 'claude-code' {
       }
       /** True when the edit was held for the machine owner to review instead of written; the file is unchanged */
       staged?: boolean
+      /** @internal Which message a staged result gave (see stagedResultWording); absent unless staged */
+      stagedWording?: "review" | "card" | "cloud" | "linked" | "policy"
     }
     "enable__mcp__claude-in-chrome": {
       message: string
@@ -4590,6 +4826,8 @@ declare module 'claude-code' {
       worktreePath: string
       worktreeBranch?: string
       message: string
+      /** @internal Told to the model and shown to the person where the sandbox stays on only through this move, or where commands are refused after it. */
+      sandboxNote?: string
     }
     ExitPlanMode: {
       /** The plan that was presented to the user */
@@ -4614,11 +4852,15 @@ declare module 'claude-code' {
       tmuxSessionName?: string
       discardedFiles?: number
       discardedCommits?: number
-      /** @internal Where the session's cwd ended up: originalCwd, or a fallback when it was gone. */
+      /** @internal Where the session's cwd ended up: originalCwd, or a fallback when it was gone or led outside what the launch gave. */
       restoredCwd?: string
       /** @internal originalCwd was gone (or a network path the session will not touch), so restoredCwd is a fallback directory. */
       originalCwdMissing?: boolean
       message: string
+      /** @internal What the mod that removed the worktree said of getting the work back. */
+      releaseNote?: string
+      /** @internal Told to the model and shown to the person where the sandbox stays on only through this move, or where commands are refused after it. */
+      sandboxNote?: string
     }
     FetchInboxMessage: {
       ok: boolean
@@ -4634,6 +4876,14 @@ declare module 'claude-code' {
       attachments_prefix?: string
       reason?: string
     }
+    GetGoal: {
+      /** The goal condition, or null when no goal is active */
+      condition: string | null
+      /** The evaluator's last reason the goal isn't met */
+      lastReason?: string
+      /** Whether the goal is paused until the user's next message */
+      paused?: boolean
+    }
     GetTask: {
       taskId: string
       statusMessage: string
@@ -4647,10 +4897,17 @@ declare module 'claude-code' {
       lastUpdatedAt: string
       status: "completed"
       result: {
-        content: {
+        content: Array<{
           type: "text"
           text: string
-        }[]
+        } | {
+          type: "image"
+          source: {
+            type: "base64"
+            media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+            data: string
+          }
+        }>
         isError: boolean
       }
     } | {
@@ -4718,6 +4975,7 @@ declare module 'claude-code' {
         presents_as?: string | null
         installation_preference?: string | null
       }>
+      note?: string
     }
     ListSkills: {
       results: Array<{
@@ -4729,6 +4987,7 @@ declare module 'claude-code' {
         presents_as?: string | null
         installation_preference?: string | null
       }>
+      note?: string
     }
     LSP: {
       /** The LSP operation that was performed */
@@ -4741,6 +5000,21 @@ declare module 'claude-code' {
       resultCount?: number
       /** Number of files containing results */
       fileCount?: number
+    }
+    McpTaskCheck: {
+      /** What came of the call */
+      message: string
+      isError: boolean
+    }
+    McpTaskResumePolling: {
+      /** What came of the call */
+      message: string
+      isError: boolean
+    }
+    McpTaskShowQuestion: {
+      /** What came of the call */
+      message: string
+      isError: boolean
     }
     memory_list: {
       outcome: "ok" | "refused" | "failed"
@@ -4790,6 +5064,8 @@ declare module 'claude-code' {
       timeoutMs: number
       /** No timeout — runs until TaskStop or session end. */
       persistent?: boolean
+      /** True when the command ran in the sandbox only because its permission check relied on the sandbox; the settings would otherwise have exempted it. */
+      keptInSandboxByCheck?: boolean
     }
     NotebookEdit: {
       /** The new source code that was written to the cell */
@@ -4815,6 +5091,10 @@ declare module 'claude-code' {
     }
     OfferChromeSetup: {
       outcome: "connected" | "not_now" | "no_attempt_yet"
+    }
+    PauseGoal: {
+      /** The goal that was paused */
+      condition: string
     }
     Poll: {
       /** Rendered event envelopes, or "(no pending events)" */
@@ -4850,6 +5130,7 @@ declare module 'claude-code' {
         at: string
         fields: {}
       } | null>
+      rows?: Array<string | null>
     }
     Projects: {
       method: "project_info"
@@ -4879,7 +5160,7 @@ declare module 'claude-code' {
       method: "project_read"
       notice?: string
       path: string
-      /** @internal Lowercase hex SHA-256 of the UTF-8 bytes of a text doc's whole text. Set only where docVersionsOffered. */
+      /** @internal Lowercase hex SHA-256 of the UTF-8 bytes of a text doc's whole text; never on a project_read that delivered only part of the doc. Set where docVersionsOffered; also, while tengu_lovely_rain is on, on a project_read that saved the whole text to a file, and on a project_write by local_path in a conversation (not a script's inner call); always on a project_write with edits. A later checked write by path looks for this hash. */
       version?: string
       file_kind?: string
       content?: string
@@ -4895,14 +5176,23 @@ declare module 'claude-code' {
         name?: string
         doc_uuid?: string
         text?: string
+        image_attached?: boolean
+        page?: number
       }[]
+      /** @internal Page images for the hits, sent to the model as image blocks after the JSON. Absent when there are none. stripForStorage removes it before the result is stored or sent to SDK clients. */
+      images?: Array<{
+        content_id: string
+        page?: number
+        media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+        data: string
+      }>
       docs?: string[]
     } | {
       method: "project_write"
       notice?: string
       path: string
       doc_uuid: string
-      /** @internal Lowercase hex SHA-256 of the UTF-8 bytes of a text doc's whole text. Set only where docVersionsOffered. */
+      /** @internal Lowercase hex SHA-256 of the UTF-8 bytes of a text doc's whole text; never on a project_read that delivered only part of the doc. Set where docVersionsOffered; also, while tengu_lovely_rain is on, on a project_read that saved the whole text to a file, and on a project_write by local_path in a conversation (not a script's inner call); always on a project_write with edits. A later checked write by path looks for this hash. */
       version?: string
       replaced: boolean
       present_to_user?: boolean
@@ -4935,12 +5225,6 @@ declare module 'claude-code' {
     propose_skills: {
       /** Number of proposals shown on the review card */
       proposalCount: number
-    }
-    ProposeGoal: {
-      /** The condition shown to the user for approval, or set directly when ask_user was false */
-      condition: string
-      /** Whether the user was asked for approval (true) or the goal was set directly (false) */
-      askUser: boolean
     }
     PublishPlugin: {
       state: "published" | "in-review" | "publishing" | "on-shelf" | "refused"
@@ -5039,15 +5323,9 @@ declare module 'claude-code' {
         mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
         /** Why the page could not be processed as an image; set only when base64 is empty */
         error?: string
+        /** @internal The page's text layer. Set only when the call named no page range and the PDF was too large to read whole */
+        text?: string
       }>
-    } | {
-      type: "file_unchanged"
-      file: {
-        /** The path to the file */
-        filePath: string
-      }
-      /** Set when the dedup matched a startup-seeded entry (CLAUDE.md / nested memory) rather than a prior Read tool_result */
-      source?: "seeded"
     }
     ReadMcpResourceDirTool: {
       /** Direct children of the directory resource. Subdirectories appear with mimeType "inode/directory". */
@@ -5094,6 +5372,21 @@ declare module 'claude-code' {
       /** RFC3339 timestamp, by this machine's clock, of when this call read the queue. Missing from results saved before this field existed. */
       read_at?: string
     }
+    ReadWidgetContext: {
+      /** The views' shared text and images, or a note. */
+      blocks: Array<{
+        type: "text"
+        text: string
+      } | {
+        type: "image"
+        source: {
+          type: "base64"
+          media_type: "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+          data: string
+        }
+      }>
+      isError: boolean
+    }
     RemoteTrigger: {
       status: number
       json: string
@@ -5110,7 +5403,7 @@ declare module 'claude-code' {
         file: string
         /** 1-indexed line the finding anchors to */
         line?: number
-        /** One-sentence statement of the defect */
+        /** Statement of the defect */
         summary: string
         /** Compressed label for compact UI (≤60 chars): the claim alone, no rationale or consequence clause */
         short_summary?: string
@@ -5118,6 +5411,8 @@ declare module 'claude-code' {
         failure_scenario: string
         /** Short kebab-case slug of the finding type, e.g. "correctness", "simplification", "efficiency", "test-coverage" */
         category?: string
+        /** Set when the review instructions ask for it. important: a bug the change adds or makes worse; pre_existing: a bug that was there before the change; nit: a minor issue */
+        severity?: "important" | "pre_existing" | "nit"
         /** Set when a verify pass ran; absent on inline-only reviews */
         verdict?: "CONFIRMED" | "PLAUSIBLE"
         /** Set ONLY when re-reporting after applying fixes: what happened to this finding */
@@ -5156,6 +5451,7 @@ declare module 'claude-code' {
         presents_as?: string | null
         installation_preference?: string | null
       }>
+      note?: string
     }
     SearchSkills: {
       results: Array<{
@@ -5167,6 +5463,7 @@ declare module 'claude-code' {
         presents_as?: string | null
         installation_preference?: string | null
       }>
+      note?: string
     }
     SendFeedback: {
       success: boolean
@@ -5186,6 +5483,33 @@ declare module 'claude-code' {
       }[]
     }
     SendMessage: unknown
+    SendToProject: {
+      /** Whether the call went through: a project was created (mode 'new') or the existing project was reached (mode 'existing'; savedToMemory and handedOff say what landed there). False means nothing was created or sent; see reason and mayExist. */
+      created: boolean
+      reason?: string
+      mayExist?: boolean
+      projectId?: string
+      projectName?: string
+      projectUrl?: string
+      attachedRepo?: string | null
+      appInstallPending?: boolean
+      mode?: "new" | "existing"
+      savedToMemory?: boolean
+      memoryOmitted?: boolean
+      handedOff?: boolean
+      setupSubmitted?: boolean
+      setupUncertain?: boolean
+      threadsOnCard?: number
+      message?: "sent" | "uncertain" | "not_sent" | null
+      openedInBrowser?: boolean
+      browserOpenPending?: boolean
+      notes?: string[]
+    }
+    SendToProjectContext: {
+      /** delivered: context holds what the command read. already_delivered: an earlier call in this run returned it. nothing_read: the run sends one message and read no context. no_run: no /send-to-project run of the user’s waits in this turn. */
+      status: "delivered" | "already_delivered" | "nothing_read" | "no_run"
+      context?: string
+    }
     SendUserFile: {
       caption?: string
       display?: "render" | "attach"
@@ -5206,8 +5530,13 @@ declare module 'claude-code' {
           original_width: number
           original_height: number
         }
+        thumbnail?: {
+          width: number
+          height: number
+        }
         project_path?: string
         partial_error?: string
+        opens_by_path?: boolean
       }[]
       rendered_locally?: boolean
     }
@@ -5231,10 +5560,20 @@ declare module 'claude-code' {
           original_width: number
           original_height: number
         }
+        thumbnail?: {
+          width: number
+          height: number
+        }
       }[]
       /** ISO timestamp captured at tool execution on the emitting process. Optional — resumed sessions replay pre-sentAt outputs verbatim. */
       sentAt?: string
       rendered_locally?: boolean
+    }
+    SetGoal: {
+      /** The condition shown to the user for approval, or set directly */
+      condition: string
+      /** Whether the user was asked for approval (true) or the goal was set directly (false) */
+      askUser: boolean
     }
     ShareOnboardingGuide: {
       status: "created" | "updated" | "deleted" | "has_existing" | "unavailable"
@@ -5259,6 +5598,8 @@ declare module 'claude-code' {
       status?: "inline"
       /** True when the skill instructions were loaded read-only (nothing was executed) */
       readOnly?: boolean
+      /** True when an MCP server served the skill */
+      fromMcpServer?: boolean
     } | {
       /** Whether the skill completed successfully */
       success: boolean
@@ -5291,6 +5632,8 @@ declare module 'claude-code' {
       }[]
       note: string
       trigger?: "user_asked" | "proactive"
+      answer?: "added" | "not_added" | "not_now"
+      added?: string[]
     }
     SuggestSkills: {
       results: Array<{
@@ -5308,7 +5651,11 @@ declare module 'claude-code' {
       task: {
         id: string
         subject: string
+        /** The task's description as saved. It can differ from the tool_use input if Claude Code corrects a malformed call or a PreToolUse hook changes the input. Absent in results from older Claude Code versions. */
+        description?: string
       }
+      /** @internal Present when the result told Claude that the app sets task statuses. */
+      appKeepsStatuses?: true
     }
     TaskGet: {
       task: {
@@ -5398,6 +5745,10 @@ declare module 'claude-code' {
       durationMs: number
       /** The URL that was fetched */
       url: string
+      /** @internal The model may get the result as a search result that it can cite. */
+      citable?: true
+      /** @internal The result holds the page's text. Only the tool_result sent to the model keeps it. */
+      pageText?: true
       artifactRead?: {
         slug: string
         ver?: string
@@ -5425,6 +5776,8 @@ declare module 'claude-code' {
       durationSeconds: number
       /** Number of web searches performed */
       searchCount?: number
+      /** @internal The hits hold page text that goes to the model in the plain string, even with citations on */
+      plainPageText?: true
     }
     Workflow: {
       status: "async_launched" | "remote_launched"
@@ -5446,6 +5799,27 @@ declare module 'claude-code' {
       warning?: string
       /** Set if syntax check failed */
       error?: string
+    }
+    WrapUp: {
+      /** Whether the call put a question to the user */
+      asks: boolean
+      /** The next-step box for this call, to draw without reading the tool's input. Open the box when blocked is true or actions isn't empty; otherwise draw no box. Trust it only when the result's entry in tool_result_meta has built_in_tool set to this tool. It is built from the input the call ran with; where a permission answer or a hook before the call changed that input, the entry has no built_in_tool. The recap and the question are each cleaned to one line of at most 500 UTF-16 units, ending in an ellipsis where that limit cut it, with no whole <cc-memory> markers, no terminal escape sequences and no invisible characters other than those an emoji or a word needs. A placeholder such as [REDACTED] or <token> stands in place of most keys and tokens recognised by their shape. A private key that could not be masked, or a tool call's own markup, is cut with all the text after it, and an ellipsis then shows only if what is left still passes that limit or the text ran past 2000 units. Draw the recap and the question as plain text, as they stand: they may hold Markdown, HTML or links, and normalizing them can undo the cleaning. Absent from a result stored by an earlier version of Claude Code. */
+      nextStep?: {
+        /** Claude's short summary of the turn. Empty when nothing visible is left, or when it holds a key that cannot be masked alone (one that an invisible character, an accent or nested markers part, or whose rest comes to stand right after its mask), even when ask is present. */
+        recap: string
+        /** The decision Claude asks of the user. Absent when Claude asked none, when nothing visible is left, or when it holds a key that cannot be masked alone, as for recap. */
+        ask?: string
+        /** Whether Claude's work stops here until the user answers. Can be true with no question. */
+        blocked: boolean
+        /** The buttons to draw under the question, in Claude's order, its pick first. Two replies with the same label are listed once, and a reply whose label holds a key or token is left out. Empty when there is no question, and when the first button is left out. */
+        actions: Array<{
+          /** A reply button's text. Draw it as plain text with no links. On a click, put exactly this text into the message box and let the person send it. Never send it yourself. */
+          label: string
+        } | {
+          /** One of the app's own buttons: verify checks this turn's changes; fix_ci, address_comments and resolve_conflicts act on an open pull request. The app shows each only while it applies. */
+          action: "verify" | "fix_ci" | "address_comments" | "resolve_conflicts"
+        }>
+      }
     }
     Write: {
       /** Whether a new file was created or an existing file was updated */
@@ -5478,6 +5852,44 @@ declare module 'claude-code' {
       userModified?: boolean
       /** True when the write was held for the machine owner to review instead of written; the file is unchanged */
       staged?: boolean
+      /** @internal Which message a staged result gave (see stagedResultWording); absent unless staged */
+      stagedWording?: "review" | "card" | "cloud" | "linked" | "policy"
+    }
+    Yield: {
+      /** Rendered event envelopes, or "(no pending events)" */
+      content: string
+      /** Number of events delivered in this result */
+      eventCount: number
+      /** Wake events still queued after this chunk; they follow in the next delivery */
+      remainingWakeCount: number
+      /** Each delivered event's images and documents, 1:1 with the events. Absent when none has any */
+      media?: Array<Array<{
+        type: "image"
+        source: {
+          type: "base64"
+          media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+          data: string
+        }
+      } | {
+        type: "document"
+        source: {
+          type: "base64"
+          media_type: "application/pdf"
+          data: string
+        }
+      }>>
+      toolsUsed?: string[]
+      provenance?: Array<{
+        authority: "human-principal" | "human-other" | "peer-agent" | "world-event"
+        senderId?: string
+        senderText?: string
+      } | null>
+      declared?: Array<{
+        kind: string
+        at: string
+        fields: {}
+      } | null>
+      rows?: Array<string | null>
     }
   }
 }

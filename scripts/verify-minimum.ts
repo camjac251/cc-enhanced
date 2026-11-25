@@ -19,10 +19,10 @@ const manifest = JSON.parse(
 		path.join(repoRoot, "plugin", ".claude-plugin", "plugin.json"),
 		"utf8",
 	),
-) as { metadata?: { minimumClaudeCodeVersion?: string } };
-const minimum = manifest.metadata?.minimumClaudeCodeVersion;
-if (!minimum)
-	throw new Error("plugin.json has no metadata.minimumClaudeCodeVersion");
+) as { engines?: { "claude-code"?: string } };
+const minimum = manifest.engines?.["claude-code"]?.replace(/^>=/, "");
+if (!minimum || !/^\d+\.\d+\.\d+$/.test(minimum))
+	throw new Error('plugin.json needs engines["claude-code"] as ">=x.y.z"');
 const release = await fetchNativeRelease({ spec: minimum });
 await verifyMods(release.binaryPath, { live: false });
 console.log(
