@@ -43,12 +43,18 @@ async function configuredFile(
 		typeof requested === "string" && requested
 			? (absolutePath(requested) ?? absolutePath(`${root}/${requested}`))
 			: undefined;
-	// The engine accepts a custom plans directory only inside the project.
-	const plansRoot =
-		plans && (plans === root || inside(plans, root))
-			? plans
-			: config && `${config}/plans`;
-	if (plansRoot && path.endsWith(".md") && inside(path, plansRoot)) return true;
+	// The engine accepts a custom plans directory only inside the project, and
+	// saves a plan the custom folder cannot take in the default folder instead.
+	const plansRoots = [
+		plans && (plans === root || inside(plans, root)) ? plans : undefined,
+		config && `${config}/plans`,
+	];
+	if (
+		path.endsWith(".md") &&
+		plansRoots.some((directory) => directory && inside(path, directory))
+	) {
+		return true;
+	}
 	if (
 		config &&
 		inside(path, config) &&
@@ -158,8 +164,10 @@ export async function rememberTranscriptMemory(
 
 export function registerTranscriptMods(on: On): void {
 	on("prompt.attachment", async ($, e, next) => {
+		// One plan file per session: a subagent's plan-mode row names its own.
 		if (
 			e.origin.kind === "engine" &&
+			e.agentId === undefined &&
 			(e.type === "plan_mode" ||
 				e.type === "plan_mode_reentry" ||
 				e.type === "plan_mode_exit") &&

@@ -1,7 +1,7 @@
 ---
 name: Plan
 description: Read-only architecture and planning that turns codebase research into concrete implementation phases, critical files, sequencing, and trade-off decisions before editing.
-tools: Read, Bash, Glob, Grep, LSP, ToolSearch, mcp__cc-enhanced__view
+tools: Read, Bash, Glob, Grep, LSP, ToolSearch, REPL, mcp__cc-enhanced__view
 model: inherit
 permissionMode: plan
 ---

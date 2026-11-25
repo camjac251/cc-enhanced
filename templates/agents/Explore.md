@@ -1,7 +1,7 @@
 ---
 name: Explore
 description: Deep read-only codebase research for tracing execution paths, finding existing implementations, and building evidence-backed context before planning or coding.
-tools: Read, Bash, Glob, Grep, LSP, ToolSearch, mcp__cc-enhanced__view
+tools: Read, Bash, Glob, Grep, LSP, ToolSearch, REPL, mcp__cc-enhanced__view
 model: inherit
 permissionMode: plan
 ---

@@ -1,8 +1,6 @@
 import { expect, test } from "claude-code/testing";
 
 const CORE = { plugin: "engine", tier: "core" } as const;
-const STOCK_WRAPPER =
-	"Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.";
 const SKILL_ENTRY = [
 	"- claude-api: Reference for the Claude API / Anthropic SDK — model ids, pricing, params.",
 	'TRIGGER — read BEFORE opening the target file; don\'t skip because it "looks like a one-liner" — whenever: the prompt names Claude/Anthropic.',
@@ -54,22 +52,6 @@ test("skill listing respects downstream replacement and null", async ($, on) => 
 	expect(await $.prompt.attachment(input)).toEqual({ text: replacement });
 });
 
-test("CLAUDE.md wrapper changes without modifying file text or unrelated context", async ($, on) => {
-	on("prompt.context", (_$, e) => ({ blocks: e.blocks }));
-	const contents = `Contents of /work/CLAUDE.md:\n\nKeep $& and \ufeff\r\n${STOCK_WRAPPER}`;
-	const result = await $.prompt.context({
-		blocks: [
-			{ name: "claudeMd", text: `${STOCK_WRAPPER}\n\n${contents}` },
-			{ name: "custom", text: STOCK_WRAPPER },
-		],
-	});
-	expect(result.blocks[0]?.text).toContain(
-		"Treat applicable CLAUDE.md instructions as requirements.",
-	);
-	expect(result.blocks[0]?.text.endsWith(contents)).toBe(true);
-	expect(result.blocks[1]).toEqual({ name: "custom", text: STOCK_WRAPPER });
-});
-
 for (const agent of ["statusline-setup", "claude-code-guide"]) {
 	test(`${agent} is hidden only when built in`, async ($, on) => {
 		on("agent.offer", () => ({ isOffered: true }));
@@ -97,10 +79,19 @@ for (const agent of ["statusline-setup", "claude-code-guide"]) {
 				provider: CORE,
 			}),
 		).toEqual({ isOffered: true });
+		expect(
+			await $.agent.offer({
+				agent,
+				description: "Built in",
+				source: "built-in",
+				provider: CORE,
+				agentId: "resumed-agent",
+			}),
+		).toEqual({ isOffered: true });
 	});
 }
 
-for (const tool of ["Glob", "Grep", "WebSearch", "WebFetch", "NotebookEdit"]) {
+for (const tool of ["Glob", "Grep", "WebSearch", "WebFetch"]) {
 	test(`${tool} is denied and its core description deferred`, async ($, on) => {
 		on("tool.describe", (_$, e) => ({ description: e.description }));
 		const check = await $.tool.check({ tool, input: {} });
@@ -135,6 +126,44 @@ test("disabled tool.call is stopped before reaching a provider", async ($, on) =
 	});
 	expect(result.deny).toContain("Disabled by cc-enhanced");
 	expect(calls).toBe(0);
+});
+
+test("NotebookEdit stays enabled with its core description", async ($, on) => {
+	on("tool.check", { tool: "NotebookEdit" }, () => ({ decision: "allow" }));
+	on("tool.describe", (_$, e) => ({ description: e.description }));
+	let calls = 0;
+	on("tool.call", { tool: "NotebookEdit" }, (_$, e) => {
+		calls += 1;
+		return {
+			result: {
+				new_source: e.new_source,
+				cell_type: "code",
+				language: "python",
+				edit_mode: "replace",
+				notebook_path: e.notebook_path,
+				original_file: "{}",
+				updated_file: "{}",
+			},
+		};
+	});
+	const input = {
+		tool: "NotebookEdit",
+		notebook_path: "/work/notebook.ipynb",
+		new_source: "print(1)",
+	} as const;
+	expect(
+		(await $.tool.check({ tool: "NotebookEdit", input: {} })).decision,
+	).toBe("allow");
+	const result = await $.tool.call(input);
+	expect(result.deny).toBeUndefined();
+	expect(calls).toBe(1);
+	expect(
+		await $.tool.describe({
+			tool: "NotebookEdit",
+			description: "Original",
+			provider: CORE,
+		}),
+	).toEqual({ description: "Original" });
 });
 
 test("tool groups expand in place without changing calls or viewport metadata", async ($, on) => {

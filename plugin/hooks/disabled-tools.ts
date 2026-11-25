@@ -1,10 +1,10 @@
 import type { On } from "claude-code";
 
 export const DISABLED_TOOL_ROUTING =
-	"Disabled by cc-enhanced. Use fd, rg, ast-grep, or bat through Bash; use mcp__cc-enhanced__view for text ranges.";
+	"Disabled by cc-enhanced. Use fd, rg, ast-grep, or bat through Bash (or `$` in a Code Mode script); use mcp__cc-enhanced__view for text ranges.";
 
 export function registerDisabledToolMods(on: On): void {
-	const matcher = { tool: /^(?:Glob|Grep|WebSearch|WebFetch|NotebookEdit)$/ };
+	const matcher = { tool: /^(?:Glob|Grep|WebSearch|WebFetch)$/ };
 	on("tool.call", matcher, () => ({ deny: DISABLED_TOOL_ROUTING }));
 	on("tool.check", matcher, () => ({
 		decision: "deny",

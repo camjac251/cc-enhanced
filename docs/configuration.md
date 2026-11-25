@@ -79,7 +79,7 @@ Use the stock `effortLevel` setting for the default effort, up to `xhigh`. `CLAU
 
 cc-enhanced does not implement `CLAUDE_CODE_MODEL_ALIASES`, `CLAUDE_CODE_CONFIGURED_MODEL_CATALOG`, a model picker, or an expanded Agent schema. In an opted-in routed launch, `CC_ENHANCED_AGENT_ROUTING_CONFIG` names the Clodex config whose `modelAliases` entries map to canonical `clodex:<providerId>:<modelId>` IDs at `agent.spawn`. Only explicitly requested configured aliases are rewritten. Full IDs, unknown models, stock aliases, forks, resumed agents, and omitted model choices retain stock behavior.
 
-Use Workflow `agent(prompt, { agentType, model: "luna", effort: "max" })` for per-worker routing. The built-in Agent tool still accepts only stock model aliases; do not send it arbitrary routed IDs. The hook changes only the model, preserving the selected agent type, task, and stock effort handling. See the [subscription-routing guide](subscription-routing/README.md).
+Use Workflow `agent(prompt, { agentType, model: "luna", effort: "max" })` for per-worker routing. The built-in Agent tool still accepts only stock model aliases; do not send it arbitrary routed IDs. The hook changes only the model, preserving the selected agent type and task. A routed worker runs on another model than the main conversation, so with no `effort` named it takes `CLAUDE_CODE_SUBAGENT_EFFORT` when set, else that model's saved effort or its default, not the caller's. See the [subscription-routing guide](subscription-routing/README.md).
 
 ## Status line
 
@@ -108,13 +108,17 @@ The footer is the main session's line, also while you view an agent: Claude Code
 
 The mod's policy is fixed rather than selected through environment tags:
 
-- `mcp__cc-enhanced__batch_edit` edits without a prior Read, matching every `old_string` against the file's current content and refusing the whole batch if one is missing or ambiguous. Each change is one real Edit call, so Edit's permission prompts and hooks apply. A mid-batch rollback restores file bytes directly, without a permission prompt or rewind record, and does not undo transcript side effects.
-- `mcp__cc-enhanced__view` adds numbered text ranges and whitespace rendering. Its 4 MiB input limit and output caps are independent of the stock Read token setting.
-- Glob, Grep, WebSearch, WebFetch, and NotebookEdit are denied and receive routing-only deferred descriptions.
-- `statusline-setup` and `claude-code-guide` are hidden from agent discovery; transcript tool groups are expanded.
-- Plan/memory Edit and Write rows show one full-path diff from the stored result, without rereading the file. Custom plan/memory roots and engine-reported paths are recognized. Errors, staged writes, unchanged output, unavailable patches, and diffs beyond the UI drawing limit remain stock.
+- `mcp__cc-enhanced__batch_edit` edits without a prior Read, matching every `old_string` against the file's current content and refusing the whole batch if one is missing or ambiguous. Each change is one real Edit call. Approval follows Edit's rules for every change: the batch runs when Edit is allowed for all of them, is refused when Edit is denied for any, and otherwise asks once for the whole batch; an allow rule for `batch_edit` itself does not skip an ask Edit would raise. A mid-batch rollback restores file bytes directly, without a permission prompt or rewind record, and does not undo transcript side effects.
+- `mcp__cc-enhanced__view` adds numbered text ranges and whitespace rendering. It reads files over 4 MiB in byte ranges, refuses anything but a regular file without reading it, and its output caps (1,000 lines, 100,000 characters) are independent of the stock Read token setting.
+- Glob, Grep, WebSearch, and WebFetch are denied and receive routing-only deferred descriptions. NotebookEdit stays stock and is the path for notebook edits.
+- `statusline-setup` and `claude-code-guide` are hidden from agent discovery but can still be resumed; transcript tool groups are expanded.
+- Plan/memory Edit and Write rows show one full-path diff from the stored result, without rereading the file. Custom plan/memory roots and engine-reported paths are recognized. Plans count both in a custom `plansDirectory` inside the project and in the default plans folder, where Claude Code saves a plan the custom folder cannot take; only the main conversation's plan file is tracked, not a subagent's. Errors, staged writes, unchanged output, unavailable patches, and diffs beyond the UI drawing limit remain stock.
 
 Disable the plugin in `/plugin` or use `--safe-mode` when you need behavior without the mod. Do not send mod-only parameters to built-in Read or Edit.
+
+## Code Mode
+
+Code Mode (`CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`, experimental and gated by Claude Code) has Claude write JavaScript that calls tools from a script. When a request offers its `REPL` tool, the plugin adds a `cc-enhanced:code-mode` system prompt section: search through the shell, use `mcp__cc-enhanced__view` for numbered ranges, and make one `mcp__cc-enhanced__batch_edit` call for several replacements in one file. Claude Code raises a script's tool calls under each tool's own name, so the Glob, Grep, WebSearch, and WebFetch refusals and `batch_edit`'s Edit permission gate apply to scripts as to direct calls; a refused call's message names the script shell (`$`). The Explore and Plan defaults list `REPL`, so those subagents can use Code Mode when it is on; the entry is ignored otherwise. The live verifier cannot start Code Mode, so script behavior is covered by engine tests and the hook contract, not by a live run.
 
 ## Maintenance memory limits
 

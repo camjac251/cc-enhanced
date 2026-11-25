@@ -354,6 +354,11 @@ const pathCases: (Environment & { name: string; path: string })[] = [
 		settings: { plansDirectory: "/elsewhere/plans" },
 	},
 	{
+		name: "default plan folder beside a valid custom one",
+		path: "/config/claude/plans/review.md",
+		settings: { plansDirectory: "notes/plans" },
+	},
+	{
 		name: "user memory directory",
 		path: "/home/tester/notes/facts.md",
 		sources: { user: { autoMemoryDirectory: "~/notes" } },
@@ -458,6 +463,41 @@ for (const type of [
 		await ui.unmount();
 	});
 }
+
+test("a subagent's plan-mode row does not replace the main plan file", async ($, on) => {
+	environment(on);
+	on("prompt.attachment", () => ({ text: "Plan reminder" }));
+	on("ui.render", { component: "ToolResult" }, ($, e) =>
+		$.ui.resolve(e).Text({ children: "stock row" }),
+	);
+	const main = "/host-selected/main/plan.md";
+	const worker = "/host-selected/worker/plan.md";
+	for (const [planFilePath, agentId] of [
+		[main, undefined],
+		[worker, "worker-agent"],
+	] as const) {
+		await $.prompt.attachment({
+			type: "plan_mode",
+			text: "Plan reminder",
+			origin: { kind: "engine" },
+			...(agentId === undefined ? {} : { agentId }),
+			detail: { planFilePath, hasPlan: true, reminder: "full" },
+		});
+	}
+	const plan = await $.ui.mount({
+		plugin: "cc-enhanced",
+		...row("ToolUse", "Edit", changed("Edit", main)),
+	});
+	expect((await plan.find({ type: "Code" }))?.props.source).toBe(DIFF);
+	await plan.unmount();
+	const other = await $.ui.mount({
+		plugin: "cc-enhanced",
+		...row("ToolResult", "Edit", changed("Edit", worker)),
+	});
+	expect(await other.find({ type: "Code" })).toBeUndefined();
+	expect((await other.find({ type: "Text" }))?.text).toBe("stock row");
+	await other.unmount();
+});
 
 test("actual memory index paths identify sibling memory files without classifying ordinary instruction folders", async ($, on) => {
 	environment(on);

@@ -9,4 +9,4 @@ The routed aliases are `sol`, `terra`, and `luna`.
 - Without Workflow, use an agent definition whose `model` is the full routed ID, or report that the requested per-worker route is unavailable. Do not replace the chosen agent with a different specialist or change the parent model as a workaround.
 - Use readable aliases in Workflow calls. Do not set launch-wide subagent model or effort overrides for a one-worker request.
 - Fresh agents have independent context, so pass the task-specific context they need. Forks inherit their parent model, effort, and context and cannot be rerouted.
-- Without an explicit worker-routing request, preserve each agent definition and normal model and effort inheritance.
+- Without an explicit worker-routing request, preserve each agent definition and stock model and effort selection. A worker on a different model than the parent uses the call's or definition's effort, not the parent's.

@@ -75,8 +75,10 @@ export function registerAgentRoutingMods(on: On): void {
 			return next(e);
 		}
 		const model = configuredModel(config, name);
-		// Effort is not part of AgentSpawnInput. Stock retains the caller's effort;
-		// only the explicit model changes, never the task, selected type, or scope.
+		// Effort is not part of AgentSpawnInput. A subagent on a model other than
+		// the main conversation's takes the call's or definition's effort, else
+		// CLAUDE_CODE_SUBAGENT_EFFORT, else that model's saved effort or default.
+		// Only the explicit model changes, never the task, selected type, or scope.
 		return next(model === undefined ? e : { ...e, model });
 	});
 }

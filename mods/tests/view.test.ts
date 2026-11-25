@@ -3,6 +3,31 @@ import { expect, test } from "claude-code/testing";
 
 const VIEW = "mcp__cc-enhanced__view";
 const CORE = { plugin: "engine", tier: "core" } as const;
+const SMALL_FILE = {
+	kind: "file",
+	size: 64,
+	mtimeMs: 0,
+	isLink: false,
+} as const;
+const CHUNK = 4 * 1024 * 1024;
+// Fixed-width 16-byte lines: the line numbered EDGE_LINE starts 16 bytes
+// before the first 4 MiB chunk boundary.
+const EDGE_LINE = CHUNK / 16;
+
+function numbered(from: number, count: number): string {
+	return Array.from(
+		{ length: count },
+		(_, index) => `${String(from + index).padStart(15, "0")}\n`,
+	).join("");
+}
+
+function toBase64(bytes: Uint8Array): string {
+	let binary = "";
+	for (let index = 0; index < bytes.length; index += 0x2000) {
+		binary += String.fromCharCode(...bytes.subarray(index, index + 0x2000));
+	}
+	return btoa(binary);
+}
 
 for (const decision of ["deny", "ask"] as const) {
 	test(`view refuses Read ${decision} before any filesystem access`, async ($, on) => {
@@ -33,16 +58,23 @@ for (const decision of ["deny", "ask"] as const) {
 	});
 }
 
-test("view checks the actual path, reads bytes once, and returns its requested line range", async ($, on) => {
+test("view checks the actual path, stats it, reads bytes once, and returns its requested line range", async ($, on) => {
 	const calls: string[] = [];
 	on("tool.check", { tool: "Read" }, (_$, e) => {
 		expect(e.input).toEqual({ file_path: "/work/source.txt" });
 		calls.push("Read check");
 		return { decision: "allow" };
 	});
+	on("fs.stat", (_$, e) => {
+		expect(e.path).toBe("/work/source.txt");
+		calls.push("stat");
+		return { value: SMALL_FILE };
+	});
 	on("fs.read", (_$, e) => {
 		expect(e.path).toBe("/work/source.txt");
 		expect(e.as).toBe("bytes");
+		expect(e.offset).toBeUndefined();
+		expect(e.length).toBeUndefined();
 		calls.push("read bytes");
 		return { value: { base64: btoa("first\nsecond\nthird\nfourth\n") } };
 	});
@@ -51,13 +83,14 @@ test("view checks the actual path, reads bytes once, and returns its requested l
 		file_path: "/work/source.txt",
 		range: "2:3",
 	});
-	expect(calls).toEqual(["Read check", "read bytes"]);
+	expect(calls).toEqual(["Read check", "stat", "read bytes"]);
 	expect(answer.deny).toBeUndefined();
 	expect(answer.result).toBe("2 │ second\n3 │ third");
 });
 
 test("view renders whitespace and CRLF through the mod engine", async ($, on) => {
 	on("tool.check", { tool: "Read" }, () => ({ decision: "allow" }));
+	on("fs.stat", () => ({ value: SMALL_FILE }));
 	on("fs.read", () => ({ value: { base64: btoa(" a\t\r\nlast\n") } }));
 	const answer = await $.tool.call({
 		tool: VIEW,
@@ -71,6 +104,7 @@ test("view preserves UTF-8 and BOM with the engine's decoder", async ($, on) => 
 	const text = "\uFEFFcafé 音 𐐀\r\nsecond\n";
 	const base64 = btoa(String.fromCharCode(...new TextEncoder().encode(text)));
 	on("tool.check", { tool: "Read" }, () => ({ decision: "allow" }));
+	on("fs.stat", () => ({ value: SMALL_FILE }));
 	on("fs.read", () => ({ value: { base64 } }));
 	const answer = await $.tool.call({
 		tool: VIEW,
@@ -86,6 +120,7 @@ test("view defaults .output to the last 500 lines in real dispatch", async ($, o
 		(_, index) => `line ${index + 1}`,
 	).join("\n");
 	on("tool.check", { tool: "Read" }, () => ({ decision: "allow" }));
+	on("fs.stat", () => ({ value: SMALL_FILE }));
 	on("fs.read", () => ({ value: { base64: btoa(text) } }));
 	const answer = await $.tool.call({
 		tool: VIEW,
@@ -98,22 +133,102 @@ test("view defaults .output to the last 500 lines in real dispatch", async ($, o
 	expect(answer.result).toBe(expected);
 });
 
-test("view reports the filesystem's 4 MiB ceiling instead of pretending ranges stream", async ($, on) => {
+test(
+	"view reads a file over 4 MiB by byte ranges: its tail, and a range across a chunk edge that splits a character",
+	{
+		timeoutMs: 30_000,
+	},
+	async ($, on) => {
+		// U+97F3 occupies the last byte of the first chunk and two of the second.
+		const file = new TextEncoder().encode(
+			`${numbered(1, EDGE_LINE - 1)}${"a".repeat(15)}音 edge\n${numbered(EDGE_LINE + 1, 1_000)}`,
+		);
+		expect(file[CHUNK - 1]).toBe(0xe9);
+		const reads: Array<{ offset?: number; length?: number }> = [];
+		on("tool.check", { tool: "Read" }, () => ({ decision: "allow" }));
+		on("fs.stat", (_$, e) => {
+			expect(e.path).toBe("/work/large.output");
+			return {
+				value: { kind: "file", size: file.length, mtimeMs: 0, isLink: false },
+			};
+		});
+		on("fs.read", (_$, e) => {
+			expect(e.path).toBe("/work/large.output");
+			expect(e.as).toBe("bytes");
+			reads.push({ offset: e.offset, length: e.length });
+			// Answering in the host's place, the hook cuts its answer to the range.
+			const offset = e.offset ?? 0;
+			const end = e.length === undefined ? file.length : offset + e.length;
+			return { value: { base64: toBase64(file.subarray(offset, end)) } };
+		});
+		const row = (line: number) => `${line} │ ${String(line).padStart(15, "0")}`;
+		const tail = await $.tool.call({
+			tool: VIEW,
+			file_path: "/work/large.output",
+			range: "-2:",
+		});
+		expect(tail.deny).toBeUndefined();
+		expect(tail.result).toBe(
+			`${row(EDGE_LINE + 999)}\n${row(EDGE_LINE + 1_000)}`,
+		);
+		const edge = await $.tool.call({
+			tool: VIEW,
+			file_path: "/work/large.output",
+			range: `${EDGE_LINE - 1}:+3`,
+		});
+		expect(edge.deny).toBeUndefined();
+		expect(edge.result).toBe(
+			`${row(EDGE_LINE - 1)}\n${EDGE_LINE} │ ${"a".repeat(15)}音 edge\n${row(EDGE_LINE + 1)}`,
+		);
+		expect(reads.length).toBeGreaterThan(0);
+		for (const { offset, length } of reads) {
+			expect(offset).toBeDefined();
+			expect(length).toBeDefined();
+			expect(length ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(CHUNK);
+		}
+	},
+);
+
+for (const [kind, described] of [
+	["dir", "a directory"],
+	["other", "not a regular file"],
+] as const) {
+	test(`view refuses a path whose stat kind is ${kind} without reading it`, async ($, on) => {
+		let reads = 0;
+		on("tool.check", { tool: "Read" }, () => ({ decision: "allow" }));
+		on("fs.stat", () => ({
+			value: { kind, size: 0, mtimeMs: 0, isLink: false },
+		}));
+		on("fs.read", () => {
+			reads++;
+			return { deny: "A non-file must not be read." };
+		});
+		const answer = await $.tool.call({
+			tool: VIEW,
+			file_path: "/work/fifo.output",
+		});
+		expect(reads).toBe(0);
+		expect(answer.deny).toContain("regular files only");
+		expect(answer.deny).toContain(`/work/fifo.output is ${described}`);
+		expect(answer.deny).toContain("view did not read it");
+		expect(answer.result).toBeUndefined();
+	});
+}
+
+test("view reports a stat failure as a read failure without reading", async ($, on) => {
 	let reads = 0;
 	on("tool.check", { tool: "Read" }, () => ({ decision: "allow" }));
+	on("fs.stat", () => ({ deny: "No such file." }));
 	on("fs.read", () => {
 		reads++;
-		return { deny: "File exceeds the filesystem read limit." };
+		return { deny: "A missing file must not be read." };
 	});
 	const answer = await $.tool.call({
 		tool: VIEW,
-		file_path: "/work/large.output",
-		range: "1:2",
+		file_path: "/work/missing.txt",
 	});
-	expect(reads).toBe(1);
-	expect(answer.deny).toContain("4 MiB");
-	expect(answer.deny).toContain("cannot stream a range");
-	expect(answer.deny).toContain("Read with offset/limit");
+	expect(reads).toBe(0);
+	expect(answer.deny).toContain("view could not read the file");
 	expect(answer.result).toBeUndefined();
 });
 
@@ -138,6 +253,7 @@ test("view directs images, PDFs, and notebooks to Read without reading their byt
 
 test("view detects nontext bytes even for a text filename", async ($, on) => {
 	on("tool.check", { tool: "Read" }, () => ({ decision: "allow" }));
+	on("fs.stat", () => ({ value: SMALL_FILE }));
 	on("fs.read", () => ({ value: { base64: btoa("text\0binary") } }));
 	const answer = await $.tool.call({
 		tool: VIEW,
@@ -207,7 +323,9 @@ test("view is registered nondeferred only after downstream session startup", asy
 			},
 		},
 	});
-	expect(registered?.description).toContain("4 MiB");
+	expect(registered?.description).toContain("byte ranges of at most 4 MiB");
+	expect(registered?.description).toContain("regular files only");
+	expect(registered?.description).not.toContain("cannot stream");
 });
 
 test("core Read description appends view guidance to the downstream result and keeps placement", async ($, on) => {
@@ -226,6 +344,8 @@ test("core Read description appends view guidance to the downstream result and k
 	);
 	expect(answer.description).toContain(VIEW);
 	expect(answer.description).toContain("last 500 lines");
+	expect(answer.description).toContain("regular UTF-8 text files of any size");
+	expect(answer.description).not.toContain("no larger than 4 MiB");
 	expect(answer.description).not.toContain("Superseded");
 	expect(answer.isDeferred).toBe(false);
 });

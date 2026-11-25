@@ -51,6 +51,33 @@ function stubPromptEvents(on: On): void {
 	on("tool.describe", (_$, e) => ({ description: e.description }));
 }
 
+test("Code Mode guidance joins the system prompt once, only when the request offers REPL", async ($, on) => {
+	on("prompt.compose", () => ({
+		sections: [{ id: "intro", text: "Stock intro.", scope: "shared" }],
+	}));
+	const compose = (tools: string[]) =>
+		$.prompt.compose({
+			model: "claude-opus-5-5",
+			promptModel: "claude-opus-5-5",
+			surfaces: [],
+			tools,
+			outputStyle: null,
+			traits: [],
+		});
+	const offered = await compose(["REPL", "Read", "mcp__cc-enhanced__view"]);
+	expect(offered.sections.map(({ id }) => id)).toEqual([
+		"intro",
+		"cc-enhanced:code-mode",
+	]);
+	expect(offered.sections[1]?.scope).toBe("session");
+	expect(offered.sections[1]?.text).toContain("mcp__cc-enhanced__batch_edit");
+	expect(offered.sections[1]?.text).toContain(
+		"Glob, Grep, WebSearch, and WebFetch are disabled",
+	);
+	const plain = await compose(["Bash", "Read", "Edit"]);
+	expect(plain.sections.map(({ id }) => id)).toEqual(["intro"]);
+});
+
 for (const fallback of [
 	"`find` or `grep` via the Bash tool",
 	"the Glob or Grep",
@@ -331,6 +358,19 @@ test("Agent lookup changes only the stock routing paragraph", async ($, on) => {
 			provider: CORE,
 		}),
 	).toEqual(answer);
+});
+
+test("Agent lookup also rewrites the form that names the search tool", async ($, on) => {
+	stubPromptEvents(on);
+	const answer = await $.tool.describe({
+		tool: "Agent",
+		description: AGENT_LOOKUP_SOURCE.replace(
+			"`grep` via the Bash tool",
+			"the Grep tool",
+		),
+		provider: CORE,
+	});
+	expect(answer.description).toBe(AGENT_LOOKUP_EXPECTED);
 });
 
 for (const normalized of [false, true]) {

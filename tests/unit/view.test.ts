@@ -3,12 +3,14 @@ import { test } from "node:test";
 import {
 	decodeViewText,
 	parseViewRange,
+	renderViewRanges,
 	renderViewText,
 	requiresCoreRead,
 	resolveViewRange,
 	VIEW_MAX_CHARS,
 	VIEW_MAX_LINES,
-	VIEW_READ_LIMIT_BYTES,
+	VIEW_READ_CHUNK_BYTES,
+	type ViewByteReader,
 	type ViewRange,
 } from "../../plugin/hooks/view.js";
 
@@ -266,28 +268,135 @@ test("view rejects non-UTF-8, binary controls, terminal escapes, and PDF content
 	}
 });
 
-test("view honors the 4 MiB byte ceiling, not decoded character count", () => {
-	const exact = Buffer.alloc(VIEW_READ_LIMIT_BYTES, 0x61);
+// Fixed-width 16-byte lines: line n ends at byte 16 * n, so the line numbered
+// EDGE_LINE starts 16 bytes before the first chunk boundary.
+const EDGE_LINE = VIEW_READ_CHUNK_BYTES / 16;
+
+function filler(from: number, count: number): string {
+	return Array.from(
+		{ length: count },
+		(_, index) => `${String(from + index).padStart(15, "0")}\n`,
+	).join("");
+}
+
+function largeFile(edge: Buffer | string, after = 2_000): Buffer {
+	return Buffer.concat([
+		Buffer.from(filler(1, EDGE_LINE - 1)),
+		Buffer.from(edge),
+		Buffer.from(filler(EDGE_LINE + 1, after)),
+	]);
+}
+
+function rangeReader(
+	file: Buffer,
+	reads: Array<[number, number]> = [],
+): ViewByteReader {
+	return async (offset, length) => {
+		reads.push([offset, length]);
+		return new Uint8Array(file.subarray(offset, offset + length));
+	};
+}
+
+test("view reads files over one chunk by ranges and matches whole-text rendering", async () => {
+	// U+97F3 occupies the last byte of the first chunk and two of the second.
+	const multibyte = largeFile(`${"a".repeat(15)}音 edge\n`);
+	assert.equal(multibyte[VIEW_READ_CHUNK_BYTES - 1], 0xe9);
+	// CR ends the first chunk and its LF begins the second.
+	const crlf = largeFile(`${"b".repeat(15)}\r\n`);
+	assert.equal(crlf[VIEW_READ_CHUNK_BYTES - 1], 0x0d);
+	assert.equal(crlf[VIEW_READ_CHUNK_BYTES], 0x0a);
+	for (const file of [multibyte, crlf]) {
+		const text = file.toString("utf8");
+		for (const [input, path] of [
+			["-3:", "big.txt"],
+			[undefined, "big.output"],
+			["-1500:", "big.txt"],
+			[`${EDGE_LINE - 1}:${EDGE_LINE + 2}`, "big.txt"],
+			[`${EDGE_LINE}::1`, "big.txt"],
+			[`${EDGE_LINE + 1}:+2`, "big.txt"],
+			[`${EDGE_LINE}:${EDGE_LINE}`, "big.txt"],
+			["2:3", "big.txt"],
+			["1:", "big.txt"],
+			["300000:", "big.txt"],
+		] as const) {
+			for (const showWhitespace of [false, true]) {
+				const range = parseViewRange(input, path);
+				const reads: Array<[number, number]> = [];
+				assert.equal(
+					await renderViewRanges(
+						rangeReader(file, reads),
+						range,
+						showWhitespace,
+					),
+					renderViewText(text, range, showWhitespace),
+					`${input} ${showWhitespace}`,
+				);
+				for (const [, length] of reads) {
+					assert(length <= VIEW_READ_CHUNK_BYTES);
+				}
+			}
+		}
+	}
 	assert.equal(
-		decodeViewText(exact.toString("base64")).length,
-		VIEW_READ_LIMIT_BYTES,
+		await renderViewRanges(
+			rangeReader(multibyte),
+			parseViewRange(`${EDGE_LINE - 1}:${EDGE_LINE + 1}`, "big.txt"),
+		),
+		[
+			`${EDGE_LINE - 1} │ ${String(EDGE_LINE - 1).padStart(15, "0")}`,
+			`${EDGE_LINE} │ aaaaaaaaaaaaaaa音 edge`,
+			`${EDGE_LINE + 1} │ ${String(EDGE_LINE + 1).padStart(15, "0")}`,
+		].join("\n"),
 	);
-	assert.throws(
-		() =>
-			decodeViewText(
-				Buffer.alloc(VIEW_READ_LIMIT_BYTES + 1, 0x61).toString("base64"),
-			),
-		/4 MiB.*Read with offset\/limit/,
+	assert.equal(
+		await renderViewRanges(
+			rangeReader(crlf),
+			parseViewRange(`${EDGE_LINE}:+2`, "big.txt"),
+			true,
+		),
+		`${EDGE_LINE} │ ${"b".repeat(15)}␍␊\n${EDGE_LINE + 1} │ ${String(EDGE_LINE + 1).padStart(15, "0")}␊`,
 	);
-	assert.throws(
-		() =>
-			decodeViewText(
-				Buffer.from("音".repeat(Math.ceil(VIEW_READ_LIMIT_BYTES / 3))).toString(
-					"base64",
-				),
-			),
-		/4 MiB/,
+	assert.equal(
+		await renderViewRanges(
+			rangeReader(multibyte),
+			parseViewRange("-2:", "big.txt"),
+		),
+		[EDGE_LINE + 1999, EDGE_LINE + 2000]
+			.map((line) => `${line} │ ${String(line).padStart(15, "0")}`)
+			.join("\n"),
 	);
+});
+
+test("view stops its line scan at the last requested line of a large file", async () => {
+	const reads: Array<[number, number]> = [];
+	assert.equal(
+		await renderViewRanges(
+			rangeReader(largeFile(`${"c".repeat(15)}\n`), reads),
+			parseViewRange("2:3", "big.txt"),
+		),
+		"2 │ 000000000000002\n3 │ 000000000000003",
+	);
+	assert(reads.length > 0);
+	for (const [offset] of reads) assert(offset < VIEW_READ_CHUNK_BYTES);
+});
+
+test("view refuses nontext or malformed UTF-8 found beyond the first chunk", async () => {
+	const range = parseViewRange("-1:", "big.txt");
+	for (const file of [
+		largeFile(`${"d".repeat(16)}\0\n`),
+		largeFile(
+			Buffer.concat([
+				Buffer.from("e".repeat(15)),
+				Buffer.from([0xe9]),
+				Buffer.from("x\n"),
+			]),
+		),
+	]) {
+		await assert.rejects(
+			renderViewRanges(rangeReader(file), range),
+			/UTF-8 text only/,
+		);
+	}
 });
 
 test("view routes image, PDF, and notebook filenames to core Read", () => {

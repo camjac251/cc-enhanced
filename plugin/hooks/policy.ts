@@ -47,3 +47,9 @@ export const STRONG_CLAUDEMD_DISCLAIMER_LINES = [
 
 export const STRONG_CLAUDEMD_DISCLAIMER =
 	/* @__PURE__ */ STRONG_CLAUDEMD_DISCLAIMER_LINES.join("\n");
+
+/** Added to the system prompt only when the request offers Code Mode's REPL. */
+export const CODE_MODE_GUIDANCE = [
+	"In Code Mode scripts, search through the shell (`$` running fd, rg, or ast-grep); Glob, Grep, WebSearch, and WebFetch are disabled and refuse calls.",
+	"Read numbered line ranges with mcp__cc-enhanced__view. For several replacements in one file, make one mcp__cc-enhanced__batch_edit call rather than a chain of edit() calls: it validates the whole batch before changing anything and follows Edit's permissions.",
+].join("\n");

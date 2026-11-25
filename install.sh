@@ -361,9 +361,10 @@ version_lt() {
 }
 
 # The manifest's `engines` range names the oldest Claude Code that loads
-# cc-enhanced. Claude Code only notes a mismatch (and older releases ignore the
-# field), so setup refuses here instead. Only this checkout's manifest is at
-# hand, so the check applies when installing from this checkout.
+# cc-enhanced. Claude Code enforces it for GitHub and git marketplace sources,
+# but a local-folder source still loads with only a note, so setup refuses here.
+# Only this checkout's manifest is at hand, so the check applies when
+# installing from this checkout.
 require_minimum_version() {
 	local claude="$1" minimum have
 	[[ "$source_spec" == "$script_dir" ]] || return 0

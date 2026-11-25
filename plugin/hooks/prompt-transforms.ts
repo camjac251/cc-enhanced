@@ -99,35 +99,39 @@ function bashDescription(text: string): string {
 }
 
 function agentDescription(text: string): string {
-	return text
-		.replace(
-			/(^|\n)(If the target is already known, use the direct tool: [^\r\n]+? for a known path, )`grep` via the Bash tool( for a specific symbol or string\. Reserve this tool for open-ended questions that span the codebase, or tasks that match an available agent type\.)(?=\r?$)/gm,
-			(_match, boundary: string, prefix: string, suffix: string) =>
-				`${boundary}${prefix}Serena or Probe search_code (exact: true)${suffix}`,
-		)
-		.replace(
-			/(^|\n)When using the ([^\r\n]+?) tool, specify a subagent_type to select an agent: `"fork"` forks yourself \(the fork inherits your full conversation context and always runs on your model(?: \u2014 a|\. A) `model` override is ignored\); (any other type(?: \u2014 or omitting it \u2014 starts|\. Or omitting it\. Starts) a fresh agent \(general-purpose by default\)\.|any other type starts a fresh agent\.)/gm,
-			(_match, boundary: string, tool: string, availability: string) => {
-				const fresh = availability.endsWith("(general-purpose by default).")
-					? "Pass any other subagent_type, or omit subagent_type, to start a fresh agent (general-purpose by default)."
-					: "Pass any other subagent_type to start a fresh agent.";
-				return `${boundary}When using the ${tool} tool, pass \`subagent_type: "fork"\` to fork yourself. A fork inherits your full conversation context, always runs on your model, and ignores any \`model\` override. ${fresh}`;
-			},
-		)
-		.replace(
-			/(^|\n)When using the ([^\r\n]+?) tool, specify a subagent_type to choose which type of agent you want to launch\. A type of "fork" forks yourself, allowing the fork to inherit your full conversation and context, and ensuring that it runs on the same model that you are running on \(a \x60model\x60 override is ignored for forks\)\. For other types of subagents, they start fresh without your context window\.( If omitted, the general-purpose agent is used\.)?/gm,
-			(
-				_match,
-				boundary: string,
-				tool: string,
-				defaultClause: string | undefined,
-			) => {
-				const fresh = defaultClause
-					? "Pass any other subagent_type, or omit subagent_type, to start a fresh agent (general-purpose by default)."
-					: "Pass any other subagent_type to start a fresh agent.";
-				return `${boundary}When using the ${tool} tool, pass \`subagent_type: "fork"\` to fork yourself. A fork inherits your full conversation context, always runs on your model, and ignores any \`model\` override. ${fresh}`;
-			},
-		);
+	return (
+		text
+			// Stock names `grep` via the shell when its search tool is unavailable and
+			// the search tool itself (`the Grep tool`) otherwise.
+			.replace(
+				/(^|\n)(If the target is already known, use the direct tool: [^\r\n]+? for a known path, )(?:`grep` via the Bash tool|the [^\r\n`]+? tool)( for a specific symbol or string\. Reserve this tool for open-ended questions that span the codebase, or tasks that match an available agent type\.)(?=\r?$)/gm,
+				(_match, boundary: string, prefix: string, suffix: string) =>
+					`${boundary}${prefix}Serena or Probe search_code (exact: true)${suffix}`,
+			)
+			.replace(
+				/(^|\n)When using the ([^\r\n]+?) tool, specify a subagent_type to select an agent: `"fork"` forks yourself \(the fork inherits your full conversation context and always runs on your model(?: \u2014 a|\. A) `model` override is ignored\); (any other type(?: \u2014 or omitting it \u2014 starts|\. Or omitting it\. Starts) a fresh agent \(general-purpose by default\)\.|any other type starts a fresh agent\.)/gm,
+				(_match, boundary: string, tool: string, availability: string) => {
+					const fresh = availability.endsWith("(general-purpose by default).")
+						? "Pass any other subagent_type, or omit subagent_type, to start a fresh agent (general-purpose by default)."
+						: "Pass any other subagent_type to start a fresh agent.";
+					return `${boundary}When using the ${tool} tool, pass \`subagent_type: "fork"\` to fork yourself. A fork inherits your full conversation context, always runs on your model, and ignores any \`model\` override. ${fresh}`;
+				},
+			)
+			.replace(
+				/(^|\n)When using the ([^\r\n]+?) tool, specify a subagent_type to choose which type of agent you want to launch\. A type of "fork" forks yourself, allowing the fork to inherit your full conversation and context, and ensuring that it runs on the same model that you are running on \(a \x60model\x60 override is ignored for forks\)\. For other types of subagents, they start fresh without your context window\.( If omitted, the general-purpose agent is used\.)?/gm,
+				(
+					_match,
+					boundary: string,
+					tool: string,
+					defaultClause: string | undefined,
+				) => {
+					const fresh = defaultClause
+						? "Pass any other subagent_type, or omit subagent_type, to start a fresh agent (general-purpose by default)."
+						: "Pass any other subagent_type to start a fresh agent.";
+					return `${boundary}When using the ${tool} tool, pass \`subagent_type: "fork"\` to fork yourself. A fork inherits your full conversation context, always runs on your model, and ignores any \`model\` override. ${fresh}`;
+				},
+			)
+	);
 }
 
 function autoModeAttachment(text: string): string {
