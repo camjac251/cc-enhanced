@@ -7,6 +7,7 @@ import { createServer, type ServerResponse } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { PluginValidateReport } from "claude-code";
 import { STRONG_CLAUDEMD_DISCLAIMER } from "../plugin/hooks/policy.js";
 import {
 	CLAUDE_API_SKIP,
@@ -197,12 +198,19 @@ function respondToMessages(
 	response.end();
 }
 
-async function runBinary(
+interface BinaryResult {
+	code: number | null;
+	signal: NodeJS.Signals | null;
+	stdout: string;
+	stderr: string;
+}
+
+async function execBinary(
 	binary: string,
 	args: string[],
 	cwd: string,
 	env: NodeJS.ProcessEnv,
-): Promise<string> {
+): Promise<BinaryResult> {
 	const child = spawn(binary, args, {
 		cwd,
 		env,
@@ -224,14 +232,240 @@ async function runBinary(
 	}
 	try {
 		const [code, signal] = await once(child, "close");
-		if (code !== 0)
-			throw new Error(
-				`Mod verification command failed (${signal ?? code}): ${args.join(" ")}\n${Buffer.concat(stdout).toString()}${Buffer.concat(stderr).toString()}`,
-			);
-		return Buffer.concat(stdout).toString();
+		return {
+			code,
+			signal,
+			stdout: Buffer.concat(stdout).toString(),
+			stderr: Buffer.concat(stderr).toString(),
+		};
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+async function runBinary(
+	binary: string,
+	args: string[],
+	cwd: string,
+	env: NodeJS.ProcessEnv,
+): Promise<string> {
+	const { code, signal, stdout, stderr } = await execBinary(
+		binary,
+		args,
+		cwd,
+		env,
+	);
+	if (code !== 0)
+		throw new Error(
+			`Mod verification command failed (${signal ?? code}): ${args.join(" ")}\n${stdout}${stderr}`,
+		);
+	return stdout;
+}
+
+/**
+ * The validate report spells names whole and uncleaned, so print a bounded
+ * form with control and format characters escaped.
+ */
+function displayName(name: string): string {
+	const printable = name.replace(
+		/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
+		(char) => `\\u{${(char.codePointAt(0) ?? 0).toString(16)}}`,
+	);
+	return printable.length > 120 ? `${printable.slice(0, 117)}...` : printable;
+}
+
+function hostCovered(host: string, declared: ReadonlySet<string>): boolean {
+	if (declared.has(host)) return true;
+	for (const entry of declared)
+		if (entry.startsWith("*.") && host.endsWith(entry.slice(1))) return true;
+	return false;
+}
+
+/**
+ * Validate the staged plugin with `--strict --json` and hold the report to the
+ * repository's rules: a strict pass, every host a part of the plugin names
+ * covered by a declared `network.hosts` entry, and no module that forces a
+ * rewrite of the descriptions a resumed thread recorded.
+ */
+async function verifyValidateReport(
+	binary: string,
+	plugin: string,
+	cwd: string,
+	env: NodeJS.ProcessEnv,
+): Promise<void> {
+	const args = ["plugin", "validate", plugin, "--strict", "--json"];
+	const result = await execBinary(binary, args, cwd, env);
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(result.stdout);
+	} catch {
+		parsed = undefined;
+	}
+	if (!isRecord(parsed) || typeof parsed.success !== "boolean")
+		throw new Error(
+			`claude plugin validate --strict --json printed no report (${result.signal ?? result.code}):\n${result.stdout}${result.stderr}`,
+		);
+	const report = parsed as PluginValidateReport;
+	const files = [
+		...(report.manifest ? [report.manifest] : []),
+		...report.contents,
+	];
+	const problems: string[] = [];
+	if (!report.success || !report.strict || result.code !== 0) {
+		problems.push(
+			`validate did not pass under --strict (success ${report.success}, strict ${report.strict}, exit ${result.signal ?? result.code}).`,
+		);
+		for (const file of files)
+			for (const finding of [...file.errors, ...file.warnings])
+				problems.push(`${file.file}: ${finding.path}: ${finding.message}`);
+		if (report.directory?.failure) problems.push(report.directory.failure);
+	}
+
+	const modules = [];
+	for (const file of files) {
+		if (file.type !== "hooks") continue;
+		if (file.modules === null)
+			problems.push(
+				`${file.file}: validate could not read the hooks module, so its hosts and prompt-cache use are unchecked.`,
+			);
+		else modules.push(...file.modules);
+	}
+	if (modules.length === 0)
+		problems.push("validate reported no hooks module for the plugin.");
+	for (const module of modules) {
+		const name = displayName(module.module);
+		if (module.breaksPromptCache)
+			problems.push(
+				`${name} spells breakPromptCache; a resumed thread must keep the tool descriptions it recorded, so remove it.`,
+			);
+		if (module.uses.hosts && module.uses.hosts.unread.length > 0)
+			problems.push(
+				`${name} calls ${module.uses.hosts.unread.map(displayName).join(" and ")} with a URL validate cannot read; spell the host out so network.hosts can cover it.`,
+			);
+	}
+
+	const hosts = report.hosts;
+	const covered: string[] = [];
+	if (!hosts) {
+		problems.push(
+			"validate did not read the plugin's network hosts (report hosts is null).",
+		);
+	} else {
+		// The plugin-wide list covers every part; a stdio server's own list covers that server.
+		const pluginDeclared = new Set<string>();
+		const serverDeclared = new Map<string, Set<string>>();
+		for (const row of hosts.named)
+			for (const source of row.sources) {
+				if (source.type !== "declared") continue;
+				if (source.server === undefined) pluginDeclared.add(row.host);
+				else {
+					const list = serverDeclared.get(source.server) ?? new Set();
+					list.add(row.host);
+					serverDeclared.set(source.server, list);
+				}
+			}
+		for (const row of hosts.named) {
+			const reaches = row.sources.filter(({ type }) => type !== "declared");
+			if (reaches.length === 0) continue;
+			const uncovered = reaches.filter(
+				(source) =>
+					!hostCovered(row.host, pluginDeclared) &&
+					!(
+						source.type === "mcp" &&
+						hostCovered(row.host, serverDeclared.get(source.name) ?? new Set())
+					),
+			);
+			if (uncovered.length === 0) covered.push(displayName(row.host));
+			else
+				problems.push(
+					`${displayName(row.host)} is reached by ${uncovered
+						.map((source) =>
+							source.type === "module"
+								? `module ${displayName(source.path)}`
+								: source.type === "hook"
+									? `hook ${displayName(source.event)}`
+									: source.type === "mcp"
+										? `server ${displayName(source.name)}`
+										: "an unknown part",
+						)
+						.join(
+							", ",
+						)} but no network.hosts entry covers it; add it to plugin.json "network": { "hosts": [...] }.`,
+				);
+		}
+		for (const entry of hosts.unread)
+			if (entry.reason === "url")
+				problems.push(
+					`${entry.kind}${entry.name === undefined ? "" : ` ${displayName(entry.name)}`} reaches a URL validate cannot read, so network.hosts cannot be checked to cover it.`,
+				);
+	}
+	if (problems.length > 0)
+		throw new Error(
+			`claude plugin validate --strict --json report failed the verifier:\n- ${problems.join("\n- ")}`,
+		);
+	console.log(
+		`Plugin validate: strict pass; modules ${modules.map(({ module }) => displayName(module)).join(", ")}; reached hosts ${covered.length > 0 ? covered.join(", ") : "none"} covered by network.hosts; no module sets breakPromptCache.`,
+	);
+}
+
+function firstDifferentLine(left: string, right: string): number {
+	const a = left.split("\n");
+	const b = right.split("\n");
+	let line = 0;
+	while (line < a.length && line < b.length && a[line] === b[line]) line++;
+	return line + 1;
+}
+
+/**
+ * Compare the mod API declarations the target binary wrote beside the staged
+ * mod with the verbatim copy in `types/`. The staged copy starts without
+ * generated types, so any file found here was written by the target binary.
+ * The built-in tool inputs file follows the session's environment and the
+ * account's server-side feature gates: which tools exist (Glob and Grep among
+ * them) and their fields both differ between the verifier's local key and a
+ * signed-in session. Here it must only exist; refresh it from a signed-in
+ * launch.
+ */
+async function verifyGeneratedDeclarations(plugin: string): Promise<void> {
+	const generated = path.join(plugin, ".claude-plugin", "types");
+	const read = async (folder: string): Promise<Buffer | undefined> => {
+		try {
+			return await fs.readFile(path.join(generated, folder, "index.d.ts"));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			return undefined;
+		}
+	};
+	const api = await read("claude-code");
+	const tools = await read("claude-code-tools");
+	const problems: string[] = [];
+	if (api === undefined) {
+		problems.push(
+			"the launch wrote no .claude-plugin/types/claude-code/index.d.ts.",
+		);
+	}
+	if (tools === undefined) {
+		problems.push(
+			"the launch wrote no .claude-plugin/types/claude-code-tools/index.d.ts.",
+		);
+	}
+	const header =
+		api?.toString("utf8").split("\n", 1)[0] ?? "no generated version line";
+	const expected = await fs.readFile(
+		path.join(repoRoot, "types", "claude-code.d.ts"),
+	);
+	if (api !== undefined && !api.equals(expected)) {
+		problems.push(
+			`types/claude-code.d.ts differs from the generated .claude-plugin/types/claude-code/index.d.ts (first difference at line ${firstDifferentLine(api.toString("utf8"), expected.toString("utf8"))}).`,
+		);
+	}
+	if (problems.length > 0)
+		throw new Error(
+			`Mod API declarations are stale for this binary (generated header: ${JSON.stringify(header)}):\n- ${problems.join("\n- ")}\nRefresh types/claude-code.d.ts and types/claude-code-tools.d.ts verbatim from a signed-in --plugin-dir launch of this binary with CLAUDE_CODE_PLUGIN_DIR_WATCH=1, check the version header, then rerun.`,
+		);
+	console.log(
+		`Plugin mods: generated mod API declarations match types/claude-code.d.ts byte for byte (${header}); the built-in tool inputs were generated.`,
+	);
 }
 
 function toolContracts(request: ModelRequest) {
@@ -374,6 +608,8 @@ export async function verifyMods(
 		CLAUDE_CONFIG_DIR: path.join(scratch, "config"),
 		ANTHROPIC_API_KEY: "local-mod-verification",
 		DISABLE_AUTOUPDATER: "1",
+		// Stock passes must not turn into Code Mode from the maintainer's shell.
+		CLAUDE_CODE_EXPERIMENTAL_CODE_MODE: "0",
 	};
 	for (const key of [
 		"ANTHROPIC_AUTH_TOKEN",
@@ -383,6 +619,7 @@ export async function verifyMods(
 		"CLAUDE_CODE_USE_FOUNDRY",
 		"CLAUDE_CODE_ENABLE_TASKS",
 		"CLAUDE_CODE_PLUGIN_DIRS",
+		"CLAUDE_CODE_PLUGIN_DIR_WATCH",
 		"CC_ENHANCED_DISABLE",
 		"CC_ENHANCED_SUBAGENT_PROMPT_FILE",
 		"CC_ENHANCED_AGENT_ROUTING_CONFIG",
@@ -391,14 +628,7 @@ export async function verifyMods(
 	try {
 		const plugin = path.join(scratch, "plugin");
 		await stagePlugin(plugin);
-		console.log(
-			await runBinary(
-				resolvedBinary,
-				["plugin", "validate", plugin, "--strict"],
-				scratch,
-				env,
-			),
-		);
+		await verifyValidateReport(resolvedBinary, plugin, scratch, env);
 		console.log(
 			await runBinary(resolvedBinary, ["plugin", "test", plugin], scratch, env),
 		);
@@ -481,6 +711,7 @@ export async function verifyMods(
 				legacyTodo: boolean,
 				forkAvailable: boolean,
 				calls: DrivenCall[] = [],
+				extraEnv: NodeJS.ProcessEnv = {},
 			): Promise<ModelRequest> => {
 				requests.length = 0;
 				serverError = undefined;
@@ -497,11 +728,13 @@ export async function verifyMods(
 						"--plugin-dir",
 						plugin,
 						"--tools",
-						"Bash,Read,Edit,TodoWrite,Agent,TaskCreate,TaskGet,TaskList,TaskUpdate,NotebookEdit",
+						// Some environments offer Glob and Grep, and stock prompt text names
+						// them when present, so the live check covers that wording.
+						"Bash,Read,Edit,TodoWrite,Agent,TaskCreate,TaskGet,TaskList,TaskUpdate,NotebookEdit,Glob,Grep",
 						"--permission-mode",
 						"acceptEdits",
 						"--allowedTools",
-						"Read,Edit,mcp__cc-enhanced__view,mcp__cc-enhanced__batch_edit",
+						"Read,Edit,NotebookEdit,mcp__cc-enhanced__view,mcp__cc-enhanced__batch_edit",
 						"--model",
 						"claude-sonnet-4-6",
 						"--output-format",
@@ -518,6 +751,7 @@ export async function verifyMods(
 						HTTPS_PROXY: "",
 						ALL_PROXY: "",
 						NO_PROXY: "127.0.0.1,localhost",
+						...extraEnv,
 					},
 				);
 				if (serverError) throw serverError;
@@ -544,6 +778,26 @@ export async function verifyMods(
 				assert(request, "No model request carried the stock tool definitions");
 				return request;
 			};
+
+			// Headless launches write declarations beside a --plugin-dir mod only
+			// with the watch variable. Clear any earlier copy so the files checked
+			// are this launch's own.
+			await fs.rm(path.join(plugin, ".claude-plugin", "types"), {
+				recursive: true,
+				force: true,
+			});
+			await captureTurn(
+				[
+					"--no-session-persistence",
+					"-p",
+					"Reply with the local verification marker.",
+				],
+				false,
+				false,
+				[],
+				{ CLAUDE_CODE_PLUGIN_DIR_WATCH: "1" },
+			);
+			await verifyGeneratedDeclarations(plugin);
 
 			for (const legacyTodo of [false, true]) {
 				for (const forkAvailable of [false, true]) {
@@ -703,7 +957,7 @@ export async function verifyMods(
 						.join("\n");
 					assert(
 						context.includes(STRONG_CLAUDEMD_DISCLAIMER),
-						"CLAUDE.md wrapper was not strengthened",
+						"CLAUDE.md instruction policy block was not sent",
 					);
 					assert(
 						JSON.stringify(request).includes(
@@ -733,11 +987,20 @@ export async function verifyMods(
 			const editPath = path.join(scratch, "batch.txt");
 			const original = "\uFEFFalpha\r\nbeta\r\n";
 			const edited = "\uFEFFdelta\r\nbeta\r\n";
-			const notebookPath = path.join(scratch, "denied.ipynb");
+			const notebookPath = path.join(scratch, "probe.ipynb");
 			const notebook =
 				'{"cells":[{"cell_type":"code","id":"probe","source":["original"],"metadata":{},"outputs":[],"execution_count":null}],"metadata":{},"nbformat":4,"nbformat_minor":5}\n';
 			await fs.writeFile(editPath, original);
 			await fs.writeFile(notebookPath, notebook);
+			// An Edit deny rule must hold for batch_edit too: its own core Edit calls
+			// skip deny rules, so the batch is decided where the model's call is.
+			const protectedPath = path.join(scratch, "protected.txt");
+			await fs.writeFile(protectedPath, "keep\n");
+			await fs.mkdir(path.join(scratch, ".claude"), { recursive: true });
+			await fs.writeFile(
+				path.join(scratch, ".claude", "settings.json"),
+				JSON.stringify({ permissions: { deny: [`Edit(/${protectedPath})`] } }),
+			);
 			await captureTurn(
 				[
 					"--no-session-persistence",
@@ -807,6 +1070,30 @@ export async function verifyMods(
 						},
 					},
 					{
+						name: "mcp__cc-enhanced__batch_edit",
+						input: {
+							file_path: protectedPath,
+							edits: [{ old_string: "keep", new_string: "must-not-apply" }],
+						},
+						async verify(text, isError) {
+							assert.equal(
+								isError,
+								true,
+								"batch_edit ran past an Edit deny rule",
+							);
+							assert.match(
+								text,
+								/denied/i,
+								"batch_edit did not report the Edit denial",
+							);
+							assert.equal(
+								await fs.readFile(protectedPath, "utf8"),
+								"keep\n",
+								"batch_edit changed a file an Edit deny rule protects",
+							);
+						},
+					},
+					{
 						name: "mcp__cc-enhanced__view",
 						input: { file_path: editPath, range: "1:2", show_whitespace: true },
 						async verify(text, isError) {
@@ -824,28 +1111,68 @@ export async function verifyMods(
 						},
 					},
 					{
-						name: "NotebookEdit",
+						name: "Grep",
 						input: {
-							notebook_path: notebookPath,
-							cell_id: "probe",
-							new_source: "must-not-apply",
-							edit_mode: "replace",
+							pattern: "CC_ENHANCED_INSTRUCTION_SENTINEL",
+							path: scratch,
 						},
 						async verify(text, isError) {
 							assert.equal(
 								isError,
 								true,
-								"Disabled tool did not return an error",
+								"Disabled Grep did not return an error",
 							);
 							assert.match(
 								text,
 								/Disabled by cc-enhanced/,
-								"Disabled tool did not return the routing message",
+								"Disabled Grep did not return the routing message",
 							);
+							assert(
+								!text.includes("CLAUDE.md"),
+								"Disabled Grep still searched the workspace",
+							);
+						},
+					},
+					{
+						name: "Read",
+						input: { file_path: notebookPath },
+						async verify(text, isError) {
+							assert.equal(isError, false, `Notebook Read failed: ${text}`);
+						},
+					},
+					{
+						name: "NotebookEdit",
+						input: {
+							notebook_path: notebookPath,
+							cell_id: "probe",
+							new_source: "replaced-by-notebook-edit",
+							edit_mode: "replace",
+						},
+						async verify(text, isError) {
+							assert.equal(isError, false, `NotebookEdit failed: ${text}`);
+							const savedText = await fs.readFile(notebookPath, "utf8");
+							let saved: unknown;
+							try {
+								saved = JSON.parse(savedText);
+							} catch {
+								assert.fail(`NotebookEdit saved invalid JSON:\n${savedText}`);
+							}
+							assert(
+								isRecord(saved) && Array.isArray(saved.cells),
+								"NotebookEdit left an invalid notebook",
+							);
+							const cell = saved.cells.find(
+								(candidate: unknown) =>
+									isRecord(candidate) && candidate.id === "probe",
+							);
+							assert(isRecord(cell), "NotebookEdit dropped the probe cell");
+							const source = Array.isArray(cell.source)
+								? cell.source.join("")
+								: cell.source;
 							assert.equal(
-								await fs.readFile(notebookPath, "utf8"),
-								notebook,
-								"Disabled tool changed its target",
+								source,
+								"replaced-by-notebook-edit",
+								"NotebookEdit did not save the new cell source",
 							);
 						},
 					},
@@ -857,7 +1184,7 @@ export async function verifyMods(
 				"Instruction hook changed the file",
 			);
 			console.log(
-				"Plugin mods: driven batch_edit on a never-read file, all-or-nothing validation failure, view, and denied tool passed.",
+				"Plugin mods: driven batch_edit on a never-read file, all-or-nothing validation failure, Edit deny rule, view, disabled Grep, and NotebookEdit replacing a cell passed.",
 			);
 		} finally {
 			const closed = once(server, "close");

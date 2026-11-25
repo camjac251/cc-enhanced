@@ -92,3 +92,9 @@ jobs:
 
       - name: Test
         run: bun run test
+
+      # Downloads the official binary at plugin.json's engines minimum, then
+      # runs strict validation and the engine tests. No live session or API key.
+      - name: Verify plugin on the minimum Claude Code
+        if: runner.os == 'Linux'
+        run: bun run verify:minimum
